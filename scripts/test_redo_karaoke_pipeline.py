@@ -17,6 +17,7 @@ from redo_karaoke_pipeline import (
     sha256,
     validate_source_srt_scope,
 )
+from task_contract import qa_metadata, sha256 as contract_sha256
 
 
 class GlobalSequenceAlignmentTests(unittest.TestCase):
@@ -329,6 +330,22 @@ class BoundaryEvidenceTests(unittest.TestCase):
 
 
 class ProjectRegressionTests(unittest.TestCase):
+    @staticmethod
+    def manifest(source: Path, fingerprint: str = "1" * 64) -> dict:
+        return {
+            "schema_version": "2.0",
+            "project": "one mix",
+            "task_fingerprint_sha256": fingerprint,
+            "inputs": {
+                "source_srt": {
+                    "kind": "file",
+                    "path": "private/one-mix/input/source.srt",
+                    "size": source.stat().st_size,
+                    "sha256": contract_sha256(source),
+                }
+            },
+        }
+
     def test_manual_override_scope_accepts_matching_canonical_hash(self):
         with tempfile.TemporaryDirectory() as directory:
             source = Path(directory) / "source.srt"
@@ -365,20 +382,14 @@ class ProjectRegressionTests(unittest.TestCase):
                 encoding="utf-8",
             )
             cases = root / "cases.json"
-            cases.write_text(
-                json.dumps(
-                    {
-                        "project": "different mix",
-                        "source_srt_sha256": "0" * 64,
-                        "cases": [],
-                    }
-                ),
-                encoding="utf-8",
-            )
+            manifest = self.manifest(source)
+            payload = {**qa_metadata(manifest, "regression_cases"), "cases": []}
+            payload["source_srt_sha256"] = "0" * 64
+            cases.write_text(json.dumps(payload), encoding="utf-8")
 
-            issues, _ = evaluate_regression_cases([], source, cases)
+            issues, _ = evaluate_regression_cases([], cases, manifest)
 
-            self.assertTrue(any("different source SRT" in issue for issue in issues))
+            self.assertTrue(any("source_srt_sha256" in issue for issue in issues))
 
     def test_exact_project_case_passes_with_matching_hash(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -389,11 +400,11 @@ class ProjectRegressionTests(unittest.TestCase):
                 encoding="utf-8",
             )
             cases = root / "cases.json"
+            manifest = self.manifest(source)
             cases.write_text(
                 json.dumps(
                     {
-                        "project": "one mix",
-                        "source_srt_sha256": sha256(source),
+                        **qa_metadata(manifest, "regression_cases"),
                         "cases": [
                             {
                                 "id": "corrected",
@@ -409,7 +420,7 @@ class ProjectRegressionTests(unittest.TestCase):
             )
 
             issues, summary = evaluate_regression_cases(
-                [Cue(1, 1000, 2000, "correct")], source, cases
+                [Cue(1, 1000, 2000, "correct")], cases, manifest
             )
 
             self.assertEqual(issues, [])

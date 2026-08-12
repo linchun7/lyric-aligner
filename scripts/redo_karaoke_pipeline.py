@@ -20,6 +20,16 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Iterable
 
+from language_profiles import evidence_capability, thresholds
+from task_contract import (
+    assert_manifest_paths,
+    load_task_manifest,
+    report_fingerprint,
+    validate_artifact_fingerprint,
+    validate_qa_artifact,
+    verify_manifest_inputs,
+)
+
 
 TIME_RE = re.compile(r"^(\d{2}):(\d{2}):(\d{2})[,.](\d{3})$")
 LRC_RE = re.compile(r"\[(\d{1,3}):(\d{2})(?:[.:](\d{1,3}))?\](.*)")
@@ -27,7 +37,43 @@ META_RE = re.compile(
     r"^(?:\[?by:|作词|作曲|编曲|词\s*:|曲\s*:|制作人|人声采样|未经|版权|发行|混音|母带|企划|出品人|op\s*:|sp\s*:|本作品)",
     re.IGNORECASE,
 )
-ALGORITHM_VERSION = "3.7"
+ALGORITHM_VERSION = "3.8"
+
+
+def require_task_manifest(
+    args: argparse.Namespace,
+    provided: dict[str, Path | None],
+) -> dict:
+    """Load one task contract and reject stale or cross-task inputs."""
+
+    manifest = load_task_manifest(args.task_manifest)
+    issues = verify_manifest_inputs(args.task_manifest, manifest)
+    if issues:
+        raise ValueError("task manifest validation failed: " + "; ".join(issues))
+    assert_manifest_paths(args.task_manifest, manifest, provided)
+    return manifest
+
+
+def require_report_fingerprint(rows: list[dict], manifest: dict, label: str) -> None:
+    actual = report_fingerprint(rows)
+    expected = str(manifest["task_fingerprint_sha256"])
+    if actual != expected:
+        raise ValueError(
+            f"{label} belongs to another task fingerprint: "
+            f"expected {expected}, got {actual}"
+        )
+
+
+def release_gate(issues: list[str], review_candidates: list[dict]) -> dict[str, object]:
+    structurally_valid = not issues
+    fully_reviewed = len(review_candidates) == 0
+    publish_ready = structurally_valid and fully_reviewed
+    return {
+        "structurally_valid": structurally_valid,
+        "fully_reviewed": fully_reviewed,
+        "publish_ready": publish_ready,
+        "release_status": "ready" if publish_ready else "blocked",
+    }
 
 
 @dataclass(frozen=True)
@@ -268,20 +314,8 @@ def parse_lrc(path: Path) -> list[LyricLine]:
 
 
 def clean_canonical_text(value: str) -> str:
-    """Repair unambiguous token-joining defects in supplied LRC text."""
+    """Normalize whitespace without task-specific lyric corrections."""
 
-    fixes = {
-        "Causeit's": "Cause it's",
-        "causeit's": "cause it's",
-        "togetherlet's": "together, let's",
-        " Idon't": " I don't",
-        " goldI'm": " gold, I'm",
-        "goldI'm": "gold, I'm",
-        " likenothing's": " like nothing's",
-        "likenothing's": "like nothing's",
-    }
-    for old, new in fixes.items():
-        value = value.replace(old, new)
     return re.sub(r"\s+", " ", value).strip()
 
 
@@ -1449,9 +1483,19 @@ def enforce_monotonic_lyric_sequence(
 
 
 def command_build(args: argparse.Namespace) -> int:
+    manifest = require_task_manifest(
+        args,
+        {
+            "source_srt": args.srt,
+            "song_list": args.song_list,
+            "lyrics_dir": args.lyrics_dir,
+        },
+    )
+    task_fingerprint = str(manifest["task_fingerprint_sha256"])
     cues = parse_srt(args.srt)
     tracks = parse_song_list(args.song_list, args.lyrics_dir, cues[-1].end_ms)
     audio_payload = json.loads(args.audio_alignment.read_text(encoding="utf-8"))
+    validate_artifact_fingerprint(audio_payload, manifest, "audio alignment")
     events, mappings = projected_lyric_events(tracks, cues, audio_payload)
 
     cue_events: dict[int, list[dict]] = {cue.number: [] for cue in cues}
@@ -1714,6 +1758,8 @@ def command_build(args: argparse.Namespace) -> int:
         )
 
     output_rows.sort(key=lambda row: (row["start_ms"], 0 if row["kind"] == "existing" else 1))
+    for row in output_rows:
+        row["task_fingerprint_sha256"] = task_fingerprint
     final_cues = [
         Cue(index, int(row["start_ms"]), int(row["end_ms"]), str(row["text"]))
         for index, row in enumerate(output_rows, start=1)
@@ -1729,7 +1775,14 @@ def command_build(args: argparse.Namespace) -> int:
         writer = csv.DictWriter(handle, fieldnames=fields)
         writer.writeheader()
         writer.writerows(output_rows)
-    args.out_mapping.write_text(json.dumps(mappings, ensure_ascii=False, indent=2), encoding="utf-8")
+    mapping_payload = {
+        "algorithm_version": ALGORITHM_VERSION,
+        "task_fingerprint_sha256": task_fingerprint,
+        "mappings": mappings,
+    }
+    args.out_mapping.write_text(
+        json.dumps(mapping_payload, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
 
     # Verify every original cue interval survived byte-for-byte at the draft
     # stage.  Source-only non-lexical vocalizations are removed only after
@@ -1765,31 +1818,59 @@ def command_build(args: argparse.Namespace) -> int:
 
 
 def command_refine_korean(args: argparse.Namespace) -> int:
+    manifest = require_task_manifest(
+        args,
+        {
+            "source_srt": args.srt,
+            "song_list": args.song_list,
+            "lyrics_dir": args.lyrics_dir,
+        },
+    )
     cues = parse_srt(args.srt)
     tracks = parse_song_list(args.song_list, args.lyrics_dir, cues[-1].end_ms)
     audio_payload = json.loads(args.audio_alignment.read_text(encoding="utf-8"))
+    validate_artifact_fingerprint(audio_payload, manifest, "audio alignment")
     events, _ = projected_lyric_events(tracks, cues, audio_payload)
     asr_payload = json.loads(args.asr_json.read_text(encoding="utf-8"))
-    asr_jobs = {row["track"]: row for row in asr_payload.get("jobs", [])}
+    validate_artifact_fingerprint(asr_payload, manifest, "ASR evidence")
+    asr_jobs: dict[str, list[dict]] = {}
+    for job in asr_payload.get("jobs", []):
+        asr_jobs.setdefault(str(job["track"]), []).append(job)
     with args.in_report.open(encoding="utf-8-sig", newline="") as handle:
         rows = list(csv.DictReader(handle))
+    require_report_fingerprint(rows, manifest, "input report")
 
     refined = 0
     for row in rows:
         track = row.get("track", "")
-        job = asr_jobs.get(track)
+        jobs = asr_jobs.get(track, [])
         row["asr_text"] = ""
         row["asr_score"] = ""
-        if not job:
+        if not jobs:
             continue
+        job_languages = {str(job.get("language") or "ko") for job in jobs}
+        language = next(iter(job_languages)) if len(job_languages) == 1 else "mixed"
+        profile = thresholds(language)
+        minimum_score = (
+            args.min_asr_score
+            if args.min_asr_score is not None
+            else profile["review_score"]
+        )
+        minimum_coverage = (
+            args.min_asr_coverage
+            if args.min_asr_coverage is not None
+            else profile["min_coverage"]
+        )
+        row["evidence_language"] = language
         start = int(row["start_ms"]) / 1000.0
         end = int(row["end_ms"]) / 1000.0
         words: list[str] = []
-        for segment in job.get("segments", []):
-            for word in segment.get("words", []):
-                midpoint = (float(word["start"]) + float(word["end"])) / 2.0
-                if start - 0.12 <= midpoint <= end + 0.12 and float(word.get("probability", 0.0)) >= 0.20:
-                    words.append(str(word["word"]).strip())
+        for job in jobs:
+            for segment in job.get("segments", []):
+                for word in segment.get("words", []):
+                    midpoint = (float(word["start"]) + float(word["end"])) / 2.0
+                    if start - 0.12 <= midpoint <= end + 0.12 and float(word.get("probability", 0.0)) >= 0.20:
+                        words.append(str(word["word"]).strip())
         observation = " ".join(word for word in words if word).strip()
         if not observation:
             continue
@@ -1811,10 +1892,20 @@ def command_refine_korean(args: argparse.Namespace) -> int:
         if not best:
             continue
         row["asr_score"] = f"{best[1]:.3f}"
-        if best[1] >= args.min_asr_score and best[2] >= args.min_asr_coverage:
+        if best[1] >= minimum_score and best[2] >= minimum_coverage:
             row["text"] = best[3]
-            row["evidence"] = row.get("evidence", "") + "+large_v3_turbo_asr"
-            row["confidence"] = "high" if best[1] >= 0.78 else "review"
+            capability = evidence_capability(language, best[3])
+            row["evidence"] = row.get("evidence", "") + "+multilingual_word_asr"
+            row["confidence"] = (
+                "high"
+                if best[1] >= profile["auto_score"]
+                and best[2] >= profile["min_coverage"]
+                and capability["high_confidence_allowed"]
+                else "review"
+            )
+            row["pronunciation_evidence_available"] = str(
+                capability["pronunciation_available"]
+            ).lower()
             row["status"] = "asr_refined_existing"
             # The selected canonical event is part of the provenance, not just
             # replacement text.  Omitting its index made valid Korean ASR rows
@@ -1831,7 +1922,20 @@ def command_refine_korean(args: argparse.Namespace) -> int:
     # the ASR words support the canonical span and the global timing path is
     # close, or when it is materially stronger than the local selection.
     global_asr_refined = 0
-    for track, job in asr_jobs.items():
+    for track, jobs in asr_jobs.items():
+        job_languages = {str(job.get("language") or "ko") for job in jobs}
+        language = next(iter(job_languages)) if len(job_languages) == 1 else "mixed"
+        profile = thresholds(language)
+        minimum_score = (
+            args.min_asr_score
+            if args.min_asr_score is not None
+            else profile["review_score"]
+        )
+        minimum_coverage = (
+            args.min_asr_coverage
+            if args.min_asr_coverage is not None
+            else profile["min_coverage"]
+        )
         track_events = [event for event in events if event["track"] == track]
         observations = [
             {
@@ -1852,7 +1956,7 @@ def command_refine_korean(args: argparse.Namespace) -> int:
             span, score, coverage, _ = best_text_span(
                 str(row.get("asr_text", "")), canonical
             )
-            if score < args.min_asr_score or coverage < args.min_asr_coverage:
+            if score < minimum_score or coverage < minimum_coverage:
                 continue
             proposed_indices = [int(value) for value in match["event_indices"]]
             current_indices = [
@@ -1871,7 +1975,18 @@ def command_refine_korean(args: argparse.Namespace) -> int:
             row["lrc_indices"] = ";".join(str(value) for value in proposed_indices)
             row["asr_score"] = f"{score:.3f}"
             row["evidence"] = row.get("evidence", "") + "+global_asr_sequence_viterbi"
-            row["confidence"] = "high" if score >= 0.78 else "review"
+            capability = evidence_capability(language, span)
+            row["confidence"] = (
+                "high"
+                if score >= profile["auto_score"]
+                and coverage >= profile["min_coverage"]
+                and capability["high_confidence_allowed"]
+                else "review"
+            )
+            row["evidence_language"] = language
+            row["pronunciation_evidence_available"] = str(
+                capability["pronunciation_available"]
+            ).lower()
             row["status"] = "asr_refined_existing"
             global_asr_refined += 1
 
@@ -1899,20 +2014,31 @@ def command_refine_korean(args: argparse.Namespace) -> int:
 
 
 def command_finalize(args: argparse.Namespace) -> int:
+    manifest = require_task_manifest(
+        args,
+        {
+            "source_srt": args.srt,
+            "song_list": args.song_list,
+            "lyrics_dir": args.lyrics_dir,
+        },
+    )
     cues = parse_srt(args.srt)
     tracks = parse_song_list(args.song_list, args.lyrics_dir, cues[-1].end_ms)
     audio_payload = json.loads(args.audio_alignment.read_text(encoding="utf-8"))
+    validate_artifact_fingerprint(audio_payload, manifest, "audio alignment")
     events, _ = projected_lyric_events(tracks, cues, audio_payload)
     overrides = json.loads(args.manual_overrides.read_text(encoding="utf-8"))
-    _, scope_issue = validate_source_srt_scope(
-        overrides, args.srt, "manual override file"
+    override_issues = validate_qa_artifact(
+        overrides, manifest, "manual override file", "manual_overrides"
     )
-    if scope_issue:
-        raise ValueError(scope_issue)
+    if override_issues:
+        raise ValueError("; ".join(override_issues))
     overrides.pop("schema_version", None)
     overrides.pop("project", None)
     overrides.pop("scope", None)
     overrides.pop("source_srt_sha256", None)
+    overrides.pop("task_fingerprint_sha256", None)
+    overrides.pop("artifact_type", None)
     overrides.pop("_source_srt_sha256", None)
     manual_insertions = overrides.pop("_insertions", [])
     manual_cue_splits = overrides.pop("_cue_splits", [])
@@ -1923,6 +2049,7 @@ def command_finalize(args: argparse.Namespace) -> int:
     confirmed_boundary_pairs = overrides.pop("_confirmed_boundary_pairs", [])
     with args.in_report.open(encoding="utf-8-sig", newline="") as handle:
         rows = list(csv.DictReader(handle))
+    require_report_fingerprint(rows, manifest, "input report")
 
     rebuild_titles = set(args.rebuild_track)
     hybrid_titles = set(args.hybrid_track)
@@ -2204,6 +2331,8 @@ def command_finalize(args: argparse.Namespace) -> int:
     )
 
     output_rows.sort(key=lambda row: (int(row["start_ms"]), int(row["end_ms"])))
+    for row in output_rows:
+        row["task_fingerprint_sha256"] = manifest["task_fingerprint_sha256"]
     # Ensure final output is non-overlapping except for overlaps already present
     # in the original Jianying file (the opening narration/lyric overlay).
     allowed_overlaps = {
@@ -2214,10 +2343,6 @@ def command_finalize(args: argparse.Namespace) -> int:
     unexpected_overlaps: list[tuple[int, int]] = []
     for left, right in zip(output_rows, output_rows[1:]):
         if int(left["end_ms"]) <= int(right["start_ms"]):
-            continue
-        if int(right["start_ms"]) < 10_000:
-            # The source intentionally overlays opening narration with the
-            # first two lyric cues.
             continue
         signature = (
             int(left["start_ms"]),
@@ -2625,7 +2750,7 @@ def unresolved_existing_candidates(rows: list[dict]) -> list[dict]:
     }
     candidates: list[dict] = []
     for number, row in sorted(by_original.items()):
-        if number <= 8 or row.get("status") != "keep_existing":
+        if row.get("status") != "keep_existing":
             continue
         text = str(row.get("original", ""))
         if is_generic_vocalization(text) or is_repeated_lyric_fragment(text):
@@ -2696,22 +2821,17 @@ def manual_review_note_candidates(rows: list[dict]) -> list[dict]:
 
 
 def evaluate_regression_cases(
-    final: list[Cue], source_srt: Path, cases_path: Path
+    final: list[Cue], cases_path: Path, manifest: dict
 ) -> tuple[list[str], dict]:
-    """Evaluate project-scoped human confirmations guarded by input hash.
-
-    Concrete lyrics, cue numbers, and milliseconds must never leak from one
-    mix into another.  A case file is therefore accepted only when its source
-    Jianying SRT hash matches the current input.
-    """
+    """Evaluate confirmations only for their exact schema-2 task contract."""
 
     payload = json.loads(cases_path.read_text(encoding="utf-8"))
-    actual_hash, scope_issue = validate_source_srt_scope(
-        payload, source_srt, "regression case file"
+    contract_issues = validate_qa_artifact(
+        payload, manifest, "regression case file", "regression_cases"
     )
     issues: list[str] = []
-    if scope_issue:
-        issues.append(scope_issue)
+    if contract_issues:
+        issues.extend(contract_issues)
         return issues, {"project": payload.get("project", ""), "case_count": 0, "passed": 0}
 
     passed = 0
@@ -2765,24 +2885,35 @@ def evaluate_regression_cases(
         "project": payload.get("project", ""),
         "case_count": len(cases),
         "passed": passed,
-        "source_srt_sha256": actual_hash,
+        "source_srt_sha256": manifest["inputs"]["source_srt"]["sha256"],
+        "task_fingerprint_sha256": manifest["task_fingerprint_sha256"],
     }
 
 
 def command_qa(args: argparse.Namespace) -> int:
     from collections import Counter
 
+    manifest = require_task_manifest(
+        args,
+        {
+            "source_srt": args.source_srt,
+            "song_list": args.song_list,
+            "lyrics_dir": args.lyrics_dir,
+        },
+    )
     source = parse_srt(args.source_srt)
     final = parse_srt(args.final_srt)
     with args.report.open(encoding="utf-8-sig", newline="") as handle:
         rows = list(csv.DictReader(handle))
+    require_report_fingerprint(rows, manifest, "QA report")
     confirmed_omissions: dict[tuple[str, int], str] = {}
     manual_override_scope_issue: str | None = None
     if args.manual_overrides:
         qa_overrides = json.loads(args.manual_overrides.read_text(encoding="utf-8"))
-        _, manual_override_scope_issue = validate_source_srt_scope(
-            qa_overrides, args.source_srt, "manual override file"
+        override_issues = validate_qa_artifact(
+            qa_overrides, manifest, "manual override file", "manual_overrides"
         )
+        manual_override_scope_issue = "; ".join(override_issues) or None
         for item in qa_overrides.get("_confirmed_omitted_lrc_events", []):
             confirmed_omissions[(str(item["track"]), int(item["lrc_index"]))] = str(
                 item.get("reason", "confirmed_audio_edit")
@@ -2822,7 +2953,7 @@ def command_qa(args: argparse.Namespace) -> int:
         issues.append("lyric metadata leaked into final subtitles")
     unexpected_overlaps = []
     for left, right in zip(final, final[1:]):
-        if left.end_ms > right.start_ms and right.start_ms >= 10_000:
+        if left.end_ms > right.start_ms:
             unexpected_overlaps.append((left.number, right.number))
     if unexpected_overlaps:
         issues.append(f"unexpected overlaps: {unexpected_overlaps[:10]}")
@@ -2847,6 +2978,7 @@ def command_qa(args: argparse.Namespace) -> int:
     confirmed_audio_cut_count = 0
     if args.audio_alignment:
         alignment_payload = json.loads(args.audio_alignment.read_text(encoding="utf-8"))
+        validate_artifact_fingerprint(alignment_payload, manifest, "audio alignment")
         for item in alignment_payload.get("tracks", []):
             for edit in item.get("edit_candidates", []):
                 if edit.get("status") == "confirmed":
@@ -2965,7 +3097,7 @@ def command_qa(args: argparse.Namespace) -> int:
     }
     if args.regression_cases:
         regression_issues, regression_summary = evaluate_regression_cases(
-            final, args.source_srt, args.regression_cases
+            final, args.regression_cases, manifest
         )
         issues.extend(regression_issues)
     long_cues = [
@@ -2984,6 +3116,7 @@ def command_qa(args: argparse.Namespace) -> int:
     if args.song_list and args.lyrics_dir and args.audio_alignment:
         tracks = parse_song_list(args.song_list, args.lyrics_dir, source[-1].end_ms)
         alignment_payload = json.loads(args.audio_alignment.read_text(encoding="utf-8"))
+        validate_artifact_fingerprint(alignment_payload, manifest, "audio alignment")
         projected_events, _ = projected_lyric_events(tracks, source, alignment_payload)
         represented: dict[str, set[int]] = {}
         for row in rows:
@@ -3192,14 +3325,10 @@ def command_qa(args: argparse.Namespace) -> int:
     )
     high_review_count = sum(row["risk"] == "high" for row in review_candidates)
     medium_review_count = sum(row["risk"] == "medium" for row in review_candidates)
-    # Isolated canonical-event holes are blocking even when textual evidence is
-    # only medium-confidence: that is exactly how a merged Jianying cue can
-    # silently lose one lyric line in a merged-cue sequence.
-    publish_ready = (
-        not issues
-        and high_review_count == 0
-        and len(lyric_coverage_candidates) == 0
-    )
+    release = release_gate(issues, review_candidates)
+    structurally_valid = bool(release["structurally_valid"])
+    fully_reviewed = bool(release["fully_reviewed"])
+    publish_ready = bool(release["publish_ready"])
     if args.out_review:
         args.out_review.parent.mkdir(parents=True, exist_ok=True)
         fields = list(review_candidates[0]) if review_candidates else ["category"]
@@ -3209,8 +3338,13 @@ def command_qa(args: argparse.Namespace) -> int:
             writer.writerows(review_candidates)
     summary = {
         "algorithm_version": ALGORITHM_VERSION,
-        "passed": not issues,
+        "schema_version": "2.0",
+        "task_fingerprint_sha256": manifest["task_fingerprint_sha256"],
+        "passed": structurally_valid,
+        "structurally_valid": structurally_valid,
+        "fully_reviewed": fully_reviewed,
         "publish_ready": publish_ready,
+        "release_status": release["release_status"],
         "issues": issues,
         "source_cue_count": len(source),
         "final_cue_count": len(final),
@@ -3254,12 +3388,25 @@ def command_audio_align(args: argparse.Namespace) -> int:
     import librosa
     import numpy as np
 
+    manifest = require_task_manifest(
+        args,
+        {
+            "source_srt": args.srt,
+            "audio": args.audio,
+            "song_list": args.song_list,
+            "lyrics_dir": args.lyrics_dir,
+            "bpm_changes": args.bpm_changes,
+            "source_audio_dir": args.source_dir,
+        },
+    )
     cues = parse_srt(args.srt)
     tracks = parse_song_list(args.song_list, args.lyrics_dir, cues[-1].end_ms)
     bpm_changes = parse_bpm_changes(args.bpm_changes)
     mix_audio, _ = librosa.load(args.audio, sr=args.sample_rate, mono=True)
     mix_audio = np.diff(mix_audio, prepend=mix_audio[0]).astype(np.float32)
     payload: dict = {
+        "algorithm_version": ALGORITHM_VERSION,
+        "task_fingerprint_sha256": manifest["task_fingerprint_sha256"],
         "sample_rate": args.sample_rate,
         "window_seconds": args.window_seconds,
         "step_seconds": args.step_seconds,
@@ -3375,6 +3522,16 @@ def verify_timeline(source: list[Cue], output: list[Cue]) -> None:
 
 
 def command_prepare(args: argparse.Namespace) -> int:
+    manifest = require_task_manifest(
+        args,
+        {
+            "source_srt": args.srt,
+            "audio": args.audio,
+            "song_list": args.song_list,
+            "lyrics_dir": args.lyrics_dir,
+        },
+    )
+    task_fingerprint = str(manifest["task_fingerprint_sha256"])
     cues = parse_srt(args.srt)
     tracks = parse_song_list(args.song_list, args.lyrics_dir, cues[-1].end_ms)
     report_rows: list[dict] = []
@@ -3396,6 +3553,7 @@ def command_prepare(args: argparse.Namespace) -> int:
                 replacements[cue.number] = match["candidate"]
             report_rows.append(
                 {
+                    "task_fingerprint_sha256": task_fingerprint,
                     "cue": cue.number,
                     "start": format_srt_time(cue.start_ms),
                     "end": format_srt_time(cue.end_ms),
@@ -3421,6 +3579,8 @@ def command_prepare(args: argparse.Namespace) -> int:
     verify_timeline(cues, parse_srt(draft))
 
     manifest = {
+        "algorithm_version": ALGORITHM_VERSION,
+        "task_fingerprint_sha256": task_fingerprint,
         "inputs": {
             "srt": str(args.srt.resolve()),
             "srt_sha256": sha256(args.srt),
@@ -3452,6 +3612,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
     prepare = sub.add_parser("prepare", help="Build conservative text-evidence candidates.")
+    prepare.add_argument("--task-manifest", required=True, type=Path)
     prepare.add_argument("--audio", required=True, type=Path)
     prepare.add_argument("--srt", required=True, type=Path)
     prepare.add_argument("--song-list", required=True, type=Path)
@@ -3461,6 +3622,7 @@ def build_parser() -> argparse.ArgumentParser:
     prepare.add_argument("--auto-coverage", type=float, default=0.78)
     prepare.set_defaults(func=command_prepare)
     audio_align = sub.add_parser("audio-align", help="Align original recordings to the edited mix.")
+    audio_align.add_argument("--task-manifest", required=True, type=Path)
     audio_align.add_argument("--audio", required=True, type=Path)
     audio_align.add_argument("--srt", required=True, type=Path)
     audio_align.add_argument("--song-list", required=True, type=Path)
@@ -3474,6 +3636,7 @@ def build_parser() -> argparse.ArgumentParser:
     audio_align.add_argument("--candidate-count", type=int, default=10)
     audio_align.set_defaults(func=command_audio_align)
     build = sub.add_parser("build", help="Project canonical lyrics into fixed SRT cues and uncovered gaps.")
+    build.add_argument("--task-manifest", required=True, type=Path)
     build.add_argument("--srt", required=True, type=Path)
     build.add_argument("--song-list", required=True, type=Path)
     build.add_argument("--lyrics-dir", required=True, type=Path)
@@ -3481,7 +3644,7 @@ def build_parser() -> argparse.ArgumentParser:
     build.add_argument("--out-srt", required=True, type=Path)
     build.add_argument("--out-report", required=True, type=Path)
     build.add_argument("--out-mapping", required=True, type=Path)
-    build.add_argument("--preserve-cues", type=int, nargs="*", default=list(range(1, 9)))
+    build.add_argument("--preserve-cues", type=int, nargs="*", default=[])
     build.add_argument("--max-assignment-gap-ms", type=int, default=1400)
     build.add_argument("--min-gap-ms", type=int, default=700)
     build.add_argument("--min-insert-duration-ms", type=int, default=500)
@@ -3489,7 +3652,12 @@ def build_parser() -> argparse.ArgumentParser:
     build.add_argument("--max-insert-duration-ms", type=int, default=6000)
     build.add_argument("--split-long-cue-ms", type=int, default=7000)
     build.set_defaults(func=command_build)
-    refine = sub.add_parser("refine-korean", help="Use independent Korean ASR to split canonical LRC lines by cue.")
+    refine = sub.add_parser(
+        "refine-asr",
+        aliases=["refine-korean"],
+        help="Use fingerprinted multilingual ASR evidence to refine canonical LRC spans.",
+    )
+    refine.add_argument("--task-manifest", required=True, type=Path)
     refine.add_argument("--srt", required=True, type=Path)
     refine.add_argument("--song-list", required=True, type=Path)
     refine.add_argument("--lyrics-dir", required=True, type=Path)
@@ -3498,13 +3666,14 @@ def build_parser() -> argparse.ArgumentParser:
     refine.add_argument("--in-report", required=True, type=Path)
     refine.add_argument("--out-srt", required=True, type=Path)
     refine.add_argument("--out-report", required=True, type=Path)
-    refine.add_argument("--min-asr-score", type=float, default=0.56)
-    refine.add_argument("--min-asr-coverage", type=float, default=0.42)
+    refine.add_argument("--min-asr-score", type=float)
+    refine.add_argument("--min-asr-coverage", type=float)
     refine.set_defaults(func=command_refine_korean)
     finalize = sub.add_parser(
         "finalize",
         help="Apply audited rebuild or hybrid choices and cue overrides.",
     )
+    finalize.add_argument("--task-manifest", required=True, type=Path)
     finalize.add_argument("--srt", required=True, type=Path)
     finalize.add_argument("--song-list", required=True, type=Path)
     finalize.add_argument("--lyrics-dir", required=True, type=Path)
@@ -3517,15 +3686,17 @@ def build_parser() -> argparse.ArgumentParser:
     finalize.add_argument("--out-report", required=True, type=Path)
     finalize.set_defaults(func=command_finalize)
     qa = sub.add_parser("qa", help="Run final structural and regression checks.")
+    qa.add_argument("--task-manifest", required=True, type=Path)
     qa.add_argument("--source-srt", required=True, type=Path)
     qa.add_argument("--final-srt", required=True, type=Path)
     qa.add_argument("--report", required=True, type=Path)
-    qa.add_argument("--song-list", type=Path)
-    qa.add_argument("--lyrics-dir", type=Path)
-    qa.add_argument("--audio-alignment", type=Path)
-    qa.add_argument("--manual-overrides", type=Path)
+    qa.add_argument("--song-list", required=True, type=Path)
+    qa.add_argument("--lyrics-dir", required=True, type=Path)
+    qa.add_argument("--audio-alignment", required=True, type=Path)
+    qa.add_argument("--manual-overrides", required=True, type=Path)
     qa.add_argument(
         "--regression-cases",
+        required=True,
         type=Path,
         help="Project-specific confirmed cases guarded by the source SRT hash.",
     )

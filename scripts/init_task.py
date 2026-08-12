@@ -1,12 +1,19 @@
 #!/usr/bin/env python3
-"""Create an ignored local task workspace and scoped QA file skeletons."""
+"""Create a fingerprinted local task workspace and scoped QA skeletons."""
 
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 from pathlib import Path
+
+from task_contract import (
+    build_task_manifest,
+    load_task_manifest,
+    qa_metadata,
+    validate_qa_artifact,
+    write_json_atomic,
+)
 
 
 WINDOWS_RESERVED_NAMES = {
@@ -18,14 +25,6 @@ WINDOWS_RESERVED_NAMES = {
     *(f"LPT{index}" for index in range(1, 10)),
 }
 INVALID_TASK_NAME_CHARACTERS = set('<>:"/\\|?*')
-
-
-def sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
 
 
 def task_name(value: str) -> str:
@@ -43,29 +42,41 @@ def task_name(value: str) -> str:
     return value
 
 
-def validate_existing_scope(path: Path, source_hash: str) -> None:
+def validate_existing_qa(
+    path: Path,
+    manifest: dict,
+    artifact_type: str,
+) -> None:
     if not path.exists():
         return
     try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
+        payload = json.loads(path.read_text(encoding="utf-8-sig"))
     except (OSError, json.JSONDecodeError) as exc:
         raise ValueError(f"existing QA file is unreadable: {path}") from exc
-    if not isinstance(payload, dict):
-        raise ValueError(f"existing QA file must contain a JSON object: {path}")
-    existing_hash = str(payload.get("source_srt_sha256", "")).strip().lower()
-    if existing_hash != source_hash:
-        raise ValueError(
-            f"existing QA file belongs to a different source SRT: {path}"
-        )
+    issues = validate_qa_artifact(
+        payload,
+        manifest,
+        str(path),
+        artifact_type,
+    )
+    if issues:
+        raise ValueError("; ".join(issues))
 
 
-def init_task(root: Path, name: str, source_srt: Path) -> dict[str, str]:
+def init_task(
+    root: Path,
+    name: str,
+    *,
+    source_srt: Path,
+    audio: Path,
+    song_list: Path,
+    lyrics_dir: Path,
+    bpm_changes: Path | None = None,
+    source_audio_dir: Path | None = None,
+) -> dict[str, str]:
     name = task_name(name)
-    if not source_srt.is_file():
-        raise FileNotFoundError(f"source SRT does not exist: {source_srt}")
     if source_srt.suffix.lower() != ".srt":
         raise ValueError(f"source file must use the .srt extension: {source_srt}")
-    source_hash = sha256(source_srt)
     private_root = root / "private" / name
     input_root = private_root / "input"
     qa_root = private_root / "qa"
@@ -73,42 +84,58 @@ def init_task(root: Path, name: str, source_srt: Path) -> dict[str, str]:
     for directory in (input_root, qa_root, output_root):
         directory.mkdir(parents=True, exist_ok=True)
 
-    metadata = {
-        "schema_version": "1.0",
-        "project": name,
-        "source_srt_sha256": source_hash,
-        "scope": "Only this exact Jianying SRT. Never load for another mix.",
-    }
-    overrides = {
-        **metadata,
-        "_insertions": [],
-        "_cue_splits": [],
-        "_timing_overrides": {},
-        "_lrc_indices_overrides": {},
-        "_confirmed_omitted_lrc_events": [],
-        "_confirmed_boundary_pairs": [],
-        "_review_notes": {},
-    }
-    regression = {**metadata, "cases": []}
+    manifest_path = qa_root / "task_manifest.json"
+    manifest = build_task_manifest(
+        root,
+        name,
+        source_srt=source_srt,
+        audio=audio,
+        song_list=song_list,
+        lyrics_dir=lyrics_dir,
+        bpm_changes=bpm_changes,
+        source_audio_dir=source_audio_dir,
+    )
+    if manifest_path.exists():
+        existing = load_task_manifest(manifest_path)
+        if existing["task_fingerprint_sha256"] != manifest["task_fingerprint_sha256"]:
+            raise ValueError(
+                "existing task manifest belongs to different inputs; "
+                "use a new task name or migrate intentionally"
+            )
+    else:
+        write_json_atomic(manifest_path, manifest)
+
     overrides_path = qa_root / f"{name}_manual_overrides.json"
     regression_path = qa_root / f"{name}_regression_cases.json"
-    validate_existing_scope(overrides_path, source_hash)
-    validate_existing_scope(regression_path, source_hash)
+    validate_existing_qa(overrides_path, manifest, "manual_overrides")
+    validate_existing_qa(regression_path, manifest, "regression_cases")
+
     if not overrides_path.exists():
-        overrides_path.write_text(
-            json.dumps(overrides, ensure_ascii=False, indent=2) + "\n",
-            encoding="utf-8",
-        )
+        overrides = {
+            **qa_metadata(manifest, "manual_overrides"),
+            "_insertions": [],
+            "_cue_splits": [],
+            "_timing_overrides": {},
+            "_lrc_indices_overrides": {},
+            "_confirmed_omitted_lrc_events": [],
+            "_confirmed_boundary_pairs": [],
+            "_audio_edit_reviews": {},
+            "_review_notes": {},
+        }
+        write_json_atomic(overrides_path, overrides)
     if not regression_path.exists():
-        regression_path.write_text(
-            json.dumps(regression, ensure_ascii=False, indent=2) + "\n",
-            encoding="utf-8",
-        )
+        regression = {
+            **qa_metadata(manifest, "regression_cases"),
+            "cases": [],
+        }
+        write_json_atomic(regression_path, regression)
     return {
         "input": str(input_root),
         "qa": str(qa_root),
         "output": str(output_root),
-        "source_srt_sha256": source_hash,
+        "task_manifest": str(manifest_path),
+        "task_fingerprint_sha256": str(manifest["task_fingerprint_sha256"]),
+        "source_srt_sha256": str(manifest["inputs"]["source_srt"]["sha256"]),
         "manual_overrides": str(overrides_path),
         "regression_cases": str(regression_path),
     }
@@ -116,12 +143,28 @@ def init_task(root: Path, name: str, source_srt: Path) -> dict[str, str]:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--task", required=True, help="Single directory name for the local task.")
+    parser.add_argument("--task", required=True, help="Single local task directory name.")
     parser.add_argument("--source-srt", required=True, type=Path)
+    parser.add_argument("--audio", required=True, type=Path)
+    parser.add_argument("--song-list", required=True, type=Path)
+    parser.add_argument("--lyrics-dir", required=True, type=Path)
+    parser.add_argument("--bpm-changes", type=Path)
+    parser.add_argument("--source-audio-dir", type=Path)
     parser.add_argument("--root", default=Path("."), type=Path)
     args = parser.parse_args()
     try:
-        result = init_task(args.root.resolve(), args.task, args.source_srt.resolve())
+        result = init_task(
+            args.root.resolve(),
+            args.task,
+            source_srt=args.source_srt.resolve(),
+            audio=args.audio.resolve(),
+            song_list=args.song_list.resolve(),
+            lyrics_dir=args.lyrics_dir.resolve(),
+            bpm_changes=args.bpm_changes.resolve() if args.bpm_changes else None,
+            source_audio_dir=(
+                args.source_audio_dir.resolve() if args.source_audio_dir else None
+            ),
+        )
     except (OSError, ValueError) as exc:
         parser.error(str(exc))
     print(json.dumps(result, ensure_ascii=False, indent=2))
