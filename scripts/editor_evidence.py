@@ -1,11 +1,17 @@
 #!/usr/bin/env python3
-"""Reliability policy for subtitle-editor evidence by canonical language."""
+"""Compatibility adapter for the package-owned v4 editor evidence policy.
+
+New production/shadow work must use ``lyric_aligner.evidence.editor``.  This
+module remains for older diagnostic imports and intentionally cannot grant more
+trust than the package policy.
+"""
 
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
 
 from language_profiles import language_code
+from lyric_aligner.evidence.editor import trust_profile
 
 
 @dataclass(frozen=True)
@@ -21,23 +27,27 @@ class EditorEvidenceProfile:
         return asdict(self)
 
 
-_PROFILES = {
-    "en": EditorEvidenceProfile("en", "direct_text", 0.85, 0.75, True, False),
-    "zh": EditorEvidenceProfile("zh", "direct_text", 0.75, 0.70, True, False),
-    "yue": EditorEvidenceProfile("yue", "timing_hint", 0.05, 0.25, False, False),
-    "ko": EditorEvidenceProfile("ko", "phonetic_hint", 0.10, 0.30, False, True),
-    "ja": EditorEvidenceProfile("ja", "phonetic_hint", 0.10, 0.30, False, True),
-    "mixed": EditorEvidenceProfile("mixed", "timing_hint", 0.15, 0.35, False, True),
-    "auto": EditorEvidenceProfile("auto", "timing_hint", 0.0, 0.20, False, False),
-    "generic": EditorEvidenceProfile("generic", "timing_hint", 0.0, 0.20, False, False),
-}
-
-
 def editor_evidence_profile(language: str) -> EditorEvidenceProfile:
-    """Return a conservative policy for editor text/timing evidence.
+    """Return a conservative line-level compatibility view of v4 shadow policy."""
 
-    The profile is deliberately a policy layer only. Production alignment can
-    consume it incrementally without silently changing legacy v3.9 decisions.
-    """
-
-    return _PROFILES[language_code(language)]
+    code = language_code(language)
+    mode = (
+        "direct_text"
+        if code in {"en", "zh"}
+        else "phonetic_hint"
+        if code in {"ko", "ja"}
+        else "timing_hint"
+    )
+    # mixed/auto/generic are routed per span by the package implementation.  A
+    # line-level compatibility caller receives timing-only trust, never a text
+    # escalation.
+    package_language = code if code in {"en", "zh", "yue", "ko", "ja"} else "generic"
+    profile = trust_profile(package_language, mode)
+    return EditorEvidenceProfile(
+        language=code,
+        mode=mode,
+        text_weight=profile.text_weight,
+        timing_weight=profile.timing_weight,
+        allow_direct_canonical_match=mode == "direct_text" and profile.text_weight > 0,
+        allow_phonetic_hint=mode == "phonetic_hint" and profile.text_weight > 0,
+    )
