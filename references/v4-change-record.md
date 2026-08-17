@@ -275,3 +275,10 @@ HPSS/Chroma/MFCC
 4. 只对 low-margin / AFFINE drift / cut / overlap boundary 做 fine alignment；
 5. 本地 Codex 恢复完整 v3.9 legacy 工作树并接线 v4 package；
 6. 私有 calibration/blind-test 后重定全部 bootstrap 阈值。
+# 2026-08-17：本地 v3.9 baseline 恢复与 v4 production safety wiring
+
+- v3.9 legacy 生产脚本、测试和文档以独立 baseline commit 恢复；v4 集成在该 baseline 之上进行，保留 middle-cut review/apply、连续分段变速、Enhanced LRC/QRC、叠唱 review/confirmed interval 和发布门禁。
+- `redo_karaoke_pipeline.py prepare` / `audio-align` 新增可选 v4 asset mode：必须同时提供 fingerprinted `track_assets.json` 和 asset artifact，严格校验 schema、task fingerprint、v4 algorithm version、artifact ID 和 materialized output hash 后，才按 occurrence ordinal 使用 canonical LRC 路径。
+- 不提供 v4 asset 参数时保留 v3.9 legacy 兼容入口；提供任一而不提供另一项会 fail-closed，避免半接线或跨任务资产混用。
+- legacy `qa` 在 `publish_ready=true` 时自动创建 release ArtifactManifest，严格绑定 FINAL SRT、审计 CSV、QA JSON、task fingerprint 和算法版本；不可发布的 QA 不会产生 release manifest。
+- 此轮不把 v4 TimeWarp/transition/LanguageSpan 直接升格为终稿权威来源。它们仍需通过私有 A/B 与 calibration 后才可改变 v3.9 映射或发布决策。

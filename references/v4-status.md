@@ -9,7 +9,7 @@ v4 package：`4.0.0a1`
 
 ## 1. 当前结论
 
-v4 已经有可运行的独立 package/stage，但**尚未替换 legacy 生产主链**。
+v4 已经有可运行的独立 package/stage。真实 v3.9 legacy baseline 已恢复到本地集成分支；生产 CLI 已接入 fail-closed asset identity 和最终 release integrity，但 TimeWarp、transition 和 LanguageSpan 仍处于 shadow/证据阶段，**尚未替换 legacy 音频映射主路径**。
 
 已实现：
 
@@ -28,7 +28,7 @@ v4 已经有可运行的独立 package/stage，但**尚未替换 legacy 生产�
 13. 行内 `LanguageSpan`；
 14. 可直接运行的 v4 stage CLI。
 
-仍然阻止 PR #1 合并为生产替代的核心原因：远端 `scripts/redo_karaoke_pipeline.py` 仍是已提交 v3.8；此前真实使用的完整 v3.9 是未提交工作树。v4 package 尚未接入 legacy `audio-align/build/finalize/qa`。
+PR #1 仍然不能作为生产替代合并：v4 TimeWarp、transition 和 LanguageSpan 尚未完成真实私有 calibration，也尚未成为 legacy `audio-align/build/finalize/qa` 的权威决策来源。
 
 ## 2. 关键实现
 
@@ -173,10 +173,10 @@ status=review
 
 ## 4. 当前验证
 
-本地恢复 v3.9 工作树 + 当前 v4 package 的组合回归：
+本地恢复 v3.9 baseline + 当前 v4 package/production asset-release 接线的组合回归：
 
 ```text
-104 tests passed
+128 tests passed
 27.61s
 ```
 

@@ -21,6 +21,10 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Iterable
 
+REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
+if str(REPOSITORY_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPOSITORY_ROOT))
+
 from language_profiles import evidence_capability, thresholds
 from task_contract import (
     assert_manifest_paths,
@@ -29,6 +33,15 @@ from task_contract import (
     validate_artifact_fingerprint,
     validate_qa_artifact,
     verify_manifest_inputs,
+)
+from lyric_aligner.contracts.artifacts import (
+    atomic_write_json,
+    validate_artifact_output,
+    validate_upstream_artifact,
+)
+from lyric_aligner.qa.final_integrity import (
+    FinalIntegrityError,
+    build_release_artifact_manifest,
 )
 
 
@@ -44,6 +57,48 @@ META_RE = re.compile(
     re.IGNORECASE,
 )
 ALGORITHM_VERSION = "3.9"
+V4_ALGORITHM_VERSION = "4.0.0a1"
+
+
+def load_v4_assets(
+    manifest: dict,
+    assets_path: Path | None,
+    artifact_path: Path | None,
+) -> dict | None:
+    """Load v4 asset identity only when the caller explicitly enables v4 mode."""
+
+    if assets_path is None and artifact_path is None:
+        return None
+    if assets_path is None or artifact_path is None:
+        raise ValueError("v4 mode requires both --v4-track-assets and --v4-asset-artifact")
+    payload = json.loads(assets_path.read_text(encoding="utf-8"))
+    artifact = json.loads(artifact_path.read_text(encoding="utf-8"))
+    expected = str(manifest["task_fingerprint_sha256"])
+    issues = validate_upstream_artifact(
+        artifact,
+        expected_task_fingerprint=expected,
+        expected_algorithm_version=V4_ALGORITHM_VERSION,
+        expected_stage="asset_resolution",
+    )
+    issues.extend(validate_artifact_output(artifact, role="track_assets", path=assets_path))
+    if issues:
+        raise ValueError("v4 asset artifact validation failed: " + "; ".join(issues))
+    if payload.get("task_fingerprint_sha256") != expected:
+        raise ValueError("v4 track assets belong to another task fingerprint")
+    if payload.get("status") != "resolved":
+        raise ValueError("v4 track assets are not resolved")
+    return payload
+
+
+def v4_lyric_path_by_ordinal(payload: dict | None) -> dict[int, str]:
+    if payload is None:
+        return {}
+    assets = {str(item["track_id"]): item for item in payload.get("assets", [])}
+    return {
+        int(item["ordinal"]): assets[str(item["track_id"])]["canonical_lyric_path"]
+        for item in payload.get("occurrences", [])
+        if str(item.get("track_id")) in assets
+    }
 
 
 def require_task_manifest(
@@ -551,7 +606,13 @@ def bpm_change_for_track(track: Track, changes: list[dict]) -> dict | None:
     return {**ranked[0], "match_score": score} if score >= 0.62 else None
 
 
-def parse_song_list(path: Path, lyrics_dir: Path, final_end_ms: int) -> list[Track]:
+def parse_song_list(
+    path: Path,
+    lyrics_dir: Path,
+    final_end_ms: int,
+    *,
+    v4_assets: dict | None = None,
+) -> list[Track]:
     raw: list[tuple[int, str, str]] = []
     for line in read_text(path).splitlines():
         if not line.strip():
@@ -562,9 +623,14 @@ def parse_song_list(path: Path, lyrics_dir: Path, final_end_ms: int) -> list[Tra
         raw.append(((minute * 60 + second) * 1000, artist, title))
 
     lrc_files = list(lyrics_dir.glob("*.lrc"))
+    v4_lyric_paths = v4_lyric_path_by_ordinal(v4_assets)
     tracks: list[Track] = []
     for idx, (start_ms, artist, title) in enumerate(raw, start=1):
-        exact = [path for path in lrc_files if title_key(title) in title_key(path.stem)]
+        exact = (
+            [Path(v4_lyric_paths[idx])]
+            if idx in v4_lyric_paths
+            else [path for path in lrc_files if title_key(title) in title_key(path.stem)]
+        )
         if not exact:
             ranked = sorted(
                 lrc_files,
@@ -4641,6 +4707,22 @@ def command_qa(args: argparse.Namespace) -> int:
         "project_regression": regression_summary,
     }
     args.out.write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
+    if publish_ready:
+        release_manifest = getattr(args, "release_manifest", None) or args.out.with_name(
+            f"{args.out.stem}_RELEASE_ARTIFACT.json"
+        )
+        try:
+            release = build_release_artifact_manifest(
+                final_srt=args.final_srt,
+                audit_csv=args.report,
+                qa_json=args.out,
+                task_fingerprint_sha256=str(manifest["task_fingerprint_sha256"]),
+                algorithm_version=ALGORITHM_VERSION,
+                git_commit=getattr(args, "git_commit", ""),
+            )
+        except FinalIntegrityError as exc:
+            raise ValueError(f"v4 release integrity failed: {exc}") from exc
+        atomic_write_json(release_manifest, release)
     print(json.dumps(summary, ensure_ascii=False))
     return 0 if publish_ready else 1
 
@@ -4661,7 +4743,12 @@ def command_audio_align(args: argparse.Namespace) -> int:
         },
     )
     cues = parse_srt(args.srt)
-    tracks = parse_song_list(args.song_list, args.lyrics_dir, cues[-1].end_ms)
+    v4_assets = load_v4_assets(
+        manifest, getattr(args, "v4_track_assets", None), getattr(args, "v4_asset_artifact", None)
+    )
+    tracks = parse_song_list(
+        args.song_list, args.lyrics_dir, cues[-1].end_ms, v4_assets=v4_assets
+    )
     bpm_changes = parse_bpm_changes(args.bpm_changes)
     mix_audio, _ = librosa.load(args.audio, sr=args.sample_rate, mono=True)
     mix_audio = np.diff(mix_audio, prepend=mix_audio[0]).astype(np.float32)
@@ -4793,8 +4880,13 @@ def command_prepare(args: argparse.Namespace) -> int:
         },
     )
     task_fingerprint = str(manifest["task_fingerprint_sha256"])
+    v4_assets = load_v4_assets(
+        manifest, getattr(args, "v4_track_assets", None), getattr(args, "v4_asset_artifact", None)
+    )
     cues = parse_srt(args.srt)
-    tracks = parse_song_list(args.song_list, args.lyrics_dir, cues[-1].end_ms)
+    tracks = parse_song_list(
+        args.song_list, args.lyrics_dir, cues[-1].end_ms, v4_assets=v4_assets
+    )
     report_rows: list[dict] = []
     replacements: dict[int, str] = {}
 
@@ -4879,6 +4971,8 @@ def build_parser() -> argparse.ArgumentParser:
     prepare.add_argument("--song-list", required=True, type=Path)
     prepare.add_argument("--lyrics-dir", required=True, type=Path)
     prepare.add_argument("--out-dir", required=True, type=Path)
+    prepare.add_argument("--v4-track-assets", type=Path)
+    prepare.add_argument("--v4-asset-artifact", type=Path)
     prepare.add_argument("--auto-score", type=float, default=0.90)
     prepare.add_argument("--auto-coverage", type=float, default=0.78)
     prepare.set_defaults(func=command_prepare)
@@ -4895,6 +4989,8 @@ def build_parser() -> argparse.ArgumentParser:
     audio_align.add_argument("--window-seconds", type=float, default=6.0)
     audio_align.add_argument("--step-seconds", type=float, default=3.0)
     audio_align.add_argument("--candidate-count", type=int, default=10)
+    audio_align.add_argument("--v4-track-assets", type=Path)
+    audio_align.add_argument("--v4-asset-artifact", type=Path)
     audio_align.set_defaults(func=command_audio_align)
     review_audio_edits = sub.add_parser(
         "review-audio-edits",
@@ -4972,6 +5068,8 @@ def build_parser() -> argparse.ArgumentParser:
     )
     qa.add_argument("--out", required=True, type=Path)
     qa.add_argument("--out-review", type=Path)
+    qa.add_argument("--release-manifest", type=Path)
+    qa.add_argument("--git-commit", default="")
     qa.set_defaults(func=command_qa)
     return parser
 
