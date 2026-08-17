@@ -13,8 +13,8 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
-from lyric_aligner.assets.lyric_roles import META_RE
 from lyric_aligner.io.text import read_task_text
+from lyric_aligner.text.normalization import META_RE, clean_text
 
 LRC_RE = re.compile(r"\[(\d{1,3}):(\d{2})(?:[.:](\d{1,3}))?\](.*)")
 ENHANCED_TOKEN_RE = re.compile(r"<(\d{1,3}):(\d{2})(?:[.:](\d{1,3}))?>")
@@ -48,10 +48,6 @@ class CanonicalLine:
         payload = asdict(self)
         payload["tokens"] = [item.to_dict() for item in self.tokens]
         return payload
-
-
-def clean_text(value: str) -> str:
-    return re.sub(r"\s+", " ", value).strip()
 
 
 def _fraction_ms(value: str | None) -> int:
@@ -190,8 +186,6 @@ def parse_canonical_lyrics(
             ) from exc
         text, tokens = _enhanced(body.strip())
         if not text:
-            # Lyric-role preflight also excludes empty timestamp rows; keep the
-            # alternative index spaces identical between resolver and parser.
             continue
         lrc_groups.setdefault(start, []).append(
             (body.strip(), text, tokens, "enhanced_lrc" if tokens else "line_lrc")
