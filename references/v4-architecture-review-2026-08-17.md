@@ -1,147 +1,266 @@
-# Lyric Aligner v4 深度架构复盘与后续原则
+# Lyric Aligner v4 深度架构复盘与 a3 原则
 
 日期：2026-08-17  
-评估基线：`codex/v4-v3.9-integration` / `a584abaca1233d3d5aebe02d125a23b3a518ffd3`
+当前目标版本：`4.0.0a3`
 
-## 1. 决策结论
+## 1. 架构决策
 
-### v3.9：不删除，冻结
+### v4 采用 production-first
 
-v3.9 相比 v3.8 的真实可见准确率提升有限，但它已经覆盖 middle-cut review/apply、连续分段变速、Enhanced LRC/QRC、overlap review 和成熟 QA gate。因此：
+v4 不再长期依赖“shadow-only + v3.9 runtime fallback”。新真实任务尽早进入 v4；遇到不可解释的 mapping、cut、overlap 或证据冲突时 fail-closed 进入 review。
 
-- **保留为 compatibility kernel / regression oracle / emergency fallback**；
-- 不再把新算法直接堆进 `scripts/redo_karaoke_pipeline.py`；
-- v4 模块允许依赖“v3.9 的已验证行为”，但 v4 package 不反向依赖 monolith；
-- 当 v4 的 build/finalize/qa 全部迁出后，legacy 脚本只保留薄 CLI wrapper 或进入 `lyric_aligner/legacy/`；
-- v3.9 不再作为未来 v4.1/v4.2 的架构基础。
+这样做的目的不是降低稳定性要求，而是让真实任务尽快产生：
 
-### v4：目标是彻底重构，但采用渐进替换
+- mapping residual；
+- boundary error；
+- cut / overlap false positive/false negative；
+- review density；
+- runtime；
+- language-specific failure cases。
 
-“彻底重构”定义为：最终生产真源位于 `lyric_aligner/` 的类型化模块、版本化配置和 artifact chain，而不是 5000+ 行 legacy 脚本。
+这些数据用于下一版 calibration profile 和算法改进。
 
-不采用一次性 rewrite。一次性重写会同时失去 v3.9 已验证的剪切/变速/QA 行为，无法做可信 A/B。采用 strangler pattern：每完成一个 v4 stage，就用契约把旧 stage 替换掉，直到 monolith 失去生产算法职责。
+### v3.9 的新定位
 
-## 2. Codex 恢复/接线工作评价
+v3.9 不再维护为第二套长期生产路径。
 
-值得保留：
+其代码和提交仍可用于：
 
-- 正确恢复了 v3.9 baseline，而不是继续在远端 v3.8 上开发；
-- 保留了全部 v3.9 测试与行为；
-- v4 Asset Resolver 已进入 prepare/audio-align 的 fail-closed 路径；
-- QA ready 后自动生成 release manifest；
-- 没有提前把 TimeWarp/transition/LanguageSpan 当成生产真源。
+- 历史比较；
+- regression 分析；
+- 仓库级 rollback；
+- 理解已验证过的 middle-cut / Enhanced LRC/QRC / QA 行为。
 
-深审发现的关键缺口：
+但新能力不得继续写进 5000+ 行 legacy monolith，也不能在 v4 出现 review 时静默切回 v3.9。
 
-1. **source-audio identity 没有真正闭环**：legacy `audio-align` 在拿到 TrackAsset 后仍会再次调用旧 `find_source_audio()`。
-2. **canonical lyric identity 没有真正闭环**：legacy `parse_lrc()` 仍固定取同时间戳 `alternatives[0]`，可能与 `lyric-role-map` 的选择冲突。
-3. **build/finalize/qa 仍可能重新解析旧 song-list/LRC，而不是统一消费 TrackAsset binding。**
-4. **版本重复定义**：legacy 中存在独立 `V4_ALGORITHM_VERSION`，容易与 package `__version__` 漂移。
-5. **release lineage 尚未完整串上 asset/coarse/fine/transition artifact IDs。**
+## 2. “彻底重构”的定义
 
-因此 Codex 分支应作为 v4 整合基线，不应废弃；但不能直接宣称“v4 已完成生产接管”。
+4.0 的彻底重构不是一次性 rewrite，而是**生产事实真源迁移**。
 
-## 3. 当前目录结构评价
+最终必须做到：
 
-当前结构方向正确：
+```text
+Asset identity        → lyric_aligner/assets/
+Canonical lyric       → lyric_aligner/text/
+Source-to-Mix         → lyric_aligner/audio/
+Timeline              → lyric_aligner/timeline/
+Calibration           → lyric_aligner/config / 后续 calibration/
+Orchestration         → lyric_aligner/pipeline/
+Artifact / Release    → lyric_aligner/contracts + qa/
+Evidence fusion       → 后续 evidence/ + fusion/
+```
+
+当这些职责都迁出后，`scripts/redo_karaoke_pipeline.py` 应退役或只保留迁移工具性质，而不是继续成为架构中心。
+
+## 3. 当前长期目录骨架
 
 ```text
 lyric_aligner/
   assets/
+    resolver.py
+    bindings.py
+    lyric_roles.py
   audio/
+    features.py
+    coarse_mapper.py
+    timewarp.py
+    fine_alignment.py
+    transition.py
   contracts/
+    artifacts.py
   io/
+    text.py
+  pipeline/
+    context.py
+    production.py
   qa/
+    final_integrity.py
   text/
+    normalization.py
+    canonical_lyrics.py
+    language_spans.py
+  timeline/
+    projector.py
+  config.py
   domain.py
 ```
 
-优点：
-
-- asset identity、audio mapping、QA contract 已从 monolith 分离；
-- 模块可单独单元测试；
-- v4 artifact 已具有 task/version/upstream/output hash 基础；
-- coarse/fine/TimeWarp/transition 已按职责拆开，而不是重新形成第二个大文件。
-
-但**还不能称为最优/完成态**。缺少：
+后续按真实需求再建立，而不是提前创建空抽象：
 
 ```text
-lyric_aligner/
-  config.py                 # 已在 a2 hardening 建立
-  pipeline/                 # 已在 a2 hardening 建立 context
-  evidence/                 # 统一 ASR/editor/audio/forced-align evidence
-  timeline/                 # TrackOccurrence activity/overlap/composer
-  calibration/              # profile、校准结果、阈值选择
-  cache/                    # feature/source alignment cache
-  legacy/                   # 冻结 v3.9 adapter
+lyric_aligner/evidence/
+lyric_aligner/fusion/
+lyric_aligner/alignment/
+lyric_aligner/calibration/
+lyric_aligner/cache/
 ```
 
-`scripts/` 最终只能保留薄 CLI，不能继续承载领域算法。
+## 4. 当前最重要的设计原则：一个事实只有一个真源
 
-## 4. a2 hardening 已开始修复的结构问题
+### Asset
 
-`4.0.0a2` / TrackAsset schema `1.1`：
+`ResolvedAssetBinding` 一旦形成，下游不得再 fuzzy resolve source 或 LRC。
 
-- canonical same-timestamp selection 加入 TrackAsset identity；
-- 新增 `ResolvedAssetBinding`，下游只读取一个 source/LRC/original 真源；
-- 新增 canonical lyric parser，统一普通 LRC、Enhanced LRC、QRC；
-- 新增 `V4CalibrationProfile`，bootstrap 阈值开始从算法代码迁出；
-- 新增 `PipelineContext`，绑定 task fingerprint + algorithm version + calibration profile + asset artifact + occurrence bindings；
-- 新增 `legacy.bridge`，明确依赖方向只能 legacy -> v4 contract，不能 v4 -> legacy monolith。
+### Canonical lyric
 
-## 5. 下一阶段优先级
+同一个 raw lyric 文件可能因 same-timestamp role selection 得到不同 canonical interpretation，因此 canonical selection hash 必须属于 TrackAsset identity。
 
-### P0 — Integration truth
+### Calibration
 
-必须先完成：
+阈值属于完整、版本化 profile。改变 production 阈值必须改变 profile identity，不能靠隐藏 CLI/default 参数。
 
-1. legacy 全阶段使用 `ResolvedAssetBinding`；
-2. source audio 禁止再次 fuzzy resolve；
-3. canonical lyrics 禁止再次 `alternatives[0]`；
-4. strict SRT parser / `max(end_ms)` 接入 legacy 输入边界；
-5. asset artifact ID 与 calibration profile ID 从 prepare/audio-align 一直传到 final QA/release；
-6. 删除 legacy 中独立的 v4 version 常量。
+### TimeWarp
 
-### P1 — v4 audio production shadow A/B
+序列化模型的 canonical state：
 
-- 对每个 occurrence 同时产出 v3.9 mapping 与 v4 TimeWarp；
-- build 先继续用 v3.9，v4 只记录 residual/boundary candidate；
-- calibration/blind-test 达标后按 occurrence 切换；
-- common fixed-speed case 必须保持 AFFINE 快路径。
+```text
+intercept
+base_slope
+breakpoints
+slope_deltas
+```
 
-### P2 — Timeline / overlap
+派生统计不能反过来成为第二个模型状态。
 
-- `nominal_start` 只作 prior；
-- transition window 推断 A/B/A+B/silence；
-- overlap 内部真源必须是两个 TrackOccurrence，不是把两首歌词拼一行。
+### Timeline
 
-### P3 — Evidence / forced alignment
+v4 timeline 必须来自 canonical lyric + effective TimeWarp，不从 Jianying 文本重建 canonical truth。
 
-只有 P0-P2 和 evaluator 稳定后再进入：
+### Release
 
-- source-side forced alignment；
-- mix-vocal local alignment；
-- ASR/editor/audio evidence fusion；
-- 未知语言 fallback。
+最终 release 必须由 materialized output hash + upstream artifact chain 重建验证，不能只相信先前 QA 的布尔字段。
 
-## 6. v4 生产完成的退出条件
+## 5. Source-to-Mix 架构
 
-只有全部满足，才可说“v4 已彻底重构并替代 v3.9”：
+### Common case first
 
-- 生产 CLI 只调用 package orchestrator；
-- legacy monolith 不再决定 asset、canonical lyric、TimeWarp、timeline、release gate；
-- 所有 stage artifact 都包含 profile/version/upstream lineage；
-- real calibration + blind-test 显示 false-ready 不增加；
-- 固定倍速普通歌曲不因复杂模型退化；
-- cut / rate-change / overlap 指标有独立评估；
-- zh/en/ko/ja/yue 与 mixed-language 都有分层结果；
-- v3.9 只作为 regression/fallback，不再是生产主实现。
+大多数歌曲优先 AFFINE：
 
-## 7. 长期维护原则
+```text
+source_time = intercept + slope * mix_time
+```
 
-1. 新能力优先新增/替换 package stage，禁止继续扩大 monolith。
-2. 阈值属于 calibration profile，不属于业务函数常量。
-3. 同一个事实只能有一个真源：asset、canonical lyric、timewarp、timeline、decision 均如此。
-4. 任何人工 override 都必须改变 artifact/semantic identity，不能只改变运行时行为。
-5. shadow -> calibration -> gated production，禁止“新模型写完即默认上线”。
-6. 文档必须区分 implemented / shadow / production，禁止把设计稿写成已上线能力。
+只有当 residual / drift / coverage 证明 fixed-rate 解释不足时，才进入 continuous PIECEWISE_RATE。
+
+### 动态 BPM 不要求用户声明
+
+系统通过实际音频 anchor 判断是否升级。BPM 只是 soft prior。
+
+### Cut 与 rate change 分离
+
+- slope change 可以突然发生；
+- source mapping 连续 → rate change；
+- source position jump → discontinuity/cut candidate。
+
+Middle cut 无论是否声明，都不能被自动 confirmed。
+
+## 6. Transition 架构
+
+之前最大缺陷之一是把下一首 nominal start 当上一首硬 end。
+
+a3 明确分成：
+
+```text
+Primary occurrence interval
++
+Shared transition evidence interval
+```
+
+对于 A→B：
+
+```text
+A primary: ... → boundary
+B primary: boundary → ...
+
+transition evidence:
+A source ┐
+         ├→ boundary ± margin
+B source ┘
+```
+
+两首都能在同一区间取证，才有可能真实识别 2–10 秒跨曲混剪。
+
+但搜索区间重叠只是 candidate discovery，不是 overlap truth。确认动作必须留在 review/decision 层。
+
+## 7. Production Orchestrator
+
+`scripts/v4_run.py` 是 a3 的默认真实任务入口。
+
+它不是新的业务 monolith：
+
+- 算法留在 package 模块；
+- 各 stage 仍产生独立 fingerprinted artifact；
+- orchestrator 负责计划、调用、lineage 和状态聚合；
+- 未来替换 Coarse/Fine/Transition 实现时不需要重写入口。
+
+当前链：
+
+```text
+Asset
+ → Primary Coarse
+ → Selective Fine
+ → TimeWarp
+ → Canonical Timeline
+ → Shared-boundary evidence
+ → Transition
+ → production run summary
+```
+
+任何 unresolved issue 都生成 `review_required`；没有 legacy fallback。
+
+## 8. 为什么现在仍是 alpha
+
+production-first 不等于 stable。
+
+a3 仍缺：
+
+1. package-native final timeline composer；
+2. final SRT renderer；
+3. review decision artifact；
+4. Editor Evidence / LanguageSpan 到最终 cue decision 的完整融合；
+5. final renderer → release guard 一键链；
+6. real private calibration / blind-test。
+
+因此当前 `ready_for_render` 只能表示 mapping/timeline 前置条件通过，不能等价为 `publish_ready`。
+
+## 9. 为什么暂不优先 Forced Alignment
+
+在真实任务投入 Forced Alignment 前，必须先验证：
+
+- Asset identity 没有错绑；
+- TimeWarp 是主要时间真源；
+- transition 不再被 nominal hard boundary 截断；
+- real-task evaluator 能指出剩余边界误差。
+
+只有数据证明“Source-to-Mix 已可靠，但词/句边界仍明显不够准”，Forced Alignment 才是下一步高价值投入。
+
+否则会把昂贵模型叠在尚未稳定的 timeline 上。
+
+## 10. 4.0 后续升级路径
+
+### a3
+
+production-first mapping / transition / canonical timeline。
+
+### 下一 alpha
+
+package-native composer + review decision artifact + final render bridge。
+
+### beta
+
+真实任务 calibration，形成新的 named profile；按语言/场景分层评估。
+
+### rc
+
+根据真实误差决定 Forced Alignment、ASR v2、vocal local alignment 的范围；完成 blind-test 与 release gate。
+
+### 4.0 stable
+
+必须满足：
+
+- 新任务只有 v4 正式入口；
+- final SRT/QA/release 都由 v4 package contract 决定；
+- unresolved cut/overlap/evidence conflict 不产生 false-ready；
+- real calibration + blind-test 有明确指标；
+- 文档同步契约在 CI 中持续生效；
+- rollback 依赖 Git/version/artifact，而不是第二套运行时算法。
