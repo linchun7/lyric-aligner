@@ -33,6 +33,7 @@ from lyric_aligner.evaluation.strict_workflow import (
     selected_cases,
     select_candidate,
     selection_hash,
+    validate_blind_baseline_lock,
     validate_blind_lock,
     validate_manifest_metadata,
     validate_selected_files,
@@ -58,10 +59,18 @@ def require_evaluation_isolation(evaluation: dict, *, label: str) -> None:
 
 
 def command_evaluate(args: argparse.Namespace) -> int:
+    candidate_id = str(args.candidate_id or "").strip()
+    candidate_revision = str(args.candidate_revision or "").strip()
+    if not candidate_id or not candidate_revision:
+        raise StrictEvaluationError(
+            "candidate-id and candidate-revision must be non-empty"
+        )
+
     manifest = load_json(args.dataset, label="dataset manifest")
     validation = validate_manifest_metadata(manifest)
     cases = selected_cases(manifest, args.split)
-    # Important: only the selected split's prediction/QA files are required/read.
+    # Important: only the selected split's reference/prediction/QA files are
+    # resolved or read. Other split prediction/QA files may not exist yet.
     validate_selected_files(args.dataset, cases)
     runtime = runtime_identity(args.dataset, cases)
     identity = ground_truth_identity(args.dataset, manifest, args.split)
@@ -87,8 +96,8 @@ def command_evaluate(args: argparse.Namespace) -> int:
         "dataset": validation["dataset"],
         "dataset_revision": validation["dataset_revision"],
         "evaluated_split": args.split,
-        "candidate_id": args.candidate_id,
-        "candidate_revision": args.candidate_revision,
+        "candidate_id": candidate_id,
+        "candidate_revision": candidate_revision,
         "runtime_identity": runtime,
         "dataset_identity": identity,
         "dataset_validation": validation,
@@ -113,8 +122,8 @@ def command_evaluate(args: argparse.Namespace) -> int:
         json.dumps(
             {
                 "split": args.split,
-                "candidate_id": args.candidate_id,
-                "candidate_revision": args.candidate_revision,
+                "candidate_id": candidate_id,
+                "candidate_revision": candidate_revision,
                 "dataset_revision": validation["dataset_revision"],
                 "dataset_ground_truth_sha256": identity[
                     "dataset_ground_truth_sha256"
@@ -162,6 +171,7 @@ def command_select(args: argparse.Namespace) -> int:
         ],
         "baseline_candidate_id": baseline["candidate_id"],
         "baseline_candidate_revision": baseline["candidate_revision"],
+        "baseline_runtime_identity": baseline["runtime_identity"],
         "baseline_calibration_evaluation_sha256": file_sha256(args.baseline),
         "selected_candidate_id": selected["selected_candidate_id"],
         "selected_candidate_revision": selected["selected_candidate_revision"],
@@ -205,10 +215,10 @@ def command_blind(args: argparse.Namespace) -> int:
         raise StrictEvaluationError("candidate is not a blind_test evaluation")
     require_evaluation_isolation(baseline, label="baseline blind_test")
     require_evaluation_isolation(candidate, label="candidate blind_test")
-    if baseline.get("dataset") != selection.get("dataset"):
-        raise StrictEvaluationError("blind dataset name differs from selection")
-    if baseline.get("dataset_revision") != selection.get("dataset_revision"):
-        raise StrictEvaluationError("blind dataset_revision differs from selection")
+
+    # Both sides are frozen at calibration selection. Otherwise the blind gate
+    # could compare the selected candidate to a different/newer baseline.
+    validate_blind_baseline_lock(selection, baseline)
     validate_blind_lock(selection, candidate)
 
     gate = evaluate_gates(baseline, candidate, policy)
@@ -223,6 +233,9 @@ def command_blind(args: argparse.Namespace) -> int:
         "blind_case_ids_sha256": baseline["dataset_identity"][
             "case_ids_sha256"
         ],
+        "baseline_candidate_id": selection["baseline_candidate_id"],
+        "baseline_candidate_revision": selection["baseline_candidate_revision"],
+        "baseline_runtime_identity": selection["baseline_runtime_identity"],
         "selected_candidate_id": selection["selected_candidate_id"],
         "selected_candidate_revision": selection["selected_candidate_revision"],
         "selected_runtime_identity": selection["selected_runtime_identity"],
