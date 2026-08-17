@@ -84,6 +84,8 @@ class V4AsrSecondPassEndToEndTests(unittest.TestCase):
                         "job_id": "job-1",
                         "occurrence_id": "occ-1",
                         "track_id": "track-1",
+                        "ordinal": 1,
+                        "priority": "high",
                         "canonical_line_index": 0,
                         "language_profile": "en",
                         "mix_window_ms": [1000, 2500],
@@ -156,13 +158,34 @@ class V4AsrSecondPassEndToEndTests(unittest.TestCase):
             self.assertEqual(payload["mode"], "second_pass_plan_only")
             self.assertFalse(payload["policy_calibrated"])
             self.assertFalse(payload["backend_execution_performed"])
+            self.assertEqual(payload["scope_policy"], "reuse_exact_first_pass_local_windows")
             self.assertEqual(payload["selected_job_ids"], ["job-1"])
+            self.assertEqual(payload["jobs"][0]["mix_window_ms"], [1000, 2500])
+            self.assertEqual(payload["jobs"][0]["source_window_ms"], [5000, 6500])
+            self.assertEqual(payload["jobs"][0]["first_pass_priority"], "high")
             self.assertEqual(payload["first_pass_model_id"], "fast-model")
             self.assertEqual(payload["second_pass_model_id"], "accuracy-model")
             self.assertEqual(out_artifact["stage"], "asr_second_pass_planning")
+            self.assertEqual(
+                out_artifact["normalized_config"]["scope_policy"],
+                "reuse_exact_first_pass_local_windows",
+            )
             self.assertIn(plan_artifact["artifact_id"], out_artifact["upstream_artifact_ids"])
             self.assertIn(first_artifact["artifact_id"], out_artifact["upstream_artifact_ids"])
             self.assertNotIn("private lyric", json.dumps(payload))
+
+            same_model = run_command(
+                "--task-manifest", str(manifest_path),
+                "--plan", str(plan_path),
+                "--plan-artifact", str(plan_artifact_path),
+                "--first-pass-evidence", str(first_path),
+                "--first-pass-artifact", str(first_artifact_path),
+                "--second-pass-model-id", "fast-model",
+                "--out", str(root / "same.json"),
+                "--artifact-out", str(root / "same.artifact.json"),
+            )
+            self.assertNotEqual(same_model.returncode, 0)
+            self.assertIn("must differ from first-pass model_id", same_model.stderr)
 
             # Rewriting first-pass payload invalidates its artifact hash before routing.
             first_payload["source_plan_artifact_id"] = "foreign-plan"
