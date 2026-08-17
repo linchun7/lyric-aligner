@@ -1,4 +1,9 @@
-"""Explicit baseline/candidate gates for calibration and blind-test evaluation."""
+"""Explicit baseline/candidate gates for calibration and blind-test evaluation.
+
+This is the lower-level/legacy-compatible evaluation gate. New P1 workflows
+should use ``strict_workflow.py`` / ``v4_calibration_workflow.py``. The module
+remains tested because existing evaluation callers may still consume schema 2.0.
+"""
 
 from __future__ import annotations
 
@@ -274,12 +279,24 @@ def validate_blind_selection(
         raise EvaluationGateError(
             "blind-test candidate does not match calibration-selected candidate"
         )
-    locked_calibration_sha = str(selection.get("selected_calibration_evaluation_sha256") or "")
+    locked_calibration_sha = str(
+        selection.get("selected_calibration_evaluation_sha256") or ""
+    )
     if not locked_calibration_sha:
-        raise EvaluationGateError("selection artifact is missing calibration evaluation lock")
-    if str(selection.get("selection_artifact_sha256") or "") == "":
+        raise EvaluationGateError(
+            "selection artifact is missing calibration evaluation lock"
+        )
+    # Selection writers use selection_payload_sha256. Accept the older field as
+    # a compatibility alias for already-produced experimental artifacts, but
+    # require one explicit non-empty self identity.
+    selection_identity = str(
+        selection.get("selection_payload_sha256")
+        or selection.get("selection_artifact_sha256")
+        or ""
+    )
+    if not selection_identity:
         raise EvaluationGateError("selection artifact is missing self-identity")
     # The blind evaluation is intentionally a different file/split. Its SHA is
     # recorded by the final gate, while candidate identity is locked by selection.
-    if not candidate_evaluation_sha256:
+    if not str(candidate_evaluation_sha256 or "").strip():
         raise EvaluationGateError("blind candidate evaluation SHA is missing")
