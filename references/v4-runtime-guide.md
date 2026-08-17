@@ -4,193 +4,212 @@
 主线算法版本：`4.0.0a8`  
 Calibration profile：`production-bootstrap-2026-08-17-a7`
 
-> main 已完成重建、review、cut/overlap/combined、render/release、strict calibration/blind 和 private dataset scaffold/readiness。P2 新增 editor/Jianying **shadow evidence**；未经真实 calibration，它不会修改 canonical text 或最终字幕时间。
+> main 已完成 production reconstruction、P1 strict calibration/blind、P1.1 dataset readiness、P2 editor shadow evidence。P3 新增局部 acoustic evidence planner/backend diagnostic/可选 faster-whisper executor；它们是 evidence，不替代 canonical lyric 或 Source-to-Mix。
 
-## 1. Production reconstruction
-
-```powershell
-python scripts/v4_run.py `
-  --task-manifest "private/<任务>/qa/task_manifest.json" `
-  --out-dir "output/<任务>/v4" `
-  --git-commit "<commit>"
-```
-
-Review/materialization：
+## 1. 现有生产入口
 
 ```powershell
+python scripts/v4_run.py ...
 python scripts/v4_review.py template ...
 python scripts/v4_review.py apply ...
 python scripts/v4_recompose_overlap.py ...
 python scripts/v4_rebuild_cut.py ...
 python scripts/v4_compose_materializations.py ...
-```
-
-Final：
-
-```powershell
 python scripts/v4_render.py ...
 python scripts/v4_validate_release.py ...
 ```
 
-Canonical lyric 仍是文字真源；Source-to-Mix 仍是主要时间真源。
-
-## 2. Private dataset / calibration
-
-数据骨架与 readiness：
+Private dataset / calibration：
 
 ```powershell
 python scripts/v4_dataset_readiness.py scaffold ...
 python scripts/v4_dataset_readiness.py clone-candidate ...
 python scripts/v4_dataset_readiness.py check ...
-```
-
-Strict calibration/blind：
-
-```powershell
 python scripts/v4_calibration_workflow.py evaluate ...
 python scripts/v4_calibration_workflow.py select ...
 python scripts/v4_calibration_workflow.py blind ...
 ```
 
-没有授权 real-song reference truth 时，不得把 synthetic CI 指标描述为真实准确率。
-
-## 3. P2 Editor Evidence Shadow
-
-在已有 effective v4 run 上执行：
+Editor shadow：
 
 ```powershell
-python scripts/v4_editor_evidence.py `
+python scripts/v4_editor_evidence.py ...
+```
+
+## 2. 检查当前 acoustic backend
+
+```powershell
+python scripts/v4_alignment_backends.py
+```
+
+只检查 package/command discovery；不会加载模型。
+
+要求 faster-whisper mix ASR capability：
+
+```powershell
+python scripts/v4_alignment_backends.py `
+  --faster-whisper-model-id "<model-id>" `
+  --require-capability mix_asr `
+  --require-execution-ready
+```
+
+要求 external forced aligner：
+
+```powershell
+python scripts/v4_alignment_backends.py `
+  --external-forced-aligner-command "<command>" `
+  --require-capability source_forced_alignment `
+  --require-execution-ready
+```
+
+缺 capability/配置时退出码 2。不要把 `available=true` 理解成模型已在 singing 上验证。
+
+## 3. 生成 local alignment plan
+
+只用 run/review issues：
+
+```powershell
+python scripts/v4_plan_alignment.py `
   --task-manifest "private/<任务>/qa/task_manifest.json" `
-  --run "output/<任务>/v4/v4_run.json" `
-  --run-artifact "output/<任务>/v4/v4_run.artifact.json" `
-  --out "output/<任务>/v4/editor/editor_evidence.json" `
-  --artifact-out "output/<任务>/v4/editor/editor_evidence.artifact.json" `
-  --git-commit "<commit>"
+  --run "output/<任务>/v4/<effective-run>.json" `
+  --run-artifact "output/<任务>/v4/<effective-run>.artifact.json" `
+  --out "output/<任务>/v4/alignment/plan.json" `
+  --artifact-out "output/<任务>/v4/alignment/plan.artifact.json"
 ```
 
-如果 run 已经过 review/overlap/cut/combined materialization，把 `--run/--run-artifact` 指向**实际准备作为当前有效时间线的 run**。支持：
+加入 P2 editor shadow：
+
+```powershell
+python scripts/v4_plan_alignment.py `
+  --task-manifest "private/<任务>/qa/task_manifest.json" `
+  --run "output/<任务>/v4/<effective-run>.json" `
+  --run-artifact "output/<任务>/v4/<effective-run>.artifact.json" `
+  --editor-evidence "output/<任务>/v4/editor/editor_evidence.json" `
+  --editor-evidence-artifact "output/<任务>/v4/editor/editor_evidence.artifact.json" `
+  --out "output/<任务>/v4/alignment/plan.json" `
+  --artifact-out "output/<任务>/v4/alignment/plan.artifact.json"
+```
+
+Planner 默认：
 
 ```text
-production_orchestration
-review_resolution
-overlap_recomposition
-cut_rebuild
-combined_recomposition
+mix_context_ms = 1500
+source_context_ms = 1000
+editor_boundary_disagreement_ms = 500
+editor_ambiguous_margin_max = 0.08
+include_editor_missing = false
+max_jobs = 200
 ```
 
-## 4. P2 的权威边界
+这些是 bootstrap planning 参数，不是 final release 阈值。
 
-输出 artifact：
+Plan artifact：
 
 ```text
-editor_evidence_shadow / editor_evidence
+alignment_job_planning / alignment_plan
+mode = plan_only
+backend_execution_performed = false
 ```
 
-固定：
+`plan_truncated=true` 时说明 `max_jobs` 截断，不能把计划描述为完整覆盖。
+
+## 4. 执行局部 faster-whisper evidence
+
+真实环境已经安装 faster-whisper、模型可访问时：
+
+```powershell
+python scripts/v4_execute_asr_evidence.py `
+  --task-manifest "private/<任务>/qa/task_manifest.json" `
+  --plan "output/<任务>/v4/alignment/plan.json" `
+  --plan-artifact "output/<任务>/v4/alignment/plan.artifact.json" `
+  --run "output/<任务>/v4/<effective-run>.json" `
+  --run-artifact "output/<任务>/v4/<effective-run>.artifact.json" `
+  --model-id "<faster-whisper-model-id>" `
+  --device cpu `
+  --compute-type int8 `
+  --out "output/<任务>/v4/alignment/asr_evidence.json" `
+  --artifact-out "output/<任务>/v4/alignment/asr_evidence.artifact.json"
+```
+
+只执行特定 jobs：
+
+```powershell
+... --job-id "<job-id>" --job-id "<job-id>"
+```
+
+Executor 只跑 plan 中请求 `mix_asr` 的 jobs；没有 ASR job 时不会加载模型。
+
+每个 job 使用 local `clip_timestamps`，并启用：
 
 ```text
-mode = shadow_only
-policy_calibrated = false
-automatic_timing_change_allowed = false
+word_timestamps=true
+condition_on_previous_text=false
+vad_filter=false
 ```
 
-因此 P2 当前：
+语言：en/zh/ko/ja 显式 hint；yue/unknown/auto 不强制语言。
 
-- 不修改 canonical lyric；
-- 不修改 Source-to-Mix mapping；
-- 不修改 canonical timeline；
-- 不修改 run status；
-- 不修改 FINAL.srt；
-- 不允许因为 editor cue 看起来更近就覆盖 source timing。
+## 5. ASR evidence privacy
 
-`suggested_onset_delta_ms / suggested_offset_delta_ms` 只是 calibration/review 数据。
-
-## 5. LanguageSpan 路由
+默认**不写原始 ASR text**，只写：
 
 ```text
-en  -> direct_text
-zh  -> direct_text
-ko  -> phonetic_hint
-ja  -> phonetic_hint
-yue -> timing_hint
-unknown/generic -> timing_hint
-mixed -> per-span
+text SHA
+segment start/end
+avg_logprob
+no_speech_prob
+compression_ratio
+word start/end/probability/text SHA
+detected language/probability
+canonical local support score
 ```
 
-具体：
+只有在明确 private output 场景才加：
 
-- EN/ZH：可记录 normalized direct-text support；
-- KO：Hangul 可转 conservative Romanization，与 editor Latin phonetic output 比较；仍是弱 evidence；
-- JA Kana：可 conservative Romanize；
-- JA Kanji：没有 vetted reading backend 时不猜读音，只保留 timing；
-- YUE：editor text weight=0，没有 vetted Jyutping backend 时禁止用普通话拼音冒充；
-- mixed：按 canonical span 路由，不能把整行当一个语言。
-
-## 6. Evidence JSON
-
-每条 canonical line 只存：
-
-```text
-canonical_line_index
-canonical_text_sha256
-canonical_mix_start/end
-span language/script/mode/text_sha256
-editor cue number/start/end/text_sha256
-timing_support_score
-direct_text_support_score
-phonetic_support_score
-text_support_score
-effective weights
-rank_score_uncalibrated
-best-vs-second margin
-suggested onset/offset delta
+```powershell
+--include-private-text
 ```
 
-不输出 raw canonical/editor text。
+此时 artifact 会记录 `raw_private_text_included=true`。不要把带 raw text 的 output 放到公开仓库。
 
-Bootstrap weights 仅用于 shadow candidate 排序，不是经过真实数据验证的置信度门槛。
+## 6. Lineage 失败时怎么办
 
-## 7. Lineage / tamper protection
+Planner/Executor 都会拒绝：
 
-P2 验证：
+- task input hash 变化；
+- source run 不匹配；
+- timeline artifact 不属于 run；
+- editor evidence 来自另一个 run；
+- plan artifact 来自另一个 task/run；
+- plan canonical text SHA 与当前 timeline 不同；
+- 请求 job ID 不存在。
 
-- task manifest 与 input hashes；
-- task 中 `source_srt` SHA；
-- source run artifact；
-- source run algorithm/task identity；
-- 每个 canonical timeline artifact；
-- timeline artifact 必须在 run upstream；
-- occurrence/track identity。
+遇到这些错误应从对应上游 stage 重跑，不手改 artifact ID/SHA。
 
-如果 task manifest 创建后 `source_srt` 被修改，`verify_manifest_inputs` 必须先失败，不能静默读新字幕。
+## 7. Forced Alignment 当前如何用
 
-## 8. 如何用 P1 校准 P2
+当前版本**没有内置生产 forced aligner executor**。
 
-第一阶段只收集 shadow evidence：
+Planner 会为有 source timestamp 的 line 请求 `source_forced_alignment` capability；`v4_alignment_backends.py` 可检查一个已配置 external command 是否存在。
 
-1. 对 baseline v4 run 生成 editor evidence；
-2. 保留每行 candidate support / margin / delta；
-3. 用 private reference SRT 计算真实 onset/offset error；
-4. 分语言/模式检查：editor delta 是否在不降低 line/cut/overlap correctness 前提下有稳定改善；
-5. 只有 calibration split 选定 policy 后，再对 blind_test 做一次锁定评估。
+如果没有明确选定/安装/验证 backend，结果应是 unavailable/unready，而不是自动回退到 ASR 或假装 forced alignment 完成。
 
-在完成这一步以前，不应该新增 `--apply-editor-timing` 或类似开关。
+## 8. GitHub Actions 真实边界
 
-## 9. GitHub Actions 能做 / 不能做
+GitHub CI 可以验证 planner、artifact、backend discovery、fake faster-whisper executor contract，并在 ASR environment job 安装 `requirements-asr.txt` 检查 faster-whisper package。
 
-CI 可以验证：
+当前 CI **不下载真实 Whisper model，也没有用户 private song/reference truth**，所以不能证明：
 
-- EN/ZH/KO/JA/YUE/mixed synthetic routing；
-- Korean/Kana phonetic helper；
-- Kanji/Yue no-guess；
-- privacy；
-- task/run/timeline lineage；
-- source_srt tamper；
-- no automatic timing mutation；
-- 既有 P0/P1/P1.1 regression。
+- real-song ASR word timing；
+- large-v3/turbo 实际模型输出；
+- WhisperX/SOFA/MMS 可用；
+- 各语言真实准确率改善。
 
-CI 当前不能证明 editor shadow policy 在真实歌曲上提升准确率，也不能校准真实权重/自动应用阈值。
+这些必须在真实模型/私有音频环境执行后记录。
 
-## 10. 后续
+## 9. 下一步
 
-P2 shadow 全绿后优先使用真实 private dataset 做 error correlation。若有稳定收益，下一 milestone 才做 calibrated Editor Boundary Fusion。Forced Alignment/ASR v2 仍由真实剩余误差决定；same-region cut+overlap joint model 继续 fail-closed。
+1. P3 planner/backend/executor latest-head CI 全绿后合入；
+2. 用真实 private dataset 运行 P1 + P2/P3 shadow evidence；
+3. 根据 error breakdown 决定 two-pass ASR、具体 forced-aligner adapter；
+4. 只有 real blind gate 证明收益后，再做自动 boundary fusion/final evidence-family release gate。
