@@ -74,6 +74,14 @@ def refine_coarse_mapping(
     min_margin: float = 0.012,
     bpm_prior: float | None = None,
     middle_cut: str = "false",
+    bpm_prior_strength: float = 0.02,
+    max_continuous_rate: float = 2.0,
+    min_excess_source_jump: float = 1.5,
+    min_piecewise_improvement: float = 0.25,
+    minimum_feature_families: int = 2,
+    drift_threshold: float = 0.30,
+    residual_threshold: float = 0.25,
+    complexity_penalty: float = 0.035,
 ) -> dict[str, Any]:
     reasons = fine_alignment_reasons(coarse_payload)
     if not force and not reasons:
@@ -90,17 +98,32 @@ def refine_coarse_mapping(
     if len(windows) != len(path) or len(path) < 2:
         raise ValueError("fine alignment requires matching coarse windows and path points")
 
-    mix_features = extract_harmonic_features(mix_audio, sr=sr, hop_length=hop_length)
+    # Fine alignment is deliberately local.  Do not compute 16 kHz / hop-256
+    # features for the entire 40-60 minute mix when only a few coarse windows
+    # need refinement.
+    global_start = min(float(window["mix_start"]) for window in windows)
+    global_end = max(float(window["mix_end"]) for window in windows)
+    mix_duration = len(mix_audio) / sr
+    if global_start < 0 or global_end > mix_duration or global_end <= global_start:
+        raise ValueError("fine windows are outside mix audio")
+    sample_start = max(0, int(np.floor(global_start * sr)))
+    sample_end = min(len(mix_audio), int(np.ceil(global_end * sr)))
+    local_mix_audio = np.asarray(mix_audio[sample_start:sample_end], dtype=np.float32)
+    local_offset = sample_start / sr
+
+    mix_features = extract_harmonic_features(local_mix_audio, sr=sr, hop_length=hop_length)
     source_features = extract_harmonic_features(source_audio, sr=sr, hop_length=hop_length)
     fine_points: list[FinePoint] = []
     unresolved = 0
     for window, point in zip(windows, path):
         mix_start = float(window["mix_start"])
         mix_end = float(window["mix_end"])
-        mix_duration = mix_end - mix_start
+        local_mix_start = mix_start - local_offset
+        local_mix_end = mix_end - local_offset
+        mix_window_duration = mix_end - mix_start
         coarse_center = float(point["source_center"])
         coarse_slope = float(point["estimated_slope"])
-        source_duration = mix_duration * coarse_slope
+        source_duration = mix_window_duration * coarse_slope
         expected_start = coarse_center - source_duration / 2.0
         search_start = max(0.0, expected_start - source_radius_seconds)
         search_end = min(
@@ -110,8 +133,8 @@ def refine_coarse_mapping(
         retrieval = retrieve_coarse_window(
             mix_features,
             source_features,
-            mix_start=mix_start,
-            mix_end=mix_end,
+            mix_start=local_mix_start,
+            mix_end=local_mix_end,
             slopes=_slope_candidates(coarse_slope, slope_radius, slope_step),
             source_search_start=search_start,
             source_search_end=search_end,
@@ -162,17 +185,22 @@ def refine_coarse_mapping(
             mix_time=point.mix_center,
             source_time=point.refined_source_center,
             confidence=max(0.05, point.fused_score),
-            feature_scores={
-                "chroma": point.chroma_score,
-                "mfcc": point.mfcc_score,
-            },
+            feature_scores={"chroma": point.chroma_score, "mfcc": point.mfcc_score},
         )
         for point in fine_points
     ]
     timewarp = select_timewarp(
         anchors,
         bpm_prior=bpm_prior,
+        bpm_prior_strength=bpm_prior_strength,
         middle_cut=middle_cut,
+        max_continuous_rate=max_continuous_rate,
+        min_excess_source_jump=min_excess_source_jump,
+        min_piecewise_improvement=min_piecewise_improvement,
+        minimum_feature_families=minimum_feature_families,
+        drift_threshold=drift_threshold,
+        residual_threshold=residual_threshold,
+        complexity_penalty=complexity_penalty,
     )
     if unresolved:
         timewarp = {**timewarp, "blocked": True}
@@ -182,6 +210,11 @@ def refine_coarse_mapping(
         "reasons": reasons or ["forced"],
         "status": "review_required" if (unresolved or timewarp["blocked"]) else "refined",
         "unresolved_window_count": unresolved,
+        "feature_scope": {
+            "mix_feature_start": local_offset,
+            "mix_feature_end": local_offset + len(local_mix_audio) / sr,
+            "full_mix_duration": mix_duration,
+        },
         "config": {
             "sr": sr,
             "hop_length": hop_length,
@@ -191,6 +224,16 @@ def refine_coarse_mapping(
             "candidate_step_seconds": candidate_step_seconds,
             "min_score": min_score,
             "min_margin": min_margin,
+        },
+        "timewarp_config": {
+            "bpm_prior_strength": bpm_prior_strength,
+            "max_continuous_rate": max_continuous_rate,
+            "min_excess_source_jump": min_excess_source_jump,
+            "min_piecewise_improvement": min_piecewise_improvement,
+            "minimum_feature_families": minimum_feature_families,
+            "drift_threshold": drift_threshold,
+            "residual_threshold": residual_threshold,
+            "complexity_penalty": complexity_penalty,
         },
         "path": [point.to_dict() for point in fine_points],
         "timewarp": timewarp,
