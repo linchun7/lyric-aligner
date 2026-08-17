@@ -121,6 +121,28 @@ class V4ReleaseIntegrityTests(unittest.TestCase):
                     algorithm_version="4.0.0a1",
                 )
 
+    def test_qa_calibration_profile_mismatch_is_blocked_when_expected(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            srt, report, qa = write_case(root)
+            payload = json.loads(qa.read_text(encoding="utf-8"))
+            payload["calibration_profile_id"] = "wrong-profile"
+            payload["calibration_profile_version"] = "wrong-version"
+            qa.write_text(json.dumps(payload), encoding="utf-8")
+            with self.assertRaises(FinalIntegrityError) as context:
+                build_release_artifact_manifest(
+                    final_srt=srt,
+                    audit_csv=report,
+                    qa_json=qa,
+                    task_fingerprint_sha256=FINGERPRINT,
+                    algorithm_version="3.9",
+                    expected_calibration_profile_id="expected-profile",
+                    expected_calibration_profile_version="expected-version",
+                )
+            message = str(context.exception)
+            self.assertIn("calibration_profile_id mismatch", message)
+            self.assertIn("calibration_profile_version mismatch", message)
+
     def test_release_manifest_binds_all_output_hashes_and_detects_manifest_tamper(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
