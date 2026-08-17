@@ -2,12 +2,14 @@
 
 Availability means only that the local Python package/command is discoverable.
 It does *not* mean a model is downloaded, licensed for a particular use, or
-validated on singing.  Executors must still validate model/config prerequisites.
+validated on singing. Executors must still validate model/config prerequisites.
 """
 
 from __future__ import annotations
 
 import importlib.util
+import os
+import shlex
 import shutil
 from dataclasses import asdict, dataclass
 from enum import Enum
@@ -98,14 +100,29 @@ def _whisperx_status(model_id: str | None, align_model_id: str | None) -> Backen
     )
 
 
+def _command_argv(command: str) -> list[str]:
+    try:
+        return [
+            str(value)
+            for value in shlex.split(str(command or "").strip(), posix=os.name != "nt")
+            if str(value)
+        ]
+    except ValueError:
+        return []
+
+
 def _external_forced_aligner_status(command: str | None) -> BackendStatus:
     command = str(command or "").strip()
-    resolved = shutil.which(command) if command else None
+    argv = _command_argv(command)
+    executable = argv[0] if argv else ""
+    resolved = shutil.which(executable) if executable else None
     missing: list[str] = []
     if not command:
         missing.append("external_command")
+    elif not argv:
+        missing.append("external_command_parse_error")
     elif resolved is None:
-        missing.append(f"command_not_found:{command}")
+        missing.append(f"command_not_found:{executable}")
     return BackendStatus(
         backend_id="external_forced_aligner",
         kind="forced_alignment",
@@ -113,9 +130,9 @@ def _external_forced_aligner_status(command: str | None) -> BackendStatus:
         capabilities=(BackendCapability.SOURCE_FORCED_ALIGNMENT.value,),
         discovery=f"command:{command or '<not-configured>'}",
         detail=(
-            f"configured command resolved to {resolved}"
+            f"configured executable resolved to {resolved}; arguments preserved for runtime"
             if resolved is not None
-            else "no configured forced-aligner command is executable"
+            else "no configured forced-aligner executable is discoverable"
         ),
         execution_ready=not missing,
         missing_execution_requirements=tuple(missing),
