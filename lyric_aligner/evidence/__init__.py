@@ -10,10 +10,20 @@ from lyric_aligner.evidence.editor import (
     build_editor_evidence,
     evidence_for_line,
 )
+from lyric_aligner.evidence.fusion import (
+    FUSION_POLICY_ID,
+    EvidenceFusionConfig,
+    EvidenceFusionError,
+    build_evidence_fusion,
+)
 
 __all__ = [
     "EDITOR_SHADOW_POLICY_ID",
+    "FUSION_POLICY_ID",
     "EditorEvidenceError",
+    "EvidenceFusionConfig",
+    "EvidenceFusionError",
     "build_editor_evidence",
+    "build_evidence_fusion",
     "evidence_for_line",
 ]

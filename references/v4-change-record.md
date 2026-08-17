@@ -12,151 +12,127 @@
 - a8 cut+overlap composition：`5c458d8327d2641ba053423fff3066d7fdd8ba3b`；
 - P1 strict calibration/blind：`1c6babe37067c217d14a7404aa0ed6a1c4779a00`；
 - P1.1 private dataset readiness：`ad6c403a56209e945a9a61a1eeab1a4bc3c204b4`；
-- P2 editor shadow evidence：`2e96569189ac6eb16d987fb2f304403696bc809b`。
+- P2 editor shadow evidence：`2e96569189ac6eb16d987fb2f304403696bc809b`；
+- P3 local acoustic evidence：`cd3420750c06a55fa1af7d6314ec56971e728928`。
 
-P2 的 exact commit `197c9f01ef7b054837d22e9248ba0780372ffaa8` 先在 validate #479 全绿；由于 Draft->Ready GitHub control-plane mutation 连续 502，创建非 Draft replacement PR #11，validate #484 再次全绿后 squash merge。没有绕过 Draft 规则。
+P3 PR #12 latest head `c6c66f6a1fb1e2ee9d43e26064e7efc30fce3cbe` 的 validate #493 在 ASR + Python 3.10/3.12/3.14 compile/docs/full unit-E2E/Skill/privacy/environment/diff-check 全绿后 squash merge。
 
 ---
 
-## 2026-08-18 — P3 Local Acoustic Evidence Planner / Backend / Faster-Whisper Executor
+## 2026-08-18 — P4 Evidence Fusion Shadow
 
 ### 1. 目标
 
-只对已经被 v4 标记为不确定的**局部区间**补充 ASR/Forced Alignment evidence，不把整条 40 分钟 mix 重新交给一个模型，也不改变 canonical lyric / Source-to-Mix 的权威关系。
-
-### 2. 新架构
-
-新增：
+把已存在的独立 evidence family 汇总到 exact canonical line identity：
 
 ```text
-lyric_aligner/alignment/
-  backends.py
-  planner.py
-  asr_executor.py
+Source-to-Mix canonical timeline
++ P2 editor_evidence_shadow
++ P3 asr_evidence_local
+        ↓
+evidence_fusion_shadow
 ```
 
-CLI：
+P4 只做诊断/校准数据准备，不改变 canonical lyric 或 Source-to-Mix authority。
+
+### 2. 新增模块 / CLI
 
 ```text
-scripts/v4_alignment_backends.py
-scripts/v4_plan_alignment.py
-scripts/v4_execute_asr_evidence.py
+lyric_aligner/evidence/fusion.py
+scripts/v4_fuse_evidence.py
+references/evidence-fusion-shadow.md
 ```
 
-专门文档：
+Package export 同步到：
 
 ```text
-references/local-acoustic-evidence.md
+lyric_aligner/evidence/__init__.py
 ```
-
-### 3. Truthful backend registry
-
-Registry 只做 package/command discovery 和显式运行前提检查：
-
-```text
-faster_whisper -> mix_asr, word_timestamps
-whisperx       -> mix_asr, word_timestamps, ctc_alignment
-external forced-aligner command -> source_forced_alignment
-```
-
-严格区分：
-
-```text
-available != execution_ready != validated_on_singing
-```
-
-`--require-capability` 缺失返回非零，不做假 fallback。
-
-### 4. Local job planner
 
 Artifact：
 
 ```text
-alignment_job_planning / alignment_plan
+stage = evidence_fusion_shadow
+role  = evidence_fusion
 ```
 
-来源：
-
-- run/review issue；
-- P2 editor boundary disagreement；
-- P2 editor candidate ambiguity；
-- editor no-candidate 可选，默认关闭。
-
-每个 job 只保存 occurrence/line、canonical text SHA、mix/source local window、reason、capabilities、priority 和 deterministic ID，不复制歌词正文。
-
-默认 context 为 mix ±1.5s / source ±1.0s；job 超过 `max_jobs` 时明确 `plan_truncated=true`。
-
-Planner 固定：
+### 3. 固定安全语义
 
 ```text
-mode=plan_only
-backend_execution_performed=false
+mode = shadow_only
+policy_calibrated = false
+release_gate_eligible = false
+automatic_timing_change_allowed = false
 ```
 
-### 5. Faster-whisper bounded executor
+这些字段在 root/line/artifact evidence 中都必须保持不可发布语义。
 
-Executor 只处理 planner 中请求 `mix_asr` 的 jobs。每个 job 用 exact local window 调用 faster-whisper `clip_timestamps`，开启 word timestamps，关闭 previous-text conditioning，且 clip 模式不依赖 VAD。
+### 4. Bootstrap shadow states
 
-语言 hint：en/zh/ko/ja 显式；yue/unknown/auto 留空让 backend detection，避免把粤语强制为普通话。
+```text
+LOW      source timeline only
+MEDIUM   source + 1 auxiliary boundary family
+HIGH     source + editor + ASR，且二者 boundary disagreement <= conflict threshold
+CONFLICT editor + ASR boundary disagreement > conflict threshold
+```
 
-默认 output 不含 raw ASR text，只保存：
+默认：
 
-- text SHA；
-- segment/word timestamps；
-- word probability；
-- avg_logprob / no_speech / compression；
-- detected language/probability；
-- canonical local text support score。
+```text
+conflict_boundary_ms = 500
+```
 
-只有显式 private opt-in 才保留 raw ASR text。
+该阈值没有 real calibration 支持，只用于 shadow diagnostic。`HIGH` 不是 release confidence。
 
-### 6. Lineage
+### 5. Family admission / selection
 
-Planner 绑定 task、source run、effective canonical timeline、可选 editor evidence。
+- `source_timeline` 是 primary timing authority；
+- editor 只接受 P2 shadow line boundary proposal；
+- ASR 只接受有 canonical line identity 且存在有效 local segment interval 的 jobs；
+- occurrence-level ASR job 没有 line identity，不能冒充 line boundary evidence；
+- 同一 line 多 ASR jobs 时，bootstrap 选 `canonical_text_support_score` 较高者，tie 由 job ID deterministic；这不是 calibrated model arbitration。
 
-ASR executor 再绑定 task/mix audio、plan artifact、source run、canonical timeline，并验证 plan canonical text SHA 与当前 timeline 一致。
+### 6. Lineage / fail-closed
 
-### 7. Forced Alignment 当前边界
+`v4_fuse_evidence.py` 验证：
 
-当前只完成：
+- task fingerprint；
+- source run stage/role/output hash；
+- exact effective canonical timeline artifact；
+- editor/asr evidence output hash；
+- auxiliary `source_run_artifact_id` 必须与当前 run artifact ID 相同；
+- auxiliary artifact 必须把当前 source run 作为 upstream。
 
-- `source_forced_alignment` capability；
-- source local-window job planning；
-- external command readiness 检查。
+Canonical/editor text SHA mismatch、unknown line、cross-run evidence 都必须失败。
 
-**尚未接入具体 WhisperX/SOFA/MMS production backend，也未假装模型已经下载/可执行/对歌声有效。**
+### 7. Privacy
+
+Fusion output 不复制 raw canonical/editor/ASR text。保存 identity/hash/boundary/score/disagreement/shadow level。
+
+即使输入 ASR artifact 是 `include_private_text=true`，fusion output 仍不复制原文。
 
 ### 8. Tests
 
 新增：
 
-- run issue/editor disagreement/ambiguity local planning；
-- editor missing opt-in；
-- max job truncation；
-- canonical text identity mismatch fail；
-- backend availability/readiness；
-- missing required capability exit 2；
-- planner artifact E2E；
-- fake-model faster-whisper clip/word-timestamp contract；
-- raw text default privacy；
-- yue language detection open；
-- no ASR job => no model loading。
+- LOW/MEDIUM/HIGH/CONFLICT 直接 unit regressions；
+- HIGH 仍 `release_gate_eligible=false`；
+- canonical/editor SHA mismatch fail；
+- auxiliary unknown line fail；
+- artifact-level editor+ASR same-run fusion；
+- cross-run auxiliary evidence fail；
+- fusion output privacy。
 
-### 9. GitHub Actions 真实边界
+### 9. 真实边界
 
-CI 可以验证 package contract、planner、fake executor、ASR dependency environment，但当前**不下载/运行真实 Whisper model**。因此不能声称 GitHub Actions 已在真实歌曲上跑出 word timing/准确率，也不能声称 WhisperX/forced aligner production ready。
-
-### 10. Algorithm/profile
-
-P3 evidence tooling不改 Source-to-Mix、timeline、renderer 或 calibrated acoustic thresholds：
+P4 不能在没有 private reference truth 的情况下把 shadow level 升级成发布阈值。正确路径仍是：
 
 ```text
-algorithm_version = 4.0.0a8
-calibration_profile = production-bootstrap-2026-08-17-a7
+private calibration
+-> 分语言/场景检查 family coverage 与 boundary error
+-> 冻结 policy/thresholds
+-> blind_test once
+-> 才允许设计 calibrated release gate
 ```
 
-Planner threshold 只决定“哪里值得补证据”，不是发布阈值。
-
-## 验证纪律
-
-P3 必须用 latest-head ASR + Python 3.10/3.12/3.14 compile/docs/full unit-E2E/Skill/privacy/environment/diff-check 验收。Fake-model 测试不能被描述成真实模型测试。
+P4 PR 必须以 latest-head GitHub Actions ASR + Python 3.10/3.12/3.14 全门禁为合并依据。
