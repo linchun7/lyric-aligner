@@ -1,0 +1,209 @@
+"""Project canonical source-time lyrics onto the edited-mix timeline.
+
+This is the first production v4 timeline truth. It consumes an already selected
+TrackAsset canonical lyric stream plus a monotonic Source-to-Mix TimeWarp. It
+never re-resolves assets and never uses editor text as canonical truth.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any, Iterable
+
+from lyric_aligner.assets.bindings import ResolvedAssetBinding
+from lyric_aligner.text.canonical_lyrics import CanonicalLine, parse_canonical_lyrics
+
+
+class TimelineProjectionError(ValueError):
+    """Raised when a serialized TimeWarp cannot safely project canonical lyrics."""
+
+
+@dataclass(frozen=True)
+class ProjectionWindow:
+    start_ms: int
+    end_ms: int
+
+    def __post_init__(self) -> None:
+        if self.start_ms < 0 or self.end_ms <= self.start_ms:
+            raise TimelineProjectionError("invalid projection window")
+
+
+def _mapping_parts(mapping: dict[str, Any]) -> tuple[float, float, tuple[float, ...], tuple[float, ...]]:
+    try:
+        intercept = float(mapping["intercept"])
+        base_slope = float(mapping["base_slope"])
+        breakpoints = tuple(float(value) for value in mapping.get("breakpoints", []))
+        deltas = tuple(float(value) for value in mapping.get("slope_deltas", []))
+    except (KeyError, TypeError, ValueError) as exc:
+        raise TimelineProjectionError("invalid serialized TimeWarp mapping") from exc
+    if base_slope <= 0:
+        raise TimelineProjectionError("TimeWarp base_slope must be positive")
+    if len(breakpoints) != len(deltas):
+        raise TimelineProjectionError("TimeWarp breakpoints/slope_deltas length mismatch")
+    if any(right <= left for left, right in zip(breakpoints, breakpoints[1:])):
+        raise TimelineProjectionError("TimeWarp breakpoints must be strictly increasing")
+    slope = base_slope
+    for delta in deltas:
+        slope += delta
+        if slope <= 0:
+            raise TimelineProjectionError("TimeWarp local slope must remain positive")
+    return intercept, base_slope, breakpoints, deltas
+
+
+def source_time_at_mix(mapping: dict[str, Any], mix_time_seconds: float) -> float:
+    intercept, base_slope, breakpoints, deltas = _mapping_parts(mapping)
+    value = intercept + base_slope * float(mix_time_seconds)
+    for breakpoint, delta in zip(breakpoints, deltas):
+        value += delta * max(0.0, float(mix_time_seconds) - breakpoint)
+    return value
+
+
+def mix_time_for_source(mapping: dict[str, Any], source_time_seconds: float) -> float:
+    """Invert a continuous positive-slope hinge TimeWarp analytically."""
+
+    intercept, base_slope, breakpoints, deltas = _mapping_parts(mapping)
+    target = float(source_time_seconds)
+    if not breakpoints:
+        return (target - intercept) / base_slope
+
+    first_source = source_time_at_mix(mapping, breakpoints[0])
+    if target <= first_source:
+        return (target - intercept) / base_slope
+
+    left_mix = breakpoints[0]
+    left_source = first_source
+    slope = base_slope + deltas[0]
+    for index in range(1, len(breakpoints)):
+        right_mix = breakpoints[index]
+        right_source = source_time_at_mix(mapping, right_mix)
+        if target <= right_source:
+            return left_mix + (target - left_source) / slope
+        left_mix = right_mix
+        left_source = right_source
+        slope += deltas[index]
+    return left_mix + (target - left_source) / slope
+
+
+def _project_ms(mapping: dict[str, Any], source_ms: int) -> int:
+    return int(round(mix_time_for_source(mapping, float(source_ms) / 1000.0) * 1000.0))
+
+
+def _line_source_bounds(lines: list[CanonicalLine], index: int) -> tuple[int, int | None, str]:
+    line = lines[index]
+    if line.tokens:
+        start = line.tokens[0].start_ms
+        token_end = next(
+            (token.end_ms for token in reversed(line.tokens) if token.end_ms is not None),
+            None,
+        )
+        if token_end is not None and token_end > start:
+            return start, token_end, "word_timing"
+        if index + 1 < len(lines):
+            return start, lines[index + 1].time_ms, "next_line_start"
+        return start, None, "open_end"
+    if index + 1 < len(lines):
+        return line.time_ms, lines[index + 1].time_ms, "next_line_start"
+    return line.time_ms, None, "open_end"
+
+
+def project_canonical_lines(
+    lines: Iterable[CanonicalLine],
+    mapping: dict[str, Any],
+    *,
+    window: ProjectionWindow | None = None,
+) -> list[dict[str, Any]]:
+    """Project line/token source timestamps into global edited-mix milliseconds."""
+
+    rows = list(lines)
+    projected: list[dict[str, Any]] = []
+    for index, line in enumerate(rows):
+        source_start_ms, source_end_ms, end_basis = _line_source_bounds(rows, index)
+        mix_start_ms = _project_ms(mapping, source_start_ms)
+        mix_end_ms = _project_ms(mapping, source_end_ms) if source_end_ms is not None else None
+
+        if window is not None:
+            effective_end = mix_end_ms if mix_end_ms is not None else mix_start_ms + 1
+            if effective_end <= window.start_ms or mix_start_ms >= window.end_ms:
+                continue
+
+        tokens: list[dict[str, Any]] = []
+        for token in line.tokens:
+            token_start = _project_ms(mapping, token.start_ms)
+            token_end = _project_ms(mapping, token.end_ms) if token.end_ms is not None else None
+            tokens.append(
+                {
+                    "text": token.text,
+                    "source_start_ms": token.start_ms,
+                    "source_end_ms": token.end_ms,
+                    "mix_start_ms": token_start,
+                    "mix_end_ms": token_end,
+                }
+            )
+
+        projected.append(
+            {
+                "canonical_line_index": line.index,
+                "text": line.text,
+                "timing_format": line.timing_format,
+                "source_start_ms": source_start_ms,
+                "source_end_ms": source_end_ms,
+                "mix_start_ms": mix_start_ms,
+                "mix_end_ms": mix_end_ms,
+                "end_basis": end_basis,
+                "tokens": tokens,
+            }
+        )
+    return projected
+
+
+def project_binding_timeline(
+    binding: ResolvedAssetBinding,
+    mapping: dict[str, Any],
+    *,
+    window: ProjectionWindow | None = None,
+) -> dict[str, Any]:
+    lines = parse_canonical_lyrics(
+        Path(binding.canonical_lyric_path),
+        original_index_by_timestamp=binding.original_index_by_timestamp,
+    )
+    projected = project_canonical_lines(lines, mapping, window=window)
+    return {
+        "occurrence_id": binding.occurrence_id,
+        "ordinal": binding.ordinal,
+        "track_id": binding.track_id,
+        "artist": binding.artist,
+        "title": binding.title,
+        "language_profile": binding.language_profile,
+        "canonical_selection_sha256": binding.canonical_selection_sha256,
+        "window": None
+        if window is None
+        else {"start_ms": window.start_ms, "end_ms": window.end_ms},
+        "line_count": len(projected),
+        "lines": projected,
+    }
+
+
+def effective_timewarp(
+    coarse_payload: dict[str, Any],
+    fine_payload: dict[str, Any] | None = None,
+) -> tuple[dict[str, Any], bool, str]:
+    """Choose the production mapping: applied fine result, otherwise coarse."""
+
+    if fine_payload is not None:
+        fine = fine_payload.get("result", {})
+        if bool(fine.get("applied")) and isinstance(fine.get("timewarp"), dict):
+            timewarp = fine["timewarp"]
+            mapping = timewarp.get("mapping")
+            if not isinstance(mapping, dict):
+                raise TimelineProjectionError("fine TimeWarp has no mapping")
+            return mapping, bool(timewarp.get("blocked", False)), "fine"
+
+    coarse = coarse_payload.get("result", {})
+    timewarp = coarse.get("timewarp")
+    if not isinstance(timewarp, dict):
+        raise TimelineProjectionError("coarse alignment has no TimeWarp")
+    mapping = timewarp.get("mapping")
+    if not isinstance(mapping, dict):
+        raise TimelineProjectionError("coarse TimeWarp has no mapping")
+    return mapping, bool(timewarp.get("blocked", False)), "coarse"
