@@ -9,6 +9,7 @@ with stronger audio or explicit manual evidence.
 from __future__ import annotations
 
 import argparse
+import copy
 import csv
 import difflib
 import hashlib
@@ -20,6 +21,10 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Iterable
 
+REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
+if str(REPOSITORY_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPOSITORY_ROOT))
+
 from language_profiles import evidence_capability, thresholds
 from task_contract import (
     assert_manifest_paths,
@@ -29,15 +34,71 @@ from task_contract import (
     validate_qa_artifact,
     verify_manifest_inputs,
 )
+from lyric_aligner.contracts.artifacts import (
+    atomic_write_json,
+    validate_artifact_output,
+    validate_upstream_artifact,
+)
+from lyric_aligner.qa.final_integrity import (
+    FinalIntegrityError,
+    build_release_artifact_manifest,
+)
 
 
 TIME_RE = re.compile(r"^(\d{2}):(\d{2}):(\d{2})[,.](\d{3})$")
 LRC_RE = re.compile(r"\[(\d{1,3}):(\d{2})(?:[.:](\d{1,3}))?\](.*)")
+ENHANCED_LRC_TOKEN_RE = re.compile(
+    r"<(\d{1,3}):(\d{2})(?:[.:](\d{1,3}))?>"
+)
+QRC_LINE_RE = re.compile(r"^\[(\d+),(\d+)\](.*)$")
+QRC_TOKEN_RE = re.compile(r"(.+?)\((\d+),(\d+)\)")
 META_RE = re.compile(
     r"^(?:\[?by:|作词|作曲|编曲|词\s*:|曲\s*:|制作人|人声采样|未经|版权|发行|混音|母带|企划|出品人|op\s*:|sp\s*:|本作品)",
     re.IGNORECASE,
 )
-ALGORITHM_VERSION = "3.8"
+ALGORITHM_VERSION = "3.9"
+V4_ALGORITHM_VERSION = "4.0.0a1"
+
+
+def load_v4_assets(
+    manifest: dict,
+    assets_path: Path | None,
+    artifact_path: Path | None,
+) -> dict | None:
+    """Load v4 asset identity only when the caller explicitly enables v4 mode."""
+
+    if assets_path is None and artifact_path is None:
+        return None
+    if assets_path is None or artifact_path is None:
+        raise ValueError("v4 mode requires both --v4-track-assets and --v4-asset-artifact")
+    payload = json.loads(assets_path.read_text(encoding="utf-8"))
+    artifact = json.loads(artifact_path.read_text(encoding="utf-8"))
+    expected = str(manifest["task_fingerprint_sha256"])
+    issues = validate_upstream_artifact(
+        artifact,
+        expected_task_fingerprint=expected,
+        expected_algorithm_version=V4_ALGORITHM_VERSION,
+        expected_stage="asset_resolution",
+    )
+    issues.extend(validate_artifact_output(artifact, role="track_assets", path=assets_path))
+    if issues:
+        raise ValueError("v4 asset artifact validation failed: " + "; ".join(issues))
+    if payload.get("task_fingerprint_sha256") != expected:
+        raise ValueError("v4 track assets belong to another task fingerprint")
+    if payload.get("status") != "resolved":
+        raise ValueError("v4 track assets are not resolved")
+    return payload
+
+
+def v4_lyric_path_by_ordinal(payload: dict | None) -> dict[int, str]:
+    if payload is None:
+        return {}
+    assets = {str(item["track_id"]): item for item in payload.get("assets", [])}
+    return {
+        int(item["ordinal"]): assets[str(item["track_id"])]["canonical_lyric_path"]
+        for item in payload.get("occurrences", [])
+        if str(item.get("track_id")) in assets
+    }
 
 
 def require_task_manifest(
@@ -95,10 +156,19 @@ class Track:
 
 
 @dataclass(frozen=True)
+class LyricToken:
+    text: str
+    start_ms: int
+    end_ms: int | None = None
+
+
+@dataclass(frozen=True)
 class LyricLine:
     index: int
     time_ms: int
     text: str
+    tokens: tuple[LyricToken, ...] = ()
+    timing_format: str = "line_lrc"
 
 
 def read_text(path: Path) -> str:
@@ -195,6 +265,290 @@ def write_srt(cues: Iterable[Cue], replacements: dict[int, str], path: Path) -> 
     path.write_text("\n\n".join(blocks) + "\n", encoding="utf-8-sig", newline="\n")
 
 
+def report_fieldnames(rows: list[dict]) -> list[str]:
+    """Keep every report column, including fields added to later rows."""
+
+    return list(dict.fromkeys(key for row in rows for key in row)) or ["kind"]
+
+
+def set_row_lrc_provenance(row: dict, events: Iterable[dict]) -> None:
+    """Bind final canonical text to the LRC events that actually supplied it.
+
+    ASR refinement may discover that a cue belongs to a neighbouring lyric
+    event.  Keeping the draft index after replacing the text creates false
+    coverage: QA sees the old index even though its canonical lyric vanished.
+    """
+
+    row["lrc_indices"] = ";".join(
+        str(int(event["lrc_index"])) for event in events
+    )
+
+
+def source_overlap_signatures(cues: list[Cue]) -> set[tuple[int, int, int, int]]:
+    """Return exact overlap pairs already authored in the source SRT.
+
+    Jianying may store overlay tracks out of chronological cue-number order, so
+    checking only adjacent source blocks misses legitimate original overlays.
+    Exact timing signatures keep this exception narrow: changed or newly
+    introduced overlaps are still rejected.
+    """
+
+    ordered = sorted(cues, key=lambda cue: (cue.start_ms, cue.end_ms, cue.number))
+    signatures: set[tuple[int, int, int, int]] = set()
+    for position, left in enumerate(ordered):
+        for right in ordered[position + 1 :]:
+            if right.start_ms >= left.end_ms:
+                break
+            signatures.add(
+                (left.start_ms, left.end_ms, right.start_ms, right.end_ms)
+            )
+    return signatures
+
+
+def normalized_confirmed_overlap_intervals(value: object) -> list[dict]:
+    if value in (None, []):
+        return []
+    if not isinstance(value, list):
+        raise ValueError("_confirmed_overlap_intervals must be a list")
+    normalized: list[dict] = []
+    for position, item in enumerate(value, start=1):
+        if not isinstance(item, dict):
+            raise ValueError(f"confirmed overlap interval {position} must be an object")
+        try:
+            cue = int(item["cue"])
+            start_ms = int(item["start_ms"])
+            end_ms = int(item["end_ms"])
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ValueError(
+                f"confirmed overlap interval {position} has invalid coordinates"
+            ) from exc
+        tracks = tuple(sorted(str(track).strip() for track in item.get("tracks", [])))
+        evidence = str(item.get("evidence") or item.get("reason") or "").strip()
+        if (
+            cue <= 0
+            or end_ms <= start_ms
+            or len(tracks) != 2
+            or not all(tracks)
+            or not evidence
+        ):
+            raise ValueError(
+                f"confirmed overlap interval {position} requires a positive cue, "
+                "start_ms < end_ms, exactly two tracks, and evidence"
+            )
+        normalized.append(
+            {
+                **item,
+                "cue": cue,
+                "start_ms": start_ms,
+                "end_ms": end_ms,
+                "tracks": tracks,
+                "evidence": evidence,
+            }
+        )
+    return normalized
+
+
+def normalized_cross_track_overlap_reviews(value: object) -> list[dict]:
+    if value in (None, []):
+        return []
+    if not isinstance(value, list):
+        raise ValueError("_cross_track_overlap_reviews must be a list")
+    normalized: list[dict] = []
+    seen: set[tuple[int, tuple[str, str]]] = set()
+    for position, item in enumerate(value, start=1):
+        if not isinstance(item, dict):
+            raise ValueError(f"cross-track overlap review {position} must be an object")
+        try:
+            cue = int(item["cue"])
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ValueError(
+                f"cross-track overlap review {position} has an invalid cue"
+            ) from exc
+        tracks = tuple(sorted(str(track).strip() for track in item.get("tracks", [])))
+        status = str(item.get("status", "")).strip().casefold()
+        evidence = str(item.get("evidence") or item.get("reason") or "").strip()
+        if cue <= 0 or len(tracks) != 2 or not all(tracks):
+            raise ValueError(
+                f"cross-track overlap review {position} requires a positive cue "
+                "and exactly two tracks"
+            )
+        if status not in {"confirmed", "rejected"} or not evidence:
+            raise ValueError(
+                f"cross-track overlap review {position} requires confirmed/rejected "
+                "status and evidence"
+            )
+        key = (cue, tracks)
+        if key in seen:
+            raise ValueError(
+                f"cross-track overlap review {position} duplicates cue {cue}"
+            )
+        seen.add(key)
+        normalized.append(
+            {
+                **item,
+                "cue": cue,
+                "tracks": tracks,
+                "status": status,
+                "evidence": evidence,
+            }
+        )
+    return normalized
+
+
+def matching_cross_track_overlap_review(
+    candidate: dict, reviews: list[dict]
+) -> dict | None:
+    tracks = tuple(
+        sorted(part.strip() for part in str(candidate.get("track", "")).split(" + "))
+    )
+    cue = int(candidate.get("left_cue") or 0)
+    return next(
+        (
+            review
+            for review in reviews
+            if int(review["cue"]) == cue and tuple(review["tracks"]) == tracks
+        ),
+        None,
+    )
+
+
+def cross_track_overlap_review_consistency_issues(
+    intervals: list[dict], reviews: list[dict]
+) -> list[str]:
+    issues: list[str] = []
+    interval_keys = {
+        (int(item["cue"]), tuple(item["tracks"])) for item in intervals
+    }
+    review_by_key = {
+        (int(item["cue"]), tuple(item["tracks"])): item for item in reviews
+    }
+    for key in sorted(interval_keys):
+        review = review_by_key.get(key)
+        if review is None:
+            issues.append(
+                f"confirmed overlap interval for cue {key[0]} has no exact review"
+            )
+        elif str(review["status"]) != "confirmed":
+            issues.append(
+                f"overlap interval for cue {key[0]} conflicts with rejected review"
+            )
+    for key, review in sorted(review_by_key.items()):
+        if str(review["status"]) == "confirmed" and key not in interval_keys:
+            issues.append(
+                f"confirmed overlap review for cue {key[0]} has no exact allowed interval"
+            )
+    return issues
+
+
+def overlap_pair_is_confirmed(left: dict, right: dict, intervals: list[dict]) -> bool:
+    overlap_start = max(int(left["start_ms"]), int(right["start_ms"]))
+    overlap_end = min(int(left["end_ms"]), int(right["end_ms"]))
+    tracks = tuple(sorted((str(left.get("track", "")), str(right.get("track", "")))))
+    return any(
+        int(item["start_ms"]) <= overlap_start
+        and overlap_end <= int(item["end_ms"])
+        and tuple(item["tracks"]) == tracks
+        for item in intervals
+    )
+
+
+def overlapping_row_pairs(rows: list[dict]) -> Iterable[tuple[dict, dict]]:
+    ordered = sorted(
+        rows, key=lambda row: (int(row["start_ms"]), int(row["end_ms"]))
+    )
+    for position, left in enumerate(ordered):
+        for right in ordered[position + 1 :]:
+            if int(right["start_ms"]) >= int(left["end_ms"]):
+                break
+            yield left, right
+
+
+def cross_track_overlap_candidates(
+    cues: list[Cue], tracks: list[Track], events: list[dict]
+) -> list[dict]:
+    """Detect one-cell transitions that may contain vocals from both songs."""
+
+    candidates: list[dict] = []
+    for left_track, right_track in zip(tracks, tracks[1:]):
+        boundary = right_track.start_ms
+        transition_cues = [
+            cue
+            for cue in cues
+            if cue.start_ms < boundary < cue.end_ms
+        ]
+        for cue in transition_cues:
+            left_events = [
+                event
+                for event in events
+                if int(event["track_index"]) == left_track.index
+                and cue.start_ms - 500 <= int(event["projected_ms"]) <= cue.end_ms + 500
+            ]
+            right_events = [
+                event
+                for event in events
+                if int(event["track_index"]) == right_track.index
+                and cue.start_ms - 500 <= int(event["projected_ms"]) <= cue.end_ms + 500
+            ]
+            if not left_events or not right_events:
+                continue
+            cue_units = boundary_units(cue.text)
+            best_split: tuple[float, float, int, dict, dict] | None = None
+            for split in range(1, len(cue_units)):
+                left_observation = join_boundary_units(cue_units[:split])
+                right_observation = join_boundary_units(cue_units[split:])
+                left_event = max(
+                    left_events,
+                    key=lambda row: span_similarity(
+                        left_observation, str(row["text"])
+                    )[0],
+                )
+                right_event = max(
+                    right_events,
+                    key=lambda row: span_similarity(
+                        right_observation, str(row["text"])
+                    )[0],
+                )
+                left_score = span_similarity(left_observation, str(left_event["text"]))[0]
+                right_score = span_similarity(right_observation, str(right_event["text"]))[0]
+                candidate = (
+                    min(left_score, right_score),
+                    left_score + right_score,
+                    split,
+                    left_event,
+                    right_event,
+                )
+                if best_split is None or candidate[:2] > best_split[:2]:
+                    best_split = candidate
+            if best_split is None or best_split[0] < 0.72:
+                continue
+            minimum_score, total_score, _, selected_left, selected_right = best_split
+            # Require one source cell to contain recognizable evidence from
+            # both canonical streams.  Mere proximity to a normal song change
+            # must not block every transition.
+            candidates.append(
+                {
+                    "category": "cross_track_vocal_overlap",
+                    "risk": "high",
+                    "track": f"{left_track.title} + {right_track.title}",
+                    "left_cue": cue.number,
+                    "right_cue": "",
+                    "start": format_srt_time(cue.start_ms),
+                    "observed_left": cue.text,
+                    "observed_right": "",
+                    "current_left": cue.text,
+                    "current_right": "",
+                    "suggested_left": str(selected_left["text"]),
+                    "suggested_right": str(selected_right["text"]),
+                    "score": round(total_score / 2.0, 6),
+                    "improvement": "",
+                    "unit_shift": "",
+                    "mode": "two_canonical_streams_near_track_boundary",
+                    "reason": "two adjacent song sources project vocals into one transition cell; confirm two-track overlap or reject",
+                }
+            )
+    return candidates
+
+
 def title_key(value: str) -> str:
     value = unicodedata.normalize("NFKC", value).casefold()
     return "".join(ch for ch in value if ch.isalnum())
@@ -252,7 +606,13 @@ def bpm_change_for_track(track: Track, changes: list[dict]) -> dict | None:
     return {**ranked[0], "match_score": score} if score >= 0.62 else None
 
 
-def parse_song_list(path: Path, lyrics_dir: Path, final_end_ms: int) -> list[Track]:
+def parse_song_list(
+    path: Path,
+    lyrics_dir: Path,
+    final_end_ms: int,
+    *,
+    v4_assets: dict | None = None,
+) -> list[Track]:
     raw: list[tuple[int, str, str]] = []
     for line in read_text(path).splitlines():
         if not line.strip():
@@ -263,9 +623,14 @@ def parse_song_list(path: Path, lyrics_dir: Path, final_end_ms: int) -> list[Tra
         raw.append(((minute * 60 + second) * 1000, artist, title))
 
     lrc_files = list(lyrics_dir.glob("*.lrc"))
+    v4_lyric_paths = v4_lyric_path_by_ordinal(v4_assets)
     tracks: list[Track] = []
     for idx, (start_ms, artist, title) in enumerate(raw, start=1):
-        exact = [path for path in lrc_files if title_key(title) in title_key(path.stem)]
+        exact = (
+            [Path(v4_lyric_paths[idx])]
+            if idx in v4_lyric_paths
+            else [path for path in lrc_files if title_key(title) in title_key(path.stem)]
+        )
         if not exact:
             ranked = sorted(
                 lrc_files,
@@ -289,27 +654,105 @@ def parse_song_list(path: Path, lyrics_dir: Path, final_end_ms: int) -> list[Tra
     return tracks
 
 
+def lrc_timestamp_ms(minute: str, second: str, fraction: str | None) -> int:
+    fraction = fraction or "0"
+    millis = int(fraction.ljust(3, "0")[:3])
+    return (int(minute) * 60 + int(second)) * 1000 + millis
+
+
+def parse_enhanced_lrc_tokens(body: str) -> tuple[str, tuple[LyricToken, ...]]:
+    markers = list(ENHANCED_LRC_TOKEN_RE.finditer(body))
+    if not markers:
+        return clean_canonical_text(body), ()
+    tokens: list[LyricToken] = []
+    prefix = body[: markers[0].start()]
+    pieces: list[str] = [prefix] if prefix else []
+    for position, marker in enumerate(markers):
+        token_end = markers[position + 1].start() if position + 1 < len(markers) else len(body)
+        token_text = body[marker.end() : token_end]
+        pieces.append(token_text)
+        cleaned = clean_canonical_text(token_text)
+        if not cleaned:
+            continue
+        start_ms = lrc_timestamp_ms(*marker.groups())
+        next_start_ms = (
+            lrc_timestamp_ms(*markers[position + 1].groups())
+            if position + 1 < len(markers)
+            else None
+        )
+        tokens.append(LyricToken(cleaned, start_ms, next_start_ms))
+    return clean_canonical_text("".join(pieces)), tuple(tokens)
+
+
+def parse_qrc_tokens(
+    line_start_ms: int, line_duration_ms: int, body: str
+) -> tuple[str, tuple[LyricToken, ...]]:
+    matches = list(QRC_TOKEN_RE.finditer(body))
+    if not matches:
+        return clean_canonical_text(re.sub(r"\(\d+,\d+\)", "", body)), ()
+    raw_starts = [int(match.group(2)) for match in matches]
+    relative = bool(
+        raw_starts
+        and min(raw_starts) < max(0, line_start_ms - 500)
+        and max(raw_starts) <= line_duration_ms + 500
+    )
+    tokens: list[LyricToken] = []
+    pieces: list[str] = []
+    previous_start = -1
+    for match in matches:
+        text = clean_canonical_text(match.group(1))
+        if not text:
+            continue
+        raw_start = int(match.group(2))
+        duration = int(match.group(3))
+        start_ms = line_start_ms + raw_start if relative else raw_start
+        end_ms = start_ms + duration if duration > 0 else None
+        if start_ms < previous_start:
+            return clean_canonical_text(re.sub(r"\(\d+,\d+\)", "", body)), ()
+        previous_start = start_ms
+        pieces.append(match.group(1))
+        tokens.append(LyricToken(text, start_ms, end_ms))
+    return clean_canonical_text("".join(pieces)), tuple(tokens)
+
+
 def parse_lrc(path: Path) -> list[LyricLine]:
-    grouped: dict[int, list[str]] = {}
+    grouped: dict[int, list[tuple[str, tuple[LyricToken, ...], str]]] = {}
     for raw_line in read_text(path).splitlines():
-        match = LRC_RE.match(raw_line.strip())
+        stripped = raw_line.strip()
+        qrc_match = QRC_LINE_RE.match(stripped)
+        if qrc_match:
+            start_ms = int(qrc_match.group(1))
+            duration_ms = int(qrc_match.group(2))
+            text, tokens = parse_qrc_tokens(start_ms, duration_ms, qrc_match.group(3))
+            if text and not META_RE.match(text):
+                grouped.setdefault(start_ms, []).append((text, tokens, "qrc_word_timing"))
+            continue
+        match = LRC_RE.match(stripped)
         if not match:
             continue
         minute, second, fraction, text = match.groups()
-        fraction = fraction or "0"
-        millis = int(fraction.ljust(3, "0")[:3])
-        time_ms = (int(minute) * 60 + int(second)) * 1000 + millis
-        text = text.strip()
+        time_ms = lrc_timestamp_ms(minute, second, fraction)
+        text, tokens = parse_enhanced_lrc_tokens(text.strip())
         if not text or META_RE.match(text):
             continue
-        grouped.setdefault(time_ms, []).append(text)
+        grouped.setdefault(time_ms, []).append(
+            (text, tokens, "enhanced_lrc" if tokens else "line_lrc")
+        )
 
     result: list[LyricLine] = []
     for time_ms, alternatives in sorted(grouped.items()):
         # LRCs in this project place the original lyric first and translations
         # at the same timestamp.  Preserve the original wording verbatim.
-        text = clean_canonical_text(alternatives[0])
-        result.append(LyricLine(index=len(result), time_ms=time_ms, text=text))
+        text, tokens, timing_format = alternatives[0]
+        result.append(
+            LyricLine(
+                index=len(result),
+                time_ms=time_ms,
+                text=clean_canonical_text(text),
+                tokens=tokens,
+                timing_format=timing_format,
+            )
+        )
     return result
 
 
@@ -396,6 +839,131 @@ def best_text_span(observation: str, canonical: str) -> tuple[str, float, float,
             if (score, coverage) > (best[1], best[2]):
                 best = (span, score, coverage, mode)
     return best
+
+
+def canonical_event_coverage(
+    rows: list[dict], event: dict, nearby_window_ms: int = 3000
+) -> dict[str, object]:
+    """Verify canonical lyric coverage using text as well as LRC metadata.
+
+    A lyric may be split across adjacent subtitle cells, while ASR refinement
+    may also leave a stale LRC index on unrelated text.  Check both the rows
+    carrying the index and same-track rows around the projected onset.  Long
+    lexical lines require textual support; very short ad-libs retain index-
+    based coverage because one-token similarity scores are unstable.
+    """
+
+    track = str(event["track"])
+    index = int(event["lrc_index"])
+    projected_ms = int(event["projected_ms"])
+    canonical = str(event["text"])
+
+    def row_indices(row: dict) -> set[int]:
+        return {
+            int(value)
+            for value in str(row.get("lrc_indices", "")).split(";")
+            if value.strip().isdigit()
+        }
+
+    linked_rows = [
+        row
+        for row in rows
+        if str(row.get("track", "")) == track and index in row_indices(row)
+    ]
+    nearby_rows = [
+        row
+        for row in rows
+        if str(row.get("track", "")) == track
+        and int(row["end_ms"]) >= projected_ms - nearby_window_ms
+        and int(row["start_ms"]) <= projected_ms + nearby_window_ms
+    ]
+
+    def text_evidence(candidates: list[dict]) -> tuple[float, float, bool]:
+        if not candidates:
+            return 0.0, 0.0, False
+        ordered = sorted(
+            candidates, key=lambda row: (int(row["start_ms"]), int(row["end_ms"]))
+        )
+        texts = [str(row.get("text", "")) for row in ordered]
+        observations = [*texts, " ".join(texts)]
+        exact = any(
+            normalized_text(canonical) in normalized_text(value)
+            for value in observations
+        )
+        scored = [best_text_span(value, canonical) for value in observations]
+        best = max(scored, key=lambda item: (item[1], item[2]))
+        return best[1], best[2], exact
+
+    linked_score, linked_coverage, linked_exact = text_evidence(linked_rows)
+    nearby_score, nearby_coverage, nearby_exact = text_evidence(nearby_rows)
+    lexical = len(normalized_text(canonical)) >= 12
+    covered = (
+        linked_exact
+        or nearby_exact
+        or (linked_score >= 0.70 and linked_coverage >= 0.65)
+        or (nearby_score >= 0.70 and nearby_coverage >= 0.65)
+        if lexical
+        else bool(linked_rows) or nearby_score >= 0.55
+    )
+    return {
+        "covered": covered,
+        "linked": bool(linked_rows),
+        "linked_score": linked_score,
+        "linked_coverage": linked_coverage,
+        "linked_exact": linked_exact,
+        "nearby_score": nearby_score,
+        "nearby_coverage": nearby_coverage,
+        "nearby_exact": nearby_exact,
+    }
+
+
+def contains_language_script(language: str, value: str) -> bool:
+    """Return whether text contains the native script expected for a language."""
+
+    if language == "ko":
+        return bool(re.search(r"[가-힣]", value))
+    if language == "ja":
+        return bool(re.search(r"[ぁ-ゖァ-ヺ一-鿿]", value))
+    if language == "zh":
+        return bool(re.search(r"[一-鿿]", value))
+    return bool(re.search(r"[A-Za-z]", value))
+
+
+def cross_language_phonetic_rescue(
+    language: str,
+    original: str,
+    observation: str,
+    canonical_span: str,
+    score: float,
+    coverage: float,
+    distance_ms: int,
+    has_lrc_indices: bool,
+) -> bool:
+    """Treat Jianying Latin output as phonetic evidence for Korean/Japanese.
+
+    Jianying does not directly recognize Korean or Japanese in this workflow;
+    it commonly emits English-looking phonetics instead.  Preserve genuine
+    English only when the canonical LRC candidate is also English.  This
+    narrow fallback requires target-script ASR and target-script canonical
+    lyrics, and applies only to otherwise-unmapped Jianying rows.
+    """
+
+    if language not in {"ko", "ja"} or has_lrc_indices:
+        return False
+    if not re.search(r"[A-Za-z]", original):
+        return False
+    if contains_language_script(language, original):
+        return False
+    if not contains_language_script(language, observation):
+        return False
+    if not contains_language_script(language, canonical_span):
+        return False
+    profile = thresholds(language)
+    return (
+        score >= profile["review_score"] + 0.10
+        and coverage >= profile["min_coverage"] - 0.06
+        and distance_ms <= 3500
+    )
 
 
 def cue_track(cue: Cue, tracks: list[Track]) -> Track:
@@ -668,8 +1236,6 @@ def audio_edit_candidates(
         source_before = float(left["slope"]) * mix_time + float(left["intercept"])
         source_after = float(right["slope"]) * mix_time + float(right["intercept"])
         skipped = source_after - source_before
-        if skipped < max(2.0, float(tempo_ratio) * 1.5):
-            continue
         anchors = sorted(text_anchors or [])
         left_text = max((row for row in anchors if row[0] <= mix_time), default=None)
         right_text = min((row for row in anchors if row[0] >= mix_time), default=None)
@@ -679,7 +1245,7 @@ def audio_edit_candidates(
             text_skip = (right_text[1] - left_text[1]) - float(tempo_ratio) * (
                 right_text[0] - left_text[0]
             )
-            text_supported = text_skip > 1.5 and abs(text_skip - skipped) <= 2.5
+            text_supported = text_skip > 0.5 and abs(text_skip - skipped) <= 2.5
         reliable_waveform = (
             int(left.get("anchor_count", 0)) >= 2
             and int(right.get("anchor_count", 0)) >= 2
@@ -688,6 +1254,16 @@ def audio_edit_candidates(
             and float(left.get("max_residual", 999.0)) <= 0.8
             and float(right.get("max_residual", 999.0)) <= 0.8
         )
+        # A short edit is difficult to distinguish from waveform ambiguity by
+        # audio alone.  Permit sub-two-second candidates only when reliable
+        # waveform segments and independent text anchors agree on the jump.
+        minimum_skip = (
+            max(0.6, float(tempo_ratio) * 0.5)
+            if reliable_waveform and text_supported
+            else max(2.0, float(tempo_ratio) * 1.5)
+        )
+        if skipped < minimum_skip:
+            continue
         status = (
             "review"
             if reliable_waveform and (text_supported or len(anchors) < 2)
@@ -729,9 +1305,24 @@ def project_source_with_confirmed_cuts(
         ),
         key=lambda row: float(row["mix_time"]),
     )
+    previous: dict | None = None
+    for cut in confirmed:
+        source_start = float(cut["source_start"])
+        source_end = float(cut["source_end"])
+        if source_end <= source_start:
+            raise ValueError("confirmed audio cut must move source time forward")
+        if previous is not None and (
+            float(cut["mix_time"]) <= float(previous["mix_time"])
+            or source_start < float(previous["source_end"])
+        ):
+            raise ValueError("confirmed audio cuts must be ordered and non-overlapping")
+        previous = cut
     for cut in confirmed:
         if float(cut["source_start"]) <= source_seconds < float(cut["source_end"]):
             return None, "confirmed_source_cut"
+    for run in mapping.get("variable_speed_runs", []):
+        if float(run["source_start"]) <= source_seconds <= float(run["source_end"]):
+            return invert_piecewise_run(source_seconds, run), "monotonic_variable_speed_mapping"
     if not confirmed:
         return (
             (source_seconds - float(mapping["intercept"])) / float(mapping["slope"]),
@@ -766,6 +1357,31 @@ def project_source_with_confirmed_cuts(
     return (source_seconds - intercept) / slope, "confirmed_cut_piecewise_audio_mapping"
 
 
+def projected_track_window_status(
+    track: Track, mix_ms: int, nearby_text_match: bool = False
+) -> tuple[bool, str | None]:
+    """Classify a projected lyric against the portion retained in the mix.
+
+    A positive source-time intercept commonly means that the editor removed the
+    beginning of the original song.  Those earlier LRC events are intentional
+    prefix omissions, not missing subtitles and must never be pulled back to
+    the first cue merely because they are the first canonical lyrics.
+    """
+
+    inside_window = track.start_ms <= mix_ms < track.end_ms
+    near_boundary = (
+        abs(mix_ms - track.start_ms) <= 750
+        or abs(mix_ms - track.end_ms) <= 750
+    )
+    if inside_window or near_boundary or nearby_text_match:
+        return True, None
+    if mix_ms < track.start_ms:
+        return False, "trimmed_before_mix_entry"
+    if mix_ms >= track.end_ms:
+        return False, "trimmed_after_mix_exit"
+    return False, "outside_track_window"
+
+
 def robust_linear_mapping(
     mix_times: list[float], source_times: list[float], residual_limit: float = 1.5
 ) -> dict:
@@ -793,6 +1409,152 @@ def robust_linear_mapping(
         "median_abs_residual": float(np.median(np.abs(residuals[inliers]))) if inliers.any() else 999.0,
         "max_inlier_residual": float(np.max(np.abs(residuals[inliers]))) if inliers.any() else 999.0,
     }
+
+
+def _point_line_residual(
+    point: tuple[float, float], left: tuple[float, float], right: tuple[float, float]
+) -> float:
+    if right[0] == left[0]:
+        return abs(point[1] - left[1])
+    fraction = (point[0] - left[0]) / (right[0] - left[0])
+    expected = left[1] + fraction * (right[1] - left[1])
+    return abs(point[1] - expected)
+
+
+def simplify_monotonic_knots(
+    points: list[tuple[float, float]], tolerance: float = 0.35
+) -> list[tuple[float, float]]:
+    """Reduce a trusted monotonic path while retaining real speed changes."""
+
+    if len(points) <= 2:
+        return points
+    best_position = 0
+    best_residual = -1.0
+    for position in range(1, len(points) - 1):
+        residual = _point_line_residual(points[position], points[0], points[-1])
+        if residual > best_residual:
+            best_position = position
+            best_residual = residual
+    if best_residual <= tolerance:
+        return [points[0], points[-1]]
+    left = simplify_monotonic_knots(points[: best_position + 1], tolerance)
+    right = simplify_monotonic_knots(points[best_position:], tolerance)
+    return left[:-1] + right
+
+
+def build_variable_speed_runs(audio_track: dict, mapping: dict) -> list[dict]:
+    """Build conservative continuous piecewise mappings from waveform anchors.
+
+    The selected waveform path can contain repeated-chorus mistakes.  Activate
+    variable-speed projection only for long monotonic runs whose local slopes
+    are plausible and whose shape is materially better than one affine fit.
+    Confirmed source cuts split runs; rejected cut candidates do not.
+    """
+
+    path = sorted(
+        audio_track.get("path", []), key=lambda row: float(row["mix_center"])
+    )
+    if len(path) < 4:
+        return []
+    confirmed_times = sorted(
+        float(row["mix_time"])
+        for row in audio_track.get("edit_candidates", [])
+        if row.get("status") == "confirmed"
+        and row.get("type") == "forward_source_cut"
+    )
+    groups: list[list[dict]] = [[] for _ in range(len(confirmed_times) + 1)]
+    for row in path:
+        mix_time = float(row["mix_center"])
+        position = sum(mix_time >= cut_time for cut_time in confirmed_times)
+        groups[position].append(row)
+
+    runs: list[dict] = []
+    for group in groups:
+        if len(group) < 4:
+            continue
+        points = [
+            (float(row["mix_center"]), float(row["selected"]["source_center"]))
+            for row in group
+        ]
+        if points[-1][0] - points[0][0] < 9.0:
+            continue
+        slopes = [
+            (right[1] - left[1]) / (right[0] - left[0])
+            for left, right in zip(points, points[1:])
+            if right[0] > left[0]
+        ]
+        if len(slopes) != len(points) - 1 or any(
+            slope < 0.55 or slope > 1.80 for slope in slopes
+        ):
+            continue
+        # A wildly alternating local slope is characteristic of ambiguous
+        # waveform matches, not a plausible editor speed ramp.
+        slope_changes = [abs(right - left) for left, right in zip(slopes, slopes[1:])]
+        if slope_changes and sorted(slope_changes)[len(slope_changes) // 2] > 0.22:
+            continue
+        affine = robust_linear_mapping(
+            [point[0] for point in points],
+            [point[1] for point in points],
+            residual_limit=2.0,
+        )
+        affine_residuals = [
+            abs(point[1] - (float(affine["slope"]) * point[0] + float(affine["intercept"])))
+            for point in points
+        ]
+        knots = simplify_monotonic_knots(points, tolerance=0.35)
+        if len(knots) < 3 or max(affine_residuals, default=0.0) < 0.75:
+            continue
+        piecewise_residuals: list[float] = []
+        for point in points:
+            pair = next(
+                (
+                    (left, right)
+                    for left, right in zip(knots, knots[1:])
+                    if left[0] <= point[0] <= right[0]
+                ),
+                None,
+            )
+            piecewise_residuals.append(
+                _point_line_residual(point, *pair) if pair else 999.0
+            )
+        if max(piecewise_residuals, default=999.0) > 0.45:
+            continue
+        runs.append(
+            {
+                "mix_start": knots[0][0],
+                "mix_end": knots[-1][0],
+                "source_start": knots[0][1],
+                "source_end": knots[-1][1],
+                "knots": [
+                    {"mix_time": mix_time, "source_time": source_time}
+                    for mix_time, source_time in knots
+                ],
+                "anchor_count": len(points),
+                "max_piecewise_residual": max(piecewise_residuals),
+                "max_affine_residual": max(affine_residuals),
+            }
+        )
+    return runs
+
+
+def invert_piecewise_run(source_seconds: float, run: dict) -> float:
+    knots = [
+        (float(row["mix_time"]), float(row["source_time"]))
+        for row in run["knots"]
+    ]
+    pair = next(
+        (
+            (left, right)
+            for left, right in zip(knots, knots[1:])
+            if left[1] <= source_seconds <= right[1]
+        ),
+        None,
+    )
+    if pair is None:
+        pair = (knots[0], knots[1]) if source_seconds < knots[0][1] else (knots[-2], knots[-1])
+    left, right = pair
+    slope = (right[1] - left[1]) / (right[0] - left[0])
+    return left[0] + (source_seconds - left[1]) / slope
 
 
 def derive_track_mapping(
@@ -888,6 +1650,9 @@ def derive_track_mapping(
         if bpm_ratio
         else None
     )
+    variable_speed_runs = build_variable_speed_runs(audio_track, mapping)
+    mapping["variable_speed_runs"] = variable_speed_runs
+    mapping["variable_speed_run_count"] = len(variable_speed_runs)
     return mapping
 
 
@@ -899,6 +1664,7 @@ def projected_lyric_events(
     audio_by_index = {
         int(row["track"]["index"]): row for row in audio_payload.get("tracks", [])
     }
+    require_resolved_audio_edits(audio_payload)
     for track in tracks:
         lines = parse_lrc(Path(track.lrc_path)) if track.lrc_path else []
         track_cues = [cue for cue in cues if cue_track(cue, tracks).index == track.index]
@@ -915,6 +1681,7 @@ def projected_lyric_events(
             "confirmed_cut_count": len(confirmed_cuts),
             "confirmed_cuts": confirmed_cuts,
             "cut_out_events": [],
+            "boundary_omitted_events": [],
         }
         mappings.append(mapping_row)
         for line in lines:
@@ -933,9 +1700,8 @@ def projected_lyric_events(
                 )
                 continue
             mix_ms = int(round(track.start_ms + mix_local * 1000.0))
-            inside_window = track.start_ms <= mix_ms < track.end_ms
             nearby_text_match = False
-            if not inside_window and track.start_ms - 3500 <= mix_ms <= track.end_ms + 3500:
+            if not (track.start_ms <= mix_ms < track.end_ms) and track.start_ms - 3500 <= mix_ms <= track.end_ms + 3500:
                 for cue in cues:
                     if abs(cue.start_ms - mix_ms) > 1800:
                         continue
@@ -943,8 +1709,42 @@ def projected_lyric_events(
                     if similarity >= 0.78 and coverage >= 0.55:
                         nearby_text_match = True
                         break
-            near_boundary = abs(mix_ms - track.start_ms) <= 750 or abs(mix_ms - track.end_ms) <= 750
-            if inside_window or near_boundary or nearby_text_match:
+            include_event, boundary_reason = projected_track_window_status(
+                track, mix_ms, nearby_text_match
+            )
+            if include_event:
+                projected_tokens: list[dict] = []
+                for token in line.tokens:
+                    token_mix, token_method = project_source_with_confirmed_cuts(
+                        token.start_ms / 1000.0, mapping, audio_track
+                    )
+                    if token_mix is None:
+                        continue
+                    token_end_mix = None
+                    if token.end_ms is not None:
+                        token_end_mix, _ = project_source_with_confirmed_cuts(
+                            token.end_ms / 1000.0, mapping, audio_track
+                        )
+                    projected_tokens.append(
+                        {
+                            "text": token.text,
+                            "start_ms": int(round(track.start_ms + token_mix * 1000.0)),
+                            "end_ms": (
+                                int(round(track.start_ms + token_end_mix * 1000.0))
+                                if token_end_mix is not None
+                                else None
+                            ),
+                            "mapping_method": token_method,
+                        }
+                    )
+                projected_tokens = [
+                    token
+                    for position, token in enumerate(projected_tokens)
+                    if position == 0
+                    or int(token["start_ms"]) >= int(projected_tokens[position - 1]["start_ms"])
+                ]
+                if projected_tokens:
+                    mix_ms = int(projected_tokens[0]["start_ms"])
                 events.append(
                     {
                         "track_index": track.index,
@@ -955,6 +1755,26 @@ def projected_lyric_events(
                         "text": line.text,
                         "mapping_method": projection_method,
                         "mapping_residual": mapping["median_abs_residual"],
+                        "lyric_timing_format": line.timing_format,
+                        "word_timing": projected_tokens,
+                        "projected_end_ms": next(
+                            (
+                                int(token["end_ms"])
+                                for token in reversed(projected_tokens)
+                                if token.get("end_ms") is not None
+                            ),
+                            None,
+                        ),
+                    }
+                )
+            else:
+                mapping_row["boundary_omitted_events"].append(
+                    {
+                        "lrc_index": line.index,
+                        "lrc_time_ms": line.time_ms,
+                        "projected_ms": mix_ms,
+                        "text": line.text,
+                        "reason": boundary_reason,
                     }
                 )
     events.sort(key=lambda row: (row["projected_ms"], row["track_index"], row["lrc_index"]))
@@ -1338,6 +2158,30 @@ def assignment_score(cue: Cue, event: dict) -> float:
     return similarity * 4.0 + coverage * 0.5 - edge_delta + timing_bonus
 
 
+def assignment_candidates(
+    cues: list[Cue], event: dict, max_assignment_gap_ms: int
+) -> list[Cue]:
+    """Return every nearby cue in chronological order.
+
+    Editor SRT files may serialize overlay tracks by layer rather than by
+    timestamp.  Scanning that file order with an early ``break`` can therefore
+    miss a later block whose real timestamp is earlier and whose text is the
+    strongest lyric match.  Sorting a view of the cues keeps their original
+    numbers and intervals intact while making the time-window scan valid.
+    """
+
+    projected_ms = int(event["projected_ms"])
+    ordered = sorted(cues, key=lambda cue: (cue.start_ms, cue.end_ms, cue.number))
+    candidates: list[Cue] = []
+    for cue in ordered:
+        if cue.end_ms < projected_ms - max_assignment_gap_ms:
+            continue
+        if cue.start_ms > projected_ms + max_assignment_gap_ms:
+            break
+        candidates.append(cue)
+    return candidates
+
+
 def repair_collapsed_sequence_assignments(
     cues: list[Cue],
     cue_events: dict[int, list[dict]],
@@ -1501,15 +2345,13 @@ def command_build(args: argparse.Namespace) -> int:
     cue_events: dict[int, list[dict]] = {cue.number: [] for cue in cues}
     preserved = set(args.preserve_cues)
     for event in events:
-        candidates: list[Cue] = []
-        for cue in cues:
-            if cue.number in preserved:
-                continue
-            if cue.end_ms < event["projected_ms"] - args.max_assignment_gap_ms:
-                continue
-            if cue.start_ms > event["projected_ms"] + args.max_assignment_gap_ms:
-                break
-            candidates.append(cue)
+        candidates = [
+            cue
+            for cue in assignment_candidates(
+                cues, event, args.max_assignment_gap_ms
+            )
+            if cue.number not in preserved
+        ]
         if not candidates:
             continue
         selected = max(candidates, key=lambda cue: assignment_score(cue, event))
@@ -1892,10 +2734,30 @@ def command_refine_korean(args: argparse.Namespace) -> int:
         if not best:
             continue
         row["asr_score"] = f"{best[1]:.3f}"
-        if best[1] >= minimum_score and best[2] >= minimum_coverage:
+        selected_event = best[4]
+        distance_ms = abs(
+            int(selected_event["projected_ms"]) - int(row["start_ms"])
+        )
+        phonetic_rescue = cross_language_phonetic_rescue(
+            language,
+            str(row.get("original", "")),
+            observation,
+            best[3],
+            best[1],
+            best[2],
+            distance_ms,
+            bool(str(row.get("lrc_indices", "")).strip()),
+        )
+        if (
+            best[1] >= minimum_score and best[2] >= minimum_coverage
+        ) or phonetic_rescue:
             row["text"] = best[3]
             capability = evidence_capability(language, best[3])
-            row["evidence"] = row.get("evidence", "") + "+multilingual_word_asr"
+            row["evidence"] = row.get("evidence", "") + (
+                "+cross_language_phonetic_rescue"
+                if phonetic_rescue
+                else "+multilingual_word_asr"
+            )
             row["confidence"] = (
                 "high"
                 if best[1] >= profile["auto_score"]
@@ -1908,12 +2770,9 @@ def command_refine_korean(args: argparse.Namespace) -> int:
             ).lower()
             row["status"] = "asr_refined_existing"
             # The selected canonical event is part of the provenance, not just
-            # replacement text.  Omitting its index made valid Korean ASR rows
-            # look like unresolved Jianying leftovers and also hid coverage
-            # from the sequence QA.
-            selected_event = best[4]
-            if not str(row.get("lrc_indices", "")).strip():
-                row["lrc_indices"] = str(selected_event["lrc_index"])
+            # replacement text.  Always replace a stale draft index: retaining
+            # it can make QA report a missing lyric as covered.
+            set_row_lrc_provenance(row, [selected_event])
             refined += 1
 
     # Independent ASR matching can select the wrong occurrence of a repeated
@@ -1972,7 +2831,7 @@ def command_refine_korean(args: argparse.Namespace) -> int:
             if current_indices and not (close_global_path or materially_better):
                 continue
             row["text"] = span
-            row["lrc_indices"] = ";".join(str(value) for value in proposed_indices)
+            set_row_lrc_provenance(row, match["events"])
             row["asr_score"] = f"{score:.3f}"
             row["evidence"] = row.get("evidence", "") + "+global_asr_sequence_viterbi"
             capability = evidence_capability(language, span)
@@ -1996,7 +2855,7 @@ def command_refine_korean(args: argparse.Namespace) -> int:
     ]
     write_srt(final_cues, {}, args.out_srt)
     with args.out_report.open("w", encoding="utf-8-sig", newline="") as handle:
-        fields = list(rows[0]) if rows else ["kind"]
+        fields = report_fieldnames(rows)
         writer = csv.DictWriter(handle, fieldnames=fields)
         writer.writeheader()
         writer.writerows(rows)
@@ -2013,6 +2872,130 @@ def command_refine_korean(args: argparse.Namespace) -> int:
     return 0
 
 
+def apply_interval_overrides(rows: list[dict], overrides: object) -> int:
+    """Replace a reviewed track interval with explicitly timed lyric rows.
+
+    A full-track rebuild may place an automatic lyric a few frames across a
+    later verified interval boundary.  Drop same-index duplicates, crop a
+    different neighbouring lyric to one boundary, and still reject an
+    ambiguous row spanning both sides of the reviewed interval.
+    """
+
+    if not isinstance(overrides, list):
+        raise ValueError("_interval_overrides must be an array")
+    applied = 0
+    for position, override in enumerate(overrides, start=1):
+        if not isinstance(override, dict):
+            raise ValueError(f"interval override {position} must be an object")
+        track = str(override.get("track", "")).strip()
+        evidence = str(override.get("evidence", "")).strip()
+        parts = override.get("parts")
+        if not track or not evidence or not isinstance(parts, list) or not parts:
+            raise ValueError(
+                f"interval override {position} requires track, evidence, and parts"
+            )
+        start_ms = int(override["start_ms"])
+        end_ms = int(override["end_ms"])
+        if end_ms <= start_ms:
+            raise ValueError(f"interval override {position} has an invalid interval")
+
+        normalized_parts: list[dict] = []
+        previous_end = start_ms
+        for part_position, part in enumerate(parts, start=1):
+            if not isinstance(part, dict):
+                raise ValueError(
+                    f"interval override {position} part {part_position} must be an object"
+                )
+            part_start = int(part["start_ms"])
+            part_end = int(part["end_ms"])
+            text = str(part.get("text", "")).strip()
+            if (
+                not text
+                or part_start < start_ms
+                or part_end > end_ms
+                or part_end <= part_start
+                or part_start < previous_end
+            ):
+                raise ValueError(
+                    f"interval override {position} part {part_position} is invalid"
+                )
+            normalized_parts.append(
+                {
+                    "kind": "manual_interval",
+                    "original_cue": "",
+                    "start_ms": part_start,
+                    "end_ms": part_end,
+                    "original": "",
+                    "text": text,
+                    "status": "manual_verified_interval",
+                    "confidence": "high",
+                    "evidence": str(part.get("evidence", evidence)),
+                    "projected_delta_ms": 0,
+                    "track": track,
+                    "lrc_indices": str(part.get("lrc_indices", "")),
+                }
+            )
+            previous_end = part_end
+
+        affected = [
+            row
+            for row in rows
+            if str(row.get("track", "")) == track
+            and int(row["end_ms"]) > start_ms
+            and int(row["start_ms"]) < end_ms
+        ]
+        if not affected:
+            raise ValueError(
+                f"interval override {position} does not overlap any {track} rows"
+            )
+        part_indices = {
+            int(value)
+            for part in parts
+            for value in str(part.get("lrc_indices", "")).split(";")
+            if value.strip().isdigit()
+        }
+
+        def row_indices(row: dict) -> set[int]:
+            return {
+                int(value)
+                for value in str(row.get("lrc_indices", "")).split(";")
+                if value.strip().isdigit()
+            }
+
+        preserved_rows: list[dict] = []
+        for row in rows:
+            if row not in affected:
+                preserved_rows.append(row)
+                continue
+            row_start = int(row["start_ms"])
+            row_end = int(row["end_ms"])
+            if start_ms <= row_start and row_end <= end_ms:
+                continue
+            if row_indices(row) & part_indices:
+                continue
+            if row_start < start_ms < row_end <= end_ms:
+                cropped = dict(row)
+                cropped["end_ms"] = start_ms
+            elif start_ms <= row_start < end_ms < row_end:
+                cropped = dict(row)
+                cropped["start_ms"] = end_ms
+            else:
+                raise ValueError(
+                    f"interval override {position} crosses an existing row boundary"
+                )
+            if int(cropped["end_ms"]) - int(cropped["start_ms"]) < 300:
+                continue
+            cropped["evidence"] = (
+                str(cropped.get("evidence", ""))
+                + "+cropped_to_manual_interval_boundary"
+            )
+            preserved_rows.append(cropped)
+        rows[:] = preserved_rows
+        rows.extend(normalized_parts)
+        applied += 1
+    return applied
+
+
 def command_finalize(args: argparse.Namespace) -> int:
     manifest = require_task_manifest(
         args,
@@ -2026,6 +3009,7 @@ def command_finalize(args: argparse.Namespace) -> int:
     tracks = parse_song_list(args.song_list, args.lyrics_dir, cues[-1].end_ms)
     audio_payload = json.loads(args.audio_alignment.read_text(encoding="utf-8"))
     validate_artifact_fingerprint(audio_payload, manifest, "audio alignment")
+    require_resolved_audio_edits(audio_payload)
     events, _ = projected_lyric_events(tracks, cues, audio_payload)
     overrides = json.loads(args.manual_overrides.read_text(encoding="utf-8"))
     override_issues = validate_qa_artifact(
@@ -2042,11 +3026,23 @@ def command_finalize(args: argparse.Namespace) -> int:
     overrides.pop("_source_srt_sha256", None)
     manual_insertions = overrides.pop("_insertions", [])
     manual_cue_splits = overrides.pop("_cue_splits", [])
+    manual_interval_overrides = overrides.pop("_interval_overrides", [])
     manual_timing_overrides = overrides.pop("_timing_overrides", {})
     manual_lrc_index_overrides = overrides.pop("_lrc_indices_overrides", {})
     overrides.pop("_confirmed_omitted_lrc_events", [])
     manual_review_notes = overrides.pop("_review_notes", {})
     confirmed_boundary_pairs = overrides.pop("_confirmed_boundary_pairs", [])
+    confirmed_overlap_intervals = normalized_confirmed_overlap_intervals(
+        overrides.pop("_confirmed_overlap_intervals", [])
+    )
+    cross_track_overlap_reviews = normalized_cross_track_overlap_reviews(
+        overrides.pop("_cross_track_overlap_reviews", [])
+    )
+    overlap_issues = cross_track_overlap_review_consistency_issues(
+        confirmed_overlap_intervals, cross_track_overlap_reviews
+    )
+    if overlap_issues:
+        raise ValueError("; ".join(overlap_issues))
     with args.in_report.open(encoding="utf-8-sig", newline="") as handle:
         rows = list(csv.DictReader(handle))
     require_report_fingerprint(rows, manifest, "input report")
@@ -2168,6 +3164,9 @@ def command_finalize(args: argparse.Namespace) -> int:
         for position, event in enumerate(track_events):
             event_index = int(event["lrc_index"])
             start_ms = event_starts[event_index]
+            word_timing = event.get("word_timing", [])
+            if word_timing:
+                start_ms = int(word_timing[0]["start_ms"])
             if position == 0 and start_ms - range_start <= 1000:
                 start_ms = range_start
             next_start = (
@@ -2176,6 +3175,12 @@ def command_finalize(args: argparse.Namespace) -> int:
                 else range_end
             )
             end_ms = min(range_end, next_start - 80, start_ms + 6000)
+            if event.get("projected_end_ms") is not None:
+                end_ms = min(
+                    range_end,
+                    next_start - 80,
+                    max(start_ms + 400, int(event["projected_end_ms"])),
+                )
             if end_ms - start_ms < 400:
                 continue
             output_rows.append(
@@ -2197,6 +3202,8 @@ def command_finalize(args: argparse.Namespace) -> int:
                         if event_index in anchor_cues
                         else "+interpolated_between_jianying_anchors+large_v3_turbo_sequence_check"
                     ),
+                    "lyric_timing_format": event.get("lyric_timing_format", "line_lrc"),
+                    "word_timing_used": str(bool(word_timing)).lower(),
                     "projected_delta_ms": start_ms - int(event["projected_ms"]),
                     "track": track.title,
                     "lrc_indices": str(event["lrc_index"]),
@@ -2248,6 +3255,10 @@ def command_finalize(args: argparse.Namespace) -> int:
                     "lrc_indices": str(insertion.get("lrc_indices", "")),
                 }
             )
+
+    interval_overrides_applied = apply_interval_overrides(
+        output_rows, manual_interval_overrides
+    )
 
     applied = 0
     for row in output_rows:
@@ -2335,22 +3346,18 @@ def command_finalize(args: argparse.Namespace) -> int:
         row["task_fingerprint_sha256"] = manifest["task_fingerprint_sha256"]
     # Ensure final output is non-overlapping except for overlaps already present
     # in the original Jianying file (the opening narration/lyric overlay).
-    allowed_overlaps = {
-        (left.start_ms, left.end_ms, right.start_ms, right.end_ms)
-        for left, right in zip(cues, cues[1:])
-        if left.end_ms > right.start_ms
-    }
+    allowed_overlaps = source_overlap_signatures(cues)
     unexpected_overlaps: list[tuple[int, int]] = []
-    for left, right in zip(output_rows, output_rows[1:]):
-        if int(left["end_ms"]) <= int(right["start_ms"]):
-            continue
+    for left, right in overlapping_row_pairs(output_rows):
         signature = (
             int(left["start_ms"]),
             int(left["end_ms"]),
             int(right["start_ms"]),
             int(right["end_ms"]),
         )
-        if signature not in allowed_overlaps:
+        if signature not in allowed_overlaps and not overlap_pair_is_confirmed(
+            left, right, confirmed_overlap_intervals
+        ):
             unexpected_overlaps.append((int(left["start_ms"]), int(right["start_ms"])))
     if unexpected_overlaps:
         raise AssertionError(f"unexpected overlaps: {unexpected_overlaps[:5]}")
@@ -2372,6 +3379,7 @@ def command_finalize(args: argparse.Namespace) -> int:
                 "rebuilt": sum(row["kind"] == "rebuilt" for row in output_rows),
                 "manual_overrides": applied,
                 "manual_cue_splits": split_applied,
+                "manual_interval_overrides": interval_overrides_applied,
                 "manual_timing_overrides": timing_applied,
                 "manual_lrc_index_overrides": lrc_index_applied,
                 "manual_review_notes": review_notes_applied,
@@ -2863,6 +3871,36 @@ def evaluate_regression_cases(
                     f"project regression {case_id} failed at {format_srt_time(start_ms)}"
                 )
                 continue
+        elif kind == "interval_timing":
+            candidates = [
+                cue
+                for cue in final
+                if abs(cue.start_ms - start_ms) <= tolerance
+                and abs(cue.end_ms - end_ms) <= tolerance
+            ]
+            if not candidates:
+                issues.append(
+                    f"project regression {case_id} has no cue at confirmed interval "
+                    f"{format_srt_time(start_ms)}-{format_srt_time(end_ms)}"
+                )
+                continue
+        elif kind == "continuous_coverage":
+            max_gap_ms = int(case.get("max_gap_ms", 0))
+            cursor = start_ms
+            for cue in sorted(final, key=lambda item: (item.start_ms, item.end_ms)):
+                if cue.end_ms <= cursor or cue.start_ms >= end_ms:
+                    continue
+                if cue.start_ms - cursor > max_gap_ms:
+                    break
+                cursor = max(cursor, cue.end_ms)
+                if cursor >= end_ms:
+                    break
+            if cursor < end_ms:
+                issues.append(
+                    f"project regression {case_id} has an uncovered subtitle gap at "
+                    f"{format_srt_time(cursor)} before {format_srt_time(end_ms)}"
+                )
+                continue
         elif kind == "absent_text":
             offending = [
                 cue
@@ -2890,6 +3928,215 @@ def evaluate_regression_cases(
     }
 
 
+def matching_audio_edit_review(
+    track: str, edit: dict, reviews: object
+) -> dict | None:
+    """Return a manually reviewed edit only when its full coordinates match."""
+
+    if not isinstance(reviews, list):
+        return None
+    coordinates = ("mix_time", "source_start", "source_end")
+    for review in reviews:
+        if not isinstance(review, dict):
+            continue
+        if str(review.get("track", "")) != track:
+            continue
+        if str(review.get("status", "")) not in {"confirmed", "rejected"}:
+            continue
+        if any(key not in review or key not in edit for key in coordinates):
+            continue
+        try:
+            matches = all(
+                abs(float(review[key]) - float(edit[key])) <= 1e-6
+                for key in coordinates
+            )
+        except (TypeError, ValueError):
+            continue
+        if matches:
+            return review
+    return None
+
+
+def normalized_audio_edit_reviews(reviews: object) -> list[dict]:
+    """Return a validated list of task-scoped audio-edit decisions."""
+
+    if reviews in (None, {}, []):
+        return []
+    if not isinstance(reviews, list):
+        raise ValueError("_audio_edit_reviews must be a list")
+    normalized: list[dict] = []
+    seen: dict[tuple[str, float, float, float], str] = {}
+    for position, review in enumerate(reviews, start=1):
+        if not isinstance(review, dict):
+            raise ValueError(f"audio edit review {position} must be an object")
+        status = str(review.get("status", ""))
+        if status not in {"confirmed", "rejected"}:
+            raise ValueError(
+                f"audio edit review {position} status must be confirmed or rejected"
+            )
+        evidence = str(review.get("evidence") or review.get("reason") or "").strip()
+        if not evidence:
+            raise ValueError(f"audio edit review {position} requires evidence or reason")
+        try:
+            key = (
+                str(review["track"]),
+                float(review["mix_time"]),
+                float(review["source_start"]),
+                float(review["source_end"]),
+            )
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ValueError(
+                f"audio edit review {position} has invalid coordinates"
+            ) from exc
+        if key in seen:
+            raise ValueError(
+                f"audio edit review {position} duplicates a {seen[key]} decision"
+            )
+        seen[key] = status
+        normalized.append({**review, "status": status, "evidence": evidence})
+    return normalized
+
+
+def apply_audio_edit_reviews(audio_payload: dict, reviews: object) -> tuple[dict, dict]:
+    """Merge exact task-scoped edit decisions into one alignment artifact.
+
+    Build, ASR refinement, finalization and QA must all consume this reviewed
+    artifact.  Keeping decisions only in the QA file previously allowed QA to
+    report a cut as resolved while lyric projection still used the uncut map.
+    """
+
+    reviewed = copy.deepcopy(audio_payload)
+    decisions = normalized_audio_edit_reviews(reviews)
+    candidates: list[tuple[str, dict]] = [
+        (str(item.get("track", {}).get("title", "")), edit)
+        for item in reviewed.get("tracks", [])
+        for edit in item.get("edit_candidates", [])
+    ]
+    applied = 0
+    for decision in decisions:
+        match = next(
+            (
+                edit
+                for track, edit in candidates
+                if matching_audio_edit_review(track, edit, [decision]) is not None
+            ),
+            None,
+        )
+        if match is None:
+            raise ValueError(
+                "audio edit review does not match any current alignment candidate: "
+                f"{decision['track']} at {float(decision['mix_time']):.6f}s"
+            )
+        match.setdefault("detected_status", str(match.get("status", "")))
+        match["status"] = str(decision["status"])
+        match["review_evidence"] = str(decision["evidence"])
+        applied += 1
+
+    unresolved = [
+        {"track": track, **edit}
+        for track, edit in candidates
+        if str(edit.get("status", "")) == "review"
+    ]
+    if unresolved:
+        first = unresolved[0]
+        raise ValueError(
+            "audio alignment still has unreviewed edit candidates; add exact "
+            "_audio_edit_reviews decisions before building: "
+            f"{first['track']} at {float(first['mix_time']):.6f}s"
+        )
+    summary = {
+        "review_count": len(decisions),
+        "applied_count": applied,
+        "confirmed_count": sum(
+            str(edit.get("status", "")) == "confirmed" for _, edit in candidates
+        ),
+        "rejected_count": sum(
+            str(edit.get("status", "")) == "rejected" for _, edit in candidates
+        ),
+        "informational_count": sum(
+            str(edit.get("status", "")) == "informational" for _, edit in candidates
+        ),
+    }
+    reviewed["algorithm_version"] = ALGORITHM_VERSION
+    reviewed["audio_edit_review"] = summary
+    return reviewed, summary
+
+
+def require_resolved_audio_edits(audio_payload: dict) -> None:
+    unresolved = [
+        (str(item.get("track", {}).get("title", "")), edit)
+        for item in audio_payload.get("tracks", [])
+        for edit in item.get("edit_candidates", [])
+        if str(edit.get("status", "")) == "review"
+    ]
+    if unresolved:
+        track, edit = unresolved[0]
+        raise ValueError(
+            "audio alignment has unreviewed edit candidates; run "
+            "review-audio-edits before continuing: "
+            f"{track} at {float(edit['mix_time']):.6f}s"
+        )
+
+
+def audio_edit_review_consistency_issues(
+    audio_payload: dict, reviews: object
+) -> list[str]:
+    """Report stale or unapplied decisions without changing the artifact."""
+
+    try:
+        decisions = normalized_audio_edit_reviews(reviews)
+    except ValueError as exc:
+        return [str(exc)]
+    issues: list[str] = []
+    candidates = [
+        (str(item.get("track", {}).get("title", "")), edit)
+        for item in audio_payload.get("tracks", [])
+        for edit in item.get("edit_candidates", [])
+    ]
+    for decision in decisions:
+        matched = next(
+            (
+                edit
+                for track, edit in candidates
+                if matching_audio_edit_review(track, edit, [decision]) is not None
+            ),
+            None,
+        )
+        if matched is None:
+            issues.append(
+                "stale audio edit review does not match current alignment: "
+                f"{decision['track']} at {float(decision['mix_time']):.6f}s"
+            )
+        elif str(matched.get("status", "")) != str(decision["status"]):
+            issues.append(
+                "audio edit review was not applied to the alignment artifact; "
+                "run review-audio-edits before build/finalize/qa"
+            )
+    return issues
+
+
+def command_review_audio_edits(args: argparse.Namespace) -> int:
+    manifest = require_task_manifest(args, {})
+    audio_payload = json.loads(args.audio_alignment.read_text(encoding="utf-8"))
+    validate_artifact_fingerprint(audio_payload, manifest, "audio alignment")
+    overrides = json.loads(args.manual_overrides.read_text(encoding="utf-8"))
+    issues = validate_qa_artifact(
+        overrides, manifest, "manual override file", "manual_overrides"
+    )
+    if issues:
+        raise ValueError("; ".join(issues))
+    reviewed, summary = apply_audio_edit_reviews(
+        audio_payload, overrides.get("_audio_edit_reviews", [])
+    )
+    args.out.parent.mkdir(parents=True, exist_ok=True)
+    args.out.write_text(
+        json.dumps(reviewed, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    print(json.dumps({"out": str(args.out), **summary}, ensure_ascii=False))
+    return 0
+
+
 def command_qa(args: argparse.Namespace) -> int:
     from collections import Counter
 
@@ -2907,6 +4154,9 @@ def command_qa(args: argparse.Namespace) -> int:
         rows = list(csv.DictReader(handle))
     require_report_fingerprint(rows, manifest, "QA report")
     confirmed_omissions: dict[tuple[str, int], str] = {}
+    audio_edit_reviews: object = []
+    confirmed_overlap_intervals: list[dict] = []
+    cross_track_overlap_reviews: list[dict] = []
     manual_override_scope_issue: str | None = None
     if args.manual_overrides:
         qa_overrides = json.loads(args.manual_overrides.read_text(encoding="utf-8"))
@@ -2917,6 +4167,29 @@ def command_qa(args: argparse.Namespace) -> int:
         for item in qa_overrides.get("_confirmed_omitted_lrc_events", []):
             confirmed_omissions[(str(item["track"]), int(item["lrc_index"]))] = str(
                 item.get("reason", "confirmed_audio_edit")
+            )
+        audio_edit_reviews = qa_overrides.get("_audio_edit_reviews", [])
+        try:
+            confirmed_overlap_intervals = normalized_confirmed_overlap_intervals(
+                qa_overrides.get("_confirmed_overlap_intervals", [])
+            )
+            cross_track_overlap_reviews = normalized_cross_track_overlap_reviews(
+                qa_overrides.get("_cross_track_overlap_reviews", [])
+            )
+        except ValueError as exc:
+            manual_override_scope_issue = "; ".join(
+                part
+                for part in (manual_override_scope_issue, str(exc))
+                if part
+            )
+        overlap_consistency = cross_track_overlap_review_consistency_issues(
+            confirmed_overlap_intervals, cross_track_overlap_reviews
+        )
+        if overlap_consistency:
+            manual_override_scope_issue = "; ".join(
+                part
+                for part in (manual_override_scope_issue, *overlap_consistency)
+                if part
             )
     issues: list[str] = []
     if manual_override_scope_issue:
@@ -2951,10 +4224,33 @@ def command_qa(args: argparse.Namespace) -> int:
     metadata_pattern = re.compile(r"(?:企划:|出品人:|本作品经过|OP:|SP:)", re.IGNORECASE)
     if any(metadata_pattern.search(cue.text) for cue in final):
         issues.append("lyric metadata leaked into final subtitles")
+    allowed_overlaps = source_overlap_signatures(source)
     unexpected_overlaps = []
-    for left, right in zip(final, final[1:]):
-        if left.end_ms > right.start_ms:
-            unexpected_overlaps.append((left.number, right.number))
+    row_by_interval: dict[tuple[int, int], list[dict]] = {}
+    for row in rows:
+        row_by_interval.setdefault(
+            (int(row["start_ms"]), int(row["end_ms"])), []
+        ).append(row)
+    final_rows = [
+        {
+            **(row_by_interval.get((cue.start_ms, cue.end_ms), [{}]).pop(0)),
+            "start_ms": cue.start_ms,
+            "end_ms": cue.end_ms,
+            "number": cue.number,
+        }
+        for cue in final
+    ]
+    for left, right in overlapping_row_pairs(final_rows):
+        signature = (
+            int(left["start_ms"]),
+            int(left["end_ms"]),
+            int(right["start_ms"]),
+            int(right["end_ms"]),
+        )
+        if signature not in allowed_overlaps and not overlap_pair_is_confirmed(
+            left, right, confirmed_overlap_intervals
+        ):
+            unexpected_overlaps.append((int(left["number"]), int(right["number"])))
     if unexpected_overlaps:
         issues.append(f"unexpected overlaps: {unexpected_overlaps[:10]}")
 
@@ -2979,17 +4275,24 @@ def command_qa(args: argparse.Namespace) -> int:
     if args.audio_alignment:
         alignment_payload = json.loads(args.audio_alignment.read_text(encoding="utf-8"))
         validate_artifact_fingerprint(alignment_payload, manifest, "audio alignment")
+        issues.extend(
+            audio_edit_review_consistency_issues(
+                alignment_payload, audio_edit_reviews
+            )
+        )
         for item in alignment_payload.get("tracks", []):
             for edit in item.get("edit_candidates", []):
-                if edit.get("status") == "confirmed":
+                track_title = str(item["track"]["title"])
+                effective_status = str(edit.get("status", ""))
+                if effective_status == "confirmed":
                     confirmed_audio_cut_count += 1
                     if float(edit["source_end"]) <= float(edit["source_start"]):
                         issues.append(
                             "invalid confirmed audio cut in "
-                            + str(item["track"]["title"])
+                            + track_title
                         )
                     continue
-                if edit.get("status") != "review":
+                if effective_status != "review":
                     continue
                 absolute_ms = int(item["track"]["start_ms"]) + int(
                     round(float(edit["mix_time"]) * 1000)
@@ -2998,7 +4301,7 @@ def command_qa(args: argparse.Namespace) -> int:
                     {
                         "category": "audio_edit_candidate",
                         "risk": "high",
-                        "track": str(item["track"]["title"]),
+                        "track": track_title,
                         "left_cue": 0,
                         "right_cue": "",
                         "start": format_srt_time(absolute_ms),
@@ -3111,6 +4414,7 @@ def command_qa(args: argparse.Namespace) -> int:
     ]
     lyric_coverage_candidates: list[dict] = []
     duplicate_lyric_event_candidates: list[dict] = []
+    cross_track_overlap_review_candidates: list[dict] = []
     lyric_coverage_missing: dict[str, list[int]] = {}
     lyric_metadata_unlinked: dict[str, list[int]] = {}
     if args.song_list and args.lyrics_dir and args.audio_alignment:
@@ -3118,18 +4422,50 @@ def command_qa(args: argparse.Namespace) -> int:
         alignment_payload = json.loads(args.audio_alignment.read_text(encoding="utf-8"))
         validate_artifact_fingerprint(alignment_payload, manifest, "audio alignment")
         projected_events, _ = projected_lyric_events(tracks, source, alignment_payload)
-        represented: dict[str, set[int]] = {}
-        for row in rows:
-            represented.setdefault(str(row.get("track", "")), set()).update(
-                int(value)
-                for value in row.get("lrc_indices", "").split(";")
-                if value.strip().isdigit()
+        detected_overlap_candidates = cross_track_overlap_candidates(
+            source, tracks, projected_events
+        )
+        for candidate in detected_overlap_candidates:
+            review = matching_cross_track_overlap_review(
+                candidate, cross_track_overlap_reviews
             )
+            if review and str(review["status"]) == "rejected":
+                continue
+            cue_number = int(candidate["left_cue"])
+            cue = next((row for row in source if row.number == cue_number), None)
+            if cue is None:
+                continue
+            pair = tuple(sorted(part.strip() for part in str(candidate["track"]).split(" + ")))
+            confirmed_interval = any(
+                int(item["cue"]) == cue_number
+                and
+                int(item["start_ms"]) <= cue.start_ms
+                and cue.end_ms <= int(item["end_ms"])
+                and tuple(item["tracks"]) == pair
+                for item in confirmed_overlap_intervals
+            )
+            if review and str(review["status"]) == "confirmed" and confirmed_interval:
+                continue
+            cross_track_overlap_review_candidates.append(candidate)
         expected_indices: dict[str, set[int]] = {}
         event_by_key: dict[tuple[str, int], dict] = {}
         for event in projected_events:
             expected_indices.setdefault(str(event["track"]), set()).add(int(event["lrc_index"]))
             event_by_key[(str(event["track"]), int(event["lrc_index"]))] = event
+
+        coverage_by_key = {
+            (str(event["track"]), int(event["lrc_index"])): canonical_event_coverage(
+                rows, event
+            )
+            for event in projected_events
+        }
+        represented: dict[str, set[int]] = {}
+        lyric_index_text_mismatch: dict[str, list[int]] = {}
+        for (track, index), coverage in coverage_by_key.items():
+            if bool(coverage["covered"]):
+                represented.setdefault(track, set()).add(index)
+            if bool(coverage["linked"]) and float(coverage["linked_score"]) < 0.50:
+                lyric_index_text_mismatch.setdefault(track, []).append(index)
 
         ordered_report_rows = sorted(rows, key=lambda row: (int(row["start_ms"]), int(row["end_ms"])))
         for left, right in zip(ordered_report_rows, ordered_report_rows[1:]):
@@ -3192,26 +4528,11 @@ def command_qa(args: argparse.Namespace) -> int:
             index = int(event["lrc_index"])
             if (track, index) in confirmed_omissions:
                 continue
-            if index in represented.get(track, set()):
+            coverage = coverage_by_key[(track, index)]
+            if bool(coverage["covered"]):
                 continue
-            lyric_metadata_unlinked.setdefault(track, []).append(index)
-            nearby_final = [
-                cue
-                for cue in final
-                if cue.start_ms - 600 <= int(event["projected_ms"]) <= cue.end_ms + 600
-            ]
-            final_text_score = max(
-                (
-                    best_text_span(cue.text, str(event["text"]))[1]
-                    for cue in nearby_final
-                ),
-                default=0.0,
-            )
-            # The event can already be present as a fragment inside a cue whose
-            # report carries only the neighbouring LRC index.  Treat local text
-            # evidence as covered instead of raising a false omission.
-            if final_text_score >= 0.55:
-                continue
+            if not bool(coverage["linked"]):
+                lyric_metadata_unlinked.setdefault(track, []).append(index)
             lyric_coverage_missing.setdefault(track, []).append(index)
             isolated = (
                 index - 1 in represented.get(track, set())
@@ -3263,6 +4584,7 @@ def command_qa(args: argparse.Namespace) -> int:
         + manual_review_note_candidates(rows)
         + lyric_coverage_candidates
         + duplicate_lyric_event_candidates
+        + cross_track_overlap_review_candidates
         + audio_edit_review_candidates
     )
     trusted_short_intervals = {
@@ -3351,6 +4673,10 @@ def command_qa(args: argparse.Namespace) -> int:
         "source_intervals_preserved_exactly": len(preserved_intervals),
         "new_or_rebuilt_intervals": len(final_intervals - source_intervals),
         "unexpected_overlap_count": len(unexpected_overlaps),
+        "confirmed_overlap_interval_count": len(confirmed_overlap_intervals),
+        "unresolved_cross_track_overlap_count": len(
+            cross_track_overlap_review_candidates
+        ),
         "collapsed_after_unmapped_count": len(collapsed_after_unmapped),
         "lyric_index_regression_count": len(lyric_index_regressions),
         "hybrid_anchor_drift_count": len(hybrid_anchor_drift),
@@ -3364,6 +4690,7 @@ def command_qa(args: argparse.Namespace) -> int:
         ],
         "unreviewed_audio_edit_candidate_count": len(audio_edit_review_candidates),
         "lyric_metadata_unlinked": lyric_metadata_unlinked,
+        "lyric_index_text_mismatch": lyric_index_text_mismatch,
         "lyric_coverage_missing": lyric_coverage_missing,
         "unresolved_lyric_gap_count": len(lyric_coverage_candidates),
         "unresolved_isolated_lyric_gap_count": len(lyric_coverage_candidates),
@@ -3380,6 +4707,22 @@ def command_qa(args: argparse.Namespace) -> int:
         "project_regression": regression_summary,
     }
     args.out.write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
+    if publish_ready:
+        release_manifest = getattr(args, "release_manifest", None) or args.out.with_name(
+            f"{args.out.stem}_RELEASE_ARTIFACT.json"
+        )
+        try:
+            release = build_release_artifact_manifest(
+                final_srt=args.final_srt,
+                audit_csv=args.report,
+                qa_json=args.out,
+                task_fingerprint_sha256=str(manifest["task_fingerprint_sha256"]),
+                algorithm_version=ALGORITHM_VERSION,
+                git_commit=getattr(args, "git_commit", ""),
+            )
+        except FinalIntegrityError as exc:
+            raise ValueError(f"v4 release integrity failed: {exc}") from exc
+        atomic_write_json(release_manifest, release)
     print(json.dumps(summary, ensure_ascii=False))
     return 0 if publish_ready else 1
 
@@ -3400,7 +4743,12 @@ def command_audio_align(args: argparse.Namespace) -> int:
         },
     )
     cues = parse_srt(args.srt)
-    tracks = parse_song_list(args.song_list, args.lyrics_dir, cues[-1].end_ms)
+    v4_assets = load_v4_assets(
+        manifest, getattr(args, "v4_track_assets", None), getattr(args, "v4_asset_artifact", None)
+    )
+    tracks = parse_song_list(
+        args.song_list, args.lyrics_dir, cues[-1].end_ms, v4_assets=v4_assets
+    )
     bpm_changes = parse_bpm_changes(args.bpm_changes)
     mix_audio, _ = librosa.load(args.audio, sr=args.sample_rate, mono=True)
     mix_audio = np.diff(mix_audio, prepend=mix_audio[0]).astype(np.float32)
@@ -3532,8 +4880,13 @@ def command_prepare(args: argparse.Namespace) -> int:
         },
     )
     task_fingerprint = str(manifest["task_fingerprint_sha256"])
+    v4_assets = load_v4_assets(
+        manifest, getattr(args, "v4_track_assets", None), getattr(args, "v4_asset_artifact", None)
+    )
     cues = parse_srt(args.srt)
-    tracks = parse_song_list(args.song_list, args.lyrics_dir, cues[-1].end_ms)
+    tracks = parse_song_list(
+        args.song_list, args.lyrics_dir, cues[-1].end_ms, v4_assets=v4_assets
+    )
     report_rows: list[dict] = []
     replacements: dict[int, str] = {}
 
@@ -3618,6 +4971,8 @@ def build_parser() -> argparse.ArgumentParser:
     prepare.add_argument("--song-list", required=True, type=Path)
     prepare.add_argument("--lyrics-dir", required=True, type=Path)
     prepare.add_argument("--out-dir", required=True, type=Path)
+    prepare.add_argument("--v4-track-assets", type=Path)
+    prepare.add_argument("--v4-asset-artifact", type=Path)
     prepare.add_argument("--auto-score", type=float, default=0.90)
     prepare.add_argument("--auto-coverage", type=float, default=0.78)
     prepare.set_defaults(func=command_prepare)
@@ -3634,7 +4989,18 @@ def build_parser() -> argparse.ArgumentParser:
     audio_align.add_argument("--window-seconds", type=float, default=6.0)
     audio_align.add_argument("--step-seconds", type=float, default=3.0)
     audio_align.add_argument("--candidate-count", type=int, default=10)
+    audio_align.add_argument("--v4-track-assets", type=Path)
+    audio_align.add_argument("--v4-asset-artifact", type=Path)
     audio_align.set_defaults(func=command_audio_align)
+    review_audio_edits = sub.add_parser(
+        "review-audio-edits",
+        help="Apply exact task-scoped cut decisions to an audio alignment artifact.",
+    )
+    review_audio_edits.add_argument("--task-manifest", required=True, type=Path)
+    review_audio_edits.add_argument("--audio-alignment", required=True, type=Path)
+    review_audio_edits.add_argument("--manual-overrides", required=True, type=Path)
+    review_audio_edits.add_argument("--out", required=True, type=Path)
+    review_audio_edits.set_defaults(func=command_review_audio_edits)
     build = sub.add_parser("build", help="Project canonical lyrics into fixed SRT cues and uncovered gaps.")
     build.add_argument("--task-manifest", required=True, type=Path)
     build.add_argument("--srt", required=True, type=Path)
@@ -3702,6 +5068,8 @@ def build_parser() -> argparse.ArgumentParser:
     )
     qa.add_argument("--out", required=True, type=Path)
     qa.add_argument("--out-review", type=Path)
+    qa.add_argument("--release-manifest", type=Path)
+    qa.add_argument("--git-commit", default="")
     qa.set_defaults(func=command_qa)
     return parser
 

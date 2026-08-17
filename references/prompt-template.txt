@@ -1,4 +1,4 @@
-请按当前 $lyric-aligner Skill 的 v3.8 工作流处理本次任务，并直接执行，不要只给方案。
+请按当前 $lyric-aligner Skill 的 v3.9 工作流处理本次任务，并直接执行，不要只给方案。
 
 本次输入：
 - 任务名：<简短目录名>
@@ -13,11 +13,14 @@
 - 其他说明：<剪切、旁白、版本差异、帧率等>
 
 执行要求：
-1. 使用 `scripts/redo_karaoke_pipeline.py` 的算法 v3.8，并遵守 `references/workflow.md`。
+1. 使用 `scripts/redo_karaoke_pipeline.py` 的算法 v3.9，并遵守 `references/workflow.md`。
 2. 先运行环境检查；新任务用 `scripts/init_task.py` 创建 schema 2.0 task manifest，旧任务用 `scripts/migrate_task.py` 显式迁移并保留 `.schema1.bak`。
 3. 所有生产命令必须使用同一个 `--task-manifest`。音频、SRT、歌单、LRC、BPM 或原曲任一内容变化时拒绝复用旧 QA 或中间产物。
 4. 编辑器 SRT 是主要时间参考，但文字和边界可能错误；规范 LRC 是最终歌词文字与顺序来源；BPM 只是先验；ASR 只作为发音、顺序和边界证据。
 5. 检测中途剪切和源时间跳跃。被确认剪掉的 LRC 不得补回；未确认剪切候选阻止发布。
+5.1 若存在剪切候选，先写入精确 `_audio_edit_reviews` 并运行 `review-audio-edits`；后续阶段只能使用 reviewed alignment。
+5.2 逐字/逐词歌词只作为整行边界与映射辅助，最终 SRT 仍输出完整逐行歌词。
+5.3 检查固定分段变速、连续加减速和双曲叠唱；不可靠变速或未确认叠唱必须 blocked，不得猜拼两首歌词。
 6. 检查漏句、跨格挪词、多句合并、错误去重、真实重复副歌、LRC 索引倒退、错误覆盖、新增重叠和任务级回归。
 7. 英文按词，中文按字，韩文按音节/短词，日文按假名/读音单位。日文含汉字但缺少读音层时，不得自动判高置信。
 8. LRC 未收录的 Uh/Oh/Yeah/Ah/Ooh/Huh/Na-na 等发声不加入字幕。

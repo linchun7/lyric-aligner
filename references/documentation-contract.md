@@ -1,0 +1,108 @@
+# Lyric Aligner 文档同步契约
+
+状态：mandatory  
+生效范围：v4 及后续所有实质性/关键性更新  
+生效日期：2026-08-17
+
+## 1. 目标
+
+代码、算法、CLI、schema、QA/release 语义、生产阶段状态发生实质变化时，相关权威文档必须在同一个 PR / commit series 中同步更新。文档更新不是发布后的补记，而是变更完成定义（Definition of Done）的一部分。
+
+CI 通过 `scripts/validate_docs_contract.py` 检查本契约。规则以“受影响组件 -> 必须同步的权威文档”映射执行，避免只改一份无关 Markdown 来绕过检查。
+
+## 2. 什么属于实质性/关键性更新
+
+以下任一情况属于实质性更新：
+
+- `lyric_aligner/` 下生产代码行为变化；
+- `scripts/v4_*.py` 生产 CLI 输入、输出、阶段顺序或 release 语义变化；
+- TrackAsset、artifact、task fingerprint、calibration profile、QA/release schema 变化；
+- Source-to-Mix、TimeWarp、Fine、Transition、Timeline、Evidence、Forced Alignment、ASR 路由等算法行为变化；
+- 默认生产路径、默认版本、生产/实验状态发生变化；
+- 依赖、模型、backend 或可复现性要求变化；
+- 删除、替换或退役旧生产路径。
+
+以下通常不单独触发文档要求：
+
+- 仅测试代码变化；
+- 仅拼写、格式、注释变化且没有行为改变；
+- CI 日志展示、artifact retention 等不改变产品/算法语义的流水线维护；
+- 文档本身变化。
+
+如果一个提交表面上是 refactor，但改变了公开数据结构、artifact 内容、默认路径、异常/阻断条件，则仍按实质性更新处理。
+
+## 3. 权威文档映射
+
+### A. 所有 v4 生产语义变化
+
+必须更新：
+
+- `references/v4-change-record.md`
+
+用于记录：改了什么、为什么改、兼容/迁移、验证、回滚点、已知风险。
+
+### B. 生产阶段/能力/默认策略变化
+
+必须更新：
+
+- `references/v4-status.md`
+
+包括但不限于 production/shadow/experimental 状态、默认入口、已接管的事实真源、仍会 BLOCK 的边界。
+
+### C. CLI / 实际操作流程变化
+
+至少更新以下一项：
+
+- `SKILL.md`
+- `references/v4-runtime-guide.md`
+- `references/workflow.md`
+
+其中新的默认 v4 入口优先更新 `SKILL.md` 与 `v4-runtime-guide.md`。
+
+### D. schema / contract / artifact / calibration / release 变化
+
+至少更新以下一项，并同时满足 A/B：
+
+- `references/v4-implementation.md`
+- `references/workflow.md`
+- 本文件（如果契约本身改变）
+
+### E. 架构职责或目录边界变化
+
+至少更新以下一项，并同时满足 A/B：
+
+- `references/v4-implementation.md`
+- `references/v4-architecture-review-2026-08-17.md`
+
+新增 `timeline/`、`evidence/`、`alignment/`、`fusion/`、`calibration/`、`cache/` 等长期层次时适用。
+
+## 4. CI 规则
+
+CI 对 PR 的完整 base..head diff 做检查，不只看最后一个 commit。
+
+- 有实质性生产代码变化而 `v4-change-record.md` 未变化：FAIL。
+- v4 核心能力/状态变化而 `v4-status.md` 未变化：FAIL。
+- CLI 发生变化但 SKILL/runtime/workflow 均未变化：FAIL。
+- schema/contract 类变化但 implementation/workflow/contract 文档均未变化：FAIL。
+- 架构目录/职责变化但 implementation/architecture 文档均未变化：FAIL。
+
+测试文件、文档文件、CI 自身维护不触发“为了通过契约再改文档”的递归要求。
+
+## 5. 禁止的绕过方式
+
+- 只改一个与本次变更无关的 Markdown；
+- 在 change record 写“update docs”但不描述实质变化；
+- 修改阈值/默认模型但不改变 calibration profile identity；
+- 代码先合并、后续再补文档；
+- 用 `skip`, `ignore`, commit message 或 PR label 绕过文档契约。
+
+如确有纯内部重构不应触发契约，应调整 `validate_docs_contract.py` 的组件分类规则并同步更新本文件，而不是临时跳过 CI。
+
+## 6. 与 production-first 的关系
+
+v4 采用 production-first：尽早进入真实任务，真实失败与 review candidate 反哺校准和算法升级。越是快速迭代，越需要文档契约保证：
+
+- 当前默认路径可被准确复现；
+- 线上/真实任务遇到的问题能对应到具体版本、profile 和 artifact；
+- 下一轮 AI/Codex 不会基于过期说明重复设计或错误接线；
+- 退役 v3.9 后，回滚依赖 Git tag/commit + artifact lineage，而不是维护第二套生产说明。

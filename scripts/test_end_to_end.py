@@ -13,6 +13,7 @@ from pathlib import Path
 import numpy as np
 
 from init_task import init_task
+from task_contract import qa_metadata, write_json_atomic
 
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
@@ -193,7 +194,7 @@ class SyntheticEndToEndTests(unittest.TestCase):
             with final_report.open(encoding="utf-8-sig", newline="") as handle:
                 report_rows = list(csv.DictReader(handle))
 
-            self.assertEqual(alignment_payload["algorithm_version"], "3.8")
+            self.assertEqual(alignment_payload["algorithm_version"], "3.9")
             self.assertEqual(alignment_payload["task_fingerprint_sha256"], fingerprint)
             self.assertEqual(mapping_payload["task_fingerprint_sha256"], fingerprint)
             self.assertTrue(report_rows)
@@ -205,6 +206,234 @@ class SyntheticEndToEndTests(unittest.TestCase):
             self.assertTrue(qa_payload["fully_reviewed"])
             self.assertTrue(qa_payload["publish_ready"])
             self.assertEqual(qa_payload["release_status"], "ready")
+
+    def test_reviewed_middle_cut_controls_build_projection_and_qa(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            input_root = root / "private" / "middle-cut" / "input"
+            lyrics_dir = input_root / "lyrics"
+            output = root / "output" / "middle-cut"
+            lyrics_dir.mkdir(parents=True)
+            output.mkdir(parents=True)
+            source_srt = input_root / "source.srt"
+            audio = input_root / "mix.wav"
+            song_list = input_root / "songs.txt"
+            lyric = lyrics_dir / "Signal.lrc"
+
+            source_srt.write_text(
+                "1\n00:00:00,000 --> 00:00:02,700\nfirst retained\n\n"
+                "2\n00:00:03,000 --> 00:00:05,700\nsecond retained\n\n"
+                "3\n00:00:06,000 --> 00:00:08,700\nfourth retained\n\n"
+                "4\n00:00:09,000 --> 00:00:11,700\nfifth retained\n",
+                encoding="utf-8",
+            )
+            song_list.write_text(
+                "00:00 Synthetic Artist - Signal\n", encoding="utf-8"
+            )
+            lyric.write_text(
+                "[00:00.00]first retained\n"
+                "[00:03.00]second retained\n"
+                "[00:06.00]third removed by edit\n"
+                "[00:09.00]fourth retained\n"
+                "[00:12.00]fifth retained\n",
+                encoding="utf-8",
+            )
+            write_synthetic_wave(audio)
+
+            initialized = init_task(
+                root,
+                "middle-cut",
+                source_srt=source_srt,
+                audio=audio,
+                song_list=song_list,
+                lyrics_dir=lyrics_dir,
+            )
+            manifest_path = Path(initialized["task_manifest"])
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            overrides_path = Path(initialized["manual_overrides"])
+            overrides = json.loads(overrides_path.read_text(encoding="utf-8"))
+            edit = {
+                "type": "forward_source_cut",
+                "status": "review",
+                "mix_time": 6.0,
+                "source_start": 6.0,
+                "source_end": 9.0,
+                "skipped_source_seconds": 3.0,
+            }
+            overrides["_audio_edit_reviews"] = [
+                {
+                    "track": "Signal",
+                    "mix_time": 6.0,
+                    "source_start": 6.0,
+                    "source_end": 9.0,
+                    "status": "confirmed",
+                    "evidence": "synthetic exact cut",
+                }
+            ]
+            write_json_atomic(overrides_path, overrides)
+
+            raw_alignment = output / "02_audio_alignment.json"
+            reviewed_alignment = output / "02_audio_alignment_reviewed.json"
+            draft_srt = output / "03_build.srt"
+            draft_report = output / "03_build.csv"
+            mapping = output / "03_mapping.json"
+            final_srt = output / "middle-cut_FINAL.srt"
+            final_report = output / "middle-cut_FINAL.csv"
+            qa_path = output / "middle-cut_FINAL_QA.json"
+            review_path = output / "middle-cut_REVIEW.csv"
+            regression_path = Path(initialized["regression_cases"])
+
+            write_json_atomic(
+                raw_alignment,
+                {
+                    "algorithm_version": "3.9",
+                    "task_fingerprint_sha256": initialized[
+                        "task_fingerprint_sha256"
+                    ],
+                    "tracks": [
+                        {
+                            "track": {
+                                "index": 1,
+                                "start_ms": 0,
+                                "end_ms": 11700,
+                                "artist": "Synthetic Artist",
+                                "title": "Signal",
+                                "lrc_path": str(lyric.resolve()),
+                            },
+                            "bpm_tempo_ratio": 1.0,
+                            "path": [
+                                {
+                                    "mix_center": 1.0,
+                                    "selected": {
+                                        "source_center": 1.0,
+                                        "ncc": 0.9,
+                                    },
+                                },
+                                {
+                                    "mix_center": 4.0,
+                                    "selected": {
+                                        "source_center": 4.0,
+                                        "ncc": 0.9,
+                                    },
+                                },
+                                {
+                                    "mix_center": 7.0,
+                                    "selected": {
+                                        "source_center": 10.0,
+                                        "ncc": 0.9,
+                                    },
+                                },
+                                {
+                                    "mix_center": 10.0,
+                                    "selected": {
+                                        "source_center": 13.0,
+                                        "ncc": 0.9,
+                                    },
+                                },
+                            ],
+                            "segments": [],
+                            "edit_candidates": [edit],
+                        }
+                    ],
+                },
+            )
+
+            failed = run_pipeline(
+                root,
+                "build",
+                "--task-manifest", str(manifest_path),
+                "--srt", str(source_srt),
+                "--song-list", str(song_list),
+                "--lyrics-dir", str(lyrics_dir),
+                "--audio-alignment", str(raw_alignment),
+                "--out-srt", str(draft_srt),
+                "--out-report", str(draft_report),
+                "--out-mapping", str(mapping),
+                expected=1,
+            )
+            self.assertIn("review-audio-edits", failed.stderr)
+
+            run_pipeline(
+                root,
+                "review-audio-edits",
+                "--task-manifest", str(manifest_path),
+                "--audio-alignment", str(raw_alignment),
+                "--manual-overrides", str(overrides_path),
+                "--out", str(reviewed_alignment),
+            )
+            run_pipeline(
+                root,
+                "build",
+                "--task-manifest", str(manifest_path),
+                "--srt", str(source_srt),
+                "--song-list", str(song_list),
+                "--lyrics-dir", str(lyrics_dir),
+                "--audio-alignment", str(reviewed_alignment),
+                "--out-srt", str(draft_srt),
+                "--out-report", str(draft_report),
+                "--out-mapping", str(mapping),
+            )
+            run_pipeline(
+                root,
+                "finalize",
+                "--task-manifest", str(manifest_path),
+                "--srt", str(source_srt),
+                "--song-list", str(song_list),
+                "--lyrics-dir", str(lyrics_dir),
+                "--audio-alignment", str(reviewed_alignment),
+                "--in-report", str(draft_report),
+                "--manual-overrides", str(overrides_path),
+                "--out-srt", str(final_srt),
+                "--out-report", str(final_report),
+            )
+            write_json_atomic(
+                regression_path,
+                {
+                    **qa_metadata(manifest, "regression_cases"),
+                    "cases": [
+                        {
+                            "id": "removed-middle-lyric",
+                            "kind": "absent_text",
+                            "start_ms": 0,
+                            "end_ms": 11700,
+                            "text": "third removed by edit",
+                        },
+                        {
+                            "id": "post-cut-line",
+                            "kind": "interval_text",
+                            "start_ms": 6000,
+                            "end_ms": 8700,
+                            "text": "fourth retained",
+                        },
+                    ],
+                },
+            )
+            run_pipeline(
+                root,
+                "qa",
+                "--task-manifest", str(manifest_path),
+                "--source-srt", str(source_srt),
+                "--final-srt", str(final_srt),
+                "--report", str(final_report),
+                "--song-list", str(song_list),
+                "--lyrics-dir", str(lyrics_dir),
+                "--audio-alignment", str(reviewed_alignment),
+                "--manual-overrides", str(overrides_path),
+                "--regression-cases", str(regression_path),
+                "--out", str(qa_path),
+                "--out-review", str(review_path),
+            )
+
+            final_text = final_srt.read_text(encoding="utf-8")
+            mapping_payload = json.loads(mapping.read_text(encoding="utf-8"))
+            qa_payload = json.loads(qa_path.read_text(encoding="utf-8"))
+            cut_events = mapping_payload["mappings"][0]["cut_out_events"]
+            self.assertNotIn("third removed by edit", final_text)
+            self.assertIn("fourth retained", final_text)
+            self.assertEqual([event["lrc_index"] for event in cut_events], [2])
+            self.assertEqual(qa_payload["confirmed_audio_cut_count"], 1)
+            self.assertEqual(qa_payload["project_regression"]["passed"], 2)
+            self.assertTrue(qa_payload["publish_ready"])
 
 
 if __name__ == "__main__":

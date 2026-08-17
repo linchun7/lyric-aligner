@@ -2,7 +2,7 @@
 
 ## 默认版本与结果语义
 
-- 当前生产算法为 `v3.8`。
+- 当前生产算法为 `v3.9`。
 - `passed=true` / `structurally_valid=true`：结构检查没有发现确定性错误。
 - `fully_reviewed=true`：高、中、低风险候选均为零。
 - `publish_ready=true`：同时满足结构通过和候选清零。
@@ -21,7 +21,7 @@ private/<任务名>/
 │  ├─ mix.wav
 │  ├─ songs.txt
 │  ├─ bpm.txt                  # 可选
-│  ├─ lyrics/
+│  ├─ lyrics/                 # 普通 LRC、Enhanced LRC 或受支持的 QRC 词级时间
 │  └─ source-audio/            # 完整波形流程需要
 └─ qa/
    ├─ task_manifest.json
@@ -138,7 +138,21 @@ python scripts/redo_karaoke_pipeline.py audio-align `
   --out "output/任务名/02_audio_alignment.json"
 ```
 
-BPM 是速度比例先验，不是时间戳。实际波形路径和高可信文本锚点决定映射。检测到源时间向前跳跃时只生成剪切候选；状态为 `review` 的剪切会阻止发布，只有明确改为 `confirmed` 或 `rejected` 后才能继续作为正式证据。
+BPM 是速度比例先验，不是时间戳。实际波形路径和高可信文本锚点决定映射。混剪曲段不得默认对应原曲第一句：先由波形/文本锚点求出混剪入口在原曲中的实际偏移，再投影该入口之后的歌词。映射到曲段入口之前的 LRC 事件记录为 `trimmed_before_mix_entry`，不作为漏字幕，也不得被强塞到第一格。检测到歌曲中段源时间向前跳跃时只生成剪切候选；状态为 `review` 的剪切会阻止构建和发布。
+
+将精确坐标与 `confirmed`/`rejected` 决定写入 `_audio_edit_reviews`，再运行：
+
+```powershell
+python scripts/redo_karaoke_pipeline.py review-audio-edits `
+  --task-manifest "private/任务名/qa/task_manifest.json" `
+  --audio-alignment "output/任务名/02_audio_alignment.json" `
+  --manual-overrides "private/任务名/qa/任务名_manual_overrides.json" `
+  --out "output/任务名/02_audio_alignment_reviewed.json"
+```
+
+后续 `build`、`refine-asr`、`finalize` 和 `qa` 必须使用 reviewed JSON。固定分段变速和连续加减速只有在波形锚点单调、平滑、残差受控且明显优于单一仿射映射时自动启用；源时间不连续前跳仍按剪切处理，锚点冲突则退回保守映射或阻止发布。
+
+逐字/逐词歌词仅作辅助证据。当前支持 Enhanced LRC 行内 `<mm:ss.xx>` 和常见 QRC `(start,duration)` 词级时间；普通 LRC 行为不变。无论输入含多少词级时间点，最终 SRT 仍输出完整逐行歌词，只用首末可信词时间校正整行起止与审计证据，不输出逐字 cue。
 
 ## 阶段 4：投影规范歌词
 
@@ -148,7 +162,7 @@ python scripts/redo_karaoke_pipeline.py build `
   --srt "private/任务名/input/source.srt" `
   --song-list "private/任务名/input/songs.txt" `
   --lyrics-dir "private/任务名/input/lyrics" `
-  --audio-alignment "output/任务名/02_audio_alignment.json" `
+  --audio-alignment "output/任务名/02_audio_alignment_reviewed.json" `
   --out-srt "output/任务名/03_build.srt" `
   --out-report "output/任务名/03_build.csv" `
   --out-mapping "output/任务名/03_mapping.json"
@@ -192,7 +206,7 @@ python scripts/redo_karaoke_pipeline.py refine-asr `
   --srt "private/任务名/input/source.srt" `
   --song-list "private/任务名/input/songs.txt" `
   --lyrics-dir "private/任务名/input/lyrics" `
-  --audio-alignment "output/任务名/02_audio_alignment.json" `
+  --audio-alignment "output/任务名/02_audio_alignment_reviewed.json" `
   --asr-json "output/任务名/04_asr.json" `
   --in-report "output/任务名/03_build.csv" `
   --out-srt "output/任务名/04_refined.srt" `
@@ -213,7 +227,7 @@ python scripts/redo_karaoke_pipeline.py finalize `
   --srt "private/任务名/input/source.srt" `
   --song-list "private/任务名/input/songs.txt" `
   --lyrics-dir "private/任务名/input/lyrics" `
-  --audio-alignment "output/任务名/02_audio_alignment.json" `
+  --audio-alignment "output/任务名/02_audio_alignment_reviewed.json" `
   --in-report $report `
   --manual-overrides "private/任务名/qa/任务名_manual_overrides.json" `
   --out-srt "output/任务名/任务名_FINAL.srt" `
@@ -221,6 +235,8 @@ python scripts/redo_karaoke_pipeline.py finalize `
 ```
 
 人工覆盖只允许写入 schema 2.0 文件。覆盖文本、插入、拆分、时序、LRC 索引、确认遗漏、确认边界和复核备注都必须有 `evidence` 或 `reason`。
+
+两首歌首尾叠唱时，算法只在一个过渡 cue 同时具有两首规范歌词的文本与时间证据时生成 `cross_track_vocal_overlap` 候选；不自动把两首歌词拼成一行。先在 `_cross_track_overlap_reviews` 按精确 `cue`、两个 `tracks`、`confirmed`/`rejected` 与 `evidence` 记录结论。若确认确有双曲人声，再在 `_insertions`/`_interval_overrides` 中分别写入两条逐行字幕，并在 `_confirmed_overlap_intervals` 记录同一 `cue`、精确 `start_ms`、`end_ms`、两个 `tracks` 和 `evidence`。普通顺序交接应记为 `rejected`；未复核候选、只有 confirmed 决定但没有精确允许区间，或范围外新增重叠都会阻止发布。
 
 ## 阶段 7：最终 QA
 
@@ -232,7 +248,7 @@ python scripts/redo_karaoke_pipeline.py qa `
   --report "output/任务名/任务名_FINAL_审计.csv" `
   --song-list "private/任务名/input/songs.txt" `
   --lyrics-dir "private/任务名/input/lyrics" `
-  --audio-alignment "output/任务名/02_audio_alignment.json" `
+  --audio-alignment "output/任务名/02_audio_alignment_reviewed.json" `
   --manual-overrides "private/任务名/qa/任务名_manual_overrides.json" `
   --regression-cases "private/任务名/qa/任务名_regression_cases.json" `
   --out "output/任务名/任务名_FINAL_QA.json" `
@@ -251,9 +267,18 @@ python scripts/redo_karaoke_pipeline.py qa `
 - `lyric_index_regression_count=0`
 - `unresolved_lyric_gap_count=0`
 - `unreviewed_audio_edit_candidate_count=0`
+- `unresolved_cross_track_overlap_count=0`
 - `noncanonical_vocalization_count=0`
 
 中低风险候选不再被视为可发布。命令在 `publish_ready=false` 时返回非零状态。
+
+歌词覆盖不能只依据审计 CSV 中的 `lrc_indices`。QA 同时核对：
+
+- 索引绑定字幕是否包含对应规范歌词；
+- 投影时间前后 3 秒内的同曲字幕是否跨格组成该句；
+- 较长规范歌词必须有完整文本或同时满足足够的相似度与覆盖率。
+
+`lyric_index_text_mismatch` 记录索引挂在相邻格、拆句格或旧文本上的审计项。只要投影附近实际存在完整歌词，它不阻断发布；若索引和附近字幕都找不到规范歌词，则进入 `lyric_coverage_missing` 并阻断发布。
 
 ## QA schema 2.0
 
@@ -289,7 +314,7 @@ git diff --check
 ```powershell
 python scripts/evaluate_dataset.py `
   --dataset "private/datasets/<名称>/dataset.json" `
-  --out "output/evaluation/v3.8.json"
+  --out "output/evaluation/v3.9.json"
 ```
 
 评估输出仅含聚合指标和匿名 case id，不输出歌词正文。

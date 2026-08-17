@@ -1,4 +1,4 @@
 interface:
   display_name: "Lyric Aligner"
-  short_description: "Align multilingual lyrics to edited-song SRT timelines"
-  default_prompt: "Use $lyric-aligner to align an edited song mix and produce an auditable multilingual SRT."
+  short_description: "Align edited multilingual songs to auditable line-level SRT"
+  default_prompt: "Use $lyric-aligner to align an edited song mix, review cuts or overlaps, and produce an auditable line-level SRT."

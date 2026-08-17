@@ -12,7 +12,7 @@ from task_contract import assert_manifest_paths, load_task_manifest, sha256, ver
 
 
 ASR_JOB_SCHEMA_VERSION = "1.0"
-ALGORITHM_VERSION = "3.8"
+ALGORITHM_VERSION = "3.9"
 
 
 def load_jobs(
@@ -51,7 +51,10 @@ def load_jobs(
         if start < 0 or end <= start:
             raise ValueError(f"ASR job {index} has invalid window: {start}-{end}")
         language = language_code(str(job.get("language") or default_language or ""))
-        mode = str(job.get("language_mode") or ("detect" if language == "mixed" else "fixed"))
+        mode = str(
+            job.get("language_mode")
+            or ("detect" if language in {"mixed", "auto", "generic"} else "fixed")
+        )
         if mode not in {"fixed", "detect"}:
             raise ValueError(f"ASR job {index} language_mode must be fixed or detect")
         normalized.append(

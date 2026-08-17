@@ -60,9 +60,11 @@
 
 legacy `_source_srt_sha256` 不再由生产命令接受。使用 `scripts/migrate_task.py`，并保留 `.schema1.bak`。
 
-`manual_overrides` 可包含 `_insertions`、`_cue_splits`、`_timing_overrides`、`_lrc_indices_overrides`、`_confirmed_omitted_lrc_events`、`_confirmed_boundary_pairs`、`_audio_edit_reviews` 和 `_review_notes`。每项需有 `evidence` 或 `reason`。
+`manual_overrides` 可包含 `_insertions`、`_cue_splits`、`_interval_overrides`、`_timing_overrides`、`_lrc_indices_overrides`、`_confirmed_omitted_lrc_events`、`_confirmed_boundary_pairs`、`_audio_edit_reviews` 和 `_review_notes`。每项需有 `evidence` 或 `reason`。`_interval_overrides` 用于以人工试听、规范歌词和词级 ASR 共同确认的连续局部重排；实现会拒绝吞掉跨越区间边界的相邻行。
 
-`regression_cases` 的案例放在 `cases` 数组，必须有稳定匿名 `id`、`kind`、时间/文本条件和必要容差。
+`_cross_track_overlap_reviews` 用于按 cue 和两个曲目确认或拒绝叠唱候选；普通顺序交接必须可记录为 `rejected`。`_confirmed_overlap_intervals` 用于放行已确认的双曲叠唱，必须包含同一 `cue`、精确 `start_ms`、`end_ms`、恰好两个 `tracks` 和 `evidence`。它只放行该范围和曲目组合，不放宽其他新增重叠。
+
+`regression_cases` 的案例放在 `cases` 数组，必须有稳定匿名 `id`、`kind`、时间/文本条件和必要容差。`continuous_coverage` 可用于锁定已确认的连续人声区间，并通过 `max_gap_ms` 限制该区间内允许的最大字幕空档。
 
 ## 2026-08-12：源码仓库脱敏根提交
 
@@ -120,3 +122,71 @@ legacy `_source_srt_sha256` 不再由生产命令接受。使用 `scripts/migrat
 ### 升级依据
 
 这些修复影响所有任务的输入身份、发布语义、多语言证据和隐私边界，不能由单个任务 override 安全解决。合成回归避免将任何真实歌词或歌曲硬编码进源码。
+
+## 2026-08-17：v4 Milestone 0-A 发布完整性基础
+
+- 范围：experimental / v4 foundation。
+- 分支：`agent/v4-accuracy-foundation`。
+- 目标：先消灭 false-ready 与不可追溯产物，再进入 TimeWarp/ASR/Forced Alignment。
+
+### 关键代码变更
+
+- 新增 `lyric_aligner/srt.py`：fail-closed SRT parser、稳定 cue ID、`max(cue.end_ms)` 时间轴终点。
+- 新增 `lyric_aligner/qa/final_integrity.py`：最终 SRT 与审计 CSV 逐行严格绑定；QA task fingerprint / algorithm version / release flags 严格校验。
+- 新增 `lyric_aligner/contracts/artifacts.py`：stage artifact manifest、output SHA-256、upstream lineage、canonical artifact ID、原子写出。
+- 新增 `scripts/v4_validate_release.py`：在 legacy QA 后执行的 v4 release guard。
+- 新增 `scripts/test_v4_release_integrity.py`：正文篡改、时间篡改、漏行、跨算法版本、manifest 篡改、坏 SRT、overlay 时间轴负向回归。
+- v4 评估器和 Editor Evidence foundation 保留在同一分支，详见 `references/v4-implementation.md`。
+
+### 验证
+
+- `compileall` 通过。
+- 相关核心/端到端测试：62 项通过。
+- 临时完整仓库测试中的 2 个错误来自缺少根层 `.gitignore` / `references/prompt-template.txt` 的重建环境，不属于算法失败。
+
+### 兼容性与回滚
+
+- 本轮新增 v4 package 与 release guard，不删除 legacy CLI。
+- legacy 生产算法尚未强制依赖新 package；因此可单独回滚本轮新增文件而不破坏 v3.x 输入格式。
+- 远端尚未包含此前未提交的完整 v3.9 工作树；恢复 legacy v3.9 与 v4 package 接线必须作为独立、可审查 commit 完成。
+
+### 升级依据
+
+- 已复现“最终 SRT 正文变化而旧 report/QA 仍可能显示 ready”的风险；release 产物必须形成不可拆分证据链。
+- 该修复与具体歌曲、语言、cue 无关，属于全局生产安全契约。
+## 2026-08-12：乱序叠轨与歌词假覆盖修复
+
+- 范围：global，算法版本仍为 3.8。
+- 编辑器 SRT 可能按图层而非时间顺序保存字幕。歌词事件候选改为按真实起止时间排序后扫描，避免较早写入文件的口播格抢占后写入但时间重叠的歌词格。
+- ASR 改写为另一条规范歌词时，强制同步替换 `lrc_indices`，不再保留草稿阶段的旧索引。
+- QA 新增文字级规范歌词覆盖核验：联合检查索引绑定字幕和投影点前后 3 秒的同曲相邻字幕。共享单词不足以证明整句覆盖；长歌词需出现完整规范文本，或同时达到相似度与覆盖率门槛。
+- 新增 `lyric_index_text_mismatch` 审计字段。索引偏移但附近实际有完整歌词时只记录；索引和附近字幕都缺少规范歌词时进入 `lyric_coverage_missing` 并阻断发布。
+- 新增乱序重叠轨、ASR 索引同步、假索引拒绝和跨格歌词覆盖单元测试。
+- 明确区分“原曲开头已被混剪裁掉”和“歌曲中段漏句”：歌词投影先求原曲实际入口偏移，入口之前的 LRC 事件标记为 `trimmed_before_mix_entry`，不再假定混剪从正版第一句开始，也不进入歌词缺失 QA。
+- 真实任务的歌曲、时间、歌词和人工证据仅保存在 `private/`；公开源码与文档没有任务特例。
+
+### 验证结果
+
+- `python -m unittest discover -s scripts -p "test_*.py"`：57 项通过。
+- 私有验收任务：124/124 项目回归通过，`review_candidate_count=0`、`unresolved_lyric_gap_count=0`、`publish_ready=true`；任务名称、歌曲和歌词不写入源码仓库。
+
+## 2026-08-13：算法 v3.9
+
+- 范围：global。
+- 算法版本：3.9。
+- 提交：待本轮提交。
+
+### 升级内容
+
+- 增加 `review-audio-edits`，把中段剪切的 `confirmed`/`rejected` 决定真正写回对齐产物；build、finalize 和 QA 拒绝未复核候选或“QA 已确认但映射未应用”的状态。
+- 支持多个已确认中段剪切、保守短剪切候选和曲首/曲尾裁切；被剪掉的歌词明确进入 `cut_out_events`，不回填终稿。
+- 增加连续单调分段变速映射。只有路径具有足够锚点、合理局部速度、平滑斜率变化和低残差时启用；源时间不连续前跳继续作为剪切，不把二者混为一谈。
+- 解析 Enhanced LRC 行内时间与常见 QRC 词级时间。逐字/逐词时间只作为整行歌词的起止、边界和映射辅助；正式输出仍是完整逐行 SRT，不生成逐字 cue。
+- 增加跨歌曲叠唱候选。算法不自动拼接两首歌词；候选可由 `_cross_track_overlap_reviews` 精确确认或拒绝，任务级 `_confirmed_overlap_intervals` 只允许已确认的指定两首歌在精确范围内输出两条同期逐行字幕。
+- 整曲重建后的局部人工区间覆盖可删除同索引重复行、裁切异索引跨界残段，并保留审计证据。
+
+### 测试与能力边界
+
+- 合成测试覆盖普通/Enhanced/QRC 歌词、行级输出契约、固定分段变速、渐变速度、变速与中段剪切组合、模糊波形拒绝、单/多剪切、短剪切、叠唱精确放行及完整 CLI 剪切复核链路。
+- 真实用户验收显示主要可见提升集中在一首复杂剪切歌曲；不据此宣称所有混剪均大幅提升或达到 100%。
+- 原曲版本错误、不可逆重叠人声、极短发声、缺失歌词和证据冲突仍可能物理不可辨；成熟行为是生成候选并阻止发布，而不是猜测。

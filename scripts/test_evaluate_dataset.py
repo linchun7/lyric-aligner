@@ -50,6 +50,203 @@ class DatasetEvaluationTests(unittest.TestCase):
             self.assertEqual(result["overall"]["runtime_per_audio_minute"], 6.0)
             self.assertNotIn("private synthetic phrase", serialized)
 
+    def test_missing_nine_of_ten_lines_is_not_reported_as_perfect_exact_match(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            reference = root / "reference.srt"
+            predicted = root / "predicted.srt"
+            reference.write_text(
+                "\n\n".join(
+                    f"{index}\n00:00:{index:02d},000 --> 00:00:{index:02d},500\nline {index}"
+                    for index in range(1, 11)
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            predicted.write_text(
+                "1\n00:00:01,000 --> 00:00:01,500\nline 1\n",
+                encoding="utf-8",
+            )
+            dataset = root / "dataset.json"
+            dataset.write_text(
+                json.dumps(
+                    {
+                        "schema_version": "1.0",
+                        "cases": [
+                            {
+                                "id": "missing-lines",
+                                "split": "blind_test",
+                                "language": "en",
+                                "reference_srt": "reference.srt",
+                                "predicted_srt": "predicted.srt",
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            result = evaluate_manifest(dataset)
+            self.assertEqual(result["overall"]["line_exact_recall"], 0.1)
+            self.assertEqual(result["overall"]["cue_text_exact_match_rate"], 0.1)
+            self.assertEqual(result["overall"]["missing_line_rate"], 0.9)
+
+    def test_reordered_same_tokens_are_penalized_by_sequence_metric(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            reference = root / "reference.srt"
+            predicted = root / "predicted.srt"
+            reference.write_text(
+                "1\n00:00:01,000 --> 00:00:01,500\nhello\n\n"
+                "2\n00:00:02,000 --> 00:00:02,500\nworld\n",
+                encoding="utf-8",
+            )
+            predicted.write_text(
+                "1\n00:00:01,000 --> 00:00:01,500\nworld\n\n"
+                "2\n00:00:02,000 --> 00:00:02,500\nhello\n",
+                encoding="utf-8",
+            )
+            dataset = root / "dataset.json"
+            dataset.write_text(
+                json.dumps(
+                    {
+                        "schema_version": "1.0",
+                        "cases": [
+                            {
+                                "id": "reordered",
+                                "split": "blind_test",
+                                "language": "en",
+                                "reference_srt": "reference.srt",
+                                "predicted_srt": "predicted.srt",
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            result = evaluate_manifest(dataset)
+            self.assertLess(result["overall"]["unit_f1"], 1.0)
+            self.assertGreater(result["overall"]["sequence_wer"], 0.0)
+            self.assertLess(result["overall"]["line_exact_recall"], 1.0)
+            self.assertGreater(result["overall"]["wrong_order_line_count"], 0)
+
+    def test_split_cues_pair_as_one_group_for_boundary_metrics(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            reference = root / "reference.srt"
+            predicted = root / "predicted.srt"
+            reference.write_text(
+                "1\n00:00:01,000 --> 00:00:03,000\nhello world\n",
+                encoding="utf-8",
+            )
+            predicted.write_text(
+                "1\n00:00:01,000 --> 00:00:02,000\nhello\n\n"
+                "2\n00:00:02,000 --> 00:00:03,000\nworld\n",
+                encoding="utf-8",
+            )
+            dataset = root / "dataset.json"
+            dataset.write_text(
+                json.dumps(
+                    {
+                        "schema_version": "1.0",
+                        "cases": [
+                            {
+                                "id": "split",
+                                "split": "blind_test",
+                                "language": "en",
+                                "reference_srt": "reference.srt",
+                                "predicted_srt": "predicted.srt",
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            overall = evaluate_manifest(dataset)["overall"]
+            self.assertEqual(overall["split_error_count"], 1)
+            self.assertEqual(overall["onset_mae_ms"], 0.0)
+            self.assertEqual(overall["offset_mae_ms"], 0.0)
+
+    def test_cut_times_match_by_tolerance_not_shared_ids(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            srt = "1\n00:00:01,000 --> 00:00:02,000\nline\n"
+            (root / "r.srt").write_text(srt, encoding="utf-8")
+            (root / "p.srt").write_text(srt, encoding="utf-8")
+            dataset = root / "dataset.json"
+            dataset.write_text(
+                json.dumps(
+                    {
+                        "schema_version": "1.0",
+                        "cases": [
+                            {
+                                "id": "cuts",
+                                "split": "blind_test",
+                                "language": "en",
+                                "reference_srt": "r.srt",
+                                "predicted_srt": "p.srt",
+                                "expected_cuts": [
+                                    {"time_ms": 10000},
+                                    {"time_ms": 20000},
+                                ],
+                                "predicted_cuts": [
+                                    {"time_ms": 10300},
+                                    {"time_ms": 25000},
+                                ],
+                                "cut_tolerance_ms": 500,
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            overall = evaluate_manifest(dataset)["overall"]
+            self.assertEqual(overall["cut_precision"], 0.5)
+            self.assertEqual(overall["cut_recall"], 0.5)
+
+    def test_overlap_duration_iou_and_track_attribution(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            srt = "1\n00:00:01,000 --> 00:00:02,000\nline\n"
+            (root / "r.srt").write_text(srt, encoding="utf-8")
+            (root / "p.srt").write_text(srt, encoding="utf-8")
+            dataset = root / "dataset.json"
+            dataset.write_text(
+                json.dumps(
+                    {
+                        "schema_version": "1.0",
+                        "cases": [
+                            {
+                                "id": "overlap",
+                                "split": "blind_test",
+                                "language": "en",
+                                "reference_srt": "r.srt",
+                                "predicted_srt": "p.srt",
+                                "expected_overlaps": [
+                                    {
+                                        "start_ms": 1000,
+                                        "end_ms": 3000,
+                                        "tracks": ["a", "b"],
+                                    }
+                                ],
+                                "predicted_overlaps": [
+                                    {
+                                        "start_ms": 1500,
+                                        "end_ms": 3000,
+                                        "tracks": ["b", "a"],
+                                    }
+                                ],
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            overall = evaluate_manifest(dataset)["overall"]
+            self.assertEqual(overall["overlap_duration_precision"], 1.0)
+            self.assertEqual(overall["overlap_duration_recall"], 0.75)
+            self.assertEqual(overall["overlap_iou"], 0.75)
+            self.assertEqual(overall["track_attribution_accuracy"], 1.0)
+
 
 if __name__ == "__main__":
     unittest.main()
