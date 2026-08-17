@@ -19,6 +19,7 @@ class V4CLIBootstrapTests(unittest.TestCase):
             "scripts/v4_run.py",
             "scripts/v4_review.py",
             "scripts/v4_recompose_overlap.py",
+            "scripts/v4_rebuild_cut.py",
             "scripts/v4_render.py",
         ):
             completed = subprocess.run(
@@ -29,7 +30,11 @@ class V4CLIBootstrapTests(unittest.TestCase):
                 env={},
                 check=False,
             )
-            self.assertEqual(completed.returncode, 0, msg=f"{script}: {completed.stderr}")
+            self.assertEqual(
+                completed.returncode,
+                0,
+                msg=f"{script}: {completed.stderr}",
+            )
             self.assertIn("usage:", completed.stdout.casefold())
 
 
