@@ -49,6 +49,7 @@ class RetrievalResult:
     mix_center: float
     top1: RetrievalCandidate
     top2: RetrievalCandidate | None
+    candidates: tuple[RetrievalCandidate, ...]
     margin: float
     ambiguous: bool
     min_score: float
@@ -61,6 +62,7 @@ class RetrievalResult:
             "mix_center": self.mix_center,
             "top1": self.top1.to_dict(),
             "top2": self.top2.to_dict() if self.top2 else None,
+            "candidates": [candidate.to_dict() for candidate in self.candidates],
             "margin": self.margin,
             "ambiguous": self.ambiguous,
             "min_score": self.min_score,
@@ -92,7 +94,6 @@ def extract_harmonic_features(
     if y.ndim != 1 or y.size < max(2048, hop_length * 3):
         raise ValueError("audio must be a sufficiently long mono waveform")
     harmonic, _ = librosa.effects.hpss(y)
-    # Keep the CQT basis below Nyquist for low-rate test/fast-path audio.
     c1_hz = 32.70319566257483
     n_octaves = max(3, min(7, int(math.floor(math.log2((sr / 2) / c1_hz)))))
     chroma = librosa.feature.chroma_cens(
@@ -129,8 +130,6 @@ def slope_grid(
         raise ValueError("invalid slope search range")
     values = set(float(value) for value in np.arange(minimum, maximum + step / 2, step))
     if bpm_prior is not None and minimum <= bpm_prior <= maximum:
-        # Add denser local probes, but retain the global grid so a wrong BPM
-        # prior cannot exclude the correct audio match.
         values.add(float(bpm_prior))
         values.add(float(max(minimum, bpm_prior - step / 2)))
         values.add(float(min(maximum, bpm_prior + step / 2)))
@@ -266,6 +265,7 @@ def retrieve_coarse_window(
         mix_center=(mix_start + mix_end) / 2,
         top1=top1,
         top2=top2,
+        candidates=tuple(selected),
         margin=margin,
         ambiguous=ambiguous,
         min_score=min_score,
