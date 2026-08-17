@@ -16,6 +16,7 @@ import librosa
 
 from lyric_aligner import __version__
 from lyric_aligner.audio.fine_alignment import refine_coarse_mapping
+from lyric_aligner.config import DEFAULT_V4_PROFILE
 from lyric_aligner.contracts.artifacts import (
     atomic_write_json,
     build_artifact_manifest,
@@ -23,6 +24,7 @@ from lyric_aligner.contracts.artifacts import (
     validate_artifact_output,
     validate_upstream_artifact,
 )
+from lyric_aligner.pipeline.context import build_pipeline_context
 from task_contract import assert_manifest_paths, load_task_manifest, resolve_manifest_record
 
 
@@ -60,6 +62,7 @@ def _validate_stage(
 
 
 def main() -> int:
+    defaults = DEFAULT_V4_PROFILE.fine
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--task-manifest", required=True, type=Path)
     parser.add_argument("--mix-audio", required=True, type=Path)
@@ -68,14 +71,22 @@ def main() -> int:
     parser.add_argument("--coarse", required=True, type=Path)
     parser.add_argument("--coarse-artifact", required=True, type=Path)
     parser.add_argument("--force", action="store_true")
-    parser.add_argument("--sr", type=int, default=16000)
-    parser.add_argument("--hop-length", type=int, default=256)
-    parser.add_argument("--source-radius-seconds", type=float, default=1.25)
-    parser.add_argument("--slope-radius", type=float, default=0.08)
-    parser.add_argument("--slope-step", type=float, default=0.02)
-    parser.add_argument("--candidate-step-seconds", type=float, default=0.05)
-    parser.add_argument("--min-score", type=float, default=0.62)
-    parser.add_argument("--min-margin", type=float, default=0.012)
+    parser.add_argument("--sr", type=int, default=defaults.sr)
+    parser.add_argument("--hop-length", type=int, default=defaults.hop_length)
+    parser.add_argument(
+        "--source-radius-seconds",
+        type=float,
+        default=defaults.source_radius_seconds,
+    )
+    parser.add_argument("--slope-radius", type=float, default=defaults.slope_radius)
+    parser.add_argument("--slope-step", type=float, default=defaults.slope_step)
+    parser.add_argument(
+        "--candidate-step-seconds",
+        type=float,
+        default=defaults.candidate_step_seconds,
+    )
+    parser.add_argument("--min-score", type=float, default=defaults.min_score)
+    parser.add_argument("--min-margin", type=float, default=defaults.min_margin)
     parser.add_argument("--bpm-prior", type=float)
     parser.add_argument("--out", required=True, type=Path)
     parser.add_argument("--artifact-out", required=True, type=Path)
@@ -93,6 +104,12 @@ def main() -> int:
             role="track_assets",
             stage="asset_resolution",
         )
+        context = build_pipeline_context(
+            expected_task_fingerprint=fingerprint,
+            track_assets_payload=track_assets,
+            asset_artifact=asset_artifact,
+            verify_asset_files=True,
+        )
         coarse, coarse_artifact = _validate_stage(
             args.coarse,
             args.coarse_artifact,
@@ -100,32 +117,19 @@ def main() -> int:
             role="coarse_alignment",
             stage="coarse_audio_alignment",
         )
-        if str(coarse.get("upstream_asset_artifact_id")) != str(asset_artifact["artifact_id"]):
+        if str(coarse.get("upstream_asset_artifact_id")) != context.asset_artifact.artifact_id:
             raise ValueError("coarse alignment came from a different asset artifact")
+        if str(coarse.get("calibration_profile_id")) != context.calibration_profile_id:
+            raise ValueError("coarse alignment came from a different calibration profile")
         occurrence_id = str(coarse["occurrence_id"])
-        occurrence = next(
-            (
-                item
-                for item in track_assets.get("occurrences", [])
-                if str(item.get("occurrence_id")) == occurrence_id
-            ),
-            None,
-        )
-        if occurrence is None:
+        binding = context.binding_by_occurrence_id.get(occurrence_id)
+        if binding is None:
             raise ValueError("coarse occurrence missing from track_assets")
-        asset = next(
-            (
-                item
-                for item in track_assets.get("assets", [])
-                if str(item.get("track_id")) == str(occurrence["track_id"])
-            ),
-            None,
-        )
-        if asset is None:
-            raise ValueError("TrackAsset missing for coarse occurrence")
-        source_path = Path(str(asset["source_audio_path"]))
-        if sha256_file(source_path) != str(asset["source_audio_sha256"]):
-            raise ValueError("selected source audio hash differs from TrackAsset")
+        if str(coarse.get("track_id")) != binding.track_id:
+            raise ValueError("coarse track_id differs from resolved TrackAsset")
+        if str(coarse.get("canonical_selection_sha256")) != binding.canonical_selection_sha256:
+            raise ValueError("coarse canonical selection differs from TrackAsset")
+        source_path = Path(binding.source_audio_path)
         source_dir_record = task["inputs"].get("source_audio_dir")
         if source_dir_record is not None:
             source_dir = resolve_manifest_record(args.task_manifest, source_dir_record).resolve()
@@ -150,17 +154,20 @@ def main() -> int:
             min_score=args.min_score,
             min_margin=args.min_margin,
             bpm_prior=args.bpm_prior,
-            middle_cut=str(occurrence.get("middle_cut", "false")),
+            middle_cut=binding.middle_cut,
         )
         payload = {
-            "schema_version": "1.0",
+            "schema_version": "1.1",
             "algorithm_version": __version__,
             "task_fingerprint_sha256": fingerprint,
+            "calibration_profile_version": context.calibration_profile_version,
+            "calibration_profile_id": context.calibration_profile_id,
             "occurrence_id": occurrence_id,
-            "track_id": occurrence["track_id"],
+            "track_id": binding.track_id,
+            "canonical_selection_sha256": binding.canonical_selection_sha256,
             "mix_audio_sha256": sha256_file(args.mix_audio),
-            "source_audio_sha256": sha256_file(source_path),
-            "upstream_asset_artifact_id": asset_artifact["artifact_id"],
+            "source_audio_sha256": binding.source_audio_sha256,
+            "upstream_asset_artifact_id": context.asset_artifact.artifact_id,
             "upstream_coarse_artifact_id": coarse_artifact["artifact_id"],
             "result": fine,
         }
@@ -171,6 +178,7 @@ def main() -> int:
             algorithm_version=__version__,
             outputs=(("fine_alignment", args.out),),
             normalized_config={
+                **context.artifact_config(),
                 "force": args.force,
                 "sr": args.sr,
                 "hop_length": args.hop_length,
@@ -184,11 +192,12 @@ def main() -> int:
             },
             producer={"git_commit": args.git_commit} if args.git_commit else {},
             upstream_artifact_ids=(
-                str(asset_artifact["artifact_id"]),
+                context.asset_artifact.artifact_id,
                 str(coarse_artifact["artifact_id"]),
             ),
             evidence={
                 "occurrence_id": occurrence_id,
+                "track_id": binding.track_id,
                 "applied": fine["applied"],
                 "status": fine["status"],
                 "blocked": bool(fine.get("timewarp", {}).get("blocked", False)),
@@ -204,6 +213,7 @@ def main() -> int:
                 "occurrence_id": occurrence_id,
                 "applied": fine["applied"],
                 "status": fine["status"],
+                "calibration_profile_id": context.calibration_profile_id,
                 "artifact_id": artifact["artifact_id"],
             }
         )
