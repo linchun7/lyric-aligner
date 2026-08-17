@@ -1,12 +1,12 @@
 # Lyric Aligner v4 生产运行手册
 
-更新：2026-08-17  
-适用开发版本：`4.0.0a8`  
+更新：2026-08-18  
+主线算法版本：`4.0.0a8`  
 Calibration profile：`production-bootstrap-2026-08-17-a7`
 
-> v4 继续 production-first。a8 不修改声学阈值，而是在 a6 confirmed-overlap 与 a7 confirmed-cut 两条已验证 materialization 之上增加 fail-closed composition。不能安全组合就 review/BLOCK，不人工拼 artifact。
+> main 已完成 a8 的 reconstruction/review/overlap/cut/combined/render/release 主链。当前开发重点是 P1：把真实 calibration / blind-test 变成 split-isolated、candidate-locked、可审计流程。没有真实私有数据时，GitHub Actions 只能验证框架和 synthetic regressions，不能产生真实准确率。
 
-## 1. Reconstruction
+## 1. 生产重建
 
 ```powershell
 python scripts/v4_run.py `
@@ -19,139 +19,51 @@ python scripts/v4_run.py `
 
 ```text
 Asset Resolution
- → Primary Coarse
- → AFFINE / PIECEWISE_RATE
- → Selective Fine
- → Canonical Timeline
- → Transition Evidence
- → ready_for_render | review_required
+ -> Primary Coarse
+ -> AFFINE / PIECEWISE_RATE
+ -> Selective Fine
+ -> Canonical Timeline
+ -> Transition Evidence
+ -> ready_for_render | review_required
 ```
 
-Forward source discontinuity 与 transition overlap 都是 candidate-level review evidence。
+## 2. Review / Materialization
 
-## 2. Review
+Review：
 
 ```powershell
 python scripts/v4_review.py template ...
 python scripts/v4_review.py apply ...
 ```
 
-Review schema=`1.2`。
-
-主要 actions：
-
-```text
-transition: resolved_clear | confirmed_overlap
-timewarp_discontinuity: confirmed_cut | rejected_requires_remap
-generic timewarp: confirmed_requires_rebuild
-```
-
-## 3. 单类 confirmed overlap
+Confirmed overlap：
 
 ```powershell
-python scripts/v4_recompose_overlap.py `
-  --task-manifest "private/<任务>/qa/task_manifest.json" `
-  --run "output/<任务>/v4/reviewed_run.json" `
-  --run-artifact "output/<任务>/v4/reviewed_run.artifact.json" `
-  --track-assets "output/<任务>/v4/assets/track_assets.json" `
-  --asset-artifact "output/<任务>/v4/assets/track_assets.artifact.json" `
-  --out-dir "output/<任务>/v4/overlap" `
-  --out "output/<任务>/v4/recomposed_run.json" `
-  --artifact-out "output/<任务>/v4/recomposed_run.artifact.json"
+python scripts/v4_recompose_overlap.py ...
 ```
 
-只有 exact confirmed region 内允许两首歌各自独立 SRT cue overlap。
-
-## 4. 单类 confirmed cut
+Confirmed cut：
 
 ```powershell
-python scripts/v4_rebuild_cut.py `
-  --task-manifest "private/<任务>/qa/task_manifest.json" `
-  --run "output/<任务>/v4/reviewed_run.json" `
-  --run-artifact "output/<任务>/v4/reviewed_run.artifact.json" `
-  --track-assets "output/<任务>/v4/assets/track_assets.json" `
-  --asset-artifact "output/<任务>/v4/assets/track_assets.artifact.json" `
-  --out-dir "output/<任务>/v4/cuts" `
-  --out "output/<任务>/v4/cut_rebuilt_run.json" `
-  --artifact-out "output/<任务>/v4/cut_rebuilt_run.artifact.json"
+python scripts/v4_rebuild_cut.py ...
 ```
 
-Confirmed cut 必须经过 local boundary locator、CUT_AWARE mapping 和 cut-aware canonical projection；不能靠人工清 block。
-
-## 5. 同一 reviewed task 同时有 cut + overlap
-
-**必须让两条 materializer 从同一个 `reviewed_run.json / reviewed_run.artifact.json` 独立执行。**
-
-```text
-review_resolution
- ├─ v4_rebuild_cut          → cut_rebuilt_run
- └─ v4_recompose_overlap    → recomposed_run
-```
-
-然后：
+同一 reviewed task 同时有可证明互不冲突的 cut + overlap：
 
 ```powershell
-python scripts/v4_compose_materializations.py `
-  --task-manifest "private/<任务>/qa/task_manifest.json" `
-  --cut-run "output/<任务>/v4/cut_rebuilt_run.json" `
-  --cut-artifact "output/<任务>/v4/cut_rebuilt_run.artifact.json" `
-  --overlap-run "output/<任务>/v4/recomposed_run.json" `
-  --overlap-artifact "output/<任务>/v4/recomposed_run.artifact.json" `
-  --track-assets "output/<任务>/v4/assets/track_assets.json" `
-  --asset-artifact "output/<任务>/v4/assets/track_assets.artifact.json" `
-  --out-dir "output/<任务>/v4/combined" `
-  --out "output/<任务>/v4/combined_run.json" `
-  --artifact-out "output/<任务>/v4/combined_run.artifact.json" `
-  --git-commit "<commit>"
+python scripts/v4_compose_materializations.py ...
 ```
 
-### 5.1 Identity gate
+Same-region cut+overlap、source-gap 冲突、partial-line ambiguity 等仍 fail-closed。
 
-Cut/overlap 两个 materialized run 必须：
+## 3. Final Render / Release
 
-- same task fingerprint；
-- same algorithm version；
-- same profile/version；
-- same TrackAsset artifact；
-- same `source_review_artifact_id`；
-- review/asset 均是两边 upstream。
-
-### 5.2 Issue gate
-
-Composition 使用两边 `processed_issue_ids` 抵消已经由另一条 materializer 解决的问题。两边若声称处理同一个 issue_id，或同一 unresolved issue snapshot 不一致，直接 BLOCK。
-
-只有 combined remaining issues=0 才 `ready_for_render`。
-
-### 5.3 Same-occurrence cut + overlap
-
-以 cut-aware timeline 为 base，只加入 overlap-only delta lines。
-
-必须同时满足：
-
-```text
-confirmed overlap interval 不包含 localized cut_mix_time
-AND
-overlap delta canonical source interval 不与 confirmed source gap 相交
+```powershell
+python scripts/v4_render.py ...
+python scripts/v4_validate_release.py ...
 ```
 
-缺 canonical source provenance 也 BLOCK。
-
-新 timeline：
-
-```text
-combined_timeline_recomposition / canonical_timeline
-```
-
-新 run：
-
-```text
-combined_recomposition / v4_combined_run
-schema = 1.4
-```
-
-## 6. Final Render
-
-`v4_render.py` 接受：
+`v4_render.py` 可消费：
 
 ```text
 production_orchestration
@@ -161,72 +73,249 @@ cut_rebuild
 combined_recomposition
 ```
 
-共同条件：
+共同要求：ready、无 active issues、无 legacy fallback、artifact lineage/profile/task fingerprint 全部一致。
+
+## 4. P1 数据集准备
+
+P1 严格数据集建议位于：
 
 ```text
-status == ready_for_render
-issues == []
-legacy_fallback_used == false
+private/datasets/<dataset-name>/
 ```
 
-Combined run 还要求：
+严格 schema=`1.1`。Manifest 至少应有：
 
-- combined remaining_issue_count=0；
-- cut canonical_fragment_issue_count=0；
-- source review/cut/overlap artifacts 全在 upstream；
-- cut+overlap same occurrence 使用 `combined_timeline_recomposition`；
-- combined timeline upstream 到 exact source cut/overlap timelines；
-- cross-track cue pair 仍完整落在 exact confirmed overlap region。
+```json
+{
+  "schema_version": "1.1",
+  "dataset": "opaque-dataset-name",
+  "dataset_revision": "2026-08-r1",
+  "cases": [
+    {
+      "id": "case-0001",
+      "source_group": "source-family-001",
+      "split": "calibration",
+      "language": "zh",
+      "reference_srt": "reference/case-0001.srt",
+      "predicted_srt": "predictions/candidate-a/case-0001.srt",
+      "qa_json": "predictions/candidate-a/case-0001.qa.json",
+      "audio_duration_seconds": 90,
+      "expected_cuts": [{"time_ms": 30000}],
+      "predicted_cuts": [{"time_ms": 30120}],
+      "expected_overlaps": []
+    }
+  ]
+}
+```
 
-## 7. Release
+规则：
+
+- `id` / `source_group` / dataset 名称使用 opaque 值，不含曲名/艺人；
+- 同一歌曲/版本家族的 clips 必须共享 source_group；
+- 一个 source_group 只能属于 train/calibration/blind_test 中一个 split；
+- baseline 与每个 candidate 可以有各自 prediction/QA 路径；
+- reference、case metadata、expected annotations、dataset_revision 必须一致。
+
+## 5. P1 严格入口
+
+正式入口：
+
+```text
+scripts/v4_calibration_workflow.py
+```
+
+它负责：
+
+```text
+selected split evaluation
++ source_group isolation
++ immutable ground-truth identity
++ candidate revision/runtime identity
++ calibration selection
++ blind candidate lock
+```
+
+较低层的：
+
+```text
+scripts/evaluate_calibration_dataset.py
+scripts/calibration_gate.py
+```
+
+用于诊断/测试，不应被拿来绕过 strict workflow 后宣称 blind-test 通过。
+
+## 6. Calibration 阶段
+
+目标：只使用 calibration split 选择一个 candidate。
+
+重要纪律：在这个阶段 blind prediction/QA 可以完全不存在。
+
+示意：
 
 ```powershell
-python scripts/v4_render.py ...
-python scripts/v4_validate_release.py `
-  --task-manifest "private/<任务>/qa/task_manifest.json" `
-  --final-srt "output/<任务>/v4/final/FINAL.srt" `
-  --report "output/<任务>/v4/final/FINAL.csv" `
-  --qa-json "output/<任务>/v4/final/FINAL.qa.json" `
-  --algorithm-version "4.0.0a8" `
-  --upstream-artifact "output/<任务>/v4/final/FINAL.render.artifact.json" `
-  --out-manifest "output/<任务>/v4/final/release.artifact.json"
+python scripts/v4_calibration_workflow.py evaluate `
+  --dataset "private/datasets/<name>/baseline.json" `
+  --split calibration `
+  --candidate-id baseline `
+  --candidate-revision "<baseline-commit-or-build-id>" `
+  --out "output/evaluation/baseline.calibration.json"
+
+python scripts/v4_calibration_workflow.py evaluate `
+  --dataset "private/datasets/<name>/candidate-a.json" `
+  --split calibration `
+  --candidate-id candidate-a `
+  --candidate-revision "<candidate-commit>" `
+  --out "output/evaluation/candidate-a.calibration.json"
 ```
 
-QA 可能记录：
+然后使用明确的 calibration policy 选择：
+
+```powershell
+python scripts/v4_calibration_workflow.py select `
+  --baseline "output/evaluation/baseline.calibration.json" `
+  --candidate "output/evaluation/candidate-a.calibration.json" `
+  --policy "private/datasets/<name>/calibration-policy.json" `
+  --out "output/evaluation/selection.json"
+```
+
+Selection artifact 锁：
 
 ```text
-source_run_stage = production_orchestration | review_resolution | overlap_recomposition | cut_rebuild | combined_recomposition
-confirmed_overlap_region_count
-rebuilt_cut_occurrence_count
-combined_recomposition_occurrence_count
+candidate_id
+candidate_revision
+algorithm_version
+calibration_profile_version
+calibration_profile_id
+calibration evaluation SHA
+policy SHA
+selection payload SHA
 ```
 
-## 8. Calibration / migration
+## 7. Gate policy
 
-a8 没有阈值变更：
+示意：
+
+```json
+{
+  "schema_version": "1.0",
+  "policy_id": "calibration-r1",
+  "split": "calibration",
+  "gates": [
+    {
+      "scope": "overall",
+      "metric": "line_exact_recall",
+      "direction": "higher",
+      "max_regression_abs": 0.0
+    },
+    {
+      "scope": "overall",
+      "metric": "boundary_p95_ms",
+      "direction": "lower",
+      "max_regression_abs": 50.0
+    },
+    {
+      "scope": "overall",
+      "metric": "cut_recall",
+      "direction": "higher",
+      "max_regression_abs": 0.0
+    },
+    {
+      "scope": "overall",
+      "metric": "cut_boundary_p95_ms",
+      "direction": "lower",
+      "max_regression_abs": 100.0
+    }
+  ],
+  "ranking": [
+    {"scope": "overall", "metric": "line_exact_recall", "direction": "higher"},
+    {"scope": "overall", "metric": "boundary_p95_ms", "direction": "lower"}
+  ]
+}
+```
+
+这些只是 policy 格式示例，不是项目已经校准出的真实阈值。真实阈值应由 calibration 数据确定并版本化。
+
+## 8. Blind-test 阶段
+
+只有 selection artifact 生成之后，才生成/读取 blind predictions。
+
+```powershell
+python scripts/v4_calibration_workflow.py evaluate `
+  --dataset "private/datasets/<name>/baseline.json" `
+  --split blind_test `
+  --candidate-id baseline `
+  --candidate-revision "<baseline-revision>" `
+  --out "output/evaluation/baseline.blind.json"
+
+python scripts/v4_calibration_workflow.py evaluate `
+  --dataset "private/datasets/<name>/candidate-a.json" `
+  --split blind_test `
+  --candidate-id candidate-a `
+  --candidate-revision "<exact-selected-revision>" `
+  --out "output/evaluation/candidate-a.blind.json"
+
+python scripts/v4_calibration_workflow.py blind `
+  --baseline "output/evaluation/baseline.blind.json" `
+  --candidate "output/evaluation/candidate-a.blind.json" `
+  --selection "output/evaluation/selection.json" `
+  --policy "private/datasets/<name>/blind-policy.json" `
+  --out "output/evaluation/blind-gate.json"
+```
+
+Blind gate 会拒绝：
+
+- candidate ID 与 selection 不同；
+- candidate revision 不同；
+- algorithm/profile/runtime identity 不同；
+- baseline/candidate blind ground truth 不同；
+- policy gate 不通过。
+
+## 9. P1 指标
+
+除现有 sequence/cue/onset/offset/cut/overlap 指标外，P1 增加 cut boundary：
 
 ```text
-profile_version = production-bootstrap-2026-08-17-a7
-algorithm_version = 4.0.0a8
+cut_boundary_match_count
+cut_boundary_mae_ms
+cut_boundary_p50_ms
+cut_boundary_p90_ms
+cut_boundary_p95_ms
+cut_boundary_within_250ms_rate
+cut_boundary_within_500ms_rate
 ```
 
-Algorithm contract 改变，所以旧 a7 artifact 不可改字段后继续使用；应按 a8 lineage 重跑/重新物化。
+不要单独追求低 cut-boundary MAE。必须同时看 cut recall/coverage，防止“只命中容易 cut”。
 
-## 9. 当前 BLOCK
+## 10. GitHub Actions 能做 / 不能做
 
-- overlap interval 穿 localized cut boundary；
-- overlap canonical source interval 穿 confirmed source gap；
-- overlap delta 缺 source provenance；
-- cut/overlap 任一 source mapping 仍 blocked；
-- line-LRC partial-line cut；
-- timed canonical token 被 cut 穿过；
-- 其他 unresolved review issue。
+### 可以做
 
-## 10. 下一优先级
+- Python 3.10 / 3.12 / 3.14 contract tests；
+- synthetic split-isolation tests；
+- candidate lock tests；
+- synthetic cut boundary metrics；
+- strict calibration -> selection -> blind gate E2E；
+- privacy scan / docs / environment / diff checks；
+- ASR dependency environment check。
 
-1. real private calibration / blind-test；
-2. Editor Evidence + LanguageSpan final cue fusion；
-3. 由真实误差决定 Forced Alignment / ASR v2；
-4. 只有真实任务证明必要时再研究 same-region cut+overlap joint acoustic composition。
+### 当前做不到且不得伪造
 
-不能在 real blind-test 前宣称固定百分比的准确率提升。
+如果真实私有音频、人工 reference SRT、真实 cut/overlap truth 没有提供给 runner，GitHub Actions **不能**产生真实：
+
+- 歌曲级准确率；
+- 中文/英文/韩文/日文/粤语真实分组指标；
+- 真实 cut/overlap P/R；
+- 真实 cue boundary MAE/P95；
+- 真实 runtime/review-density 生产结论。
+
+这些必须在有授权 private dataset 的环境实际运行后再汇报。
+
+## 11. 当前后续顺序
+
+1. PR #8 framework 全绿并合并；
+2. 建立第一版真实 private calibration / blind_test；
+3. 根据真实 error breakdown 决定 P2 Editor Evidence + LanguageSpan；
+4. 再判断 Forced Alignment / ASR v2 是否值得进入生产；
+5. same-region cut+overlap joint acoustic model 只在真实数据证明价值后考虑。
+
+在 real blind-test 前，不宣称固定百分比准确率提升。
