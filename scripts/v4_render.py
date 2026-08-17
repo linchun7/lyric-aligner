@@ -23,7 +23,10 @@ from lyric_aligner.contracts.artifacts import (
 )
 from lyric_aligner.pipeline.context import build_pipeline_context
 from lyric_aligner.srt import Cue, cue_id, text_sha256
-from lyric_aligner.timeline.composer import TimelineComposeError, compose_canonical_timelines
+from lyric_aligner.timeline.composer import (
+    TimelineComposeError,
+    compose_canonical_timelines,
+)
 from task_contract import load_task_manifest, verify_manifest_inputs
 
 
@@ -46,10 +49,15 @@ def _format_time(value: int) -> str:
 def _write_srt(path: Path, cues) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     blocks = [
-        f"{cue.number}\n{_format_time(cue.start_ms)} --> {_format_time(cue.end_ms)}\n{cue.text}"
+        f"{cue.number}\n{_format_time(cue.start_ms)} --> "
+        f"{_format_time(cue.end_ms)}\n{cue.text}"
         for cue in cues
     ]
-    path.write_text("\n\n".join(blocks) + "\n", encoding="utf-8-sig", newline="\n")
+    path.write_text(
+        "\n\n".join(blocks) + "\n",
+        encoding="utf-8-sig",
+        newline="\n",
+    )
 
 
 def _validate_artifact(
@@ -66,7 +74,9 @@ def _validate_artifact(
         expected_algorithm_version=__version__,
         expected_stage=stage,
     )
-    issues.extend(validate_artifact_output(artifact, role=role, path=output_path))
+    issues.extend(
+        validate_artifact_output(artifact, role=role, path=output_path)
+    )
     if issues:
         raise ValueError(f"invalid {stage} artifact: " + "; ".join(issues))
 
@@ -82,12 +92,13 @@ def _validate_run_artifact(
         "production_orchestration": "v4_production_run",
         "review_resolution": "v4_reviewed_run",
         "overlap_recomposition": "v4_recomposed_run",
+        "cut_rebuild": "v4_cut_rebuilt_run",
     }
     role = roles.get(stage)
     if role is None:
         raise ValueError(
             "run artifact must be production_orchestration, review_resolution, "
-            "or overlap_recomposition"
+            "overlap_recomposition, or cut_rebuild"
         )
     _validate_artifact(
         artifact,
@@ -117,7 +128,9 @@ def main() -> int:
         task = load_task_manifest(args.task_manifest)
         task_issues = verify_manifest_inputs(args.task_manifest, task)
         if task_issues:
-            raise ValueError("task manifest validation failed: " + "; ".join(task_issues))
+            raise ValueError(
+                "task manifest validation failed: " + "; ".join(task_issues)
+            )
         fingerprint = str(task["task_fingerprint_sha256"])
 
         run = _load(args.run)
@@ -128,28 +141,53 @@ def main() -> int:
             output_path=args.run,
         )
         if run.get("algorithm_version") != __version__:
-            raise ValueError("run algorithm version mismatch; rerun the current v4 chain")
+            raise ValueError(
+                "run algorithm version mismatch; rerun the current v4 chain"
+            )
         if run.get("task_fingerprint_sha256") != fingerprint:
             raise ValueError("run belongs to another task")
         if run.get("status") != "ready_for_render":
-            raise ValueError("run is not ready_for_render; resolve/recompose review issues first")
+            raise ValueError(
+                "run is not ready_for_render; resolve/rebuild review issues first"
+            )
         if run.get("issues") not in ([], None):
-            raise ValueError("ready_for_render run unexpectedly contains review issues")
+            raise ValueError(
+                "ready_for_render run unexpectedly contains review issues"
+            )
         if run.get("legacy_fallback_used") is not False:
-            raise ValueError("final v4 render refuses a run that used legacy fallback")
-        run_upstreams = {str(value) for value in run_artifact.get("upstream_artifact_ids", [])}
+            raise ValueError(
+                "final v4 render refuses a run that used legacy fallback"
+            )
+        run_upstreams = {
+            str(value)
+            for value in run_artifact.get("upstream_artifact_ids", [])
+        }
 
         if run_stage == "review_resolution":
             resolution = run.get("review_resolution")
             if not isinstance(resolution, dict):
-                raise ValueError("reviewed run is missing review_resolution metadata")
-            base_run_artifact_id = str(resolution.get("base_run_artifact_id") or "")
-            if not base_run_artifact_id or base_run_artifact_id not in run_upstreams:
-                raise ValueError("reviewed run is not upstream-bound to its base production run")
+                raise ValueError(
+                    "reviewed run is missing review_resolution metadata"
+                )
+            base_run_artifact_id = str(
+                resolution.get("base_run_artifact_id") or ""
+            )
+            if (
+                not base_run_artifact_id
+                or base_run_artifact_id not in run_upstreams
+            ):
+                raise ValueError(
+                    "reviewed run is not upstream-bound to its base production run"
+                )
             if int(resolution.get("remaining_issue_count", -1)) != 0:
-                raise ValueError("reviewed run still records unresolved review issues")
+                raise ValueError(
+                    "reviewed run still records unresolved review issues"
+                )
             config_base_id = str(
-                run_artifact.get("normalized_config", {}).get("base_run_artifact_id") or ""
+                run_artifact.get("normalized_config", {}).get(
+                    "base_run_artifact_id"
+                )
+                or ""
             )
             if config_base_id != base_run_artifact_id:
                 raise ValueError("review artifact base-run identity mismatch")
@@ -158,21 +196,102 @@ def main() -> int:
         if run_stage == "overlap_recomposition":
             metadata = run.get("overlap_recomposition")
             if not isinstance(metadata, dict):
-                raise ValueError("overlap-recomposed run is missing recomposition metadata")
-            source_review_id = str(metadata.get("source_review_artifact_id") or "")
+                raise ValueError(
+                    "overlap-recomposed run is missing recomposition metadata"
+                )
+            source_review_id = str(
+                metadata.get("source_review_artifact_id") or ""
+            )
             if not source_review_id or source_review_id not in run_upstreams:
-                raise ValueError("overlap recomposition is not bound to its review artifact")
+                raise ValueError(
+                    "overlap recomposition is not bound to its review artifact"
+                )
             if int(metadata.get("remaining_issue_count", -1)) != 0:
-                raise ValueError("overlap recomposition still records unresolved review issues")
+                raise ValueError(
+                    "overlap recomposition still records unresolved review issues"
+                )
             config_review_id = str(
-                run_artifact.get("normalized_config", {}).get("source_review_artifact_id") or ""
+                run_artifact.get("normalized_config", {}).get(
+                    "source_review_artifact_id"
+                )
+                or ""
             )
             if config_review_id != source_review_id:
-                raise ValueError("overlap artifact source-review identity mismatch")
+                raise ValueError(
+                    "overlap artifact source-review identity mismatch"
+                )
             regions_raw = run.get("confirmed_overlap_regions")
             if not isinstance(regions_raw, list) or not regions_raw:
-                raise ValueError("overlap recomposition has no confirmed_overlap_regions")
+                raise ValueError(
+                    "overlap recomposition has no confirmed_overlap_regions"
+                )
             confirmed_overlap_regions = regions_raw
+
+        cut_metadata: dict = {}
+        expected_cut_mapping_ids: set[str] = set()
+        expected_cut_timeline_ids: set[str] = set()
+        if run_stage == "cut_rebuild":
+            metadata = run.get("cut_rebuild")
+            if not isinstance(metadata, dict):
+                raise ValueError(
+                    "cut-rebuilt run is missing cut_rebuild metadata"
+                )
+            source_review_id = str(
+                metadata.get("source_review_artifact_id") or ""
+            )
+            if not source_review_id or source_review_id not in run_upstreams:
+                raise ValueError(
+                    "cut rebuild is not bound to its review artifact"
+                )
+            if int(metadata.get("remaining_issue_count", -1)) != 0:
+                raise ValueError(
+                    "cut rebuild still records unresolved review issues"
+                )
+            if int(metadata.get("canonical_fragment_issue_count", -1)) != 0:
+                raise ValueError(
+                    "cut rebuild still contains unresolved canonical fragments"
+                )
+            if int(metadata.get("rebuilt_occurrence_count", 0)) < 1:
+                raise ValueError("cut rebuild has no rebuilt occurrence")
+            config_review_id = str(
+                run_artifact.get("normalized_config", {}).get(
+                    "source_review_artifact_id"
+                )
+                or ""
+            )
+            if config_review_id != source_review_id:
+                raise ValueError(
+                    "cut-rebuild artifact source-review identity mismatch"
+                )
+            mapping_ids = metadata.get("new_mapping_artifact_ids")
+            timeline_ids = metadata.get("new_timeline_artifact_ids")
+            if not isinstance(mapping_ids, list) or not mapping_ids:
+                raise ValueError(
+                    "cut rebuild has no cut-aware mapping artifacts"
+                )
+            if not isinstance(timeline_ids, list) or not timeline_ids:
+                raise ValueError(
+                    "cut rebuild has no rebuilt timeline artifacts"
+                )
+            expected_cut_mapping_ids = {
+                str(value) for value in mapping_ids if str(value)
+            }
+            expected_cut_timeline_ids = {
+                str(value) for value in timeline_ids if str(value)
+            }
+            if (
+                len(expected_cut_mapping_ids) != len(mapping_ids)
+                or len(expected_cut_timeline_ids) != len(timeline_ids)
+            ):
+                raise ValueError("cut rebuild artifact IDs are missing/duplicated")
+            missing = (
+                expected_cut_mapping_ids | expected_cut_timeline_ids
+            ) - run_upstreams
+            if missing:
+                raise ValueError(
+                    "cut rebuild artifact is missing rebuilt mapping/timeline upstreams"
+                )
+            cut_metadata = metadata
 
         track_assets = _load(args.track_assets)
         asset_artifact = _load(args.asset_artifact)
@@ -185,17 +304,29 @@ def main() -> int:
         )
         asset_artifact_id = str(asset_artifact["artifact_id"])
         if asset_artifact_id not in run_upstreams:
-            raise ValueError("supplied TrackAsset artifact is not upstream of this run")
+            raise ValueError(
+                "supplied TrackAsset artifact is not upstream of this run"
+            )
         context = build_pipeline_context(
             expected_task_fingerprint=fingerprint,
             track_assets_payload=track_assets,
             asset_artifact=asset_artifact,
             verify_asset_files=True,
         )
-        if str(run.get("calibration_profile_id") or "") != context.calibration_profile_id:
-            raise ValueError("run calibration profile differs from TrackAssets")
-        if str(run.get("calibration_profile_version") or "") != context.calibration_profile_version:
-            raise ValueError("run calibration profile version differs from TrackAssets")
+        if (
+            str(run.get("calibration_profile_id") or "")
+            != context.calibration_profile_id
+        ):
+            raise ValueError(
+                "run calibration profile differs from TrackAssets"
+            )
+        if (
+            str(run.get("calibration_profile_version") or "")
+            != context.calibration_profile_version
+        ):
+            raise ValueError(
+                "run calibration profile version differs from TrackAssets"
+            )
 
         timeline_payloads: list[dict] = []
         timeline_artifact_ids: list[str] = []
@@ -203,33 +334,46 @@ def main() -> int:
         if not isinstance(occurrence_rows, list) or not occurrence_rows:
             raise ValueError("run has no occurrence summaries")
         seen_occurrences: set[str] = set()
+        cut_rebuilt_occurrence_count = 0
         for occurrence in occurrence_rows:
+            if not isinstance(occurrence, dict):
+                raise ValueError("run occurrence summary must be an object")
             occurrence_id = str(occurrence.get("occurrence_id") or "")
             if not occurrence_id or occurrence_id in seen_occurrences:
-                raise ValueError("run occurrence identity is missing/duplicated")
+                raise ValueError(
+                    "run occurrence identity is missing/duplicated"
+                )
             seen_occurrences.add(occurrence_id)
             binding = context.binding_by_occurrence_id.get(occurrence_id)
             if binding is None:
-                raise ValueError("run occurrence is missing from TrackAssets")
+                raise ValueError(
+                    "run occurrence is missing from TrackAssets"
+                )
             if bool(occurrence.get("mapping_blocked")):
                 raise ValueError("run contains a blocked occurrence")
 
             timeline_raw = occurrence.get("timeline_path")
             artifact_raw = occurrence.get("timeline_artifact_path")
             if not timeline_raw or not artifact_raw:
-                raise ValueError("renderable occurrence is missing canonical timeline artifact")
+                raise ValueError(
+                    "renderable occurrence is missing canonical timeline artifact"
+                )
             timeline_path = Path(str(timeline_raw))
             timeline_artifact_path = Path(str(artifact_raw))
             timeline = _load(timeline_path)
             timeline_artifact = _load(timeline_artifact_path)
             timeline_stage = str(
-                occurrence.get("timeline_stage") or "canonical_timeline_projection"
+                occurrence.get("timeline_stage")
+                or "canonical_timeline_projection"
             )
             if timeline_stage not in {
                 "canonical_timeline_projection",
                 "overlap_timeline_recomposition",
+                "cut_timeline_rebuild",
             }:
-                raise ValueError("run occurrence uses an unsupported timeline stage")
+                raise ValueError(
+                    "run occurrence uses an unsupported timeline stage"
+                )
             _validate_artifact(
                 timeline_artifact,
                 fingerprint=fingerprint,
@@ -239,36 +383,117 @@ def main() -> int:
             )
             timeline_artifact_id = str(timeline_artifact["artifact_id"])
             if timeline_artifact_id not in run_upstreams:
-                raise ValueError("canonical timeline artifact is not upstream of run")
+                raise ValueError(
+                    "canonical timeline artifact is not upstream of run"
+                )
             timeline_upstreams = {
-                str(value) for value in timeline_artifact.get("upstream_artifact_ids", [])
+                str(value)
+                for value in timeline_artifact.get("upstream_artifact_ids", [])
             }
             if asset_artifact_id not in timeline_upstreams:
-                raise ValueError("canonical timeline is not derived from supplied TrackAssets")
+                raise ValueError(
+                    "canonical timeline is not derived from supplied TrackAssets"
+                )
             if timeline.get("algorithm_version") != __version__:
-                raise ValueError("canonical timeline algorithm version mismatch")
+                raise ValueError(
+                    "canonical timeline algorithm version mismatch"
+                )
             if timeline.get("task_fingerprint_sha256") != fingerprint:
                 raise ValueError("canonical timeline belongs to another task")
-            if str(timeline.get("calibration_profile_id") or "") != context.calibration_profile_id:
-                raise ValueError("canonical timeline calibration profile mismatch")
+            if (
+                str(timeline.get("calibration_profile_id") or "")
+                != context.calibration_profile_id
+            ):
+                raise ValueError(
+                    "canonical timeline calibration profile mismatch"
+                )
 
             timeline_result = timeline.get("result")
             if not isinstance(timeline_result, dict):
                 raise ValueError("canonical timeline result is invalid")
-            if str(timeline_result.get("occurrence_id") or "") != binding.occurrence_id:
-                raise ValueError("canonical timeline occurrence differs from TrackAsset binding")
-            if str(timeline_result.get("track_id") or "") != binding.track_id:
-                raise ValueError("canonical timeline track differs from TrackAsset binding")
-            if str(timeline_result.get("canonical_selection_sha256") or "") != binding.canonical_selection_sha256:
-                raise ValueError("canonical timeline lyric selection differs from TrackAsset binding")
+            if (
+                str(timeline_result.get("occurrence_id") or "")
+                != binding.occurrence_id
+            ):
+                raise ValueError(
+                    "canonical timeline occurrence differs from TrackAsset binding"
+                )
+            if (
+                str(timeline_result.get("track_id") or "")
+                != binding.track_id
+            ):
+                raise ValueError(
+                    "canonical timeline track differs from TrackAsset binding"
+                )
+            if (
+                str(timeline_result.get("canonical_selection_sha256") or "")
+                != binding.canonical_selection_sha256
+            ):
+                raise ValueError(
+                    "canonical timeline lyric selection differs from TrackAsset binding"
+                )
             if int(timeline_result.get("ordinal", -1)) != binding.ordinal:
-                raise ValueError("canonical timeline ordinal differs from TrackOccurrence")
+                raise ValueError(
+                    "canonical timeline ordinal differs from TrackOccurrence"
+                )
+
+            occurrence_cut_rebuilt = bool(occurrence.get("cut_rebuilt"))
+            if occurrence_cut_rebuilt:
+                cut_rebuilt_occurrence_count += 1
+            if timeline_stage == "cut_timeline_rebuild":
+                if run_stage != "cut_rebuild" or not occurrence_cut_rebuilt:
+                    raise ValueError(
+                        "cut-rebuilt timeline requires a cut_rebuild run/occurrence"
+                    )
+                if timeline_result.get("cut_aware") is not True:
+                    raise ValueError(
+                        "cut-rebuilt canonical timeline is not marked cut_aware"
+                    )
+                if timeline_result.get("projection_issues") not in ([], None):
+                    raise ValueError(
+                        "cut-rebuilt canonical timeline still contains projection issues"
+                    )
+                if timeline_artifact_id not in expected_cut_timeline_ids:
+                    raise ValueError(
+                        "cut timeline artifact is not declared by cut_rebuild metadata"
+                    )
+                mapping_artifact_id = str(
+                    timeline.get("cut_mapping_artifact_id") or ""
+                )
+                if not mapping_artifact_id:
+                    raise ValueError(
+                        "cut-rebuilt timeline has no cut mapping artifact identity"
+                    )
+                if mapping_artifact_id not in timeline_upstreams:
+                    raise ValueError(
+                        "cut-rebuilt timeline is not upstream-bound to its cut mapping"
+                    )
+                if mapping_artifact_id not in expected_cut_mapping_ids:
+                    raise ValueError(
+                        "cut mapping artifact is not declared by cut_rebuild metadata"
+                    )
+                if mapping_artifact_id not in run_upstreams:
+                    raise ValueError(
+                        "cut mapping artifact is not upstream of cut-rebuild run"
+                    )
+            elif occurrence_cut_rebuilt:
+                raise ValueError(
+                    "cut-rebuilt occurrence does not use cut_timeline_rebuild"
+                )
 
             timeline_payloads.append(timeline)
             timeline_artifact_ids.append(timeline_artifact_id)
 
         if set(context.binding_by_occurrence_id) != seen_occurrences:
-            raise ValueError("run does not contain exactly all resolved TrackOccurrences")
+            raise ValueError(
+                "run does not contain exactly all resolved TrackOccurrences"
+            )
+        if run_stage == "cut_rebuild" and cut_rebuilt_occurrence_count != int(
+            cut_metadata.get("rebuilt_occurrence_count", -1)
+        ):
+            raise ValueError(
+                "cut-rebuild occurrence count differs from run metadata"
+            )
 
         cues = compose_canonical_timelines(
             timeline_payloads,
@@ -294,7 +519,9 @@ def main() -> int:
             "cue_id",
             "text_sha256",
         ]
-        with args.report.open("w", encoding="utf-8-sig", newline="") as handle:
+        with args.report.open(
+            "w", encoding="utf-8-sig", newline=""
+        ) as handle:
             writer = csv.DictWriter(handle, fieldnames=fieldnames)
             writer.writeheader()
             for position, rendered in enumerate(cues, start=1):
@@ -323,6 +550,9 @@ def main() -> int:
                     }
                 )
 
+        rebuilt_cut_count = int(
+            cut_metadata.get("rebuilt_occurrence_count", 0)
+        )
         qa = {
             "schema_version": "1.0",
             "algorithm_version": __version__,
@@ -339,6 +569,7 @@ def main() -> int:
             "review_candidate_count": 0,
             "cue_count": len(cues),
             "confirmed_overlap_region_count": len(confirmed_overlap_regions),
+            "rebuilt_cut_occurrence_count": rebuilt_cut_count,
             "render_config": asdict(context.profile.render),
         }
         atomic_write_json(args.qa_json, qa)
@@ -356,10 +587,15 @@ def main() -> int:
                 **context.artifact_config(),
                 "render": asdict(context.profile.render),
                 "source_run_stage": run_stage,
-                "confirmed_overlap_region_count": len(confirmed_overlap_regions),
+                "confirmed_overlap_region_count": len(
+                    confirmed_overlap_regions
+                ),
+                "rebuilt_cut_occurrence_count": rebuilt_cut_count,
                 "legacy_fallback": False,
             },
-            producer={"git_commit": args.git_commit} if args.git_commit else {},
+            producer=(
+                {"git_commit": args.git_commit} if args.git_commit else {}
+            ),
             upstream_artifact_ids=(
                 asset_artifact_id,
                 str(run_artifact["artifact_id"]),
@@ -369,7 +605,10 @@ def main() -> int:
                 "cue_count": len(cues),
                 "occurrence_count": len(occurrence_rows),
                 "review_candidate_count": 0,
-                "confirmed_overlap_region_count": len(confirmed_overlap_regions),
+                "confirmed_overlap_region_count": len(
+                    confirmed_overlap_regions
+                ),
+                "rebuilt_cut_occurrence_count": rebuilt_cut_count,
                 "source_run_stage": run_stage,
             },
         )
@@ -392,6 +631,9 @@ def main() -> int:
                 "publish_ready": True,
                 "source_run_stage": run_stage,
                 "confirmed_overlap_regions": len(confirmed_overlap_regions),
+                "rebuilt_cut_occurrences": int(
+                    cut_metadata.get("rebuilt_occurrence_count", 0)
+                ),
                 "artifact_id": render_artifact["artifact_id"],
                 "final_srt": str(args.final_srt),
                 "report": str(args.report),

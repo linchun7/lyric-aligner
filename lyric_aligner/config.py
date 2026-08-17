@@ -69,6 +69,24 @@ class TimeWarpConfig:
 
 
 @dataclass(frozen=True)
+class CutBoundaryConfig:
+    """Fine local search used only after a discontinuity is human-confirmed as a cut."""
+
+    sr: int = 16000
+    hop_length: int = 256
+    context_seconds: float = 0.80
+    candidate_step_seconds: float = 0.05
+    source_radius_seconds: float = 0.90
+    slope_radius: float = 0.08
+    slope_step: float = 0.02
+    min_side_score: float = 0.60
+    min_side_margin: float = 0.010
+    min_boundary_margin: float = 0.015
+    minimum_feature_agreement: int = 2
+    min_source_gap_seconds: float = 0.25
+
+
+@dataclass(frozen=True)
 class RenderConfig:
     """Conservative bootstrap rules for package-native final subtitle rendering."""
 
@@ -82,12 +100,13 @@ class RenderConfig:
 class V4CalibrationProfile:
     """All tunable v4 production-bootstrap values with one profile identity."""
 
-    profile_version: str = "production-bootstrap-2026-08-17-a4"
+    profile_version: str = "production-bootstrap-2026-08-17-a7"
     asset_resolver: AssetResolverConfig = field(default_factory=AssetResolverConfig)
     coarse: CoarseAlignmentConfig = field(default_factory=CoarseAlignmentConfig)
     fine: FineAlignmentConfig = field(default_factory=FineAlignmentConfig)
     transition: TransitionConfig = field(default_factory=TransitionConfig)
     timewarp: TimeWarpConfig = field(default_factory=TimeWarpConfig)
+    cut_boundary: CutBoundaryConfig = field(default_factory=CutBoundaryConfig)
     render: RenderConfig = field(default_factory=RenderConfig)
 
     def to_dict(self) -> dict[str, Any]:
@@ -144,6 +163,7 @@ def profile_from_dict(payload: Any) -> V4CalibrationProfile:
         "fine",
         "transition",
         "timewarp",
+        "cut_boundary",
         "render",
     }
     actual = set(payload)
@@ -170,6 +190,9 @@ def profile_from_dict(payload: Any) -> V4CalibrationProfile:
             TransitionConfig, payload["transition"], "transition"
         ),
         timewarp=_strict_dataclass(TimeWarpConfig, payload["timewarp"], "timewarp"),
+        cut_boundary=_strict_dataclass(
+            CutBoundaryConfig, payload["cut_boundary"], "cut_boundary"
+        ),
         render=_strict_dataclass(RenderConfig, payload["render"], "render"),
     )
     validate_profile(profile)
@@ -187,6 +210,9 @@ def validate_profile(profile: V4CalibrationProfile) -> None:
         ("transition.min_score", profile.transition.min_score),
         ("transition.min_margin", profile.transition.min_margin),
         ("timewarp.min_piecewise_improvement", profile.timewarp.min_piecewise_improvement),
+        ("cut_boundary.min_side_score", profile.cut_boundary.min_side_score),
+        ("cut_boundary.min_side_margin", profile.cut_boundary.min_side_margin),
+        ("cut_boundary.min_boundary_margin", profile.cut_boundary.min_boundary_margin),
     ):
         if not 0.0 <= float(value) <= 1.0:
             raise CalibrationProfileError(f"{label} must be within [0,1]")
@@ -206,6 +232,20 @@ def validate_profile(profile: V4CalibrationProfile) -> None:
         raise CalibrationProfileError("timewarp.max_continuous_rate must be positive")
     if profile.timewarp.minimum_feature_families < 1:
         raise CalibrationProfileError("timewarp.minimum_feature_families must be >= 1")
+    if profile.cut_boundary.sr <= 0 or profile.cut_boundary.hop_length <= 0:
+        raise CalibrationProfileError("cut_boundary sr/hop_length must be positive")
+    if profile.cut_boundary.context_seconds <= 0:
+        raise CalibrationProfileError("cut_boundary.context_seconds must be positive")
+    if profile.cut_boundary.candidate_step_seconds <= 0:
+        raise CalibrationProfileError("cut_boundary.candidate_step_seconds must be positive")
+    if profile.cut_boundary.source_radius_seconds <= 0:
+        raise CalibrationProfileError("cut_boundary.source_radius_seconds must be positive")
+    if profile.cut_boundary.slope_radius <= 0 or profile.cut_boundary.slope_step <= 0:
+        raise CalibrationProfileError("cut_boundary slope search must be positive")
+    if profile.cut_boundary.minimum_feature_agreement < 1:
+        raise CalibrationProfileError("cut_boundary.minimum_feature_agreement must be >= 1")
+    if profile.cut_boundary.min_source_gap_seconds <= 0:
+        raise CalibrationProfileError("cut_boundary.min_source_gap_seconds must be positive")
     if profile.render.minimum_cue_duration_ms <= 0:
         raise CalibrationProfileError("render.minimum_cue_duration_ms must be positive")
     if profile.render.maximum_line_duration_ms < profile.render.minimum_cue_duration_ms:

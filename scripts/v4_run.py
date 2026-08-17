@@ -24,6 +24,7 @@ if str(REPOSITORY_ROOT) not in sys.path:
 import librosa
 
 from lyric_aligner import __version__
+from lyric_aligner.audio.cuts import discontinuity_candidate_id
 from lyric_aligner.audio.fine_alignment import should_run_fine_alignment
 from lyric_aligner.contracts.artifacts import (
     atomic_write_json,
@@ -37,7 +38,11 @@ from lyric_aligner.timeline.projector import (
     effective_timewarp,
     project_binding_timeline,
 )
-from task_contract import load_task_manifest, resolve_manifest_record, verify_manifest_inputs
+from task_contract import (
+    load_task_manifest,
+    resolve_manifest_record,
+    verify_manifest_inputs,
+)
 
 
 def _load(path: Path) -> dict:
@@ -83,12 +88,18 @@ def _artifact_id(path: Path) -> str:
     return str(_load(path)["artifact_id"])
 
 
-def _validate_asset_output(track_assets: Path, artifact_path: Path) -> tuple[dict, dict]:
+def _validate_asset_output(
+    track_assets: Path, artifact_path: Path
+) -> tuple[dict, dict]:
     assets = _load(track_assets)
     artifact = _load(artifact_path)
-    issues = validate_artifact_output(artifact, role="track_assets", path=track_assets)
+    issues = validate_artifact_output(
+        artifact, role="track_assets", path=track_assets
+    )
     if issues:
-        raise ValueError("asset artifact output mismatch: " + "; ".join(issues))
+        raise ValueError(
+            "asset artifact output mismatch: " + "; ".join(issues)
+        )
     return assets, artifact
 
 
@@ -132,6 +143,64 @@ def _coarse_command(
     return command
 
 
+def _effective_timewarp_payload(
+    coarse: dict, fine: dict | None
+) -> tuple[dict, str]:
+    if fine is not None:
+        fine_result = fine.get("result", {})
+        fine_timewarp = fine_result.get("timewarp")
+        if bool(fine_result.get("applied")) and isinstance(
+            fine_timewarp, dict
+        ):
+            return fine_timewarp, "fine"
+    coarse_timewarp = coarse.get("result", {}).get("timewarp")
+    if not isinstance(coarse_timewarp, dict):
+        raise ValueError("coarse alignment has no TimeWarp")
+    return coarse_timewarp, "coarse"
+
+
+def _forward_discontinuity_issue(
+    *, occurrence_id: str, selection: str, row: dict
+) -> dict | None:
+    try:
+        mix_before = float(row["mix_before"])
+        mix_after = float(row["mix_after"])
+        source_before = float(row["source_before"])
+        source_after = float(row["source_after"])
+    except (KeyError, TypeError, ValueError):
+        return None
+    if mix_before < 0 or mix_after <= mix_before or source_after <= source_before:
+        return None
+    candidate_id = discontinuity_candidate_id(occurrence_id, row)
+    issue = {
+        "kind": "timewarp_discontinuity",
+        "code": "source_position_discontinuity",
+        "candidate_id": candidate_id,
+        "occurrence_id": occurrence_id,
+        "status": "review",
+        "selection": selection,
+        "mix_before": mix_before,
+        "mix_after": mix_after,
+        "source_before": source_before,
+        "source_after": source_after,
+        "reason": str(
+            row.get("reason")
+            or "forward source-position jump requires cut/remap review"
+        ),
+    }
+    for key in (
+        "type",
+        "observed_rate",
+        "excess_source_jump",
+        "expected_continuous_advance",
+        "allowed_continuous_advance",
+        "observed_source_jump",
+    ):
+        if key in row:
+            issue[key] = row[key]
+    return issue
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--task-manifest", required=True, type=Path)
@@ -147,19 +216,32 @@ def main() -> int:
         manifest = load_task_manifest(args.task_manifest)
         input_issues = verify_manifest_inputs(args.task_manifest, manifest)
         if input_issues:
-            raise ValueError("task manifest validation failed: " + "; ".join(input_issues))
+            raise ValueError(
+                "task manifest validation failed: " + "; ".join(input_issues)
+            )
         fingerprint = str(manifest["task_fingerprint_sha256"])
         mix_audio = _manifest_path(args.task_manifest, manifest, "audio")
-        song_list = _manifest_path(args.task_manifest, manifest, "song_list")
-        lyrics_dir = _manifest_path(args.task_manifest, manifest, "lyrics_dir")
-        source_dir = _manifest_path(args.task_manifest, manifest, "source_audio_dir")
+        song_list = _manifest_path(
+            args.task_manifest, manifest, "song_list"
+        )
+        lyrics_dir = _manifest_path(
+            args.task_manifest, manifest, "lyrics_dir"
+        )
+        source_dir = _manifest_path(
+            args.task_manifest, manifest, "source_audio_dir"
+        )
 
         out_dir = args.out_dir.resolve()
         asset_dir = out_dir / "assets"
         primary_dir = out_dir / "primary"
         transition_dir = out_dir / "transitions"
         timeline_dir = out_dir / "timelines"
-        for directory in (asset_dir, primary_dir, transition_dir, timeline_dir):
+        for directory in (
+            asset_dir,
+            primary_dir,
+            transition_dir,
+            timeline_dir,
+        ):
             directory.mkdir(parents=True, exist_ok=True)
 
         track_assets = asset_dir / "track_assets.json"
@@ -181,9 +263,15 @@ def main() -> int:
             str(asset_artifact),
         ]
         _append_optional(resolve_command, "--profile", args.profile)
-        _append_optional(resolve_command, "--language-map", args.language_map)
-        _append_optional(resolve_command, "--middle-cut-map", args.middle_cut_map)
-        _append_optional(resolve_command, "--lyric-role-map", args.lyric_role_map)
+        _append_optional(
+            resolve_command, "--language-map", args.language_map
+        )
+        _append_optional(
+            resolve_command, "--middle-cut-map", args.middle_cut_map
+        )
+        _append_optional(
+            resolve_command, "--lyric-role-map", args.lyric_role_map
+        )
         if args.git_commit:
             resolve_command.extend(["--git-commit", args.git_commit])
         _run(resolve_command)
@@ -201,21 +289,24 @@ def main() -> int:
         plan = build_production_plan(
             context.bindings,
             mix_duration=mix_duration,
-            transition_margin_seconds=context.profile.transition.search_margin_seconds,
+            transition_margin_seconds=(
+                context.profile.transition.search_margin_seconds
+            ),
         )
 
         issues: list[dict] = []
-        upstream_artifact_ids: list[str] = [context.asset_artifact.artifact_id]
+        upstream_artifact_ids: list[str] = [
+            context.asset_artifact.artifact_id
+        ]
         occurrence_summaries: list[dict] = []
-        primary_payloads: dict[str, dict] = {}
-        primary_artifacts: dict[str, Path] = {}
-        fine_payloads: dict[str, dict | None] = {}
-        fine_artifacts: dict[str, Path | None] = {}
+        discontinuity_issue_count = 0
 
         for item in plan.occurrences:
             safe_id = _safe(item.occurrence_id)
             coarse_path = primary_dir / f"{safe_id}.coarse.json"
-            coarse_artifact_path = primary_dir / f"{safe_id}.coarse.artifact.json"
+            coarse_artifact_path = (
+                primary_dir / f"{safe_id}.coarse.artifact.json"
+            )
             _run(
                 _coarse_command(
                     task_manifest=args.task_manifest,
@@ -231,15 +322,16 @@ def main() -> int:
                 )
             )
             coarse = _load(coarse_path)
-            primary_payloads[item.occurrence_id] = coarse
-            primary_artifacts[item.occurrence_id] = coarse_artifact_path
             upstream_artifact_ids.append(_artifact_id(coarse_artifact_path))
 
             fine: dict | None = None
+            fine_path: Path | None = None
             fine_artifact_path: Path | None = None
             if should_run_fine_alignment(coarse):
                 fine_path = primary_dir / f"{safe_id}.fine.json"
-                fine_artifact_path = primary_dir / f"{safe_id}.fine.artifact.json"
+                fine_artifact_path = (
+                    primary_dir / f"{safe_id}.fine.artifact.json"
+                )
                 fine_command = [
                     sys.executable,
                     str(REPOSITORY_ROOT / "scripts" / "v4_fine_align.py"),
@@ -264,31 +356,70 @@ def main() -> int:
                     fine_command.extend(["--git-commit", args.git_commit])
                 _run(fine_command)
                 fine = _load(fine_path)
-                upstream_artifact_ids.append(_artifact_id(fine_artifact_path))
-            fine_payloads[item.occurrence_id] = fine
-            fine_artifacts[item.occurrence_id] = fine_artifact_path
-
-            mapping, mapping_blocked, mapping_source = effective_timewarp(coarse, fine)
-            coarse_selection = str(
-                coarse.get("result", {}).get("timewarp", {}).get("selection", "")
-            )
-            if mapping_blocked:
-                issues.append(
-                    {
-                        "kind": "timewarp",
-                        "code": "effective_mapping_blocked",
-                        "occurrence_id": item.occurrence_id,
-                        "status": "review",
-                        "selection": coarse_selection,
-                        "reason": "effective Source-to-Mix mapping is blocked",
-                    }
+                upstream_artifact_ids.append(
+                    _artifact_id(fine_artifact_path)
                 )
+
+            mapping, mapping_blocked, mapping_source = effective_timewarp(
+                coarse, fine
+            )
+            timewarp_payload, timewarp_source = _effective_timewarp_payload(
+                coarse, fine
+            )
+            if timewarp_source != mapping_source:
+                raise ValueError(
+                    "effective TimeWarp provenance disagrees with projected mapping"
+                )
+            coarse_selection = str(
+                coarse.get("result", {})
+                .get("timewarp", {})
+                .get("selection", "")
+            )
+            timewarp_selection = str(
+                timewarp_payload.get("selection") or coarse_selection
+            )
+            occurrence_discontinuities: list[dict] = []
+            if mapping_blocked:
+                rows = timewarp_payload.get("discontinuities") or []
+                if not isinstance(rows, list):
+                    raise ValueError("effective TimeWarp discontinuities must be a list")
+                for row in rows:
+                    if not isinstance(row, dict):
+                        continue
+                    issue = _forward_discontinuity_issue(
+                        occurrence_id=item.occurrence_id,
+                        selection=timewarp_selection,
+                        row=row,
+                    )
+                    if issue is not None:
+                        occurrence_discontinuities.append(issue)
+                if occurrence_discontinuities:
+                    issues.extend(occurrence_discontinuities)
+                    discontinuity_issue_count += len(
+                        occurrence_discontinuities
+                    )
+                else:
+                    issues.append(
+                        {
+                            "kind": "timewarp",
+                            "code": "effective_mapping_blocked",
+                            "occurrence_id": item.occurrence_id,
+                            "status": "review",
+                            "selection": timewarp_selection,
+                            "reason": (
+                                "effective Source-to-Mix mapping is blocked; "
+                                "no replayable forward cut candidate was materialized"
+                            ),
+                        }
+                    )
 
             timeline_path: Path | None = None
             timeline_artifact_path: Path | None = None
             timeline_line_count = 0
             if not mapping_blocked:
-                binding = context.binding_by_occurrence_id[item.occurrence_id]
+                binding = context.binding_by_occurrence_id[
+                    item.occurrence_id
+                ]
                 projected = project_binding_timeline(
                     binding,
                     mapping,
@@ -303,7 +434,9 @@ def main() -> int:
                     "schema_version": "1.0",
                     "algorithm_version": __version__,
                     "task_fingerprint_sha256": fingerprint,
-                    "calibration_profile_version": context.calibration_profile_version,
+                    "calibration_profile_version": (
+                        context.calibration_profile_version
+                    ),
                     "calibration_profile_id": context.calibration_profile_id,
                     "occurrence_id": item.occurrence_id,
                     "track_id": binding.track_id,
@@ -311,13 +444,17 @@ def main() -> int:
                     "result": projected,
                 }
                 atomic_write_json(timeline_path, timeline_payload)
-                timeline_artifact_path = timeline_dir / f"{safe_id}.timeline.artifact.json"
+                timeline_artifact_path = (
+                    timeline_dir / f"{safe_id}.timeline.artifact.json"
+                )
                 timeline_upstream = [
                     context.asset_artifact.artifact_id,
                     _artifact_id(coarse_artifact_path),
                 ]
                 if fine_artifact_path is not None:
-                    timeline_upstream.append(_artifact_id(fine_artifact_path))
+                    timeline_upstream.append(
+                        _artifact_id(fine_artifact_path)
+                    )
                 timeline_artifact = build_artifact_manifest(
                     task_fingerprint_sha256=fingerprint,
                     stage="canonical_timeline_projection",
@@ -329,7 +466,11 @@ def main() -> int:
                         "primary_start": item.primary_start,
                         "primary_end": item.primary_end,
                     },
-                    producer={"git_commit": args.git_commit} if args.git_commit else {},
+                    producer=(
+                        {"git_commit": args.git_commit}
+                        if args.git_commit
+                        else {}
+                    ),
                     upstream_artifact_ids=timeline_upstream,
                     evidence={
                         "occurrence_id": item.occurrence_id,
@@ -337,25 +478,52 @@ def main() -> int:
                         "line_count": timeline_line_count,
                     },
                 )
-                atomic_write_json(timeline_artifact_path, timeline_artifact)
-                upstream_artifact_ids.append(str(timeline_artifact["artifact_id"]))
+                atomic_write_json(
+                    timeline_artifact_path, timeline_artifact
+                )
+                upstream_artifact_ids.append(
+                    str(timeline_artifact["artifact_id"])
+                )
 
             occurrence_summaries.append(
                 {
                     "occurrence_id": item.occurrence_id,
                     "ordinal": item.ordinal,
-                    "primary_interval": [item.primary_start, item.primary_end],
+                    "primary_interval": [
+                        item.primary_start,
+                        item.primary_end,
+                    ],
                     "coarse_selection": coarse_selection,
-                    "fine_applied": bool(fine and fine.get("result", {}).get("applied")),
+                    "timewarp_selection": timewarp_selection,
+                    "fine_applied": bool(
+                        fine and fine.get("result", {}).get("applied")
+                    ),
                     "mapping_source": mapping_source,
                     "mapping_blocked": mapping_blocked,
+                    "discontinuity_candidate_count": len(
+                        occurrence_discontinuities
+                    ),
+                    "coarse_path": str(coarse_path),
+                    "coarse_artifact_path": str(coarse_artifact_path),
+                    "fine_path": str(fine_path) if fine_path else None,
+                    "fine_artifact_path": (
+                        str(fine_artifact_path)
+                        if fine_artifact_path
+                        else None
+                    ),
                     "timeline_line_count": timeline_line_count,
-                    "timeline_path": str(timeline_path) if timeline_path else None,
+                    "timeline_path": (
+                        str(timeline_path) if timeline_path else None
+                    ),
                     "timeline_artifact_path": (
-                        str(timeline_artifact_path) if timeline_artifact_path else None
+                        str(timeline_artifact_path)
+                        if timeline_artifact_path
+                        else None
                     ),
                     "timeline_stage": (
-                        "canonical_timeline_projection" if timeline_artifact_path else None
+                        "canonical_timeline_projection"
+                        if timeline_artifact_path
+                        else None
                     ),
                 }
             )
@@ -373,7 +541,9 @@ def main() -> int:
                 ("right", transition.right_occurrence_id),
             ):
                 coarse_path = stage_dir / f"{side}.coarse.json"
-                coarse_artifact_path = stage_dir / f"{side}.coarse.artifact.json"
+                coarse_artifact_path = (
+                    stage_dir / f"{side}.coarse.artifact.json"
+                )
                 _run(
                     _coarse_command(
                         task_manifest=args.task_manifest,
@@ -388,11 +558,18 @@ def main() -> int:
                         mix_end=transition.search_end,
                     )
                 )
-                boundary_coarse[side] = (coarse_path, coarse_artifact_path)
-                upstream_artifact_ids.append(_artifact_id(coarse_artifact_path))
+                boundary_coarse[side] = (
+                    coarse_path,
+                    coarse_artifact_path,
+                )
+                upstream_artifact_ids.append(
+                    _artifact_id(coarse_artifact_path)
+                )
 
             transition_path = stage_dir / "transition.json"
-            transition_artifact_path = stage_dir / "transition.artifact.json"
+            transition_artifact_path = (
+                stage_dir / "transition.artifact.json"
+            )
             probe_command = [
                 sys.executable,
                 str(REPOSITORY_ROOT / "scripts" / "v4_probe_transition.py"),
@@ -420,51 +597,89 @@ def main() -> int:
             _run(probe_command)
             transition_payload = _load(transition_path)
             transition_result = transition_payload.get("result", {})
-            transition_blocked = bool(transition_result.get("blocked", False))
-            overlap_candidates = list(transition_result.get("overlap_candidates", []))
-            uncertain_intervals = list(transition_result.get("uncertain_intervals", []))
-            if transition_blocked and not (overlap_candidates or uncertain_intervals):
-                raise ValueError("blocked transition has no materialized review candidates")
+            transition_blocked = bool(
+                transition_result.get("blocked", False)
+            )
+            overlap_candidates = list(
+                transition_result.get("overlap_candidates", [])
+            )
+            uncertain_intervals = list(
+                transition_result.get("uncertain_intervals", [])
+            )
+            if transition_blocked and not (
+                overlap_candidates or uncertain_intervals
+            ):
+                raise ValueError(
+                    "blocked transition has no materialized review candidates"
+                )
 
             for candidate in overlap_candidates:
-                candidate_id = str(candidate.get("candidate_id") or "").strip()
+                candidate_id = str(
+                    candidate.get("candidate_id") or ""
+                ).strip()
                 if not candidate_id:
-                    raise ValueError("transition overlap candidate is missing candidate_id")
+                    raise ValueError(
+                        "transition overlap candidate is missing candidate_id"
+                    )
                 issues.append(
                     {
                         "kind": "transition_overlap",
                         "code": "cross_track_overlap_candidate",
                         "candidate_id": candidate_id,
-                        "left_occurrence_id": transition.left_occurrence_id,
-                        "right_occurrence_id": transition.right_occurrence_id,
+                        "left_occurrence_id": (
+                            transition.left_occurrence_id
+                        ),
+                        "right_occurrence_id": (
+                            transition.right_occurrence_id
+                        ),
                         "interval_start": float(candidate["start"]),
                         "interval_end": float(candidate["end"]),
                         "status": "review",
-                        "reason": str(candidate.get("reason") or "overlap candidate"),
-                        "left_score": float(candidate.get("left_score", 0.0)),
-                        "right_score": float(candidate.get("right_score", 0.0)),
+                        "reason": str(
+                            candidate.get("reason")
+                            or "overlap candidate"
+                        ),
+                        "left_score": float(
+                            candidate.get("left_score", 0.0)
+                        ),
+                        "right_score": float(
+                            candidate.get("right_score", 0.0)
+                        ),
                     }
                 )
 
             for candidate in uncertain_intervals:
-                candidate_id = str(candidate.get("candidate_id") or "").strip()
+                candidate_id = str(
+                    candidate.get("candidate_id") or ""
+                ).strip()
                 if not candidate_id:
-                    raise ValueError("transition ambiguity candidate is missing candidate_id")
+                    raise ValueError(
+                        "transition ambiguity candidate is missing candidate_id"
+                    )
                 issues.append(
                     {
                         "kind": "transition_ambiguity",
                         "code": "ambiguous_source_occurrence",
                         "candidate_id": candidate_id,
-                        "left_occurrence_id": transition.left_occurrence_id,
-                        "right_occurrence_id": transition.right_occurrence_id,
+                        "left_occurrence_id": (
+                            transition.left_occurrence_id
+                        ),
+                        "right_occurrence_id": (
+                            transition.right_occurrence_id
+                        ),
                         "interval_start": float(candidate["start"]),
                         "interval_end": float(candidate["end"]),
                         "status": "review",
-                        "reason": str(candidate.get("reason") or "transition ambiguity"),
+                        "reason": str(
+                            candidate.get("reason")
+                            or "transition ambiguity"
+                        ),
                     }
                 )
 
-            upstream_artifact_ids.append(_artifact_id(transition_artifact_path))
+            upstream_artifact_ids.append(
+                _artifact_id(transition_artifact_path)
+            )
             transition_summaries.append(
                 {
                     **transition.to_dict(),
@@ -472,22 +687,34 @@ def main() -> int:
                     "blocked": transition_blocked,
                     "overlap_candidate_count": len(overlap_candidates),
                     "uncertain_interval_count": len(uncertain_intervals),
-                    "left_coarse_path": str(boundary_coarse["left"][0]),
-                    "left_coarse_artifact_path": str(boundary_coarse["left"][1]),
-                    "right_coarse_path": str(boundary_coarse["right"][0]),
-                    "right_coarse_artifact_path": str(boundary_coarse["right"][1]),
+                    "left_coarse_path": str(
+                        boundary_coarse["left"][0]
+                    ),
+                    "left_coarse_artifact_path": str(
+                        boundary_coarse["left"][1]
+                    ),
+                    "right_coarse_path": str(
+                        boundary_coarse["right"][0]
+                    ),
+                    "right_coarse_artifact_path": str(
+                        boundary_coarse["right"][1]
+                    ),
                     "transition_path": str(transition_path),
-                    "transition_artifact_path": str(transition_artifact_path),
+                    "transition_artifact_path": str(
+                        transition_artifact_path
+                    ),
                 }
             )
 
         status = readiness_status(issues=issues)
         run_path = out_dir / "v4_run.json"
         run_payload = {
-            "schema_version": "1.1",
+            "schema_version": "1.2",
             "algorithm_version": __version__,
             "task_fingerprint_sha256": fingerprint,
-            "calibration_profile_version": context.calibration_profile_version,
+            "calibration_profile_version": (
+                context.calibration_profile_version
+            ),
             "calibration_profile_id": context.calibration_profile_id,
             "status": status,
             "legacy_fallback_used": False,
@@ -509,19 +736,36 @@ def main() -> int:
                     context.profile.transition.search_margin_seconds
                 ),
                 "transition_issue_granularity": "candidate",
+                "timewarp_issue_granularity": (
+                    "candidate_when_forward_discontinuity_is_replayable"
+                ),
+                "primary_mapping_provenance_materialized": True,
                 "legacy_fallback": False,
             },
-            producer={"git_commit": args.git_commit} if args.git_commit else {},
-            upstream_artifact_ids=tuple(sorted(set(upstream_artifact_ids))),
+            producer=(
+                {"git_commit": args.git_commit} if args.git_commit else {}
+            ),
+            upstream_artifact_ids=tuple(
+                sorted(set(upstream_artifact_ids))
+            ),
             evidence={
                 "status": status,
                 "occurrence_count": len(occurrence_summaries),
                 "transition_count": len(transition_summaries),
                 "review_issue_count": len(issues),
+                "timewarp_discontinuity_issue_count": (
+                    discontinuity_issue_count
+                ),
             },
         )
         atomic_write_json(run_artifact_path, run_artifact)
-    except (OSError, KeyError, ValueError, RuntimeError, json.JSONDecodeError) as exc:
+    except (
+        OSError,
+        KeyError,
+        ValueError,
+        RuntimeError,
+        json.JSONDecodeError,
+    ) as exc:
         parser.error(str(exc))
 
     print(
@@ -533,6 +777,9 @@ def main() -> int:
                 "occurrences": len(occurrence_summaries),
                 "transitions": len(transition_summaries),
                 "review_issues": len(issues),
+                "timewarp_discontinuity_issues": (
+                    discontinuity_issue_count
+                ),
                 "run": str(run_path),
                 "artifact": str(run_artifact_path),
                 "artifact_id": run_artifact["artifact_id"],
