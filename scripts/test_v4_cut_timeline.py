@@ -64,21 +64,19 @@ def token(text, start_ms, end_ms):
 
 
 class V4CutTimelineTests(unittest.TestCase):
-    def test_line_start_inside_confirmed_source_gap_is_omitted(self):
+    def test_line_lrc_omits_only_when_entire_inferred_interval_is_inside_gap(self):
         rows = [
             line(0, 1000, "before"),
             line(1, 4000, "crosses cut"),
-            line(2, 6000, "fully removed"),
-            line(3, 8500, "after"),
+            line(2, 5500, "fully removed"),
+            line(3, 6500, "starts in gap but survives"),
+            line(4, 8500, "after"),
         ]
         projected, issues, omitted = project_cut_aware_lines(rows, mapping())
         self.assertIn("before", [row["text"] for row in projected])
         self.assertIn("after", [row["text"] for row in projected])
         self.assertNotIn("fully removed", [row["text"] for row in projected])
-        self.assertIn(
-            "fully removed",
-            [row["text"] for row in omitted],
-        )
+        self.assertIn("fully removed", [row["text"] for row in omitted])
         self.assertTrue(
             any(
                 issue["code"] == "line_lrc_intersects_confirmed_cut"
@@ -86,6 +84,21 @@ class V4CutTimelineTests(unittest.TestCase):
                 for issue in issues
             )
         )
+        self.assertTrue(
+            any(
+                issue["code"] == "line_lrc_starts_in_confirmed_cut"
+                and issue["canonical_line_index"] == 3
+                for issue in issues
+            )
+        )
+
+    def test_last_line_starting_inside_gap_is_review_not_silently_omitted(self):
+        rows = [line(0, 6000, "open partial")]
+        projected, issues, omitted = project_cut_aware_lines(rows, mapping())
+        self.assertEqual(projected, [])
+        self.assertEqual(omitted, [])
+        self.assertEqual(len(issues), 1)
+        self.assertEqual(issues[0]["code"], "line_lrc_starts_in_confirmed_cut")
 
     def test_word_timing_keeps_only_complete_surviving_canonical_tokens(self):
         rows = [
