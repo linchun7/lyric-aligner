@@ -8,6 +8,14 @@ from typing import Any
 
 @dataclass(frozen=True)
 class TrackAsset:
+    """One immutable recording + canonical lyric interpretation.
+
+    ``canonical_lyric_sha256`` identifies the raw lyric file.  The same raw LRC
+    can still yield different canonical lyrics when a task-level role override
+    selects a different same-timestamp alternative, so
+    ``canonical_selection_sha256`` is part of the asset identity as well.
+    """
+
     track_id: str
     artist: str
     title: str
@@ -16,6 +24,7 @@ class TrackAsset:
     source_audio_sha256: str
     canonical_lyric_path: str
     canonical_lyric_sha256: str
+    canonical_selection_sha256: str
     language: str = "auto"
 
     def to_dict(self) -> dict[str, Any]:
@@ -24,6 +33,8 @@ class TrackAsset:
 
 @dataclass(frozen=True)
 class TrackOccurrence:
+    """One appearance of a TrackAsset in the edited mix."""
+
     track_id: str
     occurrence_id: str
     ordinal: int
