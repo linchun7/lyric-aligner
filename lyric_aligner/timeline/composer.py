@@ -1,9 +1,8 @@
 """Compose v4 canonical occurrence timelines into final subtitle cues.
 
-The composer is deliberately conservative.  It only accepts already projected,
-unblocked canonical timelines and never invents lyric text.  Cross-track overlap
-requires an explicit future review-decision path; until then an unexpected cue
-overlap is a hard error rather than an implicit merge.
+The composer only accepts already projected, unblocked canonical timelines and
+never invents lyric text. Cross-track cue overlap is allowed only when the exact
+pairwise overlap is fully contained by a materialized confirmed-overlap region.
 """
 
 from __future__ import annotations
@@ -12,6 +11,7 @@ from dataclasses import asdict, dataclass
 from typing import Any, Iterable
 
 from lyric_aligner.config import RenderConfig
+from lyric_aligner.timeline.overlap import ConfirmedOverlapRegion
 
 
 class TimelineComposeError(ValueError):
@@ -164,12 +164,57 @@ def _compose_one(payload: dict[str, Any], config: RenderConfig) -> list[FinalCue
     return provisional
 
 
+def _regions(
+    values: Iterable[ConfirmedOverlapRegion | dict[str, Any]],
+) -> tuple[ConfirmedOverlapRegion, ...]:
+    output: list[ConfirmedOverlapRegion] = []
+    for value in values:
+        if isinstance(value, ConfirmedOverlapRegion):
+            output.append(value)
+            continue
+        if not isinstance(value, dict):
+            raise TimelineComposeError("confirmed overlap region must be an object")
+        try:
+            output.append(
+                ConfirmedOverlapRegion(
+                    candidate_id=str(value["candidate_id"]),
+                    left_occurrence_id=str(value["left_occurrence_id"]),
+                    right_occurrence_id=str(value["right_occurrence_id"]),
+                    start_ms=int(value["start_ms"]),
+                    end_ms=int(value["end_ms"]),
+                    issue_id=str(value.get("issue_id") or ""),
+                )
+            )
+        except (KeyError, TypeError, ValueError) as exc:
+            raise TimelineComposeError("confirmed overlap region is malformed") from exc
+    return tuple(output)
+
+
+def _cross_track_overlap_is_confirmed(
+    left: FinalCue,
+    right: FinalCue,
+    regions: tuple[ConfirmedOverlapRegion, ...],
+) -> bool:
+    overlap_start = max(left.start_ms, right.start_ms)
+    overlap_end = min(left.end_ms, right.end_ms)
+    if overlap_end <= overlap_start:
+        return True
+    pair = {left.occurrence_id, right.occurrence_id}
+    for region in regions:
+        if pair != {region.left_occurrence_id, region.right_occurrence_id}:
+            continue
+        if overlap_start >= region.start_ms and overlap_end <= region.end_ms:
+            return True
+    return False
+
+
 def compose_canonical_timelines(
     timeline_payloads: Iterable[dict[str, Any]],
     *,
     config: RenderConfig,
+    confirmed_overlap_regions: Iterable[ConfirmedOverlapRegion | dict[str, Any]] = (),
 ) -> list[FinalCue]:
-    """Compose all occurrence timelines into a deterministic final cue stream."""
+    """Compose occurrence timelines into a deterministic final cue stream."""
 
     cues: list[FinalCue] = []
     seen_occurrences: set[str] = set()
@@ -186,6 +231,7 @@ def compose_canonical_timelines(
     if not cues:
         raise TimelineComposeError("no canonical cues available for final rendering")
 
+    regions = _regions(confirmed_overlap_regions)
     ordered = sorted(
         cues,
         key=lambda cue: (
@@ -197,10 +243,11 @@ def compose_canonical_timelines(
     )
     for left, right in zip(ordered, ordered[1:]):
         if right.start_ms < left.end_ms and right.occurrence_id != left.occurrence_id:
-            raise TimelineComposeError(
-                "cross-track cue overlap requires an explicit confirmed-overlap decision: "
-                f"{left.occurrence_id} / {right.occurrence_id}"
-            )
+            if not _cross_track_overlap_is_confirmed(left, right, regions):
+                raise TimelineComposeError(
+                    "cross-track cue overlap is outside confirmed-overlap evidence: "
+                    f"{left.occurrence_id} / {right.occurrence_id}"
+                )
 
     return [
         FinalCue(
