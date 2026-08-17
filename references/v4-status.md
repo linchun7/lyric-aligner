@@ -2,6 +2,7 @@
 
 更新日期：2026-08-17  
 当前开发分支：`agent/v4-final-renderer`  
+Draft PR：#3  
 基线：`main` 已合入 v4.0.0a3（squash commit `cfa43f4c...`）  
 当前开发版本：`4.0.0a4`  
 TrackAsset schema：`1.1`
@@ -48,7 +49,7 @@ PR #2 已在 base=`main` 的 CI #267 全绿后 squash merge。
 lyric_aligner/timeline/composer.py
 ```
 
-它只消费 canonical projected timelines，不从 Jianying/ASR 重造歌词。
+只消费 canonical projected timelines，不从 Jianying/ASR 重造歌词。
 
 当前规则：
 
@@ -68,7 +69,7 @@ lyric_aligner/timeline/composer.py
 scripts/v4_render.py
 ```
 
-它只接受：
+只接受：
 
 ```text
 v4_run.status == ready_for_render
@@ -76,15 +77,18 @@ issues == []
 legacy_fallback_used == false
 ```
 
-并重新验证：
+Renderer 重新验证：
 
 - task fingerprint；
 - current v4 algorithm version；
 - calibration profile identity；
-- run artifact；
-- TrackAsset artifact；
-- 每个 canonical timeline artifact 的 materialized hash；
-- timeline artifact 必须属于 run upstream lineage。
+- production-run artifact；
+- supplied TrackAsset artifact 必须就是 production run upstream；
+- 每个 canonical timeline artifact 必须属于 production-run upstream；
+- timeline artifact 必须由 supplied TrackAsset artifact 派生；
+- timeline occurrence / track / ordinal / canonical-selection 必须与 `ResolvedAssetBinding` 一致；
+- production run 必须精确覆盖全部 resolved TrackOccurrences；
+- materialized output hash 不得漂移。
 
 输出：
 
@@ -95,9 +99,7 @@ FINAL.qa.json
 FINAL.render.artifact.json
 ```
 
-现有 `v4_validate_release.py` 可继续消费 `final_render` artifact，生成最终 `release.artifact.json`。
-
-因此 a4 的正常无-review任务已经不需要 v3.9 `build/finalize/qa` 来生成最终文件。
+因此 a4 的正常无-review任务不再需要 v3.9 `build/finalize/qa` 生成最终文件。
 
 ## 4. a4 Render Calibration
 
@@ -118,11 +120,11 @@ profile version：
 production-bootstrap-2026-08-17-a4
 ```
 
-这些值只是 bootstrap，后续由真实 calibration 调整。
+这些值是 bootstrap，后续必须用真实 calibration 调整。
 
-### 迁移边界
+### a3 → a4 迁移
 
-由于 profile complete content 已改变：
+由于 profile complete content 改变：
 
 - a3 profile_id != a4 profile_id；
 - a3 TrackAsset/profile artifacts 不允许直接给 a4 renderer；
@@ -136,41 +138,73 @@ Task Manifest
  → v4_run
  → ready_for_render
  → v4_render
- → FINAL.srt + FINAL.csv + FINAL.qa.json
+ → FINAL.srt + FINAL.csv + FINAL.qa.json + FINAL.render.artifact.json
  → v4_validate_release
  → release.artifact.json
 ```
 
-这里第一次形成 package-native 的 v4 run→final files→release 路径。
-
 `review_required` 仍不得进入 renderer。
 
-## 6. 合成验收
+### Release lineage 已进一步收紧
 
-新增：
+v4 release 现在必须：
+
+- 至少有一个 upstream artifact；
+- **恰好一个 `final_render` upstream**；
+- requested release algorithm version == upstream algorithm version；
+- QA calibration profile id/version == upstream profile identity；
+- `final_render` artifact 中记录的 `final_srt / audit_csv / qa_json` size/SHA 必须与当前实体文件逐一一致。
+
+因此即使 SRT/CSV/QA 三份文件被一起协调修改，只要没有重新生成对应 `final_render` artifact，release 也必须失败。
+
+## 6. 合成与负向验收
+
+新增/扩展：
 
 - `scripts/test_v4_timeline_composer.py`
 - `scripts/test_v4_render_end_to_end.py`
+- `scripts/test_v4_release_lineage.py`
+- `scripts/test_v4_release_integrity.py`
 
-后者使用完全合成的 WAV / 虚构 LRC / schema-2.0 Task Manifest，通过真实 subprocess 执行：
+覆盖：
+
+- open last line；
+- long instrumental gap；
+- word-timing tail；
+- occurrence-window clipping；
+- too-short cue BLOCK；
+- unconfirmed cross-track overlap BLOCK；
+- synthetic `v4_run → v4_render → v4_validate_release`；
+- modified final SRT 与旧 render artifact 不一致时 BLOCK；
+- 多个/错误版本 final_render artifact BLOCK；
+- QA calibration profile mismatch BLOCK。
+
+## 7. 当前 CI 状态：外部 GitHub Actions 计费阻断
+
+PR #3 的 Actions run #283 与 #285 **均未启动任何 runner**：
 
 ```text
-v4_run
- → v4_render
- → v4_validate_release
+runner_id = 0
+steps = []
 ```
 
-并验证：
+GitHub check annotation 明确返回：
 
-- final canonical text；
-- cue timing 正数且受 mix/window 限制；
-- audit/QA；
-- `publish_ready=true` 只在 review-free renderer 输出；
-- release manifest stage/version/fingerprint/lineage。
+> The job was not started because recent account payments have failed or your spending limit needs to be increased.
 
-当前分支尚需通过完整 CI 后才能认为 a4 该里程碑可合入 main。
+因此当前红灯是 GitHub Actions billing / spending-limit 外部阻断，不是 unittest、compile 或 renderer 代码失败。
 
-## 7. 仍未解决的 review 路径
+处理原则：
+
+- 不降低 CI 门禁；
+- 不删除测试；
+- 不把旧 a3 CI 绿灯冒充 a4 验收；
+- PR #3 保持 Draft；
+- GitHub Actions 计费/限额恢复后，以**最新 PR #3 head**重新运行 Python 3.10/3.12/3.14 + ASR 全矩阵。
+
+只有最新 a4 head 全绿后才允许合入 main。
+
+## 8. 仍未解决的 review 路径
 
 当前最大的生产缺口已从“没有 renderer”转为“review decision 不能自动重放”。
 
@@ -183,8 +217,9 @@ v4_run
 5. Editor Evidence + LanguageSpan 最终 cue fusion；
 6. real private calibration / blind-test。
 
-## 8. 当前不能宣称
+## 9. 当前不能宣称
 
+- a4 已通过 CI；
 - a4 已 stable；
 - bootstrap render duration 已最优；
 - review_required 可以跳过；
@@ -193,4 +228,4 @@ v4_run
 
 当前正确表述：
 
-> **v4.0.0a4 正在完成 package-native final rendering，使 review-free 任务可以从 Task Manifest 全程走 v4 到 release manifest；复杂 cut/overlap 的可重放人工决策仍是下一优先级。**
+> **v4.0.0a4 已实现 package-native final rendering 与更严格的 release lineage，并已具备 synthetic run→render→release 测试；当前唯一无法完成的正式矩阵验收受 GitHub Actions 账户计费/支出上限阻断。**
