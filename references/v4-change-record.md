@@ -13,126 +13,147 @@
 - P1 strict calibration/blind：`1c6babe37067c217d14a7404aa0ed6a1c4779a00`；
 - P1.1 private dataset readiness：`ad6c403a56209e945a9a61a1eeab1a4bc3c204b4`；
 - P2 editor shadow evidence：`2e96569189ac6eb16d987fb2f304403696bc809b`；
-- P3 local acoustic evidence：`cd3420750c06a55fa1af7d6314ec56971e728928`。
+- P3 local acoustic evidence：`cd3420750c06a55fa1af7d6314ec56971e728928`；
+- P4 evidence fusion shadow：`bc4e10760ffee2e5990ca580d5edbadd7d561eaf`。
 
-P3 PR #12 latest head `c6c66f6a1fb1e2ee9d43e26064e7efc30fce3cbe` 的 validate #493 在 ASR + Python 3.10/3.12/3.14 compile/docs/full unit-E2E/Skill/privacy/environment/diff-check 全绿后 squash merge。
+P3 validate #493 与 P4 validate #517 均在 ASR + Python 3.10/3.12/3.14 compile/docs/full unit-E2E/Skill/privacy/environment/diff-check 全绿后合入。
 
 ---
 
-## 2026-08-18 — P4 Evidence Fusion Shadow
+## 2026-08-18 — P5 ASR Second-Pass Routing
 
 ### 1. 目标
 
-把已存在的独立 evidence family 汇总到 exact canonical line identity：
+把 P3 第一遍 local faster-whisper evidence 中**弱或缺失的原 local jobs**路由到第二遍 accuracy-model 计划。
 
-```text
-Source-to-Mix canonical timeline
-+ P2 editor_evidence_shadow
-+ P3 asr_evidence_local
-        ↓
-evidence_fusion_shadow
-```
-
-P4 只做诊断/校准数据准备，不改变 canonical lyric 或 Source-to-Mix authority。
+P5 不重新扫描整曲、不扩大 window、不自动运行模型。
 
 ### 2. 新增模块 / CLI
 
 ```text
-lyric_aligner/evidence/fusion.py
-scripts/v4_fuse_evidence.py
-references/evidence-fusion-shadow.md
+lyric_aligner/alignment/asr_routing.py
+scripts/v4_plan_asr_second_pass.py
+references/asr-second-pass-routing.md
 ```
 
-Package export 同步到：
-
-```text
-lyric_aligner/evidence/__init__.py
-```
+`lyric_aligner/alignment/__init__.py` 同步 export routing contract。
 
 Artifact：
 
 ```text
-stage = evidence_fusion_shadow
-role  = evidence_fusion
+stage = asr_second_pass_planning
+role  = asr_second_pass_plan
 ```
 
-### 3. 固定安全语义
+固定：
 
 ```text
-mode = shadow_only
+mode = second_pass_plan_only
 policy_calibrated = false
-release_gate_eligible = false
-automatic_timing_change_allowed = false
+backend_execution_performed = false
+scope_policy = reuse_exact_first_pass_local_windows
 ```
 
-这些字段在 root/line/artifact evidence 中都必须保持不可发布语义。
+### 3. Weak-evidence signals
 
-### 4. Bootstrap shadow states
+Bootstrap reasons：
 
 ```text
-LOW      source timeline only
-MEDIUM   source + 1 auxiliary boundary family
-HIGH     source + editor + ASR，且二者 boundary disagreement <= conflict threshold
-CONFLICT editor + ASR boundary disagreement > conflict threshold
+missing_first_pass_evidence
+missing_segments
+missing_segment_quality
+missing_canonical_text_support
+low_canonical_text_support
+low_avg_logprob
+high_no_speech_probability
+low_language_probability
 ```
 
-默认：
+默认参数：
 
 ```text
-conflict_boundary_ms = 500
+min_canonical_text_support = 0.65
+min_avg_logprob = -0.75
+max_no_speech_prob = 0.60
+min_language_probability = 0.65
+max_jobs = 100
 ```
 
-该阈值没有 real calibration 支持，只用于 shadow diagnostic。`HIGH` 不是 release confidence。
+这些只用于 evidence routing，不是发布阈值。
 
-### 5. Family admission / selection
+### 4. Exact local scope
 
-- `source_timeline` 是 primary timing authority；
-- editor 只接受 P2 shadow line boundary proposal；
-- ASR 只接受有 canonical line identity 且存在有效 local segment interval 的 jobs；
-- occurrence-level ASR job 没有 line identity，不能冒充 line boundary evidence；
-- 同一 line 多 ASR jobs 时，bootstrap 选 `canonical_text_support_score` 较高者，tie 由 job ID deterministic；这不是 calibrated model arbitration。
+Second-pass job 复用原 planner job 的：
 
-### 6. Lineage / fail-closed
+```text
+job_id
+occurrence/track/line identity
+mix_window_ms
+source_window_ms
+canonical_text_sha256
+```
 
-`v4_fuse_evidence.py` 验证：
+不扩大到整曲。`source_forced_alignment`-only job 不会被转成 ASR job。
 
-- task fingerprint；
-- source run stage/role/output hash；
-- exact effective canonical timeline artifact；
-- editor/asr evidence output hash；
-- auxiliary `source_run_artifact_id` 必须与当前 run artifact ID 相同；
-- auxiliary artifact 必须把当前 source run 作为 upstream。
+### 5. Priority-aware truncation
 
-Canonical/editor text SHA mismatch、unknown line、cross-run evidence 都必须失败。
+早期 draft 按 line index 排序会导致 `max_jobs` 可能挤掉高优先级严重弱证据，已修复。
 
-### 7. Privacy
+现在按：
 
-Fusion output 不复制 raw canonical/editor/ASR text。保存 identity/hash/boundary/score/disagreement/shadow level。
+1. first-pass planner priority：high > medium > low；
+2. severity class：missing evidence > missing segment/quality > low canonical support > other；
+3. reason count；
+4. deterministic identity tie-break。
 
-即使输入 ASR artifact 是 `include_private_text=true`，fusion output 仍不复制原文。
+输出 `eligible_second_pass_job_count_before_truncation` 和 `second_pass_plan_truncated`，不能静默截断。
+
+### 6. Model lineage
+
+First-pass evidence 必须记录 `config.model_id`。
+
+默认要求：
+
+```text
+second_pass_model_id != first_pass_model_id
+```
+
+防止同模型重复跑却伪称 two-pass escalation。当前 contract 不判断模型强弱，只绑定身份；运营可配置 turbo -> large-v3。
+
+### 7. Lineage / fail-closed
+
+CLI 验证：
+
+- task fingerprint/input hash；
+- exact alignment plan artifact；
+- exact first-pass ASR artifact；
+- first-pass `source_plan_artifact_id`；
+- first-pass artifact upstream 包含 plan；
+- same source run identity；
+- first-pass evidence 不包含 plan 中不存在的 mix_asr jobs。
+
+Artifact 被改动、跨 task/plan/run、same-model escalation 都必须失败。
 
 ### 8. Tests
 
-新增：
+新增/收紧：
 
-- LOW/MEDIUM/HIGH/CONFLICT 直接 unit regressions；
-- HIGH 仍 `release_gate_eligible=false`；
-- canonical/editor SHA mismatch fail；
-- auxiliary unknown line fail；
-- artifact-level editor+ASR same-run fusion；
-- cross-run auxiliary evidence fail；
-- fusion output privacy。
+- weak/missing evidence routing；
+- good evidence skip；
+- missing segment quality reroute；
+- exact local window reuse；
+- forced-only job skip；
+- priority-aware max_jobs truncation；
+- invalid priority fail；
+- extra foreign first-pass job fail；
+- first/second model lineage；
+- same-model second pass fail；
+- first-pass artifact tamper fail。
 
-### 9. 真实边界
+### 9. GitHub Actions 真实边界
 
-P4 不能在没有 private reference truth 的情况下把 shadow level 升级成发布阈值。正确路径仍是：
+CI 只验证 routing/lineage/privacy/contracts，不下载/运行真实 second-pass large model，也没有 private real-song truth。
 
-```text
-private calibration
--> 分语言/场景检查 family coverage 与 boundary error
--> 冻结 policy/thresholds
--> blind_test once
--> 才允许设计 calibrated release gate
-```
+因此不能声称 large-v3 相对 turbo 的真实收益，不能把 bootstrap thresholds 升级成 production confidence，也不能把 second-pass plan 解释成模型已执行。
 
-P4 PR 必须以 latest-head GitHub Actions ASR + Python 3.10/3.12/3.14 全门禁为合并依据。
+P5 必须以 latest-head ASR + Python 3.10/3.12/3.14 全门禁为合并依据。
