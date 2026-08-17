@@ -1,204 +1,192 @@
 # Lyric Aligner v4 关键变更记录
 
-> 所有实质性生产更新必须按 `documentation-contract.md` 在同一 PR 同步本文件。这里记录已进入代码的行为、兼容/迁移和验证边界，不把设计草案写成已实现事实。
+> 所有实质性生产更新必须按 `documentation-contract.md` 在同一 PR 同步本文件。这里只记录已进入代码的行为、兼容/迁移和验证边界。
 
-## 2026-08-17 — Foundation：测量、多语言与发布可信性
+## 2026-08-17 — 已合入 main 的 v4 主线
 
-- evaluator 增加 sequence WER、line exact P/R/F1、missing/extra/order、split/merge、onset/offset、cut、overlap IoU/track attribution；
-- Editor Evidence 按语言分级，canonical text 不由 ASR/Editor 决定；
-- strict SRT parser；
-- FINAL SRT/audit/QA 严格绑定；
-- ArtifactManifest 绑定 task fingerprint、algorithm version、config、upstream IDs、materialized SHA；
-- release 拒绝跨 task/version/profile 或未固化 calibration override。
+- a3 production-first reconstruction：`cfa43f4c854b699819cd3acb0cfea575cd1a04c8`；
+- a4 package-native final render/release：`236d9d717229147ee1d1a8755d712e54db47a751`；
+- a5 replayable review decisions：`a80a531d6933946484c54d3a589bc55b0cb9e94b`；
+- a6 confirmed-overlap dual-track recomposition：`dfd840b3a6f893531cce8019aae53e803243f95c`。
 
-## 2026-08-17 — TrackAsset / Canonical Single Truth
+### Foundation retained on main
 
-- fail-closed TrackAsset/TrackOccurrence/ResolvedAssetBinding；
-- source/LRC resolution 使用 score + margin + identity + 文件唯一占用；
-- semantic identity 包含 source SHA、raw lyric SHA、canonical same-timestamp selection SHA；
-- line LRC / Enhanced LRC / QRC 进入统一 canonical parser；
-- downstream 不得重新 fuzzy resolve source/LRC 或重选 canonical original。
+- fail-closed TrackAsset / TrackOccurrence / ResolvedAssetBinding；
+- canonical lyric single truth，包括 line LRC / Enhanced LRC / QRC exact original selection；
+- HPSS harmonic + Chroma CENS + MFCC Source-to-Mix；
+- global monotonic path + AFFINE-first / evidence-driven PIECEWISE_RATE；
+- Selective Fine；
+- candidate-level transition evidence/review；
+- replayable Review Decision；
+- confirmed-overlap 两路独立 canonical timeline recomposition；
+- final SRT/audit/QA/release immutable artifact lineage；
+- Documentation Contract / Skill / privacy / environment / multi-Python CI。
 
-## 2026-08-17 — Audio Mapping v2
+---
 
-- HPSS harmonic + Chroma CENS + MFCC；
-- 每窗多候选、NMS、top1/top2 margin、全局单调 source path；
-- AFFINE-first；BPM 只作 soft prior；
-- evidence-driven continuous PIECEWISE_RATE；
-- `rate change != cut`；source-position jump 才产生 discontinuity；
-- Selective Fine 只处理难例/局部区间。
+## 2026-08-17 — v4.0.0a7 Confirmed-cut Source Gap Rebuild（当前 PR #6）
 
-## 2026-08-17 — Calibration / Documentation Contracts
+目标：把人工确认的 source-position discontinuity materialize 成显式 source gap + retained TimeWarp segments + cut-aware canonical timeline，而不是把 blocked TimeWarp 布尔值改掉或直接删除歌词。
 
-- 完整 `V4CalibrationProfile` 内容形成稳定 profile_id；
-- TrackAsset artifact 嵌入 profile；
-- 临时 CLI overrides 只允许实验，release BLOCK；
-- `documentation-contract.md + validate_docs_contract.py` 进入 CI；
-- production/status/CLI/schema/architecture 变化必须同步 owning docs。
-
-## 2026-08-17 — v4.0.0a3 Production-first（已合入 main）
-
-PR #2 squash merge：
+### 1. Version / profile
 
 ```text
-cfa43f4c854b699819cd3acb0cfea575cd1a04c8
+package = 4.0.0a7
+profile = production-bootstrap-2026-08-17-a7
 ```
 
-新增 `timeline/projector.py`、`pipeline/production.py`、`v4_run.py`，形成 Asset → Coarse → Fine → Timeline → Transition 的 v4 reconstruction。新任务优先 v4，unresolved evidence → `review_required`，无 silent v3.9 fallback。
+新增 versioned `CutBoundaryConfig`。Bootstrap 当前使用 16kHz、约 0.8s context、50ms candidate step、harmonic Chroma/MFCC 双特征及 score/margin/feature-agreement/boundary-margin 门禁。数值尚未经过真实任务 calibration。
 
-最终 base=main CI #267 全绿后合并。
+完整 profile 内容改变，因此 a6/a5 artifacts 不允许混入 a7 release。
 
-## 2026-08-17 — v4.0.0a4 Package-native Final Render（已合入 main）
+### 2. Candidate-level source discontinuity
 
-PR #3 squash merge：
+`v4_run.py` 对每个 effective TimeWarp forward source jump 单独生成：
 
 ```text
-236d9d717229147ee1d1a8755d712e54db47a751
+kind=timewarp_discontinuity
+candidate_id
+occurrence_id
+mix_before/mix_after
+source_before/source_after
 ```
 
-新增 `timeline/composer.py` / `v4_render.py`，review-free 任务形成：
+Occurrence summary 固定记录 primary Coarse/Fine path + artifact provenance，后续 rebuild 不重新猜文件。
+
+### 3. Review Decision schema 1.2
+
+新增 discontinuity actions：
 
 ```text
-v4_run → v4_render → v4_validate_release
+confirmed_cut
+rejected_requires_remap
 ```
 
-严格 release binding 要求 exact final_render upstream、algorithm/profile 一致，并重新验证 FINAL SRT/CSV/QA materialized hashes。
+两者都不会让 run 直接 ready。
 
-GitHub Billing 恢复后最新 head 的 #303 在 Python 3.10/3.12/3.14 + ASR + docs/Skill/privacy/environment/diff-check 全绿后才合并。
+`confirmed_cut` 冻结 exact discontinuity snapshot，写 `requires_timeline_rebuild=true`；`rejected_requires_remap` 表明“不是物理 cut”，但 failed mapping 仍必须 remap。
 
-## 2026-08-17 — v4.0.0a5 Replayable Review Decision（已合入 main）
+### 4. Local cut boundary locator
 
-PR #4 squash merge：
+新增 `lyric_aligner/audio/cuts.py`。
+
+Coarse `[mix_before,mix_after]` 只作为搜索窗口，不使用中点当 cut 真值。对候选切点分别要求：
 
 ```text
-a80a531d6933946484c54d3a589bc55b0cb9e94b
+left context  -> source-before
+right context -> source-after
 ```
 
-新增：
+并通过 per-side score/margin/feature agreement、non-ambiguous、boundary best-vs-separated-second margin。source gap 非 forward/过小也 BLOCK。
+
+### 5. CUT_AWARE TimeWarp
+
+`build_cut_aware_timewarp()` 生成：
 
 ```text
-lyric_aligner/review/decisions.py
-scripts/v4_review.py
+retained segment 0 (AFFINE/PIECEWISE_RATE)
+explicit source gap
+retained segment 1 (AFFINE/PIECEWISE_RATE)
+[...]
 ```
 
-人工 review 升级为 task-scoped + exact base-run-scoped + fingerprinted artifact。
+每个 retained segment 使用原 alignment anchors + localized boundary anchors，重新运行现有 `select_timewarp()`。任一 segment blocked => rebuild BLOCK。
 
-安全语义：
-
-- transition `resolved_clear`：解除 false-positive candidate；
-- `confirmed_overlap`：仍 review_required + requires_recomposition；
-- TimeWarp `confirmed_requires_rebuild`：仍 review_required；
-- blocked TimeWarp 没有 `resolved_clear`。
-
-Renderer 接受合法 `review_resolution` run，并保留 base TrackAsset/timeline lineage。
-
-PR head `66ad787...` 的 validate #321 在 Python 3.10/3.12/3.14、ASR、review→render E2E、Documentation Contract、Skill/privacy/environment/diff-check 一次全绿后合并。
-
-## 2026-08-17 — v4.0.0a6 Confirmed-overlap Dual-track Recomposition（当前开发）
-
-目标：把人工确认的 cross-track overlap 从一个“仍然 BLOCK 的事实”materialize 成两路独立 canonical timeline，使最终 SRT 可以在**确认区间内**保留两条同时存在的歌词 cue，而不是拼成一行。
-
-### Candidate-level transition identity
-
-发现 a5 的边界级 transition issue 在同一 A→B window 出现多个分离 candidate 时过粗。a6 增加：
+Artifact：
 
 ```text
-candidate_id = hash(candidate_type, left_occurrence, right_occurrence, start_ms, end_ms)
+cut_timewarp_rebuild / cut_aware_timewarp
 ```
 
-`v4_run` 对每个 overlap/ambiguity interval 单独创建：
+### 6. Cut-aware canonical projection
+
+新增 `lyric_aligner/timeline/cuts.py`。
+
+#### line-LRC
+
+安全规则已从“line start 在 gap 就整行删除”收紧为：
+
+- **整个可推断行区间都位于 source gap**：才能自动 omit；
+- line start 在 gap 内但可能延续到 gap 后：partial-line review；
+- line interval 从 retained segment 穿过 gap：review；
+- last/open line start 在 gap 内：review；
+- 完整位于 retained segment：正常投影。
+
+这样避免把可能仍可听到后半句的 line-LRC 整行误删。
+
+#### Enhanced LRC / QRC
+
+- complete token retained -> keep；
+- complete token in gap -> omit；
+- token 本身被 cut 穿过 -> review；
+- 一行只剩部分完整 tokens -> canonical fragment，只来自规范歌词 token。
+
+Artifact：
 
 ```text
-transition_overlap
-transition_ambiguity
+cut_timeline_rebuild / canonical_timeline
 ```
 
-Review Decision schema 升为 `1.1`，candidate-level issue identity 包含 candidate_id。清除一个 candidate 不影响同边界其他 candidate。
+### 7. `v4_rebuild_cut.py`
 
-### Transition provenance for recomposition
-
-`v4_run` transition summary 现在固定记录：
+正式链：
 
 ```text
-left_coarse_path / artifact
-right_coarse_path / artifact
-transition_path / artifact
+review_resolution
+ + exact TrackAsset
+ + exact primary Coarse/Fine
+ + confirmed_cut
+ → localize cut
+ → cut_timewarp_rebuild
+ → cut_timeline_rebuild
+ → cut_rebuild / v4_cut_rebuilt_run
 ```
 
-下游禁止重新猜文件。
+Confirmed candidate 必须重新对应 current effective TimeWarp 唯一 discontinuity；snapshot 与 current evidence 必须一致；primary mapping identity/lineage 必须与 reviewed run 和 TrackAsset 完全闭合。
 
-### New overlap timeline layer
+Projection ambiguity 会变成新的 active `canonical_fragment` issue。
 
-新增：
+### 8. Renderer
+
+`v4_render.py` 新增支持：
 
 ```text
-lyric_aligner/timeline/overlap.py
-scripts/v4_recompose_overlap.py
+cut_rebuild / v4_cut_rebuilt_run
+cut_timeline_rebuild / canonical_timeline
 ```
 
-对每个 `confirmed_overlap`：
+必须 `remaining_issue_count=0`、`canonical_fragment_issue_count=0`，且 cut mapping/timeline/review/TrackAsset lineage 完整、`cut_aware=true`、projection_issues=[]。
 
-1. 要求非空 issue_id/candidate_id；
-2. candidate_id/interval/pair 必须与原 Transition artifact 唯一一致；
-3. Transition artifact 必须属于 reviewed-run lineage；
-4. Transition artifact 必须 upstream 到 exact TrackAsset artifact；
-5. LEFT/RIGHT boundary coarse 分别验证 exact occurrence、track、canonical selection、asset identity；
-6. 两侧 coarse artifact 必须都属于 reviewed-run 和 Transition lineage，且不能是同一 artifact；
-7. `should_run_fine_alignment()` 判断难例时自动执行 Selective Fine；
-8. effective boundary TimeWarp Fine 后仍 blocked → recomposition 失败；
-9. canonical lyrics 通过 boundary mapping 在 exact confirmed interval 重新投影；
-10. projected lines/tokens 严格 clip 到 confirmed interval；
-11. 与 primary occurrence timeline 合并，只扩展到 confirmed region。
+### 9. Regression coverage
 
-生成：
+当前 PR 已新增：
 
-```text
-overlap_timeline_recomposition  # per occurrence timeline artifact
-overlap_recomposition           # recomposed run artifact
-```
+- `test_v4_cut_review.py`；
+- `test_v4_cut_mapping.py`；
+- `test_v4_cut_timeline.py`：whole-gap omission vs partial-line review、word-timed fragments、token-cut BLOCK；
+- `test_v4_cut_boundary_locator.py`：synthetic WAV physical cut locator；
+- `test_v4_cut_rebuild_end_to_end.py`：artifact-level `review_resolution → v4_rebuild_cut → v4_render`；
+- CLI bootstrap 加入 `v4_rebuild_cut.py`；
+- 既有 overlap/review/render/release regressions 全保留。
 
-Processed overlap issues 移除，其他 review issues 原样保留。只有 remaining issues=0 才 `ready_for_render`。
+### 10. CI history / current gate
 
-### Composer / Renderer
+PR #6 首轮 validate #362：
 
-`v4_render.py` 新增支持 `overlap_recomposition` run。
+- ASR environment：SUCCESS；
+- compileall：SUCCESS；
+- Python 3.10/3.12/3.14 均在 Documentation Contract 阶段失败；
+- unit tests 因 docs gate 未通过而没有执行。
 
-Final composer 对**所有实际跨 track cue 交集**逐对检查，不只看排序后的相邻 cue。只有：
+根因是 a7 owning docs 当时没有实际提交到分支，而不是 cut algorithm failure。当前 PR 已补交 owning docs；必须以最新 head 重新跑完整 CI，不能用旧 head 作为验收。
 
-```text
-exact occurrence pair
-AND entire pairwise intersection ⊆ confirmed region
-```
+### 11. 尚未完成
 
-才允许 cue 时间重叠。任何越界仍 BLOCK。
-
-最终输出保持两个独立 canonical cues，不把左右歌词拼文本。
-
-### a6 regression coverage
-
-新增/扩展：
-
-- stable transition candidate_id；
-- same-boundary multi-candidate independent review；
-- confirmed issue_id materialization；
-- strict overlap clipping / primary+overlap timeline merge；
-- confirmed-region-only composer gate；
-- non-adjacent cross-track intersection regression；
-- swapped boundary occurrence/track/canonical/asset lineage BLOCK；
-- artifact-level `v4_recompose_overlap → v4_render` E2E，避免把测试稳定性绑在声学阈值是否碰巧触发 overlap；
-- CLI bootstrap。
-
-### Calibration / migration
-
-a6 不修改 bootstrap calibration 数值，继续使用 `production-bootstrap-2026-08-17-a4` profile 内容。变化属于 algorithm/review/timeline contract，因此 package version 升为 `4.0.0a6`；a5 artifacts 不可与 a6 artifacts 混入同一 release。
-
-### 尚未完成
-
-- confirmed TimeWarp/middle-cut mapping + timeline rebuild；
+- confirmed cut + confirmed overlap 同任务的 unified stage composition；
 - real private calibration / blind-test；
 - Editor Evidence + LanguageSpan final cue fusion；
 - Forced Alignment / ASR v2 由真实误差决定优先级。
 
 ## 验证纪律
 
-任何“测试通过/可合并”结论必须绑定具体 head/CI。a6 当前尚未完成最新 head 的 GitHub Actions 验证，因此不能声明可合并。
+任何“测试通过/可合并”结论必须绑定具体 latest head/CI。PR #6 保持 Draft，最新 head 的 Python 3.10/3.12/3.14、ASR、Documentation Contract、unit/E2E、Skill/privacy/environment/diff-check 全绿后才可合并。
