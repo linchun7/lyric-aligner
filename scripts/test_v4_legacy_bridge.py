@@ -5,6 +5,7 @@ from pathlib import Path
 
 from lyric_aligner import __version__
 from lyric_aligner.assets.resolver import resolve_assets
+from lyric_aligner.config import DEFAULT_V4_PROFILE
 from lyric_aligner.contracts.artifacts import build_artifact_manifest
 from lyric_aligner.legacy.bridge import (
     LEGACY_ALGORITHM_VERSION,
@@ -37,8 +38,16 @@ class V4LegacyBridgeTests(unittest.TestCase):
             language_by_track={"Signal": "en"},
             lyric_role_overrides_by_track={"Signal": {1000: 1}},
         )
-        payload["algorithm_version"] = __version__
-        payload["task_fingerprint_sha256"] = "1" * 64
+        payload.update(
+            {
+                "algorithm_version": __version__,
+                "task_fingerprint_sha256": "1" * 64,
+                "calibration_profile_version": DEFAULT_V4_PROFILE.profile_version,
+                "calibration_profile_id": DEFAULT_V4_PROFILE.profile_id,
+                "calibration_profile": DEFAULT_V4_PROFILE.to_dict(),
+                "calibration_overrides": {},
+            }
+        )
         track_assets = root / "track_assets.json"
         track_assets.write_text(
             json.dumps(payload, ensure_ascii=False), encoding="utf-8"
@@ -48,6 +57,11 @@ class V4LegacyBridgeTests(unittest.TestCase):
             stage="asset_resolution",
             algorithm_version=__version__,
             outputs=(("track_assets", track_assets),),
+            normalized_config={
+                "calibration_profile_version": DEFAULT_V4_PROFILE.profile_version,
+                "calibration_profile_id": DEFAULT_V4_PROFILE.profile_id,
+                "calibration_overrides": {},
+            },
         )
         artifact_path = root / "track_assets.artifact.json"
         artifact_path.write_text(json.dumps(artifact), encoding="utf-8")
@@ -78,6 +92,10 @@ class V4LegacyBridgeTests(unittest.TestCase):
             self.assertEqual(metadata["legacy_algorithm_version"], LEGACY_ALGORITHM_VERSION)
             self.assertEqual(metadata["v4_algorithm_version"], __version__)
             self.assertEqual(metadata["asset_artifact_id"], artifact_id(artifact))
+            self.assertEqual(
+                metadata["calibration_profile_id"],
+                DEFAULT_V4_PROFILE.profile_id,
+            )
 
 
 def artifact_id(path: Path) -> str:
