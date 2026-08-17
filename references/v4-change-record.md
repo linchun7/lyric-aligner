@@ -53,38 +53,15 @@ CI #241 曾因 CLI 已变但 runtime/workflow 文档未同步而正确 FAIL，�
 
 合入方式：PR #2 squash merge，main commit `cfa43f4c854b699819cd3acb0cfea575cd1a04c8`。
 
-### 策略
-
 - 新真实任务优先 v4；
 - unresolved mapping/cut/transition → `review_required`；
 - 禁止静默 fallback v3.9；
 - v3.9 只作为 Git 历史/比较/仓库级 rollback 点；
 - 新算法不再继续堆入 legacy monolith。
 
-### Timeline / Transition / Orchestration
+新增 `timeline/projector.py`、`pipeline/production.py`、`scripts/v4_run.py`，形成 Asset → Coarse → Fine → Timeline → Transition 的生产入口。相邻 A/B 在 `boundary ± profile.search_margin_seconds` 同一 mix 窗口独立取证；搜索窗口重叠不等于 overlap 已确认。
 
-新增：
-
-- `timeline/projector.py`：canonical source timestamps → mix timeline；
-- `pipeline/production.py`：primary interval 与 shared transition search interval 分离；
-- `scripts/v4_run.py`：Asset → Coarse → Fine → Timeline → Transition 的生产入口。
-
-相邻 A/B 在 `boundary ± profile.search_margin_seconds` 同一 mix 窗口独立取证；搜索窗口重叠不等于 overlap 已确认。
-
-状态：
-
-```text
-ready_for_render
-review_required
-```
-
-并固定：
-
-```json
-"legacy_fallback_used": false
-```
-
-### a3 最终验收
+状态：`ready_for_render | review_required`，且固定 `legacy_fallback_used=false`。
 
 PR 已 retarget 到 main 后，head `940f0fa...` 的 CI #267 SUCCESS：Python 3.10/3.12/3.14 full tests、synthetic `v4_run` E2E、Documentation Contract、Skill、privacy、environment、diff-check、ASR environment 全部通过。
 
@@ -92,7 +69,7 @@ PR 已 retarget 到 main 后，head `940f0fa...` 的 CI #267 SUCCESS：Python 3.
 
 目标：让 review-free 任务不再需要 v3.9 `build/finalize/qa`，从 v4 canonical timeline 直接生成最终 SRT/audit/QA/release chain。
 
-### 版本 / Profile
+### Version / Profile
 
 - package：`4.0.0a4`；
 - profile：`production-bootstrap-2026-08-17-a4`；
@@ -105,29 +82,25 @@ open_line_duration_ms = 5000
 word_timing_tail_ms = 120
 ```
 
-这些是 bootstrap 参数，必须由真实 calibration 验证。
+以上均为 bootstrap 参数，必须由真实 calibration 验证。
 
 ### Final Timeline Composer
 
-新增：`lyric_aligner/timeline/composer.py`。
-
-关键语义：
+新增 `lyric_aligner/timeline/composer.py`：
 
 - 只消费 canonical projected timeline；
 - 不从 Editor/ASR 生成最终歌词文本；
 - cue 裁剪到 occurrence window；
 - last/open line 使用有限显示时长；
-- next-line gap 很长时使用 maximum line duration，避免上一句穿过长间奏常驻；
-- Enhanced LRC/QRC word timing 仅增加短 profile tail；
-- 过短 cue BLOCK，而不是擅自拉长；
-- same-occurrence 异常重叠 BLOCK；
-- 未确认 cross-track overlap BLOCK。
+- next-line gap 很长时应用 maximum line duration；
+- Enhanced/QRC word timing 只增加短 profile tail；
+- 过短 cue、same-occurrence 异常 overlap、未确认 cross-track overlap 均 BLOCK。
 
 ### Package-native Renderer
 
-新增：`scripts/v4_render.py`。
+新增 `scripts/v4_render.py`。
 
-只允许：
+只接受：
 
 ```text
 run.status == ready_for_render
@@ -135,7 +108,14 @@ run.issues == []
 legacy_fallback_used == false
 ```
 
-并重新验证 task/version/profile、run artifact、TrackAsset artifact、timeline artifacts 和 upstream lineage。
+并验证：
+
+- task / algorithm / profile；
+- production run artifact；
+- supplied TrackAsset artifact 必须属于该 run upstream；
+- timeline artifacts 必须属于 run upstream 且从同一 TrackAsset artifact 派生；
+- timeline occurrence/track/ordinal/canonical-selection 与 binding 一致；
+- run occurrence set 必须精确等于 resolved occurrence set。
 
 输出：
 
@@ -146,39 +126,51 @@ FINAL.qa.json
 FINAL.render.artifact.json
 ```
 
-Audit CSV 逐 cue 记录 canonical line/occurrence/track provenance、cue_id 和 text hash；QA 只有在完全 review-free 且 composer 无异常时才可 `publish_ready=true`。
+### Strict Release Binding
 
-现有 `v4_validate_release.py` 再验证 final SRT/audit/QA，成功生成 `release.artifact.json` 才构成当前正式发布完整性链。
+`v4_validate_release.py` 在 a4 进一步 fail-closed：
 
-### a3 → a4 迁移
+- v4 release 至少需要一个 upstream artifact；
+- **必须且只能有一个 `final_render` upstream**；
+- release `--algorithm-version` 必须等于 upstream algorithm version；
+- upstream calibration profile id/version 必须存在且与 QA 完全一致；
+- `final_render` artifact 中记录的 `final_srt`、`audit_csv`、`qa_json` size/SHA 必须分别匹配当前实体文件。
 
-profile complete content 已变化，因此：
+这样即使三份最终文件被一起协调修改、彼此仍一致，只要未重新生成对应 `final_render` artifact，也不能形成 release。
 
-> a3 TrackAsset/profile artifacts 不允许直接给 a4 renderer 静默复用。
+### a3 → a4 Migration
 
-必须从 Asset Resolution / `v4_run` 重跑 a4 chain。禁止手工修改旧 artifact 补 `render` 字段。
+profile complete content 已变化，所以 a3 TrackAsset/profile artifacts 不允许直接给 a4 renderer 静默复用。必须从 Asset Resolution / `v4_run` 重跑 a4 chain，禁止手工给旧 JSON 补 `render` 字段。
 
-### 新测试
+### Tests
 
 - `test_v4_timeline_composer.py`：open line、长间奏、word tail、window clipping、短 cue、未确认 cross-track overlap；
-- `test_v4_render_end_to_end.py`：纯合成 WAV/LRC/Task Manifest，真实 subprocess 执行：
+- `test_v4_render_end_to_end.py`：纯合成 WAV/LRC/Task Manifest，真实 subprocess 执行 `v4_run → v4_render → v4_validate_release`；
+- `test_v4_release_lineage.py`：modified final file、多个 render artifact、wrong algorithm version 等负向 lineage；
+- `test_v4_release_integrity.py`：QA calibration profile mismatch 等最终完整性回归。
 
-```text
-v4_run → v4_render → v4_validate_release
-```
+### Current CI Blocker
 
-并验证 final SRT/audit/QA/release lineage。
+PR #3 的 Actions #283/#285 均在 runner 分配前失败，`runner_id=0`、`steps=[]`。GitHub annotation 明确为账户付款失败或 spending limit 需要提高，不是代码测试失败。
 
-### a4 尚未完成
+因此：
+
+- 不降低 CI；
+- 不把 a3 旧绿灯当作 a4 验收；
+- PR #3 保持 Draft；
+- Actions billing 恢复后，以最新 head 重新跑完整 3.10/3.12/3.14 + ASR 矩阵；
+- 最新 a4 head 未正式跑绿前不合 main。
+
+### a4 Still Next
 
 - Review Decision artifact；
-- confirmed overlap 的双路 transition-aware timeline；
+- confirmed overlap 双路 transition-aware timeline；
 - confirmed/rejected middle cut 决策重放；
 - Editor Evidence + LanguageSpan 最终 cue fusion；
-- real private calibration / blind-test。
+- real private calibration/blind-test。
 
-Forced Alignment / ASR v2 继续以后续真实误差数据决定优先级。
+Forced Alignment / ASR v2 继续以后续真实误差决定优先级。
 
 ## 验证纪律
 
-任何“测试通过/可合并”结论必须绑定具体 head/CI。旧 head 绿灯不能继承到新代码。当前 a4 分支在完整 Python 3.10/3.12/3.14 + ASR + docs/Skill/privacy/environment/diff-check 全绿前，不声明可合入 main。
+任何“测试通过/可合并”结论必须绑定具体 head/CI。旧 head 绿灯不能继承到新代码；GitHub runner 未启动也不能称为代码测试失败或通过。
