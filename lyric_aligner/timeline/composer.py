@@ -1,8 +1,9 @@
 """Compose v4 canonical occurrence timelines into final subtitle cues.
 
 The composer only accepts already projected, unblocked canonical timelines and
-never invents lyric text. Cross-track cue overlap is allowed only when the exact
-pairwise overlap is fully contained by a materialized confirmed-overlap region.
+never invents lyric text. Cross-track cue overlap is allowed only when every
+actual pairwise intersection is fully contained by a materialized confirmed-
+overlap region for that exact TrackOccurrence pair.
 """
 
 from __future__ import annotations
@@ -241,8 +242,12 @@ def compose_canonical_timelines(
             cue.end_ms,
         ),
     )
-    for left, right in zip(ordered, ordered[1:]):
-        if right.start_ms < left.end_ms and right.occurrence_id != left.occurrence_id:
+    for index, left in enumerate(ordered):
+        for right in ordered[index + 1 :]:
+            if right.start_ms >= left.end_ms:
+                break
+            if right.occurrence_id == left.occurrence_id:
+                continue
             if not _cross_track_overlap_is_confirmed(left, right, regions):
                 raise TimelineComposeError(
                     "cross-track cue overlap is outside confirmed-overlap evidence: "
