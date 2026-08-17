@@ -1,6 +1,6 @@
 ---
 name: lyric-aligner
-description: Align multilingual lyrics to edited-song subtitle timelines using editor SRT anchors, canonical LRC text, source-audio waveform and BPM mapping, multilingual ASR evidence, task-scoped overrides, regression cases, and release-blocking QA. Use for music mixes, karaoke subtitles, lyric timing correction, missing lyric lines, split or merged cues, repeated choruses, and audio-cut detection.
+description: Align multilingual lyrics to edited-song subtitle timelines using editor SRT anchors, canonical line- or word-timed lyrics, source-audio waveform and variable-speed mapping, multilingual ASR evidence, task-scoped overrides, regression cases, and release-blocking QA. Use for music mixes, karaoke subtitles, lyric timing correction, missing lyric lines, split or merged cues, repeated choruses, middle cuts, speed ramps, and overlapping song transitions.
 ---
 
 # Lyric Aligner
@@ -19,6 +19,8 @@ description: Align multilingual lyrics to edited-song subtitle timelines using e
 8. 通用算法不得包含某首歌、某个 cue、某个时间点或具体错词的硬编码修补。
 9. 所有任务 QA 必须绑定完整任务指纹；音频、SRT、歌单、LRC、BPM 或原曲任一变化都不得静默复用旧结论。
 10. 只有 `passed=true`、`fully_reviewed=true`、`publish_ready=true` 且 `review_candidate_count=0` 时才可称为可发布。
+11. 逐字/逐词时间只作整行歌词的起止、边界和映射证据；正式 SRT 始终输出完整逐行歌词，不生成逐字卡拉 OK cue。
+12. 两首歌曲同时演唱时不得把两路歌词猜拼成一行；候选必须由任务级 `_cross_track_overlap_reviews` 确认或拒绝，确认后还需用 `_confirmed_overlap_intervals` 限定两条同期逐行 cue 的精确范围。
 
 不能保证所有物理不可辨片段达到绝对 100%。正确策略是自动发现不确定性并阻止发布，而不是猜测。
 
@@ -80,10 +82,11 @@ python scripts/init_task.py `
 
 1. `prepare`
 2. `audio-align`（有原曲时）
-3. `build`
-4. `validate_multilingual_asr.py` 与 `refine-korean`（有低证据片段时；`refine-korean` 名称暂为兼容名称，内部支持多语言证据）
-5. `finalize`
-6. `qa`
+3. 检查剪切候选；将精确决定写入 `_audio_edit_reviews` 后运行 `review-audio-edits`
+4. `build`，并始终使用已复核的 alignment JSON
+5. `validate_multilingual_asr.py` 与 `refine-asr`（有低证据片段时；`refine-korean` 是兼容别名）
+6. `finalize`
+7. `qa`
 
 所有阶段都必须传入同一个 `--task-manifest`。中间 JSON 和 CSV 也携带同一 `task_fingerprint_sha256`；不匹配时立即停止。
 
@@ -95,7 +98,7 @@ python scripts/init_task.py `
 
 ## 版本与回归
 
-- 当前生产算法版本：`v3.8`。
+- 当前生产算法版本：`v3.9`。
 - `v3.7` 是迁移前基线，不再作为新任务默认入口。
 - 当前公开 Git 历史从脱敏根提交 `4ce42eb` 开始；更早历史已清理，不能通过普通 Git 历史回滚。
 - 每次全局改动必须更新 `references/change-record.md`，并运行：

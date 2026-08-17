@@ -119,7 +119,9 @@ def init_task(
             "_lrc_indices_overrides": {},
             "_confirmed_omitted_lrc_events": [],
             "_confirmed_boundary_pairs": [],
-            "_audio_edit_reviews": {},
+            "_confirmed_overlap_intervals": [],
+            "_cross_track_overlap_reviews": [],
+            "_audio_edit_reviews": [],
             "_review_notes": {},
         }
         write_json_atomic(overrides_path, overrides)

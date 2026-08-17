@@ -12,7 +12,7 @@ from task_contract import assert_manifest_paths, load_task_manifest, sha256, ver
 
 
 ASR_JOB_SCHEMA_VERSION = "1.0"
-ALGORITHM_VERSION = "3.8"
+ALGORITHM_VERSION = "3.9"
 
 
 def load_jobs(
