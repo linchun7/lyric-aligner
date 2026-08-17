@@ -41,6 +41,15 @@ class V4CanonicalLyricTests(unittest.TestCase):
         )
         self.assertEqual([line.text for line in lines], ["canonical"])
 
+    def test_mixed_lrc_qrc_alternatives_share_one_index_space(self):
+        lines = self.parse(
+            "[00:01.00]translation\n[1000,2000]canonical(0,500) line(500,600)\n",
+            selection={1000: 1},
+        )
+        self.assertEqual(lines[0].text, "canonical line")
+        self.assertEqual(lines[0].timing_format, "qrc_word_timing")
+        self.assertEqual(lines[0].tokens[0].start_ms, 1000)
+
     def test_qrc_ambiguous_alternatives_block_without_selection(self):
         with self.assertRaisesRegex(CanonicalLyricError, "ambiguous"):
             self.parse("[1000,2000]first(0,500)\n[1000,2000]second(0,500)\n")

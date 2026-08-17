@@ -1,9 +1,8 @@
 """Canonical lyric parsing with explicit same-timestamp original selection.
 
-This is the v4 lyric truth layer. Downstream stages must not pick the first
-same-timestamp LRC row or re-run language heuristics. Asset resolution decides
-the original once; this parser consumes that decision while preserving
-Enhanced-LRC/QRC token timing when available.
+All supported lyric formats share one timestamp/alternative identity space. The
+alternative index emitted by asset preflight is therefore stable even when a
+file mixes line LRC, Enhanced LRC and QRC representations.
 """
 
 from __future__ import annotations
@@ -50,6 +49,13 @@ class CanonicalLine:
         return payload
 
 
+@dataclass(frozen=True)
+class _Alternative:
+    text: str
+    tokens: tuple[CanonicalToken, ...]
+    timing_format: str
+
+
 def _fraction_ms(value: str | None) -> int:
     value = value or "0"
     if len(value) == 1:
@@ -79,20 +85,12 @@ def _enhanced(body: str) -> tuple[str, tuple[CanonicalToken, ...]]:
         if not text:
             continue
         start = timestamp_ms(*marker.groups())
-        next_start = (
-            timestamp_ms(*markers[position + 1].groups())
-            if position + 1 < len(markers)
-            else None
-        )
+        next_start = timestamp_ms(*markers[position + 1].groups()) if position + 1 < len(markers) else None
         tokens.append(CanonicalToken(text, start, next_start))
     return clean_text("".join(pieces)), tuple(tokens)
 
 
-def _qrc(
-    line_start_ms: int,
-    line_duration_ms: int,
-    body: str,
-) -> tuple[str, tuple[CanonicalToken, ...]]:
+def _qrc(line_start_ms: int, line_duration_ms: int, body: str) -> tuple[str, tuple[CanonicalToken, ...]]:
     matches = list(QRC_TOKEN_RE.finditer(body))
     if not matches:
         return clean_text(re.sub(r"\(\d+,\d+\)", "", body)), ()
@@ -117,32 +115,8 @@ def _qrc(
             raise CanonicalLyricError("QRC token timestamps move backward")
         previous_start = start
         pieces.append(raw_text)
-        tokens.append(
-            CanonicalToken(text, start, start + duration if duration > 0 else None)
-        )
+        tokens.append(CanonicalToken(text, start, start + duration if duration > 0 else None))
     return clean_text("".join(pieces)), tuple(tokens)
-
-
-def _select_index(
-    start: int,
-    candidates: list,
-    *,
-    original_index_by_timestamp: dict[int, int],
-    lexical_predicate,
-) -> int:
-    selected_index = original_index_by_timestamp.get(start)
-    if selected_index is None:
-        lexical = [index for index, item in enumerate(candidates) if lexical_predicate(item)]
-        if len(lexical) != 1:
-            raise CanonicalLyricError(
-                f"canonical original is ambiguous at {start}ms; consume TrackAsset selection"
-            )
-        selected_index = lexical[0]
-    if selected_index < 0 or selected_index >= len(candidates):
-        raise CanonicalLyricError(
-            f"canonical alternative index {selected_index} is out of range at {start}ms"
-        )
-    return selected_index
 
 
 def parse_canonical_lyrics(
@@ -150,16 +124,10 @@ def parse_canonical_lyrics(
     *,
     original_index_by_timestamp: dict[int, int] | None = None,
 ) -> list[CanonicalLine]:
-    """Parse canonical lines without ever guessing among alternatives.
-
-    ``original_index_by_timestamp`` uses the exact alternative index emitted by
-    ``track_assets.json``. When a timestamp has multiple lexical alternatives
-    and no explicit selection is supplied, parsing fails closed.
-    """
+    """Parse canonical lines using the exact TrackAsset alternative selection."""
 
     original_index_by_timestamp = original_index_by_timestamp or {}
-    lrc_groups: dict[int, list[tuple[str, str, tuple[CanonicalToken, ...], str]]] = {}
-    qrc_groups: dict[int, list[tuple[str, tuple[CanonicalToken, ...]]]] = {}
+    groups: dict[int, list[_Alternative]] = {}
 
     for line_number, raw in enumerate(read_task_text(path).splitlines(), start=1):
         stripped = raw.strip()
@@ -171,7 +139,7 @@ def parse_canonical_lyrics(
             duration = int(qrc_match.group(2))
             text, tokens = _qrc(start, duration, qrc_match.group(3))
             if text:
-                qrc_groups.setdefault(start, []).append((text, tokens))
+                groups.setdefault(start, []).append(_Alternative(text, tokens, "qrc_word_timing"))
             continue
 
         match = LRC_RE.match(stripped)
@@ -181,46 +149,36 @@ def parse_canonical_lyrics(
         try:
             start = timestamp_ms(minute, second, fraction)
         except ValueError as exc:
-            raise CanonicalLyricError(
-                f"invalid LRC timestamp at line {line_number}"
-            ) from exc
+            raise CanonicalLyricError(f"invalid LRC timestamp at line {line_number}") from exc
         text, tokens = _enhanced(body.strip())
         if not text:
+            # Role preflight also drops empty timestamp alternatives, preserving
+            # the same index space.
             continue
-        lrc_groups.setdefault(start, []).append(
-            (body.strip(), text, tokens, "enhanced_lrc" if tokens else "line_lrc")
+        groups.setdefault(start, []).append(
+            _Alternative(text, tokens, "enhanced_lrc" if tokens else "line_lrc")
         )
 
     result: list[CanonicalLine] = []
-    timestamps = sorted(set(lrc_groups) | set(qrc_groups))
-    for start in timestamps:
-        if start in qrc_groups:
-            candidates = qrc_groups[start]
-            selected_index = _select_index(
-                start,
-                candidates,
-                original_index_by_timestamp=original_index_by_timestamp,
-                lexical_predicate=lambda item: bool(item[0]) and not META_RE.match(item[0]),
-            )
-            text, tokens = candidates[selected_index]
-            if not text or META_RE.match(text):
+    for start, alternatives in sorted(groups.items()):
+        selected_index = original_index_by_timestamp.get(start)
+        if selected_index is None:
+            lexical = [
+                index
+                for index, item in enumerate(alternatives)
+                if item.text and not META_RE.match(item.text)
+            ]
+            if len(lexical) != 1:
                 raise CanonicalLyricError(
-                    f"canonical selection points to metadata/blank QRC text at {start}ms"
+                    f"canonical original is ambiguous at {start}ms; consume TrackAsset selection"
                 )
-            result.append(
-                CanonicalLine(len(result), start, text, tokens, "qrc_word_timing")
+            selected_index = lexical[0]
+        if selected_index < 0 or selected_index >= len(alternatives):
+            raise CanonicalLyricError(
+                f"canonical alternative index {selected_index} is out of range at {start}ms"
             )
-            continue
-
-        alternatives = lrc_groups[start]
-        selected_index = _select_index(
-            start,
-            alternatives,
-            original_index_by_timestamp=original_index_by_timestamp,
-            lexical_predicate=lambda item: bool(item[1]) and not META_RE.match(item[1]),
-        )
-        _, text, tokens, timing_format = alternatives[selected_index]
-        if not text or META_RE.match(text):
+        selected = alternatives[selected_index]
+        if not selected.text or META_RE.match(selected.text):
             raise CanonicalLyricError(
                 f"canonical selection points to metadata/blank text at {start}ms"
             )
@@ -228,9 +186,9 @@ def parse_canonical_lyrics(
             CanonicalLine(
                 index=len(result),
                 time_ms=start,
-                text=text,
-                tokens=tokens,
-                timing_format=timing_format,
+                text=selected.text,
+                tokens=selected.tokens,
+                timing_format=selected.timing_format,
             )
         )
 
