@@ -2,7 +2,7 @@
 
 ## 版本与 QA
 
-新任务默认使用算法 `v3.8`。运行前确认 `scripts/redo_karaoke_pipeline.py` 的 `ALGORITHM_VERSION` 为 `3.8`，并为任务创建 schema 2.0 的 `task_manifest.json`。
+新任务默认使用算法 `v3.9`。运行前确认 `scripts/redo_karaoke_pipeline.py` 的 `ALGORITHM_VERSION` 为 `3.9`，并为任务创建 schema 2.0 的 `task_manifest.json`。
 
 `publish_ready=true` 表示所有已知结构错误和高、中、低风险候选均已清零；它不是未经测量的绝对正确率。物理不可辨、歌词源冲突或版本不一致时，系统必须阻止发布，而不是猜测。
 
@@ -14,6 +14,8 @@
 2. 编辑器导出的 SRT；不要先手工清洗。
 3. 歌曲清单：`分:秒 歌手 - 歌名`。
 4. 规范原语言 LRC 目录。
+
+若有 Enhanced LRC 或 QRC 逐字/逐词时间，可一并提供。它只用于辅助校正整行起止和映射，正式 SRT 仍是逐行字幕。
 
 完整波形流程还需要：
 
@@ -90,7 +92,9 @@ ASR 作业：
 
 ## 复用边界
 
-- 可跨任务复用：v3.8 通用程序、语言 profile、QA 规则、同版本规范 LRC 和原曲。
+- 可跨任务复用：v3.9 通用程序、语言 profile、QA 规则、同版本规范 LRC 和原曲。
+- 中段剪切候选必须经 `review-audio-edits` 写入 reviewed alignment 后才能继续。
+- 两首歌交接候选先用 `_cross_track_overlap_reviews` 确认或拒绝；确有叠唱时分别保留两条逐行字幕，并用 `_confirmed_overlap_intervals` 限定允许的重叠范围，不得自动拼成一行。
 - 只能在完整任务指纹一致时复用：cue 覆盖、毫秒边界、确认剪切、确认遗漏和回归案例。
 - 新混剪即使歌单相同，也必须重新计算波形映射。
 - 用户或模型确认的新结论必须写回任务级 QA，不得只留在对话记录。
