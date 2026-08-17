@@ -51,6 +51,9 @@ class TransitionConfig:
     min_score: float = 0.72
     min_margin: float = 0.02
     min_overlap_seconds: float = 0.75
+    search_margin_seconds: float = 10.0
+    minimum_feature_agreement: int = 2
+    merge_gap_seconds: float = 0.35
 
 
 @dataclass(frozen=True)
@@ -67,9 +70,9 @@ class TimeWarpConfig:
 
 @dataclass(frozen=True)
 class V4CalibrationProfile:
-    """All tunable v4 bootstrap values with one reproducible profile identity."""
+    """All tunable v4 production-bootstrap values with one profile identity."""
 
-    profile_version: str = "bootstrap-2026-08-17"
+    profile_version: str = "production-bootstrap-2026-08-17-a3"
     asset_resolver: AssetResolverConfig = field(default_factory=AssetResolverConfig)
     coarse: CoarseAlignmentConfig = field(default_factory=CoarseAlignmentConfig)
     fine: FineAlignmentConfig = field(default_factory=FineAlignmentConfig)
@@ -178,6 +181,14 @@ def validate_profile(profile: V4CalibrationProfile) -> None:
         raise CalibrationProfileError("coarse slope range is invalid")
     if profile.coarse.slope_step <= 0:
         raise CalibrationProfileError("coarse.slope_step must be positive")
+    if profile.transition.search_margin_seconds <= 0:
+        raise CalibrationProfileError("transition.search_margin_seconds must be positive")
+    if profile.transition.min_overlap_seconds <= 0:
+        raise CalibrationProfileError("transition.min_overlap_seconds must be positive")
+    if profile.transition.minimum_feature_agreement < 1:
+        raise CalibrationProfileError("transition.minimum_feature_agreement must be >= 1")
+    if profile.transition.merge_gap_seconds < 0:
+        raise CalibrationProfileError("transition.merge_gap_seconds must be >= 0")
     if profile.timewarp.max_continuous_rate <= 0:
         raise CalibrationProfileError("timewarp.max_continuous_rate must be positive")
     if profile.timewarp.minimum_feature_families < 1:
