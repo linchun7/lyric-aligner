@@ -20,6 +20,7 @@ class V4CLIBootstrapTests(unittest.TestCase):
             "scripts/v4_review.py",
             "scripts/v4_recompose_overlap.py",
             "scripts/v4_rebuild_cut.py",
+            "scripts/v4_compose_materializations.py",
             "scripts/v4_render.py",
         ):
             completed = subprocess.run(
