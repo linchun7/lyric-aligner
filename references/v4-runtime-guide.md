@@ -4,14 +4,13 @@
 主线算法版本：`4.0.0a8`  
 Calibration profile：`production-bootstrap-2026-08-17-a7`
 
-> main 已完成 production reconstruction、P1 strict calibration/blind、P1.1 dataset readiness、P2 editor shadow evidence、P3 local acoustic evidence。P4 新增 **shadow-only evidence fusion**；未经 private calibration，它不会修改 canonical lyric、Source-to-Mix 或 FINAL.srt。
+> main 已完成 production reconstruction、P1/P1.1、P2 editor shadow、P3 local acoustic evidence、P4 shadow fusion。P5 新增 **second-pass ASR plan-only routing**；它只决定哪些原 local jobs 值得换一个 accuracy model 再跑，不扩大到整曲，也不自动修改字幕。
 
-## 1. 现有生产入口
+## 1. 现有生产 / evidence 入口
 
 ```powershell
 python scripts/v4_run.py ...
-python scripts/v4_review.py template ...
-python scripts/v4_review.py apply ...
+python scripts/v4_review.py ...
 python scripts/v4_recompose_overlap.py ...
 python scripts/v4_rebuild_cut.py ...
 python scripts/v4_compose_materializations.py ...
@@ -19,7 +18,7 @@ python scripts/v4_render.py ...
 python scripts/v4_validate_release.py ...
 ```
 
-Private dataset / calibration：
+Calibration / dataset：
 
 ```powershell
 python scripts/v4_dataset_readiness.py scaffold ...
@@ -30,13 +29,14 @@ python scripts/v4_calibration_workflow.py select ...
 python scripts/v4_calibration_workflow.py blind ...
 ```
 
-Editor shadow：
+Editor / fusion：
 
 ```powershell
 python scripts/v4_editor_evidence.py ...
+python scripts/v4_fuse_evidence.py ...
 ```
 
-## 2. P3 acoustic backend / planner / ASR
+## 2. P3 第一遍 local ASR
 
 Backend check：
 
@@ -44,7 +44,7 @@ Backend check：
 python scripts/v4_alignment_backends.py
 ```
 
-Local planner：
+Local plan：
 
 ```powershell
 python scripts/v4_plan_alignment.py `
@@ -57,7 +57,7 @@ python scripts/v4_plan_alignment.py `
   --artifact-out "output/<任务>/v4/alignment/plan.artifact.json"
 ```
 
-Local faster-whisper evidence：
+第一遍 faster-whisper evidence：
 
 ```powershell
 python scripts/v4_execute_asr_evidence.py `
@@ -66,144 +66,175 @@ python scripts/v4_execute_asr_evidence.py `
   --plan-artifact "output/<任务>/v4/alignment/plan.artifact.json" `
   --run "output/<任务>/v4/<effective-run>.json" `
   --run-artifact "output/<任务>/v4/<effective-run>.artifact.json" `
-  --model-id "<faster-whisper-model-id>" `
+  --model-id "mobiuslabsgmbh/faster-whisper-large-v3-turbo" `
   --device cpu `
   --compute-type int8 `
-  --out "output/<任务>/v4/alignment/asr_evidence.json" `
-  --artifact-out "output/<任务>/v4/alignment/asr_evidence.artifact.json"
+  --out "output/<任务>/v4/alignment/asr_first.json" `
+  --artifact-out "output/<任务>/v4/alignment/asr_first.artifact.json"
 ```
 
-默认 ASR evidence 不写 raw text；只有 private output 明确需要时才使用 `--include-private-text`。
+模型 ID 只是示例配置；实际可用性必须由 runtime/backend 明确确认。
 
-GitHub Actions #493 已验证 faster-whisper 依赖环境可以安装/检查，但 CI 不下载/运行真实 Whisper model。
-
-## 3. P4 生成 Evidence Fusion Shadow
-
-最完整输入：source run + P2 editor evidence + P3 ASR evidence。
+## 3. P5 生成第二遍 ASR 计划
 
 ```powershell
-python scripts/v4_fuse_evidence.py `
+python scripts/v4_plan_asr_second_pass.py `
   --task-manifest "private/<任务>/qa/task_manifest.json" `
-  --run "output/<任务>/v4/<effective-run>.json" `
-  --run-artifact "output/<任务>/v4/<effective-run>.artifact.json" `
-  --editor-evidence "output/<任务>/v4/editor/editor_evidence.json" `
-  --editor-evidence-artifact "output/<任务>/v4/editor/editor_evidence.artifact.json" `
-  --asr-evidence "output/<任务>/v4/alignment/asr_evidence.json" `
-  --asr-evidence-artifact "output/<任务>/v4/alignment/asr_evidence.artifact.json" `
-  --out "output/<任务>/v4/evidence/fusion.json" `
-  --artifact-out "output/<任务>/v4/evidence/fusion.artifact.json" `
+  --plan "output/<任务>/v4/alignment/plan.json" `
+  --plan-artifact "output/<任务>/v4/alignment/plan.artifact.json" `
+  --first-pass-evidence "output/<任务>/v4/alignment/asr_first.json" `
+  --first-pass-artifact "output/<任务>/v4/alignment/asr_first.artifact.json" `
+  --second-pass-model-id "Systran/faster-whisper-large-v3" `
+  --out "output/<任务>/v4/alignment/asr_second_plan.json" `
+  --artifact-out "output/<任务>/v4/alignment/asr_second_plan.artifact.json" `
   --git-commit "<commit>"
 ```
 
-也允许只提供 editor 或只提供 ASR；完全没有 auxiliary evidence 时 output 会是 source-only LOW shadow state。
+P5 只 plan，不执行模型。
 
-默认：
+Output：
 
 ```text
-conflict_boundary_ms = 500
+stage = asr_second_pass_planning
+role  = asr_second_pass_plan
+mode = second_pass_plan_only
+policy_calibrated = false
+backend_execution_performed = false
+scope_policy = reuse_exact_first_pass_local_windows
 ```
 
-可显式覆盖：
+## 4. 默认 routing 参数
+
+```text
+min_canonical_text_support = 0.65
+min_avg_logprob = -0.75
+max_no_speech_prob = 0.60
+min_language_probability = 0.65
+reroute_missing_segments = true
+reroute_missing_line_support = true
+max_jobs = 100
+```
+
+可覆盖：
 
 ```powershell
-... --conflict-boundary-ms 500
+--min-canonical-text-support 0.65
+--min-avg-logprob -0.75
+--max-no-speech-prob 0.60
+--min-language-probability 0.65
+--max-jobs 100
 ```
 
-该参数是未校准 shadow diagnostic threshold，不是 release threshold。
+这些是未校准 routing 参数，不是 final confidence/release threshold。
 
-## 4. P4 输出怎么读
+## 5. 哪些情况进入第二遍
 
-Artifact：
+可能的 reasons：
 
 ```text
-stage = evidence_fusion_shadow
-role  = evidence_fusion
+missing_first_pass_evidence
+missing_segments
+missing_segment_quality
+missing_canonical_text_support
+low_canonical_text_support
+low_avg_logprob
+high_no_speech_probability
+low_language_probability
 ```
 
-Root/line 固定：
+第一遍证据足够好的 job 不进入第二遍。
+
+## 6. Scope / priority 安全
+
+P5 **不扩大时间窗**。每个 second-pass row 复用原 planner 的：
 
 ```text
-mode = shadow_only
-policy_calibrated = false
-release_gate_eligible = false
-automatic_timing_change_allowed = false
+job_id
+mix_window_ms
+source_window_ms
+canonical_text_sha256
 ```
 
-Shadow levels：
+当 eligible jobs > `max_jobs`：
 
 ```text
-LOW      source only
-MEDIUM   source + exactly one auxiliary boundary family
-HIGH     source + editor + ASR，且 editor/ASR 分歧 <= threshold
-CONFLICT editor + ASR 分歧 > threshold
+planner priority high > medium > low
+then evidence severity
+then reason count
+then deterministic identity
 ```
 
-**不要把 HIGH 当成“可发布”。** 当前 HIGH 只说明两个 auxiliary family 在 bootstrap threshold 下相互接近。
-
-## 5. P4 lineage 失败时怎么办
-
-Fusion 会拒绝：
-
-- task input hash 已变化；
-- source run artifact 不匹配；
-- timeline artifact 不属于 current run；
-- editor/asr evidence 来自另一个 source run；
-- auxiliary artifact 没有把 current source run 作为 upstream；
-- editor canonical text SHA 与当前 timeline 不一致；
-- auxiliary evidence 指向不存在的 canonical line。
-
-遇到这些问题要从对应 upstream stage 重跑，不手改 artifact ID/SHA。
-
-## 6. P4 privacy
-
-Fusion output 不复制：
+检查：
 
 ```text
-canonical raw lyric text
-editor raw text
-ASR raw text
+eligible_second_pass_job_count_before_truncation
+second_pass_job_count
+second_pass_plan_truncated
+priority_counts
+reason_counts
 ```
 
-即使 ASR input artifact 是 private-text opt-in，fusion 也只保留 identity/hash/boundary/score，不复制正文。
+`second_pass_plan_truncated=true` 时不能把计划描述为完整覆盖。
 
-## 7. Forced Alignment 当前如何用
+## 7. Model lineage
 
-当前 main 仍没有内置 production forced-aligner executor。
-
-已有：
+First-pass evidence 必须有：
 
 ```text
-source_forced_alignment capability
-source local-window planning
-external command readiness check
+config.model_id
 ```
 
-如果没有明确安装/配置/验证 backend，必须保持 unavailable/unready，不自动回退假结果。
+且：
 
-## 8. GitHub Actions 能 / 不能做
+```text
+second_pass_model_id != first_pass_model_id
+```
 
-CI 可以真实验证：
+否则 CLI 失败。这样避免同模型重复跑却被称为 accuracy escalation。
 
-- P4 LOW/MEDIUM/HIGH/CONFLICT deterministic rules；
-- HIGH 仍不可 release；
-- artifact lineage / cross-run fail；
-- privacy；
-- P0-P3 全部 regressions；
-- faster-whisper dependency environment。
+推荐运行思路是 fast first pass / accuracy second pass，例如 turbo -> large-v3；但模型是否真的更优必须由 private real-song evaluation 决定。
 
-CI 当前不能证明：
+## 8. 真正执行第二遍
 
-- real-song ASR/forced-alignment timing accuracy；
-- P4 shadow level 与真实错误率的统计关系；
-- 500ms conflict threshold 是最优值；
-- HIGH 可以安全自动改 timing/发布。
+P5 当前不提供独立 second-pass executor。正确执行方式是：读取 `selected_job_ids`，再调用现有 P3 `v4_execute_asr_evidence.py`，使用 second-pass model ID，并**只传这些 job IDs**。
 
-这些只能通过授权 private calibration + blind_test 完成。
+概念：
 
-## 9. 下一步
+```powershell
+python scripts/v4_execute_asr_evidence.py `
+  ... `
+  --model-id "<second-pass-model-id>" `
+  --job-id "<selected-job-id-1>" `
+  --job-id "<selected-job-id-2>" `
+  ...
+```
 
-1. P4 latest-head CI 全绿并合入；
-2. P5 two-pass ASR routing：只对第一遍弱证据 local jobs 调度 accuracy pass；
-3. 选择并实现具体 forced-aligner adapter 前先锁 model/license/language/cache lineage；
-4. 用 private calibration 评估 editor/ASR/forced-alignment family；
-5. 只有 blind gate 证明收益后，才设计 calibrated boundary application/release gate。
+不得因为 P5 生成计划就声称 second model 已执行。
+
+## 9. Lineage 失败时怎么办
+
+P5 会拒绝：
+
+- task input hash 变化；
+- plan artifact 不匹配；
+- first-pass artifact output hash 不匹配；
+- first-pass evidence 来自另一个 plan；
+- first-pass artifact 没绑定 exact plan；
+- first-pass/source-run identity 不同；
+- first-pass evidence 出现原 plan 不存在的 mix_asr job；
+- first-pass model ID 缺失；
+- second-pass model ID 与 first-pass 相同。
+
+不要手改 artifact ID/SHA 绕过。
+
+## 10. GitHub Actions 能 / 不能做
+
+CI 可以验证：routing、priority-aware truncation、exact-window reuse、model lineage、artifact lineage、privacy、P0-P4 regressions。
+
+CI 当前不会下载/运行真实 second-pass large model，也没有 private real-song/reference truth，所以不能证明：
+
+- large-v3 相对 turbo 的真实收益；
+- bootstrap routing thresholds 最优；
+- second-pass evidence 可自动改 final timing。
+
+这些必须通过授权 private calibration + blind_test。
