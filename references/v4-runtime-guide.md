@@ -4,9 +4,9 @@
 主线算法版本：`4.0.0a8`  
 Calibration profile：`production-bootstrap-2026-08-17-a7`
 
-> main 已完成 a8 的 reconstruction/review/overlap/cut/combined/render/release 主链。当前开发重点是 P1：把真实 calibration / blind-test 变成 split-isolated、candidate-locked、可审计流程。没有真实私有数据时，GitHub Actions 只能验证框架和 synthetic regressions，不能产生真实准确率。
+> main 已完成 reconstruction/review/overlap/cut/combined/render/release 与 strict calibration/blind framework。P1.1 新增 private dataset scaffold/readiness，目标是让真实数据准备可执行、可检查，但绝不生成假字幕、假 QA 或假准确率。
 
-## 1. 生产重建
+## 1. 生产重建主链
 
 ```powershell
 python scripts/v4_run.py `
@@ -15,160 +15,196 @@ python scripts/v4_run.py `
   --git-commit "<commit>"
 ```
 
-主链：
-
-```text
-Asset Resolution
- -> Primary Coarse
- -> AFFINE / PIECEWISE_RATE
- -> Selective Fine
- -> Canonical Timeline
- -> Transition Evidence
- -> ready_for_render | review_required
-```
-
-## 2. Review / Materialization
-
-Review：
+需要 review 时：
 
 ```powershell
 python scripts/v4_review.py template ...
 python scripts/v4_review.py apply ...
 ```
 
-Confirmed overlap：
+Materialization：
 
 ```powershell
 python scripts/v4_recompose_overlap.py ...
-```
-
-Confirmed cut：
-
-```powershell
 python scripts/v4_rebuild_cut.py ...
-```
-
-同一 reviewed task 同时有可证明互不冲突的 cut + overlap：
-
-```powershell
 python scripts/v4_compose_materializations.py ...
 ```
 
-Same-region cut+overlap、source-gap 冲突、partial-line ambiguity 等仍 fail-closed。
-
-## 3. Final Render / Release
+Final：
 
 ```powershell
 python scripts/v4_render.py ...
 python scripts/v4_validate_release.py ...
 ```
 
-`v4_render.py` 可消费：
+Same-region cut+overlap、partial-line ambiguity、证据不足 mapping 仍 fail-closed。
 
-```text
-production_orchestration
-review_resolution
-overlap_recomposition
-cut_rebuild
-combined_recomposition
-```
+## 2. 新建真实 private dataset 骨架
 
-共同要求：ready、无 active issues、无 legacy fallback、artifact lineage/profile/task fingerprint 全部一致。
-
-## 4. P1 数据集准备
-
-P1 严格数据集建议位于：
+推荐目录：
 
 ```text
 private/datasets/<dataset-name>/
 ```
 
-严格 schema=`1.1`。Manifest 至少应有：
+运行：
+
+```powershell
+python scripts/v4_dataset_readiness.py scaffold `
+  --out-dir "private/datasets/<dataset-name>" `
+  --dataset "opaque-dataset-id" `
+  --dataset-revision "2026-08-r1" `
+  --candidate-id baseline `
+  --calibration-cases 6 `
+  --blind-cases 6
+```
+
+生成：
+
+```text
+baseline.dataset.json
+calibration-policy.template.json
+blind-policy.template.json
+READINESS.json
+reference/
+predictions/baseline/
+```
+
+**不会生成：**
+
+```text
+reference/*.srt
+predictions/**/*.srt
+predictions/**/*.qa.json
+真实 cut/overlap 标注
+任何 accuracy metric
+```
+
+初始 `READINESS.json` 应明确 references/evaluation 尚未 ready；这是正常状态。
+
+## 3. 填写真实 reference / truth
+
+`baseline.dataset.json` 使用 strict schema `1.1`。
+
+每个 case 至少检查/填写：
 
 ```json
 {
-  "schema_version": "1.1",
-  "dataset": "opaque-dataset-name",
-  "dataset_revision": "2026-08-r1",
-  "cases": [
-    {
-      "id": "case-0001",
-      "source_group": "source-family-001",
-      "split": "calibration",
-      "language": "zh",
-      "reference_srt": "reference/case-0001.srt",
-      "predicted_srt": "predictions/candidate-a/case-0001.srt",
-      "qa_json": "predictions/candidate-a/case-0001.qa.json",
-      "audio_duration_seconds": 90,
-      "expected_cuts": [{"time_ms": 30000}],
-      "predicted_cuts": [{"time_ms": 30120}],
-      "expected_overlaps": []
-    }
-  ]
+  "id": "calibration-0001",
+  "source_group": "sg-calibration-0001",
+  "split": "calibration",
+  "language": "zh",
+  "reference_srt": "reference/calibration-0001.srt",
+  "predicted_srt": "predictions/baseline/calibration-0001.srt",
+  "qa_json": "predictions/baseline/calibration-0001.qa.json",
+  "audio_duration_seconds": 90,
+  "expected_cuts": [],
+  "predicted_cuts": [],
+  "expected_overlaps": [],
+  "predicted_overlaps": [],
+  "expected_occurrences": []
 }
 ```
 
-规则：
+注意：
 
-- `id` / `source_group` / dataset 名称使用 opaque 值，不含曲名/艺人；
-- 同一歌曲/版本家族的 clips 必须共享 source_group；
-- 一个 source_group 只能属于 train/calibration/blind_test 中一个 split；
-- baseline 与每个 candidate 可以有各自 prediction/QA 路径；
-- reference、case metadata、expected annotations、dataset_revision 必须一致。
+- `id/source_group/dataset` 用 opaque 值，不写曲名/艺人；
+- 同一 source/version family 的 clips 必须共享 source_group；
+- 同一 source_group 不能跨 train/calibration/blind_test；
+- `language` 应按真实 canonical language/profile 标注；
+- expected cut/overlap 是人工 truth，不从模型输出复制；
+- `audio_duration_seconds=0` 只是 scaffold 占位，真实评估前应补真实值。
 
-## 5. P1 严格入口
+## 4. 检查数据准备状态
 
-正式入口：
+### 只检查 metadata
 
-```text
-scripts/v4_calibration_workflow.py
+```powershell
+python scripts/v4_dataset_readiness.py check `
+  --dataset "private/datasets/<name>/baseline.dataset.json" `
+  --require metadata
 ```
 
-它负责：
+### reference 是否齐全
 
-```text
-selected split evaluation
-+ source_group isolation
-+ immutable ground-truth identity
-+ candidate revision/runtime identity
-+ calibration selection
-+ blind candidate lock
+```powershell
+python scripts/v4_dataset_readiness.py check `
+  --dataset "private/datasets/<name>/baseline.dataset.json" `
+  --split calibration `
+  --require references
 ```
 
-较低层的：
+### prediction + QA 是否齐全
 
-```text
-scripts/evaluate_calibration_dataset.py
-scripts/calibration_gate.py
+```powershell
+python scripts/v4_dataset_readiness.py check `
+  --dataset "private/datasets/<name>/baseline.dataset.json" `
+  --split calibration `
+  --require predictions
 ```
 
-用于诊断/测试，不应被拿来绕过 strict workflow 后宣称 blind-test 通过。
+### 是否真正可进入 P1 evaluate
 
-## 6. Calibration 阶段
+```powershell
+python scripts/v4_dataset_readiness.py check `
+  --dataset "private/datasets/<name>/baseline.dataset.json" `
+  --split calibration `
+  --require evaluation `
+  --out "output/evaluation/baseline.calibration.readiness.json"
+```
 
-目标：只使用 calibration split 选择一个 candidate。
+`evaluation` readiness 同时要求：
 
-重要纪律：在这个阶段 blind prediction/QA 可以完全不存在。
+- reference files 全部存在；
+- prediction + QA 全部存在；
+- QA JSON 有 algorithm/profile runtime identity；
+- selected split runtime identity 唯一一致。
 
-示意：
+返回码：ready=0；不 ready=2。缺失只报告 opaque case IDs，不输出歌词/绝对路径。
+
+## 5. 派生 candidate manifest
+
+不要手工复制一份 baseline manifest 后逐行改 prediction path。
+
+使用：
+
+```powershell
+python scripts/v4_dataset_readiness.py clone-candidate `
+  --source "private/datasets/<name>/baseline.dataset.json" `
+  --candidate-id candidate-a `
+  --out "private/datasets/<name>/candidate-a.dataset.json"
+```
+
+它保持 ground truth 不变，只把：
+
+```text
+predicted_srt -> predictions/candidate-a/<case>.srt
+qa_json       -> predictions/candidate-a/<case>.qa.json
+```
+
+并清空 inherited `predicted_cuts/predicted_overlaps`，防止把 baseline 预测冒充 candidate 预测。
+
+## 6. Calibration strict workflow
+
+当 readiness 通过后：
 
 ```powershell
 python scripts/v4_calibration_workflow.py evaluate `
-  --dataset "private/datasets/<name>/baseline.json" `
+  --dataset "private/datasets/<name>/baseline.dataset.json" `
   --split calibration `
   --candidate-id baseline `
-  --candidate-revision "<baseline-commit-or-build-id>" `
+  --candidate-revision "<baseline-commit/build>" `
   --out "output/evaluation/baseline.calibration.json"
 
 python scripts/v4_calibration_workflow.py evaluate `
-  --dataset "private/datasets/<name>/candidate-a.json" `
+  --dataset "private/datasets/<name>/candidate-a.dataset.json" `
   --split calibration `
   --candidate-id candidate-a `
-  --candidate-revision "<candidate-commit>" `
+  --candidate-revision "<candidate-commit/build>" `
   --out "output/evaluation/candidate-a.calibration.json"
 ```
 
-然后使用明确的 calibration policy 选择：
+然后 review `calibration-policy.template.json`，复制/改名为正式 versioned policy 后执行：
 
 ```powershell
 python scripts/v4_calibration_workflow.py select `
@@ -178,77 +214,22 @@ python scripts/v4_calibration_workflow.py select `
   --out "output/evaluation/selection.json"
 ```
 
-Selection artifact 锁：
+**模板 policy 不是经过真实数据校准的 production threshold。** 不应因为名字叫 template 就直接当最终门槛长期使用。
 
-```text
-candidate_id
-candidate_revision
-algorithm_version
-calibration_profile_version
-calibration_profile_id
-calibration evaluation SHA
-policy SHA
-selection payload SHA
-```
+## 7. Blind-test
 
-## 7. Gate policy
-
-示意：
-
-```json
-{
-  "schema_version": "1.0",
-  "policy_id": "calibration-r1",
-  "split": "calibration",
-  "gates": [
-    {
-      "scope": "overall",
-      "metric": "line_exact_recall",
-      "direction": "higher",
-      "max_regression_abs": 0.0
-    },
-    {
-      "scope": "overall",
-      "metric": "boundary_p95_ms",
-      "direction": "lower",
-      "max_regression_abs": 50.0
-    },
-    {
-      "scope": "overall",
-      "metric": "cut_recall",
-      "direction": "higher",
-      "max_regression_abs": 0.0
-    },
-    {
-      "scope": "overall",
-      "metric": "cut_boundary_p95_ms",
-      "direction": "lower",
-      "max_regression_abs": 100.0
-    }
-  ],
-  "ranking": [
-    {"scope": "overall", "metric": "line_exact_recall", "direction": "higher"},
-    {"scope": "overall", "metric": "boundary_p95_ms", "direction": "lower"}
-  ]
-}
-```
-
-这些只是 policy 格式示例，不是项目已经校准出的真实阈值。真实阈值应由 calibration 数据确定并版本化。
-
-## 8. Blind-test 阶段
-
-只有 selection artifact 生成之后，才生成/读取 blind predictions。
+Selection artifact 生成之后才准备/读取 blind predictions。
 
 ```powershell
 python scripts/v4_calibration_workflow.py evaluate `
-  --dataset "private/datasets/<name>/baseline.json" `
+  --dataset "private/datasets/<name>/baseline.dataset.json" `
   --split blind_test `
   --candidate-id baseline `
-  --candidate-revision "<baseline-revision>" `
+  --candidate-revision "<exact-baseline-revision>" `
   --out "output/evaluation/baseline.blind.json"
 
 python scripts/v4_calibration_workflow.py evaluate `
-  --dataset "private/datasets/<name>/candidate-a.json" `
+  --dataset "private/datasets/<name>/candidate-a.dataset.json" `
   --split blind_test `
   --candidate-id candidate-a `
   --candidate-revision "<exact-selected-revision>" `
@@ -262,60 +243,33 @@ python scripts/v4_calibration_workflow.py blind `
   --out "output/evaluation/blind-gate.json"
 ```
 
-Blind gate 会拒绝：
+Blind 会锁 baseline + selected candidate revision/runtime identity；不能看完 blind 后悄悄替换代码/profile。
 
-- candidate ID 与 selection 不同；
-- candidate revision 不同；
-- algorithm/profile/runtime identity 不同；
-- baseline/candidate blind ground truth 不同；
-- policy gate 不通过。
+## 8. GitHub Actions 能做 / 不能做
 
-## 9. P1 指标
+### 能做
 
-除现有 sequence/cue/onset/offset/cut/overlap 指标外，P1 增加 cut boundary：
+- scaffold/readiness synthetic E2E；
+- split/source_group isolation；
+- candidate clone truth-preservation；
+- QA runtime identity consistency；
+- P1 strict selection/blind lock；
+- Python 3.10/3.12/3.14 regression；
+- ASR dependency environment；
+- docs/privacy/environment/diff-check。
 
-```text
-cut_boundary_match_count
-cut_boundary_mae_ms
-cut_boundary_p50_ms
-cut_boundary_p90_ms
-cut_boundary_p95_ms
-cut_boundary_within_250ms_rate
-cut_boundary_within_500ms_rate
-```
+### 当前明确不能做
 
-不要单独追求低 cut-boundary MAE。必须同时看 cut recall/coverage，防止“只命中容易 cut”。
+公共 GitHub runner 没有用户授权的 private real-song 音频/reference truth，因此不能真实生成：
 
-## 10. GitHub Actions 能做 / 不能做
+- 各语言真实字幕准确率；
+- real boundary MAE/P95；
+- real cut/overlap P/R；
+- production runtime/review density；
+- real blind improvement percentage。
 
-### 可以做
+这些只能在真实 private dataset 被提供并实际跑过后汇报；不得用 synthetic tests 代替。
 
-- Python 3.10 / 3.12 / 3.14 contract tests；
-- synthetic split-isolation tests；
-- candidate lock tests；
-- synthetic cut boundary metrics；
-- strict calibration -> selection -> blind gate E2E；
-- privacy scan / docs / environment / diff checks；
-- ASR dependency environment check。
+## 9. 下一步
 
-### 当前做不到且不得伪造
-
-如果真实私有音频、人工 reference SRT、真实 cut/overlap truth 没有提供给 runner，GitHub Actions **不能**产生真实：
-
-- 歌曲级准确率；
-- 中文/英文/韩文/日文/粤语真实分组指标；
-- 真实 cut/overlap P/R；
-- 真实 cue boundary MAE/P95；
-- 真实 runtime/review-density 生产结论。
-
-这些必须在有授权 private dataset 的环境实际运行后再汇报。
-
-## 11. 当前后续顺序
-
-1. PR #8 framework 全绿并合并；
-2. 建立第一版真实 private calibration / blind_test；
-3. 根据真实 error breakdown 决定 P2 Editor Evidence + LanguageSpan；
-4. 再判断 Forced Alignment / ASR v2 是否值得进入生产；
-5. same-region cut+overlap joint acoustic model 只在真实数据证明价值后考虑。
-
-在 real blind-test 前，不宣称固定百分比准确率提升。
+P1.1 完成后并行做 P2 Editor Evidence + LanguageSpan shadow artifact。默认不改 canonical text、不把 editor timing 变成真源；自动 boundary refinement 要等 real calibration 再打开。Forced Alignment/ASR v2 根据真实 error breakdown 决定。
