@@ -14,6 +14,7 @@ from typing import Iterable
 from lyric_aligner.assets.lyric_roles import inspect_lyric_roles
 from lyric_aligner.contracts.artifacts import sha256_file
 from lyric_aligner.domain import TrackAsset, TrackOccurrence
+from lyric_aligner.io.text import read_task_text
 
 ASSET_SCHEMA_VERSION = "1.0"
 AUDIO_SUFFIXES = {".flac", ".wav", ".mp3", ".m4a", ".aac", ".ogg"}
@@ -49,7 +50,7 @@ def stable_id(*parts: str, prefix: str) -> str:
 
 def parse_song_list(path: Path) -> list[SongEntry]:
     entries: list[SongEntry] = []
-    for line_number, raw in enumerate(path.read_text(encoding="utf-8-sig").splitlines(), start=1):
+    for line_number, raw in enumerate(read_task_text(path).splitlines(), start=1):
         line = raw.strip()
         if not line:
             continue
@@ -79,14 +80,7 @@ def parse_song_list(path: Path) -> list[SongEntry]:
 
 
 def _candidate_score(entry: SongEntry, path: Path) -> float:
-    """Score one filename without letting a shared title swamp artist identity.
-
-    Exact Artist+Title is strongest. A filename that contains both artist and
-    title is a strong candidate but intentionally stays below exact so an
-    alternate live/studio/version file remains visible through the margin gate.
-    Title-only matches are useful for uniquely named files, but are deliberately
-    weaker because two different artists can share the same song title.
-    """
+    """Score one filename without letting a shared title swamp artist identity."""
 
     title = normalized_key(entry.title)
     artist = normalized_key(entry.artist)
@@ -275,6 +269,8 @@ def resolve_assets(
         "schema_version": ASSET_SCHEMA_VERSION,
         "status": "resolved",
         "song_list": str(song_list.resolve()),
+        "song_list_sha256": sha256_file(song_list),
+        "resolver_config": {"min_score": min_score, "min_margin": min_margin},
         "assets": [asset.to_dict() for asset in assets.values()],
         "occurrences": [occurrence.to_dict() for occurrence in occurrences],
         "resolution": [
