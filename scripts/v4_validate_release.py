@@ -9,6 +9,7 @@ from pathlib import Path
 
 from lyric_aligner.contracts.artifacts import atomic_write_json
 from lyric_aligner.qa.final_integrity import FinalIntegrityError, build_release_artifact_manifest
+from task_contract import load_task_manifest, verify_manifest_inputs
 
 
 def main() -> int:
@@ -23,7 +24,10 @@ def main() -> int:
     args = parser.parse_args()
 
     try:
-        task = json.loads(args.task_manifest.read_text(encoding="utf-8-sig"))
+        task = load_task_manifest(args.task_manifest)
+        issues = verify_manifest_inputs(args.task_manifest, task)
+        if issues:
+            raise ValueError("task manifest validation failed: " + "; ".join(issues))
         fingerprint = str(task["task_fingerprint_sha256"])
         manifest = build_release_artifact_manifest(
             final_srt=args.final_srt,
