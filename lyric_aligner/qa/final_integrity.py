@@ -123,6 +123,8 @@ def validate_qa_payload(
     *,
     expected_task_fingerprint: str,
     expected_algorithm_version: str,
+    expected_calibration_profile_id: str | None = None,
+    expected_calibration_profile_version: str | None = None,
 ) -> dict[str, Any]:
     payload = json.loads(qa_json.read_text(encoding="utf-8-sig"))
     issues: list[str] = []
@@ -133,6 +135,20 @@ def validate_qa_payload(
             "QA algorithm version mismatch: "
             f"expected {expected_algorithm_version}, got {payload.get('algorithm_version')}"
         )
+    if expected_calibration_profile_id is not None:
+        actual = str(payload.get("calibration_profile_id") or "")
+        if actual != expected_calibration_profile_id:
+            issues.append(
+                "QA calibration_profile_id mismatch: "
+                f"expected {expected_calibration_profile_id}, got {actual or '<missing>'}"
+            )
+    if expected_calibration_profile_version is not None:
+        actual = str(payload.get("calibration_profile_version") or "")
+        if actual != expected_calibration_profile_version:
+            issues.append(
+                "QA calibration_profile_version mismatch: "
+                f"expected {expected_calibration_profile_version}, got {actual or '<missing>'}"
+            )
     for key in ("passed", "structurally_valid", "fully_reviewed", "publish_ready"):
         if payload.get(key) is not True:
             issues.append(f"QA {key} must be true")
@@ -153,6 +169,8 @@ def build_release_artifact_manifest(
     git_commit: str = "",
     normalized_config: dict[str, Any] | None = None,
     upstream_artifact_ids: tuple[str, ...] = (),
+    expected_calibration_profile_id: str | None = None,
+    expected_calibration_profile_version: str | None = None,
 ) -> dict[str, Any]:
     binding = validate_srt_report_binding(
         final_srt,
@@ -163,6 +181,8 @@ def build_release_artifact_manifest(
         qa_json,
         expected_task_fingerprint=task_fingerprint_sha256,
         expected_algorithm_version=algorithm_version,
+        expected_calibration_profile_id=expected_calibration_profile_id,
+        expected_calibration_profile_version=expected_calibration_profile_version,
     )
     return build_artifact_manifest(
         task_fingerprint_sha256=task_fingerprint_sha256,
