@@ -7,10 +7,10 @@
 ```text
 lyric_aligner/
   assets/       # TrackAsset / TrackOccurrence / fail-closed resolution
-  audio/        # feature retrieval / TimeWarp / Fine / Transition
+  audio/        # features / Coarse / TimeWarp / Fine / Transition
   contracts/    # immutable artifact lineage
   io/           # strict task text input
-  pipeline/     # PipelineContext / production planning
+  pipeline/     # PipelineContext / production planning / review identity groundwork
   qa/           # final integrity
   text/         # canonical lyrics / normalization / language spans
   timeline/     # source→mix projection + final cue composition
@@ -24,13 +24,13 @@ v4_render.py
 v4_validate_release.py
 ```
 
-单 stage CLI 主要用于诊断和 calibration。
+单 stage CLI 主要用于诊断、calibration 和 artifact 重现。
 
 ## 2. Asset / Canonical Single Truth
 
 `TrackAsset` 表示具体录音 + canonical lyric interpretation；`TrackOccurrence` 表示该资产在 mix 中的一次出现。
 
-TrackAsset identity 包含：
+TrackAsset semantic identity：
 
 ```text
 source audio SHA-256
@@ -42,19 +42,11 @@ canonical same-timestamp selection SHA-256
 
 `ResolvedAssetBinding` 形成后，所有下游 stage 禁止重新 fuzzy resolve source/LRC。
 
-Canonical parser 支持：
-
-- line LRC；
-- Enhanced LRC；
-- QRC；
-- same timestamp alternatives；
-- token/word timing。
-
-ASR/Editor 不拥有 canonical text 权限。
+Canonical parser 支持 line LRC、Enhanced LRC、QRC、same-timestamp alternatives、token/word timing。ASR/Editor 不拥有 canonical text 权限。
 
 ## 3. Source-to-Mix Mapping
 
-### 3.1 Coarse retrieval
+### Coarse
 
 ```text
 mix/source audio
@@ -67,7 +59,7 @@ mix/source audio
 
 强 click/metronome 不是主对齐依据。
 
-### 3.2 AFFINE first
+### AFFINE first
 
 默认：
 
@@ -75,11 +67,11 @@ mix/source audio
 source_time = intercept + slope * mix_time
 ```
 
-BPM 仅作为 slope soft prior。
+BPM 仅作 slope soft prior。
 
-### 3.3 Continuous PIECEWISE_RATE
+### Continuous PIECEWISE_RATE
 
-当 AFFINE residual/drift 明显失败、复杂模型显著改善且至少有足够独立 feature family 支持时才升级：
+只有 AFFINE residual/drift 明显失败、复杂模型显著改善且获得足够独立 feature-family 支持时才升级：
 
 ```text
 source_time = intercept + base_slope * mix_time
@@ -95,33 +87,29 @@ breakpoints[]
 slope_deltas[]
 ```
 
-source position 保持连续；local slope 可以突然变化。
+source position 连续；local slope 可突然变化。
 
-### 3.4 Cut
+### Cut
 
-`rate change != cut`。
+`rate change != cut`。只有 source-position jump 超出连续倍率 envelope 才产生 discontinuity candidate。Middle cut 无论 task 声明 false/true/unknown 都不能自动 confirmed；未解决 discontinuity 必须 BLOCK。
 
-只有连续 mix 时间上的 source-position jump 超出连续倍率 envelope 才产生 discontinuity candidate。
+### Selective Fine
 
-Middle cut 无论 task 声明 false/true/unknown 都不能自动 confirmed。未解决 discontinuity 必须 BLOCK。
-
-### 3.5 Selective Fine
-
-高置信 AFFINE 不跑 Fine。ambiguous/complex/blocked case 才在 coarse source neighbourhood 做高分辨率搜索，避免整条长 mix 重算。
+高置信 AFFINE 不跑 Fine。ambiguous/complex/blocked case 才在 coarse source neighbourhood 高分辨率精修，避免整条长 mix 重算。
 
 ## 4. Transition
 
 Primary occurrence interval 负责主单曲 timeline，但 nominal start 不是真实声学硬边界。
 
-相邻 A/B 另外使用：
+相邻 A/B 使用：
 
 ```text
 boundary ± transition.search_margin_seconds
 ```
 
-LEFT source 与 RIGHT source 都在同一 mix 区间取证。
+左右 source 在同一 mix 区间独立取证。
 
-Transition profile 当前控制：
+Transition profile 控制：
 
 ```text
 min_score
@@ -132,7 +120,7 @@ minimum_feature_agreement
 merge_gap_seconds
 ```
 
-双侧强 evidence -> overlap candidate；ambiguous repeated occurrence -> uncertain interval。两者都 BLOCK/review，不自动成为 overlap truth。
+双侧强 evidence -> overlap candidate；ambiguous repeated occurrence -> uncertain interval。二者都 BLOCK/review，不自动成为 overlap truth。
 
 ## 5. Canonical Timeline Projection
 
@@ -146,9 +134,18 @@ Effective TimeWarp (Fine if applied, else Coarse)
 Global mix timeline
 ```
 
-支持 AFFINE 与 continuous PIECEWISE_RATE 的解析反演。
+支持 AFFINE 与 continuous PIECEWISE_RATE 解析反演。
 
-Blocked TimeWarp 不能生成可继续发布的 timeline。
+输出 result 明确携带：
+
+- occurrence_id；
+- ordinal；
+- track_id；
+- canonical_selection_sha256；
+- occurrence window；
+- projected lines/tokens。
+
+这些字段是 a4 final renderer 再验证 single-truth lineage 的正式接口。
 
 ## 6. Production Orchestrator
 
@@ -181,27 +178,23 @@ legacy_fallback_used = false
 
 ## 7. a4 Final Timeline Composer
 
-新增 `timeline/composer.py`。
+`timeline/composer.py` 把多个 review-free occurrence canonical timelines 组合成最终 cue stream。
 
-它把多个 review-free occurrence canonical timelines 组合成最终 cue stream。
+算法：
 
-关键算法：
-
-1. 每行 `mix_start_ms` 裁剪到 occurrence window；
+1. `mix_start_ms` 裁剪到 occurrence window；
 2. 已有 `mix_end_ms` 时使用 projected end；
 3. Enhanced/QRC word timing 加 `word_timing_tail_ms`；
 4. 没有 end 的最后行使用 `open_line_duration_ms`；
 5. 所有 cue 受 `maximum_line_duration_ms` 与 occurrence end 限制；
-6. 若有下一 canonical line，则 end 不能越过 next start；
+6. 有下一 canonical line 时 end 不越过 next start；
 7. duration < `minimum_cue_duration_ms` -> BLOCK；
 8. same-occurrence overlap -> BLOCK；
-9. cross-track overlap 未经确认 -> BLOCK。
+9. cross-track overlap 未确认 -> BLOCK。
 
-这样不会因为 line LRC 下一句很晚，就让上一句字幕穿过整段乐器间奏持续显示。
+这避免 line LRC 下一句很晚时上一句穿过长间奏常驻，也避免为了“凑出结果”自动拉长极短 cue。
 
 ## 8. a4 Render Calibration
-
-`V4CalibrationProfile` 新增：
 
 ```python
 @dataclass(frozen=True)
@@ -220,7 +213,7 @@ production-bootstrap-2026-08-17-a4
 
 所有数值均属于 bootstrap calibration，不是业务硬编码真理。
 
-由于 profile complete content 变化，a3 TrackAsset/profile artifacts 不允许静默升级；a4 从 Asset Resolution / `v4_run` 重跑。
+profile complete content 改变，因此 a3 TrackAsset/profile artifacts 不允许静默升级；a4 必须从 Asset Resolution / `v4_run` 重跑。
 
 ## 9. Package-native Final Renderer
 
@@ -232,20 +225,28 @@ v4_run.json + artifact
 track_assets.json + artifact
 ```
 
-然后逐个验证 canonical timeline payload/artifact。
-
 必须满足：
 
 ```text
 run.status == ready_for_render
 run.issues == []
 legacy_fallback_used == false
-all task/version/profile IDs match
-all materialized hashes match
-all timeline artifact IDs ∈ run upstream lineage
 ```
 
-输出：
+### Renderer lineage checks
+
+1. task / algorithm / calibration profile 完全一致；
+2. production-run artifact 的 materialized `v4_run.json` hash 必须匹配；
+3. supplied TrackAsset artifact 必须存在于 production-run upstream IDs；
+4. 每个 timeline artifact 必须存在于 production-run upstream IDs；
+5. 每个 timeline artifact 的 upstream 必须包含同一个 supplied TrackAsset artifact；
+6. timeline result 的 occurrence_id、track_id、ordinal、canonical_selection_sha256 必须与 `ResolvedAssetBinding` 相同；
+7. run occurrence set 必须精确等于全部 resolved TrackOccurrences；
+8. timeline materialized hash 不得漂移。
+
+这防止同一 task/profile 下另一轮合法但不同的 Asset Resolution 或 timeline 被误混入 final render。
+
+### Renderer outputs
 
 ```text
 FINAL.srt
@@ -256,40 +257,106 @@ FINAL.render.artifact.json
 
 Audit 每 cue 包含：
 
-- cue number/start/end/text；
+- number/start/end/text；
 - occurrence_id / track_id / ordinal；
 - canonical_line_index；
 - timing format/end basis；
 - task fingerprint；
 - cue_id / text SHA。
 
-QA 只有在 review-free composer 成功时才写 `publish_ready=true` / `review_candidate_count=0`。
+QA 只有 review-free composer 成功时才写：
 
-## 10. Release
+```text
+passed=true
+structurally_valid=true
+fully_reviewed=true
+publish_ready=true
+review_candidate_count=0
+```
 
-`v4_validate_release.py` 继续作为独立最后门禁：
+并绑定 calibration profile id/version、source run artifact、source asset artifact。
+
+## 10. Strict Release Contract
+
+`v4_validate_release.py` 是独立最后门禁：
 
 ```text
 FINAL.srt + FINAL.csv + FINAL.qa.json
                  +
-FINAL.render.artifact.json
+exact FINAL.render.artifact.json
                  ↓
 release.artifact.json
 ```
 
-它重新核对 SRT/report/QA、task、algorithm version、profile、upstream lineage 和 materialized outputs。
+对于 v4：
+
+1. 必须至少提供 upstream artifact；
+2. 必须且只能有一个 `final_render` upstream；
+3. requested release algorithm version 必须等于 upstream version；
+4. upstream calibration profile id/version 必须存在；
+5. QA calibration profile id/version 必须与 upstream 完全一致；
+6. `final_render` artifact 的三个 output records 必须分别匹配当前 final SRT / audit / QA 的 size 与 SHA-256；
+7. SRT/report 再逐 cue 核对时间、正文、cue id、text hash；
+8. QA ready flags 必须全部为 true，review count 必须为 0。
+
+关键安全性质：
+
+> 即使 FINAL.srt、FINAL.csv、FINAL.qa.json 三者被一起协调修改、彼此仍一致，只要没有重新生成对应 final_render artifact，也不能通过 release。
 
 因此 a4 review-free 正常路径不再需要 legacy v3.9 `build/finalize/qa`。
 
-## 11. 文档与 CI 契约
+## 11. Review Issue Identity Groundwork
 
-实质性生产变更必须同步：
+`pipeline/production.py` 已增加 stable review issue identity helper，为下一阶段 replayable Review Decision artifact 建接口。
 
-- `v4-change-record.md`
-- `v4-status.md`
-- owning runtime/implementation/architecture docs
+当前尚未把该机制接入 v4_run 的正式 decision replay，因此不能宣称 Review Decision 已实现。
 
-CI 运行：
+计划：
+
+- transition false positive -> `resolved_clear`；
+- confirmed overlap -> 生成 transition-aware 双路 canonical timeline；
+- middle-cut confirmed/rejected -> 对 TimeWarp/timeline 产生新 downstream artifact；
+- 每个 decision 必须绑定 task、issue_id、evidence、upstream artifact。
+
+在该层完成前，renderer 不允许绕过 `review_required`。
+
+## 12. Tests
+
+### Reconstruction E2E
+
+`test_v4_run_end_to_end.py`：synthetic WAV/LRC/task manifest，真实 subprocess 跑 `v4_run.py`。
+
+### Composer
+
+`test_v4_timeline_composer.py`：open line、long gap、word tail、window clipping、short-cue BLOCK、unconfirmed cross-track overlap BLOCK。
+
+### Run-to-release E2E
+
+`test_v4_render_end_to_end.py`：
+
+```text
+v4_run → v4_render → v4_validate_release
+```
+
+全部使用 synthetic source/mix 与虚构歌词。
+
+### Release negative tests
+
+`test_v4_release_lineage.py` / `test_v4_release_integrity.py`：
+
+- final output materialized change；
+- wrong/multiple final_render；
+- wrong algorithm version；
+- mixed profile；
+- QA profile mismatch；
+- SRT/report mismatch；
+- malformed SRT。
+
+## 13. 文档 / CI
+
+实质性生产变更同步 `v4-change-record.md`、`v4-status.md` 及 owning runtime/implementation docs。
+
+完整 CI 目标：
 
 ```text
 compileall lyric_aligner scripts
@@ -301,48 +368,10 @@ check_environment.py
 git diff --check
 ```
 
-Python matrix：3.10 / 3.12 / 3.14；ASR environment 单独验证。
+Python 3.10 / 3.12 / 3.14；ASR environment 单独验证。
 
-## 12. 当前测试重点
+### 当前外部 blocker
 
-### Reconstruction E2E
+PR #3 当前 GitHub Actions runner 因账户 payment/spending-limit 问题未启动，run 显示 `runner_id=0 / steps=[]`。这不是代码测试结果。
 
-`test_v4_run_end_to_end.py`：纯合成 WAV/LRC/task manifest，真实跑 `v4_run.py`。
-
-### Composer
-
-`test_v4_timeline_composer.py`：
-
-- open last line；
-- long instrumental gap；
-- Enhanced word tail；
-- occurrence-window clipping；
-- short-cue BLOCK；
-- unconfirmed cross-track overlap BLOCK。
-
-### Run-to-release E2E
-
-`test_v4_render_end_to_end.py`：
-
-```text
-v4_run
- → v4_render
- → v4_validate_release
-```
-
-全部使用 synthetic source/mix、虚构歌词和 schema-2.0 Task Manifest，不提交真实任务素材。
-
-## 13. 下一接口：Review Decision
-
-当前 `review_required` 仍不能 render。
-
-下一层必须把人工结论做成 task-scoped、fingerprinted、可重放 artifact，不能靠口头说明或直接修改 JSON。
-
-计划语义：
-
-- transition false positive -> `resolved_clear`，安全解除该 issue；
-- confirmed overlap -> 必须生成 transition-aware 双路 canonical timeline，不能只是把 BLOCK 改 false；
-- middle-cut confirmed/rejected -> 必须作用于 TimeWarp/timeline，再生成新 downstream artifact；
-- 每个 issue/decision 必须有稳定 identity 和 evidence。
-
-在该层完成前，不允许 renderer 绕过 `review_required`。
+处理原则：不降低门禁、不合并未验证 a4；Billing 恢复后以最新 head 重跑完整矩阵。
