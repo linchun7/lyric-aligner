@@ -1,284 +1,272 @@
 # Lyric Aligner v4 关键变更记录
 
-> 记录 v4 **实际已提交代码**的关键行为、测试、兼容性与未完成边界。详细接口和公式见 `references/v4-implementation.md`。
+> 本文件记录 v4 已实际进入代码的关键行为、兼容/迁移语义与验证边界。所有实质性生产更新必须按 `documentation-contract.md` 在同一 PR 同步本文件。
 
-## 2026-08-17 — Milestone 0-A：Release Integrity
-
-关键代码：
-
-- `lyric_aligner/srt.py`
-- `lyric_aligner/qa/final_integrity.py`
-- `lyric_aligner/contracts/artifacts.py`
-- `scripts/v4_validate_release.py`
-- `scripts/test_v4_release_integrity.py`
-
-关键变化：
-
-- 坏 SRT block fail-closed；
-- timeline end 使用 `max(cue.end_ms)`；
-- FINAL SRT / audit CSV / QA 逐行、逐时间、逐正文严格绑定；
-- task fingerprint 与 algorithm version 必须一致；
-- release artifact 绑定最终文件 SHA-256、配置和 upstream lineage；
-- manifest 原子写出；
-- `v4_validate_release.py` 先重新验证 task manifest 中所有原始输入内容，再允许 release。
-
-已覆盖正文篡改、时间篡改、漏行、跨算法版本复用、manifest 篡改、坏 SRT、overlay 时间轴乱序。
-
----
-
-## 2026-08-17 — Foundation：Sequence-aware Evaluator / Editor Evidence
+## 2026-08-17 — Foundation：Evaluator / Editor Evidence
 
 关键代码：
 
 - `scripts/evaluate_dataset.py`
 - `scripts/editor_evidence.py`
 - `scripts/language_profiles.py`
-- `scripts/validate_multilingual_asr.py`
+- `lyric_aligner/text/language_spans.py`
 
-关键变化：
+变更：
 
-- 增加 sequence-aware error、line exact precision/recall/F1、missing/extra line；
-- `zh/en` 可用 direct editor text；
-- `ko/ja` 编辑器文字仅 phonetic hint；
-- `yue` 默认 timing hint；
-- `auto/generic` 走 ASR language detection，编辑器文字不具备 canonical 决策权。
+- 修复只按 bag-of-token 统计导致错序仍高分的问题；
+- 增加 sequence WER、line exact precision/recall/F1、missing/extra/wrong-order、split/merge；
+- onset / offset 独立统计 MAE/P50/P90/P95；
+- cut 支持实际时间容差匹配；
+- overlap 增加 duration precision/recall/IoU 与 track attribution；
+- Editor Evidence 按语言分级：zh/en direct-text，ko/ja phonetic-hint，yue timing-hint，unknown/generic 不把编辑器文字当 canonical truth；
+- mixed-language 增加 span 级策略，避免一行内英文把整行韩/日/粤权重抬高。
 
-状态：策略/评估层已实现；Editor Evidence 尚未全面接入 legacy 生产打分。
+## 2026-08-17 — Milestone 0：Release / Artifact Integrity
 
----
+关键代码：
 
-## 2026-08-17 — Milestone 1-A：TrackAsset / TrackOccurrence / Canonical LRC Preflight
+- `lyric_aligner/srt.py`
+- `lyric_aligner/contracts/artifacts.py`
+- `lyric_aligner/qa/final_integrity.py`
+- `scripts/v4_validate_release.py`
+
+变更：
+
+- SRT 非空坏 block fail-closed；
+- overlay/乱序输入 timeline end 使用 `max(cue.end_ms)`；
+- FINAL SRT / audit CSV / QA 的 cue 数、顺序、时间、正文严格绑定；
+- ArtifactManifest 记录 task fingerprint、algorithm version、normalized config、upstream artifact IDs、output size/SHA-256；
+- 下游重新验证 materialized output hash，防止 manifest 生成后文件被改；
+- release 拒绝跨 task、跨 v4 algorithm version、跨 calibration profile 拼装；
+- 含未固化 CLI calibration override 的 artifact 不能发布。
+
+## 2026-08-17 — Milestone 1：TrackAsset / Canonical Lyric Single Truth
 
 关键代码：
 
 - `lyric_aligner/domain.py`
 - `lyric_aligner/assets/resolver.py`
+- `lyric_aligner/assets/bindings.py`
 - `lyric_aligner/assets/lyric_roles.py`
+- `lyric_aligner/text/canonical_lyrics.py`
+- `lyric_aligner/text/normalization.py`
 - `lyric_aligner/io/text.py`
-- `scripts/v4_resolve_assets.py`
-- `scripts/test_v4_asset_resolver.py`
-- `scripts/test_v4_lyric_roles.py`
-- `scripts/test_v4_text_encoding.py`
 
-### 资产身份
+变更：
 
-- `TrackAsset` 表示具体录音 + canonical lyric 版本；
-- `TrackOccurrence` 表示该资产在当前 mix 中的一次出现；
-- 同一首歌重复出现可以共用 asset，但 `occurrence_id` 必须不同；
-- 不同艺人/版本不能因为标题相同而串证据。
+- 建立 `TrackAsset + TrackOccurrence + ResolvedAssetBinding`；
+- source/LRC 匹配由 fail-open 改为 minimum score + top1/top2 margin + artist/title identity + 文件唯一占用；
+- 同一歌曲重复 occurrence 可共享 TrackAsset，不同资产不得静默共用 generic 文件；
+- TrackAsset schema 升为 `1.1`；
+- semantic identity 包含 source SHA、raw lyric SHA、canonical same-timestamp selection SHA；
+- 改变 `lyric-role-map` 原文选择会改变 `track_id/version_id`；
+- 普通 LRC、Enhanced LRC、QRC 进入同一个 timestamp alternative identity space；
+- downstream 不再应该重新猜 source/LRC 或固定取 `alternatives[0]`；
+- metadata 不能被 override 成 canonical original；
+- v4 文本路径默认 UTF-8 fail-closed，避免盲试编码“成功解出乱码”。
 
-### fail-closed resolver
-
-旧的“找不到就选最像文件”被替换为：
-
-- top1 minimum score；
-- top1/top2 minimum margin；
-- Artist+Title 精确命中优先；
-- 同标题不同艺人主动降权；
-- 同一 LRC/原曲文件不能被两个不同 TrackAsset 静默复用；
-- 选择过程保留 top1/top2/margin 审计数据。
-
-Bootstrap：
-
-```text
-asset min_score = 0.76
-asset min_margin = 0.08
-```
-
-尚未 calibration。
-
-### canonical LRC role
-
-- 每个 timestamp group 必须有唯一 original；
-- 单行组可直接 original；
-- 已知 `ko/ja/zh/yue/en` 可用 native script 确认唯一原文；
-- 无法区分 translation / romanization / pronunciation 的同行保持 `unknown`，不猜；
-- 两条都可能是 original 或 `auto` 多候选无法判断 -> BLOCK。
-
-### 文本编码
-
-v4 新生产路径默认 UTF-8 fail-closed。CP949/Shift-JIS/其他 legacy encoding 必须显式声明或预先转换；禁止 UTF-8 失败后盲猜 GB18030，因为“成功解码成错误脚本”比直接失败更危险。
-
-### Task/Artifact lineage
-
-`v4_resolve_assets.py` 现在：
-
-- 必须读取 schema 2.0 task manifest；
-- song list / lyrics dir / source audio dir 的路径和内容必须与 manifest 一致；
-- `track_assets` 写入 task fingerprint、algorithm version、song-list SHA-256 和 resolver config；
-- 同时产生 `asset_resolution` stage ArtifactManifest。
-
-`middle_cut=false|true|unknown` 只控制搜索策略；`true` 绝不等于 confirmed cut。
-
----
-
-## 2026-08-17 — Milestone 2-A：Affine-first TimeWarp
-
-关键代码：
-
-- `lyric_aligner/audio/timewarp.py`
-- `scripts/test_v4_timewarp.py`
-
-AFFINE：
-
-```text
-source_time = intercept + slope * mix_time
-```
-
-连续 PIECEWISE_RATE：
-
-```text
-source_time = intercept + base_slope * mix_time
-            + Σ delta_slope_i * max(0, mix_time - breakpoint_i)
-```
-
-模型选择：
-
-- 所有 occurrence 先走 AFFINE；
-- 固定模型解释充分时禁止升级；
-- 只有 residual/drift/coverage 明显失败，且 piecewise 经复杂度惩罚后显著改善，并得到至少两个独立 feature family 支持，才接受 PIECEWISE_RATE；
-- 当前最多两个 breakpoint，防止高自由度过拟合。
-
-BPM 只作弱 slope prior；错误 BPM 必须允许被真实 anchor 推翻。
-
-Cut 语义：
-
-- abrupt slope change != cut；
-- source-position jump 才是 discontinuity candidate；
-- `middle_cut=false` -> unexpected discontinuity + BLOCK；
-- `middle_cut=true/unknown` -> review + BLOCK；
-- 永不自动 confirmed；
-- backward source jump 默认 BLOCK。
-
-Bootstrap：residual/drift/improvement、`max_continuous_rate=2.0`、`min_excess_source_jump=1.5s` 均待 calibration。
-
----
-
-## 2026-08-17 — Milestone 2-B：Harmonic Coarse Retrieval + Global Path
+## 2026-08-17 — Milestone 2：Audio Mapping v2
 
 关键代码：
 
 - `lyric_aligner/audio/features.py`
 - `lyric_aligner/audio/coarse_mapper.py`
-- `scripts/test_v4_audio_features.py`
-- `scripts/test_v4_coarse_mapper.py`
+- `lyric_aligner/audio/timewarp.py`
+- `lyric_aligner/audio/fine_alignment.py`
 
-### 单窗多特征检索
+变更：
 
-1. mix/source 运行 HPSS；
-2. coarse 主证据使用 harmonic 分量；
-3. 提取 Chroma CENS + MFCC；
-4. 对 source position + slope 候选进行局部重采样匹配；
-5. 保存多个候选，而不仅是 top1；
-6. 输出 top1/top2、margin、estimated slope、Chroma/MFCC score、feature agreement；
-7. source 近邻峰用 NMS，避免同一峰的小平移伪装成 top1/top2；
-8. 重复 motif 的远距离双峰必须表现为低 margin/ambiguous。
+### Coarse Retrieval
 
-### BPM/slope 搜索
+- mix/source 使用 HPSS harmonic 以降低强 click/percussive 干扰；
+- 主检索证据为 Chroma CENS + MFCC；
+- 每窗保留多个 source/slope 候选；
+- top1/top2 margin + NMS 保留重复副歌歧义；
+- 多窗口候选走全局单调 source path，而不是每窗独立 top1；
+- BPM 只对 slope search 提供 soft prior，不删除全局候选。
 
-BPM prior 只在其附近增加更密候选，**不会删除全局 slope grid**，所以错误 BPM 不会把正确倍率排除在搜索空间外。
+### AFFINE-first TimeWarp
 
-### 多窗口全局路径
-
-`coarse_mapper.py` 不让每个窗口独立采用 top1，而是在每窗多个候选上运行动态路径选择：
-
-- source 时间默认单调向前；
-- backward jump 默认不允许；
-- transition 同时考虑 acoustic emission 与局部 observed rate；
-- 允许局部 rate 改变，不要求全曲固定 slope；
-- `middle_cut=false` 时大 forward jump 不允许被路径吞掉；
-- `middle_cut=true/unknown` 可保留 jump 路径，但后续 TimeWarp 会产生 review/BLOCK discontinuity。
-
-选出的整曲 path 自动转换为：
-
-```python
-AlignmentAnchor(
-    mix_time,
-    source_time,
-    confidence=fused_score,
-    feature_scores={"chroma": ..., "mfcc": ...},
-)
-```
-
-随后直接进入 `select_timewarp()`。
-
-### Bootstrap 参数
+模型优先：
 
 ```text
-slope range = 0.65 .. 1.80
-slope step = 0.10
-fusion = 0.78 * chroma + 0.22 * mfcc
-chroma agreement threshold = 0.68
-mfcc agreement threshold = 0.58
-coarse min_score = 0.72
-coarse min_margin = 0.035
+source_time = intercept + slope * mix_time
 ```
 
-全部待 calibration。
-
-### 合成声学验证
-
-已测试：
-
-- 从 source 截取真实片段；
-- `time_stretch(rate=1.20)`；
-- mix 叠加强 140 BPM click；
-- 故意提供错误 BPM prior=1.05；
-- 多窗口 coarse path 仍需单调定位正确 source，并让 TimeWarp 拟合 slope 接近 1.20。
-
-另有 source 重复两次相同 motif 的测试，必须显示低 top1/top2 margin 并 `ambiguous=true`。
-
-### 当前边界
-
-该链路已经可运行：
+只有 affine residual/drift/coverage 明显不足，并且更复杂模型在复杂度惩罚后显著改善、同时得到足够独立 feature family 支持，才接受连续：
 
 ```text
-HPSS/Chroma/MFCC
- -> multi-candidate retrieval
- -> monotonic global path
- -> AlignmentAnchor
- -> Affine-first TimeWarp
+PIECEWISE_RATE
 ```
 
-但尚未替换 legacy `audio-align/build/finalize`，也尚未在真实 40–60 分钟私有歌单上 calibration，因此不得声称真实准确率已提升某个百分比。
-
----
-
-## 当前组合验证
-
-在恢复的 v3.9 工作树 + 当前 v4 package 上：
+其 canonical serialized state 为：
 
 ```text
-85 tests passed
+intercept
+base_slope
+breakpoints[]
+slope_deltas[]
 ```
 
-组合包括：
+local rate 可突然改变；`1.08 → 1.17 → 1.43` 不等于 cut。
 
-- v3.9 legacy middle-cut / variable-speed / overlap / end-to-end；
-- v4 release integrity；
-- sequence-aware evaluator；
-- Editor Evidence foundation；
-- TrackAsset resolver；
-- LRC role preflight；
-- strict multilingual encoding；
-- TimeWarp；
-- harmonic coarse retrieval；
-- global coarse path。
+只有 source-position jump 超出连续倍率 envelope 才产生 discontinuity candidate；middle cut 永不自动 confirmed。
 
----
+### Selective Fine Alignment
 
-## 下一步
+- clean/high-confidence AFFINE 默认跳过；
+- ambiguous / blocked / complex 才进入高分辨率局部搜索；
+- Fine 只计算 coarse windows 覆盖的 mix 局部区间，不对整条 40–60 分钟 mix 重算高分辨率特征。
 
-1. 增加可直接运行的 coarse-align CLI 和 stage artifact；
-2. transition margin / TrackOccurrence activity / 双曲 overlap evidence；
-3. 把 legacy waveform NCC 作为独立 evidence family 融入，而不是删除；
-4. 只对 low-margin / AFFINE drift / cut / overlap boundary 做 fine alignment；
-5. 本地 Codex 恢复完整 v3.9 legacy 工作树并接线 v4 package；
-6. 私有 calibration/blind-test 后重定全部 bootstrap 阈值。
-# 2026-08-17：本地 v3.9 baseline 恢复与 v4 production safety wiring
+### 性能
 
-- v3.9 legacy 生产脚本、测试和文档以独立 baseline commit 恢复；v4 集成在该 baseline 之上进行，保留 middle-cut review/apply、连续分段变速、Enhanced LRC/QRC、叠唱 review/confirmed interval 和发布门禁。
-- `redo_karaoke_pipeline.py prepare` / `audio-align` 新增可选 v4 asset mode：必须同时提供 fingerprinted `track_assets.json` 和 asset artifact，严格校验 schema、task fingerprint、v4 algorithm version、artifact ID 和 materialized output hash 后，才按 occurrence ordinal 使用 canonical LRC 路径。
-- 不提供 v4 asset 参数时保留 v3.9 legacy 兼容入口；提供任一而不提供另一项会 fail-closed，避免半接线或跨任务资产混用。
-- legacy `qa` 在 `publish_ready=true` 时自动创建 release ArtifactManifest，严格绑定 FINAL SRT、审计 CSV、QA JSON、task fingerprint 和算法版本；不可发布的 QA 不会产生 release manifest。
-- 此轮不把 v4 TimeWarp/transition/LanguageSpan 直接升格为终稿权威来源。它们仍需通过私有 A/B 与 calibration 后才可改变 v3.9 映射或发布决策。
+Coarse 同样只计算当前 occurrence/transition 搜索区间，避免每首歌重复对整条 mix 做 HPSS/Chroma/MFCC。
+
+## 2026-08-17 — Milestone 3：Calibration / Pipeline Contracts
+
+关键代码：
+
+- `lyric_aligner/config.py`
+- `lyric_aligner/pipeline/context.py`
+- `scripts/v4_profile.py`
+
+变更：
+
+- 建立完整 `V4CalibrationProfile`；
+- profile complete content 形成稳定 `profile_id`；
+- TrackAsset artifact 嵌入完整 profile，后续 stage 从 `PipelineContext` 自动恢复；
+- threshold 变化必须体现在 profile identity，不能只改函数默认值；
+- 临时 CLI override 被标记为实验参数并阻断 release。
+
+`4.0.0a3` 当前 profile version：
+
+```text
+production-bootstrap-2026-08-17-a3
+```
+
+Transition profile 包含：
+
+- min score / margin；
+- min overlap duration；
+- search margin；
+- minimum feature agreement；
+- merge gap。
+
+`scripts/v4_probe_transition.py` 已把这些字段真正传入算法和 artifact，避免“profile 写了但运行没生效”。
+
+## 2026-08-17 — Milestone 4：Documentation Contract
+
+关键代码/文档：
+
+- `references/documentation-contract.md`
+- `scripts/validate_docs_contract.py`
+- `scripts/test_docs_contract.py`
+- `.github/workflows/validate.yml`
+
+变更：
+
+- 所有实质性生产语义变化必须同步 `v4-change-record.md`；
+- production/status 变化必须同步 `v4-status.md`；
+- CLI/workflow 变化必须同步 runtime/SKILL/workflow；
+- schema/contract 和架构职责变化必须同步 owning implementation/architecture docs；
+- 契约以 PR base..head 完整 diff 执行，不允许靠最后一个 commit 或无关 Markdown 绕过。
+
+CI #241 曾在 compileall/ASR 环境已通过的情况下，因为 CLI 更新没有同步 runtime/workflow 文档而正确 FAIL；该失败证明门禁生效，不应降低规则来“做绿 CI”。
+
+## 2026-08-17 — Milestone 5：v4.0.0a3 Production-first
+
+这是本轮策略变化最大的版本。
+
+### 生产策略
+
+- 新真实任务优先 v4；
+- unresolved mapping/cut/transition 进入 `review_required`；
+- **禁止静默 fallback v3.9**；
+- v3.9 只作为 Git 历史/比较/仓库级 rollback 点，不再维护为第二套运行时生产算法；
+- 新算法禁止继续堆进 `redo_karaoke_pipeline.py`。
+
+### Timeline 真源
+
+新增：
+
+- `lyric_aligner/timeline/projector.py`
+
+能力：
+
+- 对 AFFINE / continuous PIECEWISE_RATE TimeWarp 做 source→mix 反演；
+- 将 CanonicalLine/CanonicalToken 投影到 global mix timestamp；
+- applied Fine 优先，否则用 Coarse；
+- blocked TimeWarp 不能进入正常 timeline render 流程。
+
+### Production Plan
+
+新增：
+
+- `lyric_aligner/pipeline/production.py`
+
+严格区分：
+
+1. primary occurrence interval；
+2. shared transition evidence interval。
+
+primary interval 用 nominal start 划分主单曲 timeline；相邻边界额外让左右 source 都搜索同一 `boundary ± profile.search_margin_seconds` 区间。
+
+共享窗口只表示“允许两首都取证”，不表示已确认 overlap。
+
+### 一键生产入口
+
+新增：
+
+- `scripts/v4_run.py`
+
+当前执行：
+
+```text
+Task Manifest
+ → Asset Resolution
+ → Primary Coarse per occurrence
+ → Selective Fine
+ → Effective TimeWarp
+ → Canonical Timeline Projection
+ → Shared-boundary LEFT/RIGHT Coarse
+ → Transition Probe
+ → v4_run.json / production_orchestration artifact
+```
+
+状态：
+
+- `ready_for_render`
+- `review_required`
+
+并明确：
+
+```json
+"legacy_fallback_used": false
+```
+
+### 当前未完成边界
+
+`ready_for_render` **不是** `publish_ready`。a3 仍需实现：
+
+- package-native final timeline composer / SRT renderer；
+- review decision artifact；
+- Editor Evidence / LanguageSpan 最终 cue fusion；
+- final render → release guard 原生接线；
+- real private calibration/blind-test。
+
+Forced Alignment / ASR v2 继续后置，由真实任务数据决定投入优先级。
+
+## 验证规则
+
+任何测试数量、CI 绿灯都必须绑定具体 commit/head。旧 head 的成功不能继承到新代码。
+
+当前 a3 合入 `main` 前必须满足：
+
+- Documentation Contract PASS；
+- Python 3.10 / 3.12 / 3.14 全量 unittest PASS；
+- ASR environment PASS；
+- skill validation / privacy scan / environment / `git diff --check` PASS；
+- `v4_run.py --help` bootstrap PASS；
+- production plan / timeline / transition profile tests PASS。
+
+在这些条件完成前，本文件不声明当前 head 已可合并。
