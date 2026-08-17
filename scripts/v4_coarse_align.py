@@ -16,44 +16,29 @@ import librosa
 
 from lyric_aligner import __version__
 from lyric_aligner.audio.coarse_mapper import build_coarse_timewarp
+from lyric_aligner.config import DEFAULT_V4_PROFILE
 from lyric_aligner.contracts.artifacts import (
     atomic_write_json,
     build_artifact_manifest,
     sha256_file,
     validate_artifact_output,
-    validate_upstream_artifact,
 )
+from lyric_aligner.pipeline.context import build_pipeline_context
 from task_contract import assert_manifest_paths, load_task_manifest, resolve_manifest_record
 
 
-def _lookup_occurrence(payload: dict, occurrence_id: str) -> tuple[dict, dict]:
-    occurrence = next(
-        (item for item in payload.get("occurrences", []) if item.get("occurrence_id") == occurrence_id),
-        None,
-    )
-    if occurrence is None:
-        raise ValueError(f"occurrence_id not found in track assets: {occurrence_id}")
-    asset = next(
-        (item for item in payload.get("assets", []) if item.get("track_id") == occurrence.get("track_id")),
-        None,
-    )
-    if asset is None:
-        raise ValueError(f"TrackAsset missing for occurrence {occurrence_id}")
-    return occurrence, asset
-
-
-def _default_interval(payload: dict, occurrence: dict, mix_duration: float) -> tuple[float, float]:
+def _default_interval(bindings, binding, mix_duration: float) -> tuple[float, float]:
     """Return a coarse seed interval, not a final active-track boundary."""
 
-    ordered = sorted(payload.get("occurrences", []), key=lambda item: int(item["ordinal"]))
+    ordered = sorted(bindings, key=lambda item: item.ordinal)
     position = next(
         index
         for index, item in enumerate(ordered)
-        if item["occurrence_id"] == occurrence["occurrence_id"]
+        if item.occurrence_id == binding.occurrence_id
     )
-    start = float(occurrence["nominal_start_ms"]) / 1000.0
+    start = float(binding.nominal_start_ms) / 1000.0
     end = (
-        float(ordered[position + 1]["nominal_start_ms"]) / 1000.0
+        float(ordered[position + 1].nominal_start_ms) / 1000.0
         if position + 1 < len(ordered)
         else mix_duration
     )
@@ -61,6 +46,7 @@ def _default_interval(payload: dict, occurrence: dict, mix_duration: float) -> t
 
 
 def main() -> int:
+    defaults = DEFAULT_V4_PROFILE.coarse
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--task-manifest", required=True, type=Path)
     parser.add_argument("--mix-audio", required=True, type=Path)
@@ -70,11 +56,15 @@ def main() -> int:
     parser.add_argument("--bpm-prior", type=float)
     parser.add_argument("--mix-start", type=float)
     parser.add_argument("--mix-end", type=float)
-    parser.add_argument("--sr", type=int, default=11025)
-    parser.add_argument("--hop-length", type=int, default=1024)
-    parser.add_argument("--window-seconds", type=float, default=6.0)
-    parser.add_argument("--step-seconds", type=float, default=3.0)
-    parser.add_argument("--candidate-step-seconds", type=float, default=0.75)
+    parser.add_argument("--sr", type=int, default=defaults.sr)
+    parser.add_argument("--hop-length", type=int, default=defaults.hop_length)
+    parser.add_argument("--window-seconds", type=float, default=defaults.window_seconds)
+    parser.add_argument("--step-seconds", type=float, default=defaults.step_seconds)
+    parser.add_argument(
+        "--candidate-step-seconds",
+        type=float,
+        default=defaults.candidate_step_seconds,
+    )
     parser.add_argument("--out", required=True, type=Path)
     parser.add_argument("--artifact-out", required=True, type=Path)
     parser.add_argument("--git-commit", default="")
@@ -86,45 +76,49 @@ def main() -> int:
         fingerprint = str(task["task_fingerprint_sha256"])
 
         assets = json.loads(args.track_assets.read_text(encoding="utf-8-sig"))
-        if assets.get("task_fingerprint_sha256") != fingerprint:
-            raise ValueError("track_assets task fingerprint mismatch")
-        if assets.get("algorithm_version") != __version__:
-            raise ValueError("track_assets algorithm version mismatch")
-
-        asset_artifact = json.loads(args.asset_artifact.read_text(encoding="utf-8-sig"))
-        issues = validate_upstream_artifact(
+        asset_artifact = json.loads(
+            args.asset_artifact.read_text(encoding="utf-8-sig")
+        )
+        output_issues = validate_artifact_output(
             asset_artifact,
-            expected_task_fingerprint=fingerprint,
-            expected_algorithm_version=__version__,
-            expected_stage="asset_resolution",
+            role="track_assets",
+            path=args.track_assets,
         )
-        issues.extend(
-            validate_artifact_output(
-                asset_artifact,
-                role="track_assets",
-                path=args.track_assets,
+        if output_issues:
+            raise ValueError(
+                "invalid asset artifact output: " + "; ".join(output_issues)
             )
+        context = build_pipeline_context(
+            expected_task_fingerprint=fingerprint,
+            track_assets_payload=assets,
+            asset_artifact=asset_artifact,
+            verify_asset_files=True,
         )
-        if issues:
-            raise ValueError("invalid asset artifact: " + "; ".join(issues))
-
-        occurrence, asset = _lookup_occurrence(assets, args.occurrence_id)
-        source_path = Path(str(asset["source_audio_path"]))
-        if sha256_file(source_path) != str(asset["source_audio_sha256"]):
-            raise ValueError("selected source audio hash differs from TrackAsset")
+        binding = context.binding_by_occurrence_id.get(args.occurrence_id)
+        if binding is None:
+            raise ValueError(
+                f"occurrence_id not found in track assets: {args.occurrence_id}"
+            )
+        source_path = Path(binding.source_audio_path)
 
         source_dir_record = task["inputs"].get("source_audio_dir")
         if source_dir_record is not None:
-            source_dir = resolve_manifest_record(args.task_manifest, source_dir_record).resolve()
+            source_dir = resolve_manifest_record(
+                args.task_manifest, source_dir_record
+            ).resolve()
             try:
                 source_path.resolve().relative_to(source_dir)
             except ValueError as exc:
-                raise ValueError("TrackAsset source audio is outside task source_audio_dir") from exc
+                raise ValueError(
+                    "TrackAsset source audio is outside task source_audio_dir"
+                ) from exc
 
         mix_audio, _ = librosa.load(args.mix_audio, sr=args.sr, mono=True)
         source_audio, _ = librosa.load(source_path, sr=args.sr, mono=True)
         mix_duration = len(mix_audio) / args.sr
-        default_start, default_end = _default_interval(assets, occurrence, mix_duration)
+        default_start, default_end = _default_interval(
+            context.bindings, binding, mix_duration
+        )
         mix_start = default_start if args.mix_start is None else args.mix_start
         mix_end = default_end if args.mix_end is None else args.mix_end
         if mix_start < 0 or mix_end > mix_duration or mix_end <= mix_start:
@@ -137,43 +131,59 @@ def main() -> int:
             mix_start=mix_start,
             mix_end=mix_end,
             bpm_prior=args.bpm_prior,
-            middle_cut=str(occurrence.get("middle_cut", "false")),
+            middle_cut=binding.middle_cut,
             feature_hop_length=args.hop_length,
             window_seconds=args.window_seconds,
             step_seconds=args.step_seconds,
             candidate_step_seconds=args.candidate_step_seconds,
+            slope_minimum=defaults.slope_minimum,
+            slope_maximum=defaults.slope_maximum,
+            slope_step=defaults.slope_step,
+            min_score=defaults.min_score,
+            min_margin=defaults.min_margin,
         )
         payload = {
-            "schema_version": "1.0",
+            "schema_version": "1.1",
             "algorithm_version": __version__,
             "task_fingerprint_sha256": fingerprint,
-            "occurrence_id": args.occurrence_id,
-            "track_id": occurrence["track_id"],
+            "calibration_profile_version": context.calibration_profile_version,
+            "calibration_profile_id": context.calibration_profile_id,
+            "occurrence_id": binding.occurrence_id,
+            "track_id": binding.track_id,
+            "canonical_selection_sha256": binding.canonical_selection_sha256,
             "mix_audio_sha256": sha256_file(args.mix_audio),
-            "source_audio_sha256": sha256_file(source_path),
-            "upstream_asset_artifact_id": asset_artifact["artifact_id"],
+            "source_audio_sha256": binding.source_audio_sha256,
+            "upstream_asset_artifact_id": context.asset_artifact.artifact_id,
             "result": mapping,
         }
         atomic_write_json(args.out, payload)
+        normalized_config = {
+            **context.artifact_config(),
+            "sr": args.sr,
+            "hop_length": args.hop_length,
+            "window_seconds": args.window_seconds,
+            "step_seconds": args.step_seconds,
+            "candidate_step_seconds": args.candidate_step_seconds,
+            "slope_minimum": defaults.slope_minimum,
+            "slope_maximum": defaults.slope_maximum,
+            "slope_step": defaults.slope_step,
+            "min_score": defaults.min_score,
+            "min_margin": defaults.min_margin,
+            "bpm_prior": args.bpm_prior,
+            "mix_start": mix_start,
+            "mix_end": mix_end,
+        }
         artifact = build_artifact_manifest(
             task_fingerprint_sha256=fingerprint,
             stage="coarse_audio_alignment",
             algorithm_version=__version__,
             outputs=(("coarse_alignment", args.out),),
-            normalized_config={
-                "sr": args.sr,
-                "hop_length": args.hop_length,
-                "window_seconds": args.window_seconds,
-                "step_seconds": args.step_seconds,
-                "candidate_step_seconds": args.candidate_step_seconds,
-                "bpm_prior": args.bpm_prior,
-                "mix_start": mix_start,
-                "mix_end": mix_end,
-            },
+            normalized_config=normalized_config,
             producer={"git_commit": args.git_commit} if args.git_commit else {},
-            upstream_artifact_ids=(str(asset_artifact["artifact_id"]),),
+            upstream_artifact_ids=(context.asset_artifact.artifact_id,),
             evidence={
-                "occurrence_id": args.occurrence_id,
+                "occurrence_id": binding.occurrence_id,
+                "track_id": binding.track_id,
                 "selection": mapping["timewarp"]["selection"],
                 "blocked": mapping["timewarp"]["blocked"],
             },
@@ -185,9 +195,10 @@ def main() -> int:
     print(
         json.dumps(
             {
-                "occurrence_id": args.occurrence_id,
+                "occurrence_id": binding.occurrence_id,
                 "selection": mapping["timewarp"]["selection"],
                 "blocked": mapping["timewarp"]["blocked"],
+                "calibration_profile_id": context.calibration_profile_id,
                 "artifact_id": artifact["artifact_id"],
             }
         )
