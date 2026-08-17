@@ -1,8 +1,8 @@
 # Lyric Aligner v4 当前实施状态
 
 更新日期：2026-08-18  
-当前开发分支：`agent/v4-evidence-fusion-shadow`  
-当前 main：`cd3420750c06a55fa1af7d6314ec56971e728928`  
+当前开发分支：`agent/v4-asr-second-pass-routing`  
+当前 main：`bc4e10760ffee2e5990ca580d5edbadd7d561eaf`  
 主线算法版本：`4.0.0a8`  
 Calibration profile：`production-bootstrap-2026-08-17-a7`
 
@@ -24,157 +24,178 @@ P2    editor/Jianying multilingual shadow evidence
 
 P3    local acoustic evidence planner/backend/faster-whisper executor
       cd3420750c06a55fa1af7d6314ec56971e728928
+
+P4    shadow multi-family evidence fusion
+      bc4e10760ffee2e5990ca580d5edbadd7d561eaf
 ```
 
-P3 PR #12 latest head `c6c66f6a1fb1e2ee9d43e26064e7efc30fce3cbe` 的 validate #493：ASR environment + Python 3.10/3.12/3.14 compile/docs/full unit-E2E/Skill/privacy/environment/diff-check 全部 success 后 squash merge。
+P3 validate #493、P4 validate #517 都在 ASR environment + Python 3.10/3.12/3.14 compile/docs/full unit-E2E/Skill/privacy/environment/diff-check 全绿后合入。
 
-## 2. 当前 P4：Evidence Fusion Shadow
+## 2. 当前 P5：ASR Second-Pass Routing
 
-P4 只把已经存在的独立 evidence family 汇总到同一个 canonical line 身份上：
-
-```text
-Source-to-Mix canonical timeline
-+ P2 editor shadow evidence
-+ P3 local ASR evidence
-        ↓
-uncalibrated shadow support state
-```
+目标：第一遍 local ASR evidence 弱或缺失时，只把**原 P3 planner 已经选择的 local jobs**送入第二遍 accuracy-model 计划。
 
 新增：
 
 ```text
-lyric_aligner/evidence/fusion.py
-scripts/v4_fuse_evidence.py
-references/evidence-fusion-shadow.md
+lyric_aligner/alignment/asr_routing.py
+scripts/v4_plan_asr_second_pass.py
+references/asr-second-pass-routing.md
 ```
+
+Package export 同步到 `lyric_aligner/alignment/__init__.py`。
 
 Artifact：
 
 ```text
-stage = evidence_fusion_shadow
-role  = evidence_fusion
+stage = asr_second_pass_planning
+role  = asr_second_pass_plan
 ```
 
-固定安全语义：
+固定：
 
 ```text
-mode = shadow_only
+mode = second_pass_plan_only
 policy_calibrated = false
-release_gate_eligible = false
-automatic_timing_change_allowed = false
+backend_execution_performed = false
+scope_policy = reuse_exact_first_pass_local_windows
 ```
 
-因此 P4 不修改 canonical text、Source-to-Mix、canonical timeline、renderer 或 FINAL.srt。
+因此 P5 当前**只规划，不执行第二模型**；不修改 canonical text、Source-to-Mix、timeline、P4 fusion 或 FINAL.srt。
 
-## 3. P4 shadow levels
+## 3. P5 weak-evidence routing
+
+Bootstrap signals：
+
+```text
+missing_first_pass_evidence
+missing_segments
+missing_segment_quality
+missing_canonical_text_support
+low_canonical_text_support
+low_avg_logprob
+high_no_speech_probability
+low_language_probability
+```
+
+默认 planning 参数：
+
+```text
+min_canonical_text_support = 0.65
+min_avg_logprob = -0.75
+max_no_speech_prob = 0.60
+min_language_probability = 0.65
+max_jobs = 100
+```
+
+这些阈值只决定“是否值得补第二遍 evidence”，不是 final confidence/release threshold。
+
+## 4. Exact local scope
+
+P5 不重新搜索整曲，也不扩大 window。Second-pass row 复用原 planner job 的：
+
+```text
+job_id
+occurrence_id
+track_id
+canonical_line_index
+mix_window_ms
+source_window_ms
+canonical_text_sha256
+```
+
+`scope_policy=reuse_exact_first_pass_local_windows` 写入 payload/artifact。
+
+Forced-alignment-only jobs 不会被 P5 转成 ASR jobs。
+
+## 5. Priority-aware truncation
+
+修复了早期版本按 line number 截断的风险。
+
+如果 eligible jobs > `max_jobs`，顺序为：
+
+1. first-pass planner priority：high > medium > low；
+2. evidence severity：missing evidence > missing segment/quality > low canonical support > other weak signals；
+3. second-pass reason count；
+4. ordinal/line/window/occurrence/job ID deterministic tie-break。
 
 输出：
 
 ```text
-LOW
-MEDIUM
-HIGH
-CONFLICT
+eligible_second_pass_job_count_before_truncation
+second_pass_job_count
+second_pass_plan_truncated
+priority_counts
+reason_counts
 ```
 
-Bootstrap 解释：
+## 6. Model lineage
 
-- `LOW`：只有 source timeline；
-- `MEDIUM`：source + 1 个 auxiliary boundary family；
-- `HIGH`：editor + ASR 都有 boundary proposal，且二者最大 onset/offset 分歧未超过 bootstrap conflict threshold；
-- `CONFLICT`：editor + ASR 都有 proposal，但分歧超过 threshold。
-
-**这些不是 calibrated accuracy/confidence。即使 `HIGH` 仍然 `release_gate_eligible=false`。**
-
-默认 `conflict_boundary_ms=500` 只用于 shadow diagnostic，不能直接成为生产发布阈值。
-
-## 4. Evidence family authority
+P5 CLI 要求 first-pass evidence 必须记录：
 
 ```text
-source_timeline
-  authoritative_for_primary_timing = true
-
-editor
-  auxiliary shadow only
-
-asr
-  auxiliary shadow only
+config.model_id
 ```
 
-ASR 同一 line 有多个 local jobs 时，P4 只为 shadow fusion 选择一个 proposal，bootstrap 以 `canonical_text_support_score` 排序；这不是 calibrated model arbitration。
-
-Occurrence-level ASR job 没有 canonical line identity，不会被强行映射成某条歌词的边界。
-
-## 5. Privacy / lineage
-
-P4 output 不复制：
-
-- canonical raw lyric text；
-- editor raw text；
-- ASR raw observed text。
-
-只保留 canonical text SHA、occurrence/track/line identity、source/editor/ASR boundary、必要分数、family count、disagreement 与 shadow level。
-
-`v4_fuse_evidence.py` 必须验证：
-
-- exact task fingerprint；
-- exact source run artifact；
-- effective canonical timeline artifacts；
-- editor/asr evidence artifact output hash；
-- auxiliary evidence `source_run_artifact_id` 与当前 source run 完全一致；
-- auxiliary artifact lineage upstream 到当前 source run。
-
-另一个 task/run 的 evidence 必须 fail-closed。
-
-## 6. 当前 P3 真实运行边界
-
-P3 已进入 main，但仍需区分：
+同时默认强制：
 
 ```text
-backend available
-!= execution_ready
-!= validated_on_singing
+second_pass_model_id != first_pass_model_id
 ```
 
-GitHub Actions #493 确认 `requirements-asr.txt` 的 faster-whisper environment 可以安装/检查；CI 仍**没有下载/运行真实 Whisper model**，也没有用户 private song/reference truth。
+防止“名义 two-pass、实际同一模型重复跑”。当前 contract 不判断哪个模型更强；运营建议仍是 fast first-pass / accuracy second-pass，例如 turbo -> large-v3。
 
-因此不能声称 GitHub Actions 已证明 large-v3/turbo 的真实歌声 word timing 或准确率。
+## 7. Lineage / privacy
 
-Forced Alignment 当前仍只有 `source_forced_alignment` capability + local source-window planning + external command readiness；没有伪装 WhisperX/SOFA/MMS production-ready。
+P5 验证：
 
-## 7. P4 tests
+- task fingerprint/input hashes；
+- exact P3 alignment plan artifact；
+- exact first-pass ASR artifact；
+- first-pass `source_plan_artifact_id`；
+- first-pass artifact upstream 包含 exact plan；
+- same source run identity；
+- first-pass evidence 中不能出现原 plan 不存在的 mix_asr job。
 
-新增：
+Output 不包含 raw canonical lyric text，也不复制 ASR raw text。
 
-- source only -> LOW；
-- exactly one auxiliary family -> MEDIUM；
-- editor+ASR agreement -> HIGH；
-- editor+ASR disagreement -> CONFLICT；
-- HIGH 仍不可 release/auto-apply；
-- canonical/editor text SHA mismatch fail-closed；
-- auxiliary unknown line fail-closed；
-- artifact-level same-run lineage；
-- auxiliary evidence from another run fail-closed；
-- fusion output 不泄露 private lyric/editor/ASR raw text。
+First-pass artifact 被改动、来自另一个 task/plan/run 时必须 fail-closed。
 
-P4 尚未通过本分支 latest-head GitHub Actions，所以当前不能宣称已可合并。
+## 8. P5 tests
 
-## 8. 仍未完成 / 真实阻塞
+新增/收紧：
 
-尚未完成：
+- good first-pass job 不 reroute；
+- weak evidence reroute；
+- missing first-pass evidence reroute；
+- missing segments/line support explicit；
+- missing segment quality 不能默认当作 good；
+- forced-only job 不转 ASR；
+- extra foreign first-pass job fail；
+- `max_jobs` 优先保留 high-priority severe job；
+- invalid priority fail；
+- exact local window reuse；
+- first/second model ID lineage；
+- same-model second pass fail；
+- first-pass artifact tamper fail。
+
+P5 尚未经过本分支 latest-head GitHub Actions，因此当前不能宣称已可合并。
+
+## 9. 真实限制 / 未完成
+
+GitHub Actions 仍不会下载/运行真实 second-pass large model，也没有 private real-song/reference truth，因此不能证明：
+
+- large-v3 相对 turbo 的真实歌声收益；
+- 这些 weak thresholds 最优；
+- second-pass evidence 可以自动改 final timing。
+
+仍未完成：
 
 - 用户授权 private calibration/blind dataset 的真实填充与指标；
-- calibrated editor boundary application；
-- production forced-aligner adapter + model/language/cache lineage；
-- turbo -> large-v3 uncertain-window second-pass routing；
+- production forced-aligner adapter；
+- second-pass **execution orchestration**（P5 当前只 plan）；
 - vocal separation/local singing alignment；
 - calibrated multi-family release gate；
 - same-region cut+overlap joint acoustic model。
 
-GitHub Actions 明确做不到/当前不做：
-
-- 没有 private real-song/reference truth 时证明真实准确率提升；
-- 在现有 workflow 中下载并跑大 Whisper/WhisperX/SOFA 模型来冒充真实验收；
-- 未安装/未配置 forced aligner 时伪造 forced-alignment 结果。
-
-> **当前正确表述：P0/P1/P1.1/P2/P3 已进入 main；P4 正在把 source/editor/ASR 合成可审计但未校准的 shadow fusion。任何 HIGH 都不等于可发布。**
+> **当前正确表述：P0/P1/P1.1/P2/P3/P4 已进入 main；P5 正在把第一遍弱 local ASR evidence 安全路由到不同 accuracy model 的同一 local window，当前只生成计划。**
