@@ -8,7 +8,7 @@ import json
 import math
 import statistics
 import sys
-from collections import Counter, defaultdict
+from collections import defaultdict
 from pathlib import Path
 from typing import Any
 
@@ -69,11 +69,56 @@ def pair_cues(reference: list[Cue], predicted: list[Cue]) -> list[tuple[Cue, Cue
     return pairs
 
 
-def token_counts(language: str, cues: list[Cue]) -> Counter[str]:
-    counts: Counter[str] = Counter()
+def lcs_length(left: list[str], right: list[str]) -> int:
+    """Return the order-preserving longest common subsequence length."""
+
+    if len(left) < len(right):
+        left, right = right, left
+    previous = [0] * (len(right) + 1)
+    for left_item in left:
+        current = [0]
+        for index, right_item in enumerate(right, start=1):
+            if left_item == right_item:
+                current.append(previous[index - 1] + 1)
+            else:
+                current.append(max(previous[index], current[-1]))
+        previous = current
+    return previous[-1]
+
+
+def edit_distance(left: list[str], right: list[str]) -> int:
+    """Return Levenshtein distance using O(min(n, m)) memory."""
+
+    if len(left) < len(right):
+        left, right = right, left
+    previous = list(range(len(right) + 1))
+    for left_index, left_item in enumerate(left, start=1):
+        current = [left_index]
+        for right_index, right_item in enumerate(right, start=1):
+            substitution = previous[right_index - 1] + (left_item != right_item)
+            insertion = current[-1] + 1
+            deletion = previous[right_index] + 1
+            current.append(min(substitution, insertion, deletion))
+        previous = current
+    return previous[-1]
+
+
+def unit_sequence(language: str, cues: list[Cue]) -> list[str]:
+    sequence: list[str] = []
     for cue in cues:
-        counts.update(boundary_units_for_language(language, cue.text))
-    return counts
+        sequence.extend(boundary_units_for_language(language, cue.text))
+    return sequence
+
+
+def character_sequence(cues: list[Cue]) -> list[str]:
+    sequence: list[str] = []
+    for cue in cues:
+        sequence.extend(normalized_text(cue.text))
+    return sequence
+
+
+def normalized_line_sequence(cues: list[Cue]) -> list[str]:
+    return [normalized_text(cue.text) for cue in cues if normalized_text(cue.text)]
 
 
 def case_metrics(case: dict[str, Any], base: Path) -> dict[str, Any]:
@@ -90,10 +135,13 @@ def case_metrics(case: dict[str, Any], base: Path) -> dict[str, Any]:
     predicted = parse_srt(predicted_path)
     pairs = pair_cues(reference, predicted)
 
-    exact = sum(
+    paired_exact = sum(
         normalized_text(left.text) == normalized_text(right.text)
         for left, right in pairs
     )
+    reference_lines = normalized_line_sequence(reference)
+    predicted_lines = normalized_line_sequence(predicted)
+    line_exact_matches = lcs_length(reference_lines, predicted_lines)
     boundary_errors = [
         float(abs(left.start_ms - right.start_ms))
         for left, right in pairs
@@ -101,14 +149,19 @@ def case_metrics(case: dict[str, Any], base: Path) -> dict[str, Any]:
         float(abs(left.end_ms - right.end_ms))
         for left, right in pairs
     ]
-    reference_units = token_counts(language, reference)
-    predicted_units = token_counts(language, predicted)
-    true_positive = sum((reference_units & predicted_units).values())
-    predicted_count = sum(predicted_units.values())
-    reference_count = sum(reference_units.values())
+    reference_units = unit_sequence(language, reference)
+    predicted_units = unit_sequence(language, predicted)
+    true_positive = lcs_length(reference_units, predicted_units)
+    predicted_count = len(predicted_units)
+    reference_count = len(reference_units)
     precision = safe_divide(true_positive, predicted_count)
     recall = safe_divide(true_positive, reference_count)
     f1 = safe_divide(2 * precision * recall, precision + recall)
+
+    reference_characters = character_sequence(reference)
+    predicted_characters = character_sequence(predicted)
+    character_edits = edit_distance(reference_characters, predicted_characters)
+    unit_edits = edit_distance(reference_units, predicted_units)
 
     duration_seconds = float(case.get("audio_duration_seconds") or 0.0)
     runtime_seconds = float(case.get("runtime_seconds") or 0.0)
@@ -132,7 +185,13 @@ def case_metrics(case: dict[str, Any], base: Path) -> dict[str, Any]:
         "reference_cues": len(reference),
         "predicted_cues": len(predicted),
         "paired_cues": len(pairs),
-        "exact_text_matches": exact,
+        "exact_text_matches": paired_exact,
+        "line_exact_matches": line_exact_matches,
+        "missing_line_count": max(0, len(reference_lines) - line_exact_matches),
+        "extra_line_count": max(0, len(predicted_lines) - line_exact_matches),
+        "character_edits": character_edits,
+        "character_reference": len(reference_characters),
+        "unit_edits": unit_edits,
         "unit_true_positive": true_positive,
         "unit_predicted": predicted_count,
         "unit_reference": reference_count,
@@ -167,13 +226,36 @@ def aggregate(rows: list[dict[str, Any]]) -> dict[str, Any]:
     cut_predicted = sum(row["cut_predicted"] for row in rows)
     cut_expected = sum(row["cut_expected"] for row in rows)
     paired = sum(row["paired_cues"] for row in rows)
-    exact = sum(row["exact_text_matches"] for row in rows)
+    paired_exact = sum(row["exact_text_matches"] for row in rows)
+    line_exact = sum(row["line_exact_matches"] for row in rows)
+    reference_cues = sum(row["reference_cues"] for row in rows)
+    predicted_cues = sum(row["predicted_cues"] for row in rows)
+    missing_lines = sum(row["missing_line_count"] for row in rows)
+    extra_lines = sum(row["extra_line_count"] for row in rows)
+    character_edits = sum(row["character_edits"] for row in rows)
+    character_reference = sum(row["character_reference"] for row in rows)
+    unit_edits = sum(row["unit_edits"] for row in rows)
+    line_precision = safe_divide(line_exact, predicted_cues)
+    line_recall = safe_divide(line_exact, reference_cues)
+    line_f1 = safe_divide(2 * line_precision * line_recall, line_precision + line_recall)
     return {
         "case_count": len(rows),
         "unit_precision": round(precision, 6),
         "unit_recall": round(recall, 6),
         "unit_f1": round(f1, 6),
-        "cue_text_exact_match_rate": round(safe_divide(exact, paired), 6),
+        "sequence_cer": round(safe_divide(character_edits, character_reference), 6),
+        "sequence_wer": round(safe_divide(unit_edits, unit_reference), 6),
+        "cue_text_exact_match_rate": round(line_recall, 6),
+        "line_exact_precision": round(line_precision, 6),
+        "line_exact_recall": round(line_recall, 6),
+        "line_exact_f1": round(line_f1, 6),
+        "paired_cue_text_exact_match_rate": round(
+            safe_divide(paired_exact, paired), 6
+        ),
+        "cue_pair_precision": round(safe_divide(paired, predicted_cues), 6),
+        "cue_pair_recall": round(safe_divide(paired, reference_cues), 6),
+        "missing_line_rate": round(safe_divide(missing_lines, reference_cues), 6),
+        "extra_line_rate": round(safe_divide(extra_lines, predicted_cues), 6),
         "boundary_mae_ms": round(statistics.fmean(errors), 3) if errors else 0.0,
         "boundary_p95_ms": round(percentile(errors, 0.95), 3),
         "review_candidates_per_10_audio_minutes": round(
@@ -217,9 +299,23 @@ def evaluate_manifest(path: Path) -> dict[str, Any]:
                 "split": row["split"],
                 "language": row["language"],
                 "unit_f1": round(row["unit_f1"], 6),
-                "cue_text_exact_match_rate": round(
-                    safe_divide(row["exact_text_matches"], row["paired_cues"]), 6
+                "sequence_cer": round(
+                    safe_divide(row["character_edits"], row["character_reference"]), 6
                 ),
+                "sequence_wer": round(
+                    safe_divide(row["unit_edits"], row["unit_reference"]), 6
+                ),
+                "cue_text_exact_match_rate": round(
+                    safe_divide(row["line_exact_matches"], row["reference_cues"]), 6
+                ),
+                "line_exact_precision": round(
+                    safe_divide(row["line_exact_matches"], row["predicted_cues"]), 6
+                ),
+                "line_exact_recall": round(
+                    safe_divide(row["line_exact_matches"], row["reference_cues"]), 6
+                ),
+                "missing_line_count": row["missing_line_count"],
+                "extra_line_count": row["extra_line_count"],
                 "boundary_mae_ms": round(
                     safe_divide(
                         row["boundary_error_sum_ms"], row["boundary_error_count"]
