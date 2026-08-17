@@ -1,19 +1,13 @@
 # Lyric Aligner v4 实施记录与关键代码说明
 
-> 只记录已经进入代码的生产能力、契约和迁移边界。当前开发版本：`4.0.0a7`。
+> 只记录已经进入代码的生产能力、契约和迁移边界。当前开发版本：`4.0.0a8`。
 
-## 1. 当前正式分层
+## 1. 当前分层
 
 ```text
 lyric_aligner/
   assets/       # TrackAsset / TrackOccurrence / fail-closed resolution
-  audio/
-    features.py
-    coarse_mapper.py
-    timewarp.py
-    fine_alignment.py
-    transition.py
-    cuts.py      # confirmed-cut local boundary + CUT_AWARE mapping
+  audio/        # features / coarse / TimeWarp / Fine / transition / cuts
   contracts/    # immutable artifact lineage
   pipeline/     # context / production planning
   review/       # replayable candidate-level review decisions
@@ -21,7 +15,8 @@ lyric_aligner/
   timeline/
     projector.py
     overlap.py
-    cuts.py      # cut-aware canonical projection
+    cuts.py
+    composition.py   # a8 cut+overlap materialization composition
     composer.py
   qa/           # final integrity
 ```
@@ -33,266 +28,240 @@ v4_run.py
 v4_review.py
 v4_recompose_overlap.py
 v4_rebuild_cut.py
+v4_compose_materializations.py
 v4_render.py
 v4_validate_release.py
 ```
 
-## 2. 不变的 single-truth 约束
+## 2. Single-truth 不变约束
 
 - Canonical lyric 是最终文字真源；
 - Source-to-Mix TimeWarp 是主要时间真源；
-- TrackAsset identity 绑定 source SHA / raw lyric SHA / canonical selection SHA；
-- ResolvedAssetBinding 后下游不得重新 fuzzy resolve source/LRC；
-- ASR/Editor 不拥有 canonical text 权限。
+- TrackAsset identity 绑定 source/raw lyric/canonical selection；
+- ResolvedAssetBinding 后不得重新 fuzzy resolve；
+- ASR/Editor 不能替换 canonical text；
+- Artifact lineage 必须闭合到 exact task/profile/upstream materialization。
 
-## 3. Continuous TimeWarp 与 cut 的模型边界
+## 3. a7 基础：cut 与 overlap 已独立 materialize
 
-普通 mapping：
+### Overlap
 
-```text
-AFFINE
-PIECEWISE_RATE
-```
-
-两者都要求 source position 随 mix time 连续。局部倍率改变不等于 cut。
-
-Middle cut 会在连续 mix 时间上产生 forward source-position jump，因此不能通过给 continuous model 加一个 `confirmed=true` 来表达。
-
-a7 新增：
+`v4_recompose_overlap.py` 从 reviewed run 的 exact confirmed-overlap candidate 出发，利用 boundary-local mapping 重投影左右 canonical lyrics，生成：
 
 ```text
-CUT_AWARE
-  retained continuous segment 0
-  explicit source gap
-  retained continuous segment 1
-  [...]
+overlap_timeline_recomposition
+overlap_recomposition
 ```
 
-每个 retained segment 仍然使用普通 AFFINE/PIECEWISE_RATE。
+### Cut
 
-## 4. Discontinuity candidate identity / Review 1.2
-
-`audio/cuts.py::discontinuity_candidate_id()` 绑定：
+`v4_rebuild_cut.py` 从 exact confirmed discontinuity 出发，执行 local cut localization、CUT_AWARE segment fitting、cut-aware canonical projection，生成：
 
 ```text
-occurrence_id
-mix_before_ms/mix_after_ms
-source_before_ms/source_after_ms
+cut_timewarp_rebuild
+cut_timeline_rebuild
+cut_rebuild
 ```
 
-`v4_run` 对每个 physical source jump 生成独立 `timewarp_discontinuity` issue，并在 occurrence summary 保存 primary Coarse/Fine exact provenance。
+两条 materializer 都只处理自己负责的 issue，其他 reviewed issue 原样保留。
 
-Review Decision schema=`1.2`：
+## 4. a8 为什么增加第三层 composition
+
+同一 reviewed task 同时有 confirmed cut + confirmed overlap 时，不让两条 materializer 互相消费/重写对方输出。采用：
 
 ```text
-confirmed_cut
-rejected_requires_remap
+review_resolution
+ ├─ cut_rebuild
+ └─ overlap_recomposition
+          ↓
+combined_recomposition
 ```
 
-两者都不会让 run 直接 ready。
+优点：
 
-`confirmed_cut` materialize：
+- a6/a7 仍可独立回归；
+- composition 只处理已物化事实；
+- 不重复跑声学；
+- 不需要人工拼 manifest；
+- 可对 cut/overlap 冲突做独立 fail-closed 判断。
+
+## 5. `timeline/composition.py`
+
+### 5.1 Cut boundary / source gap extraction
+
+从 cut-aware timeline 的 `cuts[]` 读取：
 
 ```text
-status=confirmed
-decision_action=confirmed_cut
-requires_timeline_rebuild=true
-confirmed_discontinuity={mix_before,mix_after,source_before,source_after}
+cut_mix_time
+source_gap_start
+source_gap_end
 ```
 
-## 5. Local cut boundary locator
+要求边界唯一递增、source gaps 正向且互不交叉。
 
-`audio/cuts.py::locate_cut_boundary()`：
+### 5.2 Overlap delta extraction
 
-1. confirmed `[mix_before,mix_after]` 仅作为搜索区间；
-2. 使用 exact source audio + local mix audio；
-3. 提取 harmonic Chroma CENS + MFCC；
-4. 在 bootstrap 50ms candidate step 上搜索 cut time；
-5. left context 匹配 source-before 邻域；
-6. right context 匹配 source-after 邻域；
-7. per-side score / top1-top2 margin / feature agreement / non-ambiguous；
-8. joint score 取较弱一侧，避免一侧极强掩盖另一侧错误；
-9. best 必须明显优于时间上分离的 second；
-10. top-left source_end / top-right source_start 形成 localized source-gap evidence。
-
-证据不足、重复段歧义、source gap 非 forward/过小均 fail-closed。
-
-Bootstrap 配置进入 `CutBoundaryConfig`，不散落隐藏常量。
-
-## 6. CUT_AWARE segment fitting
-
-`build_cut_aware_timewarp()`：
+只提取 overlap timeline 中带以下任一 provenance 的 line：
 
 ```text
-alignment path + localized cut boundaries
-        ↓
-按 cut_mix_time 分 retained mix segments
-        ↓
-每段原 anchors + localized source boundary anchors
-        ↓
-select_timewarp(segment)
-        ↓
-AFFINE or PIECEWISE_RATE per segment
+overlap_region_id(s)
+overlap_candidate_id(s)
+overlap_recomposed=true
 ```
 
-每段要求足够 unique anchors；任一 segment blocked，整个 cut rebuild 失败。
+不把 overlap materializer 的整个 primary timeline 覆盖到 cut-aware base。
 
-Serialized mapping 保存：
+### 5.3 Mix-time disjointness
+
+对同 occurrence 的 confirmed overlap region：
 
 ```text
-kind=CUT_AWARE
-mix_start/mix_end
-segments[]:
-  index
-  mix_start/mix_end
-  source_start/source_end
-  mapping
-  selection/diagnostics
-cuts[]:
-  candidate_id/issue_id
-  cut_mix_time
-  source_gap_start/source_gap_end
-  localized evidence
+region.start_ms <= cut_boundary_ms <= region.end_ms
 ```
 
-Source jump 不再被隐藏进一个连续公式。
+成立则 `TimelineCompositionError`。原因是 cut 与双轨叠唱发生在同一局部声学区域，需要 joint model；a8 不做猜测性合成。
 
-## 7. Cut-aware canonical projection
+### 5.4 Source-time disjointness
 
-`timeline/cuts.py` 只消费 CUT_AWARE mapping + exact canonical TrackAsset。
+每条 overlap delta 必须携带 canonical source provenance。
 
-### 7.1 Segment source lookup
+Finite interval `[source_start_ms, source_end_ms)` 与任一 confirmed source gap 相交则 BLOCK。
 
-Canonical source timestamp 只允许落在某个 retained source segment。位于 explicit source gap 的 timestamp 视为被剪掉，但是否能删除文字取决于 lyric timing 粒度。
+Open interval 只有在其 start 已位于所有 relevant gap 之后才可接受；否则无法证明未穿过被删 source。
 
-### 7.2 line-LRC
+### 5.5 Merge
 
-Line end 只能由下一 canonical line start 推断，因此采用保守规则：
+安全检查通过后：
 
-- **整个可推断 line interval 都在 source gap**：可确定整行被删除，omit；
-- line start 在 gap 内但 inferred end 超过 gap：partial-line ambiguity，review；
-- line interval 从 retained segment 穿过 gap：review；
-- last/open line start 在 gap 内：没有 finite end，review；
-- line 完整在同一个 retained segment：正常 inverse projection。
+```text
+cut-aware timeline base
+ + overlap-only delta lines
+ → existing merge_primary_with_overlap_lines()
+ → combined cut-aware result
+```
 
-这条规则避免“只看 line start 就整行删掉”的错误推断。
+保留 `cut_aware=true`、`cuts[]`，并增加 combined diagnostics。
 
-### 7.3 Word-timed canonical lyric
-
-Enhanced/QRC token 逐 token：
-
-- complete token retained：投影；
-- complete token in gap：省略；
-- token interval 被 gap boundary 穿过：review；
-- 幸存 tokens 按 retained segment 分组；
-- 一行只剩部分完整 tokens 时生成 `canonical_fragment` rows，正文只来自原 canonical token text。
-
-## 8. `v4_rebuild_cut.py`
+## 6. `v4_compose_materializations.py`
 
 ### Input contract
 
-必须是：
-
-```text
-stage=review_resolution
-status=review_required
-active confirmed_cut issue(s)
-```
-
-同时要求 supplied TrackAsset artifact 是 reviewed-run upstream。
-
-### Primary mapping provenance
-
-Occurrence summary 必须 materialize：
-
-```text
-coarse_path / coarse_artifact_path
-fine_path / fine_artifact_path (optional)
-primary_interval
-```
-
-Rebuild 对 Coarse/Fine 重新验证：
-
-```text
-occurrence_id
-track_id
-canonical_selection_sha256
-upstream TrackAsset artifact
-reviewed-run lineage
-```
-
-### Candidate replay
-
-confirmed candidate_id 必须重新映射到 current effective TimeWarp 的唯一 discontinuity；confirmed snapshot 与该 discontinuity 四个坐标完全一致，否则 BLOCK。
-
-### Outputs
-
-Per occurrence：
-
-```text
-cut_timewarp_rebuild / cut_aware_timewarp
-cut_timeline_rebuild / canonical_timeline
-```
-
-Run-level：
-
 ```text
 cut_rebuild / v4_cut_rebuilt_run
-schema=1.3
+overlap_recomposition / v4_recomposed_run
+track_assets / asset_resolution
 ```
 
-Projection ambiguity 不会被吞掉，而会形成新的 deterministic `canonical_fragment` active issues。
+两边必须：
 
-## 9. Renderer a7
+- same task fingerprint；
+- same algorithm version；
+- same calibration profile/version；
+- same source review artifact ID；
+- same TrackAsset artifact；
+- review/asset 均在两边 upstream lineage。
 
-`v4_render.py` run stage whitelist：
+### Issue-set algebra
+
+记：
+
+```text
+C = cut_rebuild.processed_issue_ids
+O = overlap_recomposition.processed_issue_ids
+```
+
+要求 `C ∩ O = ∅`。
+
+Combined remaining set：
+
+```text
+(cut_active - O) ∪ (overlap_active - C)
+```
+
+同 issue_id 在两边都仍 active 时 snapshot 必须完全一致，否则 BLOCK。
+
+### Occurrence selection
+
+```text
+cut-only      → cut timeline
+overlap-only  → overlap timeline
+untouched     → 两边必须引用同一 timeline artifact
+cut+overlap   → combined_timeline_recomposition
+```
+
+### New artifacts
+
+```text
+combined_timeline_recomposition / canonical_timeline
+combined_recomposition          / v4_combined_run
+```
+
+Combined timeline upstream：TrackAsset、review、cut run、overlap run、source cut timeline、source overlap timeline。
+
+Combined run schema=`1.4`，保存 source run artifact IDs、new combined timeline IDs、combined occurrence count、remaining issue count。
+
+## 7. Renderer a8
+
+`v4_render.py` stage whitelist：
 
 ```text
 production_orchestration
 review_resolution
 overlap_recomposition
 cut_rebuild
+combined_recomposition
 ```
 
-Cut rebuild 必须：
+Renderer 对 combined mode 同时加载 cut/overlap/combined metadata。
+
+重要区别：单独 cut/overlap run 要求其自己的 `remaining_issue_count=0`；combined run 中原 materializer 可以仍记录“另一类 issue 尚未由自己处理”，最终只要求：
 
 ```text
-remaining_issue_count=0
-canonical_fragment_issue_count=0
-rebuilt_occurrence_count>=1
-mapping/timeline artifact IDs ∈ run upstreams
+combined_recomposition.remaining_issue_count = 0
+cut_rebuild.canonical_fragment_issue_count = 0
 ```
 
-`cut_timeline_rebuild` 还必须：
+Same-occurrence cut+overlap 必须：
 
 ```text
-cut_aware=true
-projection_issues=[]
-cut_mapping_artifact_id non-empty
-cut_mapping_artifact_id ∈ timeline upstreams
-cut_mapping_artifact_id ∈ run upstreams
+timeline_stage = combined_timeline_recomposition
+cut_rebuilt = true
+overlap_recomposed = true
+combined_recomposed = true
 ```
 
-原 task/profile/TrackAsset/canonical-selection/materialized hash gate 不变。
+并验证 source cut/overlap timeline artifact IDs 都是 declared upstream。
 
-## 10. Profile migration
+Final composer 的 cross-track exact confirmed-region pairwise 检查保持不变。
 
-Default profile=`production-bootstrap-2026-08-17-a7`，新增完整 `cut_boundary` 区段。因此 a6/a5 profile/artifacts fail-closed，不静默补字段。
+## 8. Algorithm / calibration identity
 
-## 11. Tests
+```text
+algorithm_version = 4.0.0a8
+calibration_profile = production-bootstrap-2026-08-17-a7
+```
 
-当前分支新增：
+a8 没改声学阈值，因此 profile 不改；algorithm contract 改变，所以 a7 artifacts 不能作为 a8 artifact 复用。
 
-- `test_v4_cut_review.py`；
-- `test_v4_cut_mapping.py`；
-- `test_v4_cut_timeline.py`：whole-gap omission / partial-line review / token fragments；
-- `test_v4_cut_boundary_locator.py`：synthetic WAV physical cut locator；
-- `test_v4_cut_rebuild_end_to_end.py`：artifact-level `review_resolution → v4_rebuild_cut → v4_render`；
-- CLI bootstrap 加 `v4_rebuild_cut.py`；
-- 既有 overlap/review/render/release tests 保留。
+## 9. Regression
 
-## 12. 已知架构边界
+新增：
 
-`v4_rebuild_cut.py` 与 `v4_recompose_overlap.py` 当前都是从 `review_resolution` 启动的独立 materialization stage。同一任务同时 confirmed cut + confirmed overlap 时尚不能自动组合为一个 ready run，必须 fail-closed；下一里程碑做 unified stage composition，而不是人工拼 artifact。
+- `test_v4_cut_overlap_composition.py`：mix/source 双层 disjointness、source provenance、canonical identity；
+- `test_v4_combined_recomposition_end_to_end.py`：artifact-level composition → render → release，验证 cut lyric 不复活且两路 overlap cue 实际相交；
+- CLI bootstrap 新增 `v4_compose_materializations.py`。
 
-Real private calibration/blind-test 也尚未完成，因此 bootstrap cut locator 参数不能被描述为最优阈值。
+Existing a6 overlap、a7 cut、review、render、release regressions 全部继续运行。
+
+## 10. Explicit architectural boundary
+
+a8 只解决**可证明互不冲突**的 cut+overlap materialization composition。
+
+以下仍不自动化：
+
+- overlap interval 穿 localized cut boundary；
+- overlap canonical source interval 穿 confirmed source gap；
+- source provenance 缺失；
+- 需要同时解释 cut 与叠唱的同区域声学。
+
+这类问题只有在 real-task blind-test 证明有足够占比/价值后，才值得新增 joint acoustic stage。
