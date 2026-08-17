@@ -120,3 +120,35 @@ legacy `_source_srt_sha256` 不再由生产命令接受。使用 `scripts/migrat
 ### 升级依据
 
 这些修复影响所有任务的输入身份、发布语义、多语言证据和隐私边界，不能由单个任务 override 安全解决。合成回归避免将任何真实歌词或歌曲硬编码进源码。
+
+## 2026-08-17：v4 Milestone 0-A 发布完整性基础
+
+- 范围：experimental / v4 foundation。
+- 分支：`agent/v4-accuracy-foundation`。
+- 目标：先消灭 false-ready 与不可追溯产物，再进入 TimeWarp/ASR/Forced Alignment。
+
+### 关键代码变更
+
+- 新增 `lyric_aligner/srt.py`：fail-closed SRT parser、稳定 cue ID、`max(cue.end_ms)` 时间轴终点。
+- 新增 `lyric_aligner/qa/final_integrity.py`：最终 SRT 与审计 CSV 逐行严格绑定；QA task fingerprint / algorithm version / release flags 严格校验。
+- 新增 `lyric_aligner/contracts/artifacts.py`：stage artifact manifest、output SHA-256、upstream lineage、canonical artifact ID、原子写出。
+- 新增 `scripts/v4_validate_release.py`：在 legacy QA 后执行的 v4 release guard。
+- 新增 `scripts/test_v4_release_integrity.py`：正文篡改、时间篡改、漏行、跨算法版本、manifest 篡改、坏 SRT、overlay 时间轴负向回归。
+- v4 评估器和 Editor Evidence foundation 保留在同一分支，详见 `references/v4-implementation.md`。
+
+### 验证
+
+- `compileall` 通过。
+- 相关核心/端到端测试：62 项通过。
+- 临时完整仓库测试中的 2 个错误来自缺少根层 `.gitignore` / `references/prompt-template.txt` 的重建环境，不属于算法失败。
+
+### 兼容性与回滚
+
+- 本轮新增 v4 package 与 release guard，不删除 legacy CLI。
+- legacy 生产算法尚未强制依赖新 package；因此可单独回滚本轮新增文件而不破坏 v3.x 输入格式。
+- 远端尚未包含此前未提交的完整 v3.9 工作树；恢复 legacy v3.9 与 v4 package 接线必须作为独立、可审查 commit 完成。
+
+### 升级依据
+
+- 已复现“最终 SRT 正文变化而旧 report/QA 仍可能显示 ready”的风险；release 产物必须形成不可拆分证据链。
+- 该修复与具体歌曲、语言、cue 无关，属于全局生产安全契约。
