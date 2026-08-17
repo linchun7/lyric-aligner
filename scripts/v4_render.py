@@ -111,6 +111,7 @@ def main() -> int:
             raise ValueError("ready_for_render run unexpectedly contains review issues")
         if run.get("legacy_fallback_used") is not False:
             raise ValueError("final v4 render refuses a run that used legacy fallback")
+        run_upstreams = {str(value) for value in run_artifact.get("upstream_artifact_ids", [])}
 
         track_assets = _load(args.track_assets)
         asset_artifact = _load(args.asset_artifact)
@@ -121,6 +122,11 @@ def main() -> int:
             role="track_assets",
             output_path=args.track_assets,
         )
+        asset_artifact_id = str(asset_artifact["artifact_id"])
+        if asset_artifact_id not in run_upstreams:
+            raise ValueError(
+                "supplied TrackAsset artifact is not upstream of this production run"
+            )
         context = build_pipeline_context(
             expected_task_fingerprint=fingerprint,
             track_assets_payload=track_assets,
@@ -132,15 +138,23 @@ def main() -> int:
         if str(run.get("calibration_profile_version") or "") != context.calibration_profile_version:
             raise ValueError("production run calibration profile version differs from TrackAssets")
 
-        run_upstreams = {str(value) for value in run_artifact.get("upstream_artifact_ids", [])}
         timeline_payloads: list[dict] = []
         timeline_artifact_ids: list[str] = []
         occurrence_rows = run.get("occurrences")
         if not isinstance(occurrence_rows, list) or not occurrence_rows:
             raise ValueError("production run has no occurrence summaries")
+        seen_occurrences: set[str] = set()
         for occurrence in occurrence_rows:
+            occurrence_id = str(occurrence.get("occurrence_id") or "")
+            if not occurrence_id or occurrence_id in seen_occurrences:
+                raise ValueError("production run occurrence identity is missing/duplicated")
+            seen_occurrences.add(occurrence_id)
+            binding = context.binding_by_occurrence_id.get(occurrence_id)
+            if binding is None:
+                raise ValueError("production run occurrence is missing from TrackAssets")
             if bool(occurrence.get("mapping_blocked")):
                 raise ValueError("production run contains a blocked occurrence")
+
             timeline_raw = occurrence.get("timeline_path")
             artifact_raw = occurrence.get("timeline_artifact_path")
             if not timeline_raw or not artifact_raw:
@@ -159,14 +173,37 @@ def main() -> int:
             timeline_artifact_id = str(timeline_artifact["artifact_id"])
             if timeline_artifact_id not in run_upstreams:
                 raise ValueError("canonical timeline artifact is not upstream of production run")
+            timeline_upstreams = {
+                str(value) for value in timeline_artifact.get("upstream_artifact_ids", [])
+            }
+            if asset_artifact_id not in timeline_upstreams:
+                raise ValueError("canonical timeline is not derived from supplied TrackAssets")
             if timeline.get("algorithm_version") != __version__:
                 raise ValueError("canonical timeline algorithm version mismatch")
             if timeline.get("task_fingerprint_sha256") != fingerprint:
                 raise ValueError("canonical timeline belongs to another task")
             if str(timeline.get("calibration_profile_id") or "") != context.calibration_profile_id:
                 raise ValueError("canonical timeline calibration profile mismatch")
+
+            timeline_result = timeline.get("result")
+            if not isinstance(timeline_result, dict):
+                raise ValueError("canonical timeline result is invalid")
+            if str(timeline_result.get("occurrence_id") or "") != binding.occurrence_id:
+                raise ValueError("canonical timeline occurrence differs from TrackAsset binding")
+            if str(timeline_result.get("track_id") or "") != binding.track_id:
+                raise ValueError("canonical timeline track differs from TrackAsset binding")
+            if str(timeline_result.get("canonical_selection_sha256") or "") != binding.canonical_selection_sha256:
+                raise ValueError(
+                    "canonical timeline lyric selection differs from TrackAsset binding"
+                )
+            if int(timeline_result.get("ordinal", -1)) != binding.ordinal:
+                raise ValueError("canonical timeline ordinal differs from TrackOccurrence")
+
             timeline_payloads.append(timeline)
             timeline_artifact_ids.append(timeline_artifact_id)
+
+        if set(context.binding_by_occurrence_id) != seen_occurrences:
+            raise ValueError("production run does not contain exactly all resolved TrackOccurrences")
 
         cues = compose_canonical_timelines(
             timeline_payloads,
@@ -201,7 +238,6 @@ def main() -> int:
                     end_ms=rendered.end_ms,
                     text=rendered.text,
                 )
-                row = asdict(rendered)
                 writer.writerow(
                     {
                         "position": position,
@@ -228,6 +264,7 @@ def main() -> int:
             "calibration_profile_version": context.calibration_profile_version,
             "calibration_profile_id": context.calibration_profile_id,
             "source_run_artifact_id": str(run_artifact["artifact_id"]),
+            "source_asset_artifact_id": asset_artifact_id,
             "passed": True,
             "structurally_valid": True,
             "fully_reviewed": True,
@@ -254,6 +291,7 @@ def main() -> int:
             },
             producer={"git_commit": args.git_commit} if args.git_commit else {},
             upstream_artifact_ids=(
+                asset_artifact_id,
                 str(run_artifact["artifact_id"]),
                 *timeline_artifact_ids,
             ),
