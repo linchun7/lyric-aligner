@@ -12,7 +12,11 @@ REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 if str(REPOSITORY_ROOT) not in sys.path:
     sys.path.insert(0, str(REPOSITORY_ROOT))
 
-from lyric_aligner.contracts.artifacts import atomic_write_json, validate_upstream_artifact
+from lyric_aligner.contracts.artifacts import (
+    atomic_write_json,
+    validate_artifact_output,
+    validate_upstream_artifact,
+)
 from lyric_aligner.qa.final_integrity import FinalIntegrityError, build_release_artifact_manifest
 from task_contract import load_task_manifest, verify_manifest_inputs
 
@@ -65,6 +69,45 @@ def _load_upstream_artifacts(paths: list[Path], *, fingerprint: str) -> tuple[tu
     }
 
 
+def _validate_final_render_binding(
+    paths: list[Path],
+    *,
+    fingerprint: str,
+    algorithm_version: str,
+    final_srt: Path,
+    report: Path,
+    qa_json: Path,
+) -> str:
+    """Require exactly one final_render artifact bound to these exact files."""
+
+    matches: list[tuple[Path, dict]] = []
+    for path in paths:
+        payload = json.loads(path.read_text(encoding="utf-8-sig"))
+        if payload.get("stage") == "final_render":
+            matches.append((path, payload))
+    if len(matches) != 1:
+        raise ValueError(
+            "v4 release requires exactly one final_render upstream artifact"
+        )
+
+    artifact_path, payload = matches[0]
+    issues = validate_upstream_artifact(
+        payload,
+        expected_task_fingerprint=fingerprint,
+        expected_algorithm_version=algorithm_version,
+        expected_stage="final_render",
+    )
+    issues.extend(validate_artifact_output(payload, role="final_srt", path=final_srt))
+    issues.extend(validate_artifact_output(payload, role="audit_csv", path=report))
+    issues.extend(validate_artifact_output(payload, role="qa_json", path=qa_json))
+    if issues:
+        raise ValueError(
+            f"final_render artifact {artifact_path} does not bind current final files: "
+            + "; ".join(issues)
+        )
+    return str(payload["artifact_id"])
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--task-manifest", required=True, type=Path)
@@ -108,9 +151,18 @@ def main() -> int:
             profile_version = upstream_metadata["calibration_profile_version"]
             if not profile_id or not profile_version:
                 raise ValueError("v4 release upstream is missing calibration profile identity")
+            final_render_artifact_id = _validate_final_render_binding(
+                args.upstream_artifact,
+                fingerprint=fingerprint,
+                algorithm_version=args.algorithm_version,
+                final_srt=args.final_srt,
+                report=args.report,
+                qa_json=args.qa_json,
+            )
         else:
             profile_id = upstream_metadata["calibration_profile_id"] or None
             profile_version = upstream_metadata["calibration_profile_version"] or None
+            final_render_artifact_id = ""
 
         manifest = build_release_artifact_manifest(
             final_srt=args.final_srt,
@@ -119,7 +171,10 @@ def main() -> int:
             task_fingerprint_sha256=fingerprint,
             algorithm_version=args.algorithm_version,
             git_commit=args.git_commit,
-            normalized_config=upstream_metadata,
+            normalized_config={
+                **upstream_metadata,
+                "final_render_artifact_id": final_render_artifact_id,
+            },
             upstream_artifact_ids=upstream_ids,
             expected_calibration_profile_id=profile_id,
             expected_calibration_profile_version=profile_version,
@@ -134,6 +189,7 @@ def main() -> int:
         "upstream_artifact_count": len(upstream_ids),
         "v4_upstream_algorithm_version": upstream_metadata["v4_upstream_algorithm_version"],
         "calibration_profile_id": upstream_metadata["calibration_profile_id"],
+        "final_render_artifact_id": final_render_artifact_id,
     }))
     return 0
 
