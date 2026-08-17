@@ -1,17 +1,9 @@
-"""Affine-first Source-to-Mix TimeWarp selection.
-
-This module operates on already-produced audio anchors. Feature extraction and
-candidate retrieval are separate concerns: this layer decides whether one
-continuous affine rate explains a track, whether a continuous piecewise-rate
-model is justified, and whether the anchor path contains a source-position
-jump that must be reviewed as a possible middle cut.
-"""
+"""Affine-first and continuous piecewise-rate Source-to-Mix mapping."""
 
 from __future__ import annotations
 
 import itertools
 import math
-import statistics
 from dataclasses import asdict, dataclass, field
 from typing import Any, Iterable
 
@@ -33,12 +25,12 @@ class MappingDiagnostics:
     coverage: float
     median_residual: float
     p95_residual: float
-    early_drift: float
-    middle_drift: float
-    late_drift: float
+    drift_early: float
+    drift_middle: float
+    drift_late: float
     drift_span: float
+    feature_agreement: dict[str, float]
     independent_feature_count: int
-    feature_agreement: float
     bpm_prior: float | None
     bpm_prior_delta: float | None
 
@@ -53,20 +45,18 @@ class TimeWarpModel:
     diagnostics: MappingDiagnostics
     objective: float
 
-    def predict(self, mix_time: float) -> float:
+    def source_time(self, mix_time: float) -> float:
         value = self.intercept + self.base_slope * mix_time
         for breakpoint, delta in zip(self.breakpoints, self.slope_deltas):
             value += delta * max(0.0, mix_time - breakpoint)
         return value
 
-    @property
-    def segment_slopes(self) -> tuple[float, ...]:
-        slopes = [self.base_slope]
-        current = self.base_slope
-        for delta in self.slope_deltas:
-            current += delta
-            slopes.append(current)
-        return tuple(slopes)
+    def local_slope(self, mix_time: float) -> float:
+        value = self.base_slope
+        for breakpoint, delta in zip(self.breakpoints, self.slope_deltas):
+            if mix_time >= breakpoint:
+                value += delta
+        return value
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -75,7 +65,6 @@ class TimeWarpModel:
             "base_slope": self.base_slope,
             "breakpoints": list(self.breakpoints),
             "slope_deltas": list(self.slope_deltas),
-            "segment_slopes": list(self.segment_slopes),
             "diagnostics": asdict(self.diagnostics),
             "objective": self.objective,
         }
@@ -97,119 +86,92 @@ class DiscontinuityCandidate:
         return asdict(self)
 
 
-def _percentile(values: list[float], fraction: float) -> float:
-    if not values:
-        return 0.0
-    return float(np.quantile(np.asarray(values, dtype=np.float64), fraction))
-
-
 def _ordered(anchors: Iterable[AlignmentAnchor]) -> list[AlignmentAnchor]:
     rows = sorted(anchors, key=lambda item: item.mix_time)
-    if len(rows) < 2:
-        raise ValueError("TimeWarp requires at least two anchors")
+    if len(rows) < 3:
+        raise ValueError("TimeWarp requires at least three anchors")
     if any(right.mix_time <= left.mix_time for left, right in zip(rows, rows[1:])):
-        raise ValueError("anchor mix_time values must be strictly increasing")
+        raise ValueError("mix anchor times must be strictly increasing")
     return rows
 
 
-def _design_matrix(x: np.ndarray, breakpoints: tuple[float, ...]) -> np.ndarray:
-    columns = [np.ones_like(x), x]
-    columns.extend(np.maximum(0.0, x - value) for value in breakpoints)
+def _design_matrix(mix: np.ndarray, breakpoints: tuple[float, ...]) -> np.ndarray:
+    columns = [np.ones_like(mix), mix]
+    columns.extend(np.maximum(0.0, mix - breakpoint) for breakpoint in breakpoints)
     return np.column_stack(columns)
 
 
-def _weighted_fit(
-    rows: list[AlignmentAnchor],
+def _weighted_lstsq(
+    matrix: np.ndarray,
+    source: np.ndarray,
+    weights: np.ndarray,
     *,
-    breakpoints: tuple[float, ...] = (),
-    bpm_prior: float | None = None,
-    bpm_prior_strength: float = 0.02,
-    mask: np.ndarray | None = None,
+    bpm_prior: float | None,
+    bpm_prior_strength: float,
 ) -> np.ndarray:
-    x = np.asarray([row.mix_time for row in rows], dtype=np.float64)
-    y = np.asarray([row.source_time for row in rows], dtype=np.float64)
-    design = _design_matrix(x, breakpoints)
-    weights = np.asarray([max(0.05, row.confidence) for row in rows], dtype=np.float64)
-    if mask is not None:
-        weights = weights * mask.astype(np.float64)
-
-    weighted_design = design * np.sqrt(weights)[:, None]
-    weighted_y = y * np.sqrt(weights)
-
+    left = matrix * np.sqrt(weights)[:, None]
+    right = source * np.sqrt(weights)
     if bpm_prior is not None and bpm_prior_strength > 0:
-        # Soft slope regularization only. Scale by actual data energy so the
-        # prior can break weak ties but cannot lock the fitted slope.
-        data_energy = float(np.sum(weights * (x - np.average(x, weights=weights)) ** 2))
-        lam = max(0.0, bpm_prior_strength) * max(data_energy, 1.0)
-        prior_row = np.zeros(design.shape[1], dtype=np.float64)
-        prior_row[1] = math.sqrt(lam)
-        weighted_design = np.vstack([weighted_design, prior_row])
-        weighted_y = np.concatenate([weighted_y, [math.sqrt(lam) * bpm_prior]])
-
-    coefficients, *_ = np.linalg.lstsq(weighted_design, weighted_y, rcond=None)
-    return coefficients
-
-
-def _predict_array(
-    rows: list[AlignmentAnchor], coefficients: np.ndarray, breakpoints: tuple[float, ...]
-) -> np.ndarray:
-    x = np.asarray([row.mix_time for row in rows], dtype=np.float64)
-    return _design_matrix(x, breakpoints) @ coefficients
+        prior = np.zeros(matrix.shape[1], dtype=np.float64)
+        prior[1] = 1.0
+        left = np.vstack([left, math.sqrt(bpm_prior_strength) * prior])
+        right = np.append(right, math.sqrt(bpm_prior_strength) * bpm_prior)
+    return np.linalg.lstsq(left, right, rcond=None)[0]
 
 
 def _robust_coefficients(
     rows: list[AlignmentAnchor],
     *,
     breakpoints: tuple[float, ...] = (),
-    bpm_prior: float | None = None,
-    bpm_prior_strength: float = 0.02,
+    bpm_prior: float | None,
+    bpm_prior_strength: float,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    coefficients = _weighted_fit(
-        rows,
-        breakpoints=breakpoints,
+    mix = np.asarray([row.mix_time for row in rows], dtype=np.float64)
+    source = np.asarray([row.source_time for row in rows], dtype=np.float64)
+    base_weights = np.asarray(
+        [max(0.05, min(1.0, row.confidence)) for row in rows], dtype=np.float64
+    )
+    matrix = _design_matrix(mix, breakpoints)
+    weights = base_weights.copy()
+    coefficients = _weighted_lstsq(
+        matrix,
+        source,
+        weights,
         bpm_prior=bpm_prior,
         bpm_prior_strength=bpm_prior_strength,
     )
-    predicted = _predict_array(rows, coefficients, breakpoints)
-    actual = np.asarray([row.source_time for row in rows], dtype=np.float64)
-    residual = actual - predicted
-    median = float(np.median(residual))
-    mad = float(np.median(np.abs(residual - median)))
-    threshold = max(0.20, 3.5 * 1.4826 * mad)
-    inliers = np.abs(residual - median) <= threshold
-    minimum = max(2 + len(breakpoints), math.ceil(len(rows) * 0.55))
-    if int(np.sum(inliers)) >= minimum and not bool(np.all(inliers)):
-        coefficients = _weighted_fit(
-            rows,
-            breakpoints=breakpoints,
+    for _ in range(4):
+        residual = source - matrix @ coefficients
+        scale = max(1e-6, float(np.median(np.abs(residual))))
+        robust = 1.0 / np.maximum(1.0, np.abs(residual) / (2.5 * scale))
+        weights = base_weights * robust
+        coefficients = _weighted_lstsq(
+            matrix,
+            source,
+            weights,
             bpm_prior=bpm_prior,
             bpm_prior_strength=bpm_prior_strength,
-            mask=inliers,
         )
-        predicted = _predict_array(rows, coefficients, breakpoints)
-        residual = actual - predicted
-    else:
-        inliers = np.ones(len(rows), dtype=bool)
+    residual = source - matrix @ coefficients
+    scale = max(1e-6, float(np.median(np.abs(residual))))
+    inliers = np.abs(residual) <= max(0.35, 3.5 * scale)
     return coefficients, residual, inliers
 
 
-def _drift_regions(residuals: list[float]) -> tuple[float, float, float, float]:
-    chunks = np.array_split(np.asarray(residuals, dtype=np.float64), 3)
-    medians = [float(np.median(chunk)) if len(chunk) else 0.0 for chunk in chunks]
-    return medians[0], medians[1], medians[2], max(medians) - min(medians)
+def _bucket_mean(values: np.ndarray, start: int, end: int) -> float:
+    subset = values[start:end]
+    return float(np.mean(subset)) if subset.size else 0.0
 
 
-def _feature_summary(rows: list[AlignmentAnchor], threshold: float = 0.50) -> tuple[int, float]:
-    families = sorted({name for row in rows for name in row.feature_scores})
-    supported = 0
-    agreements: list[float] = []
-    for family in families:
-        values = [row.feature_scores.get(family, 0.0) for row in rows]
-        support_ratio = sum(value >= threshold for value in values) / len(rows)
-        if support_ratio >= 0.60:
-            supported += 1
-        agreements.append(support_ratio)
-    return supported, (statistics.fmean(agreements) if agreements else 1.0)
+def _feature_agreement(rows: list[AlignmentAnchor]) -> tuple[dict[str, float], int]:
+    names = sorted({name for row in rows for name in row.feature_scores})
+    summary: dict[str, float] = {}
+    for name in names:
+        values = [float(row.feature_scores[name]) for row in rows if name in row.feature_scores]
+        if values:
+            summary[name] = float(np.mean(values))
+    independent = sum(value >= 0.55 for value in summary.values())
+    return summary, independent
 
 
 def _diagnostics(
@@ -220,23 +182,27 @@ def _diagnostics(
     slope: float,
     bpm_prior: float | None,
 ) -> MappingDiagnostics:
-    abs_residual = [abs(float(value)) for value in residual]
-    early, middle, late, drift_span = _drift_regions([float(value) for value in residual])
-    feature_count, feature_agreement = _feature_summary(rows)
+    absolute = np.abs(residual)
+    count = len(rows)
+    third = max(1, count // 3)
+    early = _bucket_mean(residual, 0, third)
+    middle = _bucket_mean(residual, third, min(count, third * 2))
+    late = _bucket_mean(residual, min(count, third * 2), count)
+    agreement, independent = _feature_agreement(rows)
     return MappingDiagnostics(
-        anchor_count=len(rows),
+        anchor_count=count,
         inlier_count=int(np.sum(inliers)),
-        coverage=float(np.sum(inliers) / len(rows)),
-        median_residual=float(statistics.median(abs_residual)),
-        p95_residual=_percentile(abs_residual, 0.95),
-        early_drift=early,
-        middle_drift=middle,
-        late_drift=late,
-        drift_span=drift_span,
-        independent_feature_count=feature_count,
-        feature_agreement=float(feature_agreement),
+        coverage=float(np.mean(inliers)),
+        median_residual=float(np.median(absolute)),
+        p95_residual=float(np.percentile(absolute, 95)),
+        drift_early=early,
+        drift_middle=middle,
+        drift_late=late,
+        drift_span=max(early, middle, late) - min(early, middle, late),
+        feature_agreement=agreement,
+        independent_feature_count=independent,
         bpm_prior=bpm_prior,
-        bpm_prior_delta=(abs(slope - bpm_prior) if bpm_prior is not None else None),
+        bpm_prior_delta=None if bpm_prior is None else abs(slope - bpm_prior),
     )
 
 
@@ -244,6 +210,7 @@ def _objective(diagnostics: MappingDiagnostics, breakpoint_count: int, complexit
     return (
         diagnostics.median_residual
         + 0.30 * diagnostics.p95_residual
+        + 0.20 * diagnostics.drift_span
         + complexity_penalty * breakpoint_count
     )
 
@@ -397,6 +364,8 @@ def select_timewarp(
     bpm_prior: float | None = None,
     bpm_prior_strength: float = 0.02,
     middle_cut: str = "false",
+    max_continuous_rate: float = 2.0,
+    min_excess_source_jump: float = 1.5,
     min_piecewise_improvement: float = 0.25,
     minimum_feature_families: int = 2,
     drift_threshold: float = 0.30,
@@ -404,7 +373,12 @@ def select_timewarp(
     complexity_penalty: float = 0.035,
 ) -> dict[str, Any]:
     rows = _ordered(anchors)
-    discontinuities = detect_discontinuities(rows, middle_cut=middle_cut)
+    discontinuities = detect_discontinuities(
+        rows,
+        middle_cut=middle_cut,
+        max_continuous_rate=max_continuous_rate,
+        min_excess_source_jump=min_excess_source_jump,
+    )
     affine = fit_affine(
         rows,
         bpm_prior=bpm_prior,
