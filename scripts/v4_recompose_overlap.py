@@ -149,6 +149,10 @@ def _effective_boundary_mapping(
     git_commit: str,
     fingerprint: str,
     required_upstreams: set[str],
+    expected_occurrence_id: str,
+    expected_track_id: str,
+    expected_canonical_selection_sha256: str,
+    expected_asset_artifact_id: str,
 ) -> tuple[dict, list[str], str]:
     coarse, coarse_artifact = _validate_stage(
         payload_path=coarse_path,
@@ -160,6 +164,22 @@ def _effective_boundary_mapping(
     coarse_artifact_id = str(coarse_artifact["artifact_id"])
     if coarse_artifact_id not in required_upstreams:
         raise ValueError("boundary coarse artifact is not upstream of reviewed run")
+    if str(coarse.get("occurrence_id") or "") != expected_occurrence_id:
+        raise ValueError(f"{side} boundary coarse occurrence identity mismatch")
+    if str(coarse.get("track_id") or "") != expected_track_id:
+        raise ValueError(f"{side} boundary coarse track identity mismatch")
+    if (
+        str(coarse.get("canonical_selection_sha256") or "")
+        != expected_canonical_selection_sha256
+    ):
+        raise ValueError(f"{side} boundary coarse canonical selection mismatch")
+    if str(coarse.get("upstream_asset_artifact_id") or "") != expected_asset_artifact_id:
+        raise ValueError(f"{side} boundary coarse asset identity mismatch")
+    coarse_upstreams = {
+        str(value) for value in coarse_artifact.get("upstream_artifact_ids", [])
+    }
+    if expected_asset_artifact_id not in coarse_upstreams:
+        raise ValueError(f"{side} boundary coarse artifact is not derived from TrackAssets")
 
     fine: dict | None = None
     fine_artifact_id = ""
@@ -197,6 +217,15 @@ def _effective_boundary_mapping(
             role="fine_alignment",
         )
         fine_artifact_id = str(fine_artifact["artifact_id"])
+        if str(fine.get("occurrence_id") or "") != expected_occurrence_id:
+            raise ValueError(f"{side} boundary Fine occurrence identity mismatch")
+        if str(fine.get("track_id") or "") != expected_track_id:
+            raise ValueError(f"{side} boundary Fine track identity mismatch")
+        if (
+            str(fine.get("canonical_selection_sha256") or "")
+            != expected_canonical_selection_sha256
+        ):
+            raise ValueError(f"{side} boundary Fine canonical selection mismatch")
 
     mapping, blocked, mapping_source = effective_timewarp(coarse, fine)
     if blocked:
@@ -303,11 +332,17 @@ def main() -> int:
             transition_artifact_id = str(transition_artifact["artifact_id"])
             if transition_artifact_id not in review_upstreams:
                 raise ValueError("transition artifact is not upstream of reviewed run")
+            transition_upstreams = {
+                str(value) for value in transition_artifact.get("upstream_artifact_ids", [])
+            }
+            if asset_artifact_id not in transition_upstreams:
+                raise ValueError("transition artifact is not derived from supplied TrackAssets")
             _validate_candidate(transition_payload, region)
             all_new_upstreams.add(transition_artifact_id)
 
             region_dir = out_dir / _safe(region.candidate_id)
             region_dir.mkdir(parents=True, exist_ok=True)
+            used_boundary_coarse_ids: set[str] = set()
             for side, occurrence_id in (
                 ("left", region.left_occurrence_id),
                 ("right", region.right_occurrence_id),
@@ -318,6 +353,9 @@ def main() -> int:
                 )
                 if not str(coarse_path) or not str(coarse_artifact_path):
                     raise ValueError("transition summary is missing boundary coarse provenance")
+                binding = context.binding_by_occurrence_id.get(occurrence_id)
+                if binding is None:
+                    raise ValueError("confirmed overlap occurrence is missing from TrackAssets")
                 mapping, mapping_upstreams, mapping_source = _effective_boundary_mapping(
                     task_manifest=args.task_manifest,
                     mix_audio=mix_audio,
@@ -330,10 +368,19 @@ def main() -> int:
                     git_commit=args.git_commit,
                     fingerprint=fingerprint,
                     required_upstreams=review_upstreams,
+                    expected_occurrence_id=occurrence_id,
+                    expected_track_id=binding.track_id,
+                    expected_canonical_selection_sha256=(
+                        binding.canonical_selection_sha256
+                    ),
+                    expected_asset_artifact_id=asset_artifact_id,
                 )
-                binding = context.binding_by_occurrence_id.get(occurrence_id)
-                if binding is None:
-                    raise ValueError("confirmed overlap occurrence is missing from TrackAssets")
+                coarse_artifact_id = mapping_upstreams[0]
+                if coarse_artifact_id not in transition_upstreams:
+                    raise ValueError(
+                        f"transition artifact is not upstream-bound to {side} boundary coarse"
+                    )
+                used_boundary_coarse_ids.add(coarse_artifact_id)
                 projected = project_binding_timeline(
                     binding,
                     mapping,
@@ -349,6 +396,8 @@ def main() -> int:
                 transition.setdefault("overlap_mapping_sources", {})[
                     region.candidate_id + ":" + side
                 ] = mapping_source
+            if len(used_boundary_coarse_ids) != 2:
+                raise ValueError("confirmed overlap requires two distinct boundary coarse artifacts")
             processed_issue_ids.add(region.issue_id)
 
         recomposed_occurrences = deepcopy(reviewed_run.get("occurrences", []))
@@ -382,8 +431,15 @@ def main() -> int:
             primary_result = primary_timeline.get("result")
             if not isinstance(primary_result, dict):
                 raise ValueError("primary timeline has no result")
+            if str(primary_result.get("occurrence_id") or "") != binding.occurrence_id:
+                raise ValueError("primary timeline occurrence identity mismatch")
             if str(primary_result.get("track_id") or "") != binding.track_id:
                 raise ValueError("primary timeline track identity mismatch")
+            if (
+                str(primary_result.get("canonical_selection_sha256") or "")
+                != binding.canonical_selection_sha256
+            ):
+                raise ValueError("primary timeline canonical selection mismatch")
             merged_result = merge_primary_with_overlap_lines(
                 primary_result,
                 overlap_lines_by_occurrence[occurrence_id],
