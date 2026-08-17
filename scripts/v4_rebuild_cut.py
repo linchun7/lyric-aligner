@@ -8,6 +8,7 @@ import json
 import re
 import sys
 from copy import deepcopy
+from dataclasses import asdict
 from pathlib import Path
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
@@ -34,7 +35,11 @@ from lyric_aligner.timeline.cuts import (
     CutTimelineProjectionError,
     project_binding_cut_timeline,
 )
-from task_contract import load_task_manifest, verify_manifest_inputs
+from task_contract import (
+    load_task_manifest,
+    resolve_manifest_record,
+    verify_manifest_inputs,
+)
 
 
 def _load(path: Path) -> dict:
@@ -79,7 +84,9 @@ def _effective_timewarp_payload(
 ) -> tuple[dict, str]:
     if fine is not None:
         fine_result = fine.get("result", {})
-        if bool(fine_result.get("applied")) and isinstance(fine_result.get("timewarp"), dict):
+        if bool(fine_result.get("applied")) and isinstance(
+            fine_result.get("timewarp"), dict
+        ):
             return fine_result["timewarp"], "fine"
     timewarp = coarse.get("result", {}).get("timewarp")
     if not isinstance(timewarp, dict):
@@ -99,10 +106,13 @@ def _find_discontinuity(
     matches = [
         row
         for row in rows
-        if discontinuity_candidate_id(occurrence_id, row) == candidate_id
+        if isinstance(row, dict)
+        and discontinuity_candidate_id(occurrence_id, row) == candidate_id
     ]
     if len(matches) != 1:
-        raise ValueError("confirmed cut candidate_id does not map to exactly one TimeWarp discontinuity")
+        raise ValueError(
+            "confirmed cut candidate_id does not map to exactly one TimeWarp discontinuity"
+        )
     return matches[0]
 
 
@@ -118,6 +128,67 @@ def _fragment_issue_id(
         "token_index": int(issue.get("token_index", -1)),
     }
     return canonical_json_sha256(core)
+
+
+def _validate_coarse_identity(
+    coarse: dict,
+    coarse_artifact: dict,
+    *,
+    binding,
+    asset_artifact_id: str,
+    review_upstreams: set[str],
+) -> str:
+    coarse_id = str(coarse_artifact["artifact_id"])
+    if coarse_id not in review_upstreams:
+        raise ValueError("primary coarse artifact is not upstream of reviewed run")
+    if str(coarse.get("occurrence_id") or "") != binding.occurrence_id:
+        raise ValueError("primary coarse occurrence identity mismatch")
+    if str(coarse.get("track_id") or "") != binding.track_id:
+        raise ValueError("primary coarse track identity mismatch")
+    if (
+        str(coarse.get("canonical_selection_sha256") or "")
+        != binding.canonical_selection_sha256
+    ):
+        raise ValueError("primary coarse canonical selection mismatch")
+    if str(coarse.get("upstream_asset_artifact_id") or "") != asset_artifact_id:
+        raise ValueError("primary coarse TrackAsset identity mismatch")
+    coarse_upstreams = {
+        str(value) for value in coarse_artifact.get("upstream_artifact_ids", [])
+    }
+    if asset_artifact_id not in coarse_upstreams:
+        raise ValueError("primary coarse artifact is not derived from TrackAssets")
+    return coarse_id
+
+
+def _validate_fine_identity(
+    fine: dict,
+    fine_artifact: dict,
+    *,
+    binding,
+    coarse_artifact_id: str,
+    asset_artifact_id: str,
+    review_upstreams: set[str],
+) -> str:
+    fine_id = str(fine_artifact["artifact_id"])
+    if fine_id not in review_upstreams:
+        raise ValueError("primary Fine artifact is not upstream of reviewed run")
+    if str(fine.get("occurrence_id") or "") != binding.occurrence_id:
+        raise ValueError("primary Fine occurrence identity mismatch")
+    if str(fine.get("track_id") or "") != binding.track_id:
+        raise ValueError("primary Fine track identity mismatch")
+    if (
+        str(fine.get("canonical_selection_sha256") or "")
+        != binding.canonical_selection_sha256
+    ):
+        raise ValueError("primary Fine canonical selection mismatch")
+    fine_upstreams = {
+        str(value) for value in fine_artifact.get("upstream_artifact_ids", [])
+    }
+    if asset_artifact_id not in fine_upstreams:
+        raise ValueError("primary Fine artifact is not derived from TrackAssets")
+    if coarse_artifact_id not in fine_upstreams:
+        raise ValueError("primary Fine artifact is not derived from primary Coarse")
+    return fine_id
 
 
 def main() -> int:
@@ -137,8 +208,14 @@ def main() -> int:
         task = load_task_manifest(args.task_manifest)
         task_issues = verify_manifest_inputs(args.task_manifest, task)
         if task_issues:
-            raise ValueError("task manifest validation failed: " + "; ".join(task_issues))
+            raise ValueError(
+                "task manifest validation failed: " + "; ".join(task_issues)
+            )
         fingerprint = str(task["task_fingerprint_sha256"])
+        mix_record = task["inputs"].get("audio")
+        if mix_record is None:
+            raise ValueError("task manifest has no mix audio")
+        mix_audio = resolve_manifest_record(args.task_manifest, mix_record)
 
         reviewed_run, review_artifact = _validate_stage(
             payload_path=args.run,
@@ -171,12 +248,23 @@ def main() -> int:
             asset_artifact=asset_artifact,
             verify_asset_files=True,
         )
-        if reviewed_run.get("calibration_profile_id") != context.calibration_profile_id:
+        if (
+            reviewed_run.get("calibration_profile_id")
+            != context.calibration_profile_id
+        ):
             raise ValueError("reviewed run calibration profile mismatch")
+        if (
+            reviewed_run.get("calibration_profile_version")
+            != context.calibration_profile_version
+        ):
+            raise ValueError("reviewed run calibration profile version mismatch")
 
+        issues_raw = reviewed_run.get("issues")
+        if not isinstance(issues_raw, list):
+            raise ValueError("reviewed run issues must be a list")
         confirmed = [
             issue
-            for issue in reviewed_run.get("issues", [])
+            for issue in issues_raw
             if isinstance(issue, dict)
             and issue.get("kind") == "timewarp_discontinuity"
             and issue.get("decision_action") == "confirmed_cut"
@@ -189,7 +277,9 @@ def main() -> int:
         if not isinstance(occurrence_rows, list):
             raise ValueError("reviewed run occurrences must be a list")
         occurrence_by_id = {
-            str(row.get("occurrence_id") or ""): row for row in occurrence_rows
+            str(row.get("occurrence_id") or ""): row
+            for row in occurrence_rows
+            if isinstance(row, dict)
         }
         if "" in occurrence_by_id or len(occurrence_by_id) != len(occurrence_rows):
             raise ValueError("reviewed run occurrence identity is missing/duplicated")
@@ -198,14 +288,17 @@ def main() -> int:
         for issue in confirmed:
             occurrence_id = str(issue.get("occurrence_id") or "")
             if occurrence_id not in occurrence_by_id:
-                raise ValueError("confirmed cut occurrence is missing from reviewed run")
+                raise ValueError(
+                    "confirmed cut occurrence is missing from reviewed run"
+                )
             issues_by_occurrence.setdefault(occurrence_id, []).append(issue)
 
         out_dir = args.out_dir.resolve()
         out_dir.mkdir(parents=True, exist_ok=True)
         rebuilt_occurrences = deepcopy(occurrence_rows)
         rebuilt_by_id = {
-            str(row.get("occurrence_id") or ""): row for row in rebuilt_occurrences
+            str(row.get("occurrence_id") or ""): row
+            for row in rebuilt_occurrences
         }
         processed_issue_ids: set[str] = set()
         fragment_issues: list[dict] = []
@@ -219,11 +312,18 @@ def main() -> int:
             summary = occurrence_by_id[occurrence_id]
             binding = context.binding_by_occurrence_id.get(occurrence_id)
             if binding is None:
-                raise ValueError("confirmed cut occurrence is missing from TrackAssets")
+                raise ValueError(
+                    "confirmed cut occurrence is missing from TrackAssets"
+                )
+
             coarse_path = Path(str(summary.get("coarse_path") or ""))
-            coarse_artifact_path = Path(str(summary.get("coarse_artifact_path") or ""))
+            coarse_artifact_path = Path(
+                str(summary.get("coarse_artifact_path") or "")
+            )
             if not coarse_path.is_file() or not coarse_artifact_path.is_file():
-                raise ValueError("reviewed run is missing primary coarse provenance for cut rebuild")
+                raise ValueError(
+                    "reviewed run is missing primary coarse provenance for cut rebuild"
+                )
             coarse, coarse_artifact = _validate_stage(
                 payload_path=coarse_path,
                 artifact_path=coarse_artifact_path,
@@ -231,17 +331,13 @@ def main() -> int:
                 stage="coarse_audio_alignment",
                 role="coarse_alignment",
             )
-            coarse_id = str(coarse_artifact["artifact_id"])
-            if coarse_id not in review_upstreams:
-                raise ValueError("primary coarse artifact is not upstream of reviewed run")
-            if str(coarse.get("occurrence_id") or "") != binding.occurrence_id:
-                raise ValueError("primary coarse occurrence identity mismatch")
-            if str(coarse.get("track_id") or "") != binding.track_id:
-                raise ValueError("primary coarse track identity mismatch")
-            if str(coarse.get("canonical_selection_sha256") or "") != binding.canonical_selection_sha256:
-                raise ValueError("primary coarse canonical selection mismatch")
-            if str(coarse.get("upstream_asset_artifact_id") or "") != asset_artifact_id:
-                raise ValueError("primary coarse TrackAsset identity mismatch")
+            coarse_id = _validate_coarse_identity(
+                coarse,
+                coarse_artifact,
+                binding=binding,
+                asset_artifact_id=asset_artifact_id,
+                review_upstreams=review_upstreams,
+            )
 
             fine: dict | None = None
             fine_id = ""
@@ -259,15 +355,14 @@ def main() -> int:
                     stage="fine_audio_alignment",
                     role="fine_alignment",
                 )
-                fine_id = str(fine_artifact["artifact_id"])
-                if fine_id not in review_upstreams:
-                    raise ValueError("primary Fine artifact is not upstream of reviewed run")
-                if str(fine.get("occurrence_id") or "") != binding.occurrence_id:
-                    raise ValueError("primary Fine occurrence identity mismatch")
-                if str(fine.get("track_id") or "") != binding.track_id:
-                    raise ValueError("primary Fine track identity mismatch")
-                if str(fine.get("canonical_selection_sha256") or "") != binding.canonical_selection_sha256:
-                    raise ValueError("primary Fine canonical selection mismatch")
+                fine_id = _validate_fine_identity(
+                    fine,
+                    fine_artifact,
+                    binding=binding,
+                    coarse_artifact_id=coarse_id,
+                    asset_artifact_id=asset_artifact_id,
+                    review_upstreams=review_upstreams,
+                )
 
             timewarp_payload, path_source = _effective_timewarp_payload(coarse, fine)
             path = effective_path(coarse, fine)
@@ -276,7 +371,9 @@ def main() -> int:
                 issue_id = str(issue.get("issue_id") or "").strip()
                 candidate_id = str(issue.get("candidate_id") or "").strip()
                 if not issue_id or not candidate_id:
-                    raise ValueError("confirmed cut issue is missing replayable identity")
+                    raise ValueError(
+                        "confirmed cut issue is missing replayable identity"
+                    )
                 discontinuity = _find_discontinuity(
                     occurrence_id=occurrence_id,
                     candidate_id=candidate_id,
@@ -284,15 +381,29 @@ def main() -> int:
                 )
                 snapshot = issue.get("confirmed_discontinuity")
                 if not isinstance(snapshot, dict):
-                    raise ValueError("confirmed cut issue is missing discontinuity snapshot")
-                for key in ("mix_before", "mix_after", "source_before", "source_after"):
-                    if abs(float(snapshot[key]) - float(discontinuity[key])) > 1e-6:
-                        raise ValueError("confirmed cut snapshot differs from effective TimeWarp evidence")
+                    raise ValueError(
+                        "confirmed cut issue is missing discontinuity snapshot"
+                    )
+                for key in (
+                    "mix_before",
+                    "mix_after",
+                    "source_before",
+                    "source_after",
+                ):
+                    try:
+                        expected = float(snapshot[key])
+                        current = float(discontinuity[key])
+                    except (KeyError, TypeError, ValueError) as exc:
+                        raise ValueError(
+                            "confirmed cut snapshot is malformed"
+                        ) from exc
+                    if abs(expected - current) > 1e-6:
+                        raise ValueError(
+                            "confirmed cut snapshot differs from effective TimeWarp evidence"
+                        )
                 localized.append(
                     locate_cut_boundary(
-                        mix_audio=Path(task["inputs"]["audio"]["path"])
-                        if Path(task["inputs"]["audio"]["path"]).is_absolute()
-                        else (args.task_manifest.parent / task["inputs"]["audio"]["path"]).resolve(),
+                        mix_audio=mix_audio,
                         source_audio=Path(binding.source_audio_path),
                         candidate_id=candidate_id,
                         issue_id=issue_id,
@@ -309,6 +420,7 @@ def main() -> int:
                 primary_end = float(primary_end)
             except (KeyError, TypeError, ValueError) as exc:
                 raise ValueError("occurrence primary interval is invalid") from exc
+
             cut_mapping = build_cut_aware_timewarp(
                 alignment_path=path,
                 localized_boundaries=localized,
@@ -331,7 +443,10 @@ def main() -> int:
                 "result": cut_mapping,
             }
             atomic_write_json(mapping_path, mapping_payload)
-            mapping_artifact_path = out_dir / f"{safe_id}.cut-timewarp.artifact.json"
+
+            mapping_artifact_path = (
+                out_dir / f"{safe_id}.cut-timewarp.artifact.json"
+            )
             mapping_upstreams = {
                 asset_artifact_id,
                 str(review_artifact["artifact_id"]),
@@ -346,16 +461,24 @@ def main() -> int:
                 outputs=(("cut_aware_timewarp", mapping_path),),
                 normalized_config={
                     **context.artifact_config(),
-                    "source_review_artifact_id": str(review_artifact["artifact_id"]),
+                    "source_review_artifact_id": str(
+                        review_artifact["artifact_id"]
+                    ),
                     "cut_boundary": asdict(context.profile.cut_boundary),
-                    "confirmed_candidate_ids": [row.candidate_id for row in localized],
+                    "confirmed_candidate_ids": [
+                        row.candidate_id for row in localized
+                    ],
                 },
-                producer={"git_commit": args.git_commit} if args.git_commit else {},
+                producer=(
+                    {"git_commit": args.git_commit} if args.git_commit else {}
+                ),
                 upstream_artifact_ids=tuple(sorted(mapping_upstreams)),
                 evidence={
                     "occurrence_id": occurrence_id,
                     "cut_count": len(localized),
-                    "localized_boundaries": [row.to_dict() for row in localized],
+                    "localized_boundaries": [
+                        row.to_dict() for row in localized
+                    ],
                 },
             )
             atomic_write_json(mapping_artifact_path, mapping_artifact)
@@ -375,6 +498,7 @@ def main() -> int:
                     issue=fragment_issue,
                 )
                 fragment_issues.append(fragment_issue)
+
             timeline_path = out_dir / f"{safe_id}.cut.timeline.json"
             timeline_payload = {
                 "schema_version": "1.0",
@@ -389,7 +513,10 @@ def main() -> int:
                 "result": timeline_result,
             }
             atomic_write_json(timeline_path, timeline_payload)
-            timeline_artifact_path = out_dir / f"{safe_id}.cut.timeline.artifact.json"
+
+            timeline_artifact_path = (
+                out_dir / f"{safe_id}.cut.timeline.artifact.json"
+            )
             timeline_artifact = build_artifact_manifest(
                 task_fingerprint_sha256=fingerprint,
                 stage="cut_timeline_rebuild",
@@ -398,9 +525,13 @@ def main() -> int:
                 normalized_config={
                     **context.artifact_config(),
                     "cut_mapping_artifact_id": mapping_artifact_id,
-                    "source_review_artifact_id": str(review_artifact["artifact_id"]),
+                    "source_review_artifact_id": str(
+                        review_artifact["artifact_id"]
+                    ),
                 },
-                producer={"git_commit": args.git_commit} if args.git_commit else {},
+                producer=(
+                    {"git_commit": args.git_commit} if args.git_commit else {}
+                ),
                 upstream_artifact_ids=(
                     asset_artifact_id,
                     str(review_artifact["artifact_id"]),
@@ -409,8 +540,12 @@ def main() -> int:
                 evidence={
                     "occurrence_id": occurrence_id,
                     "line_count": int(timeline_result["line_count"]),
-                    "omitted_line_count": len(timeline_result.get("omitted_lines", [])),
-                    "projection_issue_count": len(timeline_result.get("projection_issues", [])),
+                    "omitted_line_count": len(
+                        timeline_result.get("omitted_lines", [])
+                    ),
+                    "projection_issue_count": len(
+                        timeline_result.get("projection_issues", [])
+                    ),
                 },
             )
             atomic_write_json(timeline_artifact_path, timeline_artifact)
@@ -436,15 +571,18 @@ def main() -> int:
 
         remaining_issues = [
             deepcopy(issue)
-            for issue in reviewed_run.get("issues", [])
+            for issue in issues_raw
             if str(issue.get("issue_id") or "") not in processed_issue_ids
         ]
         remaining_issues.extend(fragment_issues)
+
         rebuilt_run = deepcopy(reviewed_run)
         rebuilt_run["schema_version"] = "1.3"
         rebuilt_run["occurrences"] = rebuilt_occurrences
         rebuilt_run["issues"] = remaining_issues
-        rebuilt_run["status"] = "review_required" if remaining_issues else "ready_for_render"
+        rebuilt_run["status"] = (
+            "review_required" if remaining_issues else "ready_for_render"
+        )
         rebuilt_run["cut_rebuild"] = {
             "source_review_artifact_id": str(review_artifact["artifact_id"]),
             "processed_issue_ids": sorted(processed_issue_ids),
@@ -467,7 +605,9 @@ def main() -> int:
                 "cut_boundary": asdict(context.profile.cut_boundary),
                 "legacy_fallback": False,
             },
-            producer={"git_commit": args.git_commit} if args.git_commit else {},
+            producer=(
+                {"git_commit": args.git_commit} if args.git_commit else {}
+            ),
             upstream_artifact_ids=tuple(sorted(all_upstreams)),
             evidence={
                 "status": rebuilt_run["status"],
