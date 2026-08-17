@@ -1,16 +1,9 @@
-"""Production-first planning for Lyric Aligner v4.
-
-The planner keeps two concepts separate:
-
-* a primary occurrence interval used to build the current single-track timeline;
-* an overlapping transition-search interval around each nominal boundary.
-
-The latter deliberately lets both adjacent TrackOccurrences inspect the same mix
-region.  A shared search window is evidence collection, not proof of overlap.
-"""
+"""Production-first planning and stable review identity for Lyric Aligner v4."""
 
 from __future__ import annotations
 
+import hashlib
+import json
 from dataclasses import asdict, dataclass
 from typing import Any, Iterable
 
@@ -128,6 +121,47 @@ def build_production_plan(
         occurrences=tuple(occurrences),
         transitions=tuple(transitions),
     )
+
+
+def issue_identity_payload(issue: dict[str, Any]) -> dict[str, Any]:
+    """Return stable semantic coordinates, excluding prose/diagnostic counters."""
+
+    kind = str(issue.get("kind") or "")
+    payload: dict[str, Any] = {"kind": kind}
+    if kind == "timewarp":
+        payload["occurrence_id"] = str(issue.get("occurrence_id") or "")
+    elif kind == "transition":
+        payload["left_occurrence_id"] = str(issue.get("left_occurrence_id") or "")
+        payload["right_occurrence_id"] = str(issue.get("right_occurrence_id") or "")
+    else:
+        for key in (
+            "occurrence_id",
+            "left_occurrence_id",
+            "right_occurrence_id",
+        ):
+            if issue.get(key) not in (None, ""):
+                payload[key] = str(issue[key])
+    if not kind:
+        raise ProductionPlanError("review issue requires kind")
+    if len(payload) == 1:
+        raise ProductionPlanError("review issue has no stable semantic coordinates")
+    return payload
+
+
+def stable_issue_id(issue: dict[str, Any]) -> str:
+    encoded = json.dumps(
+        issue_identity_payload(issue),
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def with_issue_id(issue: dict[str, Any]) -> dict[str, Any]:
+    payload = dict(issue)
+    payload["issue_id"] = stable_issue_id(payload)
+    return payload
 
 
 def readiness_status(*, issues: Iterable[dict[str, Any]]) -> str:
