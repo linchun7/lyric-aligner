@@ -69,15 +69,26 @@ class TimeWarpConfig:
 
 
 @dataclass(frozen=True)
+class RenderConfig:
+    """Conservative bootstrap rules for package-native final subtitle rendering."""
+
+    minimum_cue_duration_ms: int = 250
+    maximum_line_duration_ms: int = 12000
+    open_line_duration_ms: int = 5000
+    word_timing_tail_ms: int = 120
+
+
+@dataclass(frozen=True)
 class V4CalibrationProfile:
     """All tunable v4 production-bootstrap values with one profile identity."""
 
-    profile_version: str = "production-bootstrap-2026-08-17-a3"
+    profile_version: str = "production-bootstrap-2026-08-17-a4"
     asset_resolver: AssetResolverConfig = field(default_factory=AssetResolverConfig)
     coarse: CoarseAlignmentConfig = field(default_factory=CoarseAlignmentConfig)
     fine: FineAlignmentConfig = field(default_factory=FineAlignmentConfig)
     transition: TransitionConfig = field(default_factory=TransitionConfig)
     timewarp: TimeWarpConfig = field(default_factory=TimeWarpConfig)
+    render: RenderConfig = field(default_factory=RenderConfig)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -133,6 +144,7 @@ def profile_from_dict(payload: Any) -> V4CalibrationProfile:
         "fine",
         "transition",
         "timewarp",
+        "render",
     }
     actual = set(payload)
     missing = sorted(expected - actual)
@@ -158,6 +170,7 @@ def profile_from_dict(payload: Any) -> V4CalibrationProfile:
             TransitionConfig, payload["transition"], "transition"
         ),
         timewarp=_strict_dataclass(TimeWarpConfig, payload["timewarp"], "timewarp"),
+        render=_strict_dataclass(RenderConfig, payload["render"], "render"),
     )
     validate_profile(profile)
     return profile
@@ -193,6 +206,22 @@ def validate_profile(profile: V4CalibrationProfile) -> None:
         raise CalibrationProfileError("timewarp.max_continuous_rate must be positive")
     if profile.timewarp.minimum_feature_families < 1:
         raise CalibrationProfileError("timewarp.minimum_feature_families must be >= 1")
+    if profile.render.minimum_cue_duration_ms <= 0:
+        raise CalibrationProfileError("render.minimum_cue_duration_ms must be positive")
+    if profile.render.maximum_line_duration_ms < profile.render.minimum_cue_duration_ms:
+        raise CalibrationProfileError(
+            "render.maximum_line_duration_ms must be >= minimum_cue_duration_ms"
+        )
+    if not (
+        profile.render.minimum_cue_duration_ms
+        <= profile.render.open_line_duration_ms
+        <= profile.render.maximum_line_duration_ms
+    ):
+        raise CalibrationProfileError(
+            "render.open_line_duration_ms must be within cue duration bounds"
+        )
+    if profile.render.word_timing_tail_ms < 0:
+        raise CalibrationProfileError("render.word_timing_tail_ms must be >= 0")
 
 
 def load_profile(path: Path | None) -> V4CalibrationProfile:
