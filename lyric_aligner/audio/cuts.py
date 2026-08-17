@@ -14,18 +14,14 @@ import hashlib
 import json
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any, Iterable, Sequence
+from typing import Any, Sequence
 
 import librosa
 import numpy as np
 
 from lyric_aligner.audio.coarse_mapper import retrieve_coarse_window
 from lyric_aligner.audio.features import extract_harmonic_features
-from lyric_aligner.audio.timewarp import (
-    AlignmentAnchor,
-    TimeWarpParameters,
-    select_timewarp,
-)
+from lyric_aligner.audio.timewarp import AlignmentAnchor, select_timewarp
 from lyric_aligner.config import CutBoundaryConfig, TimeWarpConfig
 from lyric_aligner.timeline.projector import source_time_at_mix
 
@@ -99,7 +95,7 @@ def _point_slope(point: dict[str, Any]) -> float:
 
 
 def path_points(payload: dict[str, Any]) -> list[dict[str, Any]]:
-    """Return the effective alignment path from Fine when applied, else Coarse."""
+    """Return one serialized alignment path from a Coarse/Fine payload."""
 
     result = payload.get("result", payload)
     path = result.get("path")
@@ -108,7 +104,11 @@ def path_points(payload: dict[str, Any]) -> list[dict[str, Any]]:
     return [dict(row) for row in path]
 
 
-def effective_path(coarse_payload: dict[str, Any], fine_payload: dict[str, Any] | None) -> list[dict[str, Any]]:
+def effective_path(
+    coarse_payload: dict[str, Any], fine_payload: dict[str, Any] | None
+) -> list[dict[str, Any]]:
+    """Use Fine path only when Fine actually applied; otherwise preserve Coarse."""
+
     if fine_payload is not None:
         fine = fine_payload.get("result", {})
         if bool(fine.get("applied")) and isinstance(fine.get("path"), list):
@@ -116,7 +116,9 @@ def effective_path(coarse_payload: dict[str, Any], fine_payload: dict[str, Any] 
     return path_points(coarse_payload)
 
 
-def _anchor_values(point: dict[str, Any]) -> tuple[float, float, float, dict[str, float]]:
+def _anchor_values(
+    point: dict[str, Any],
+) -> tuple[float, float, float, dict[str, float]]:
     try:
         mix = float(point["mix_center"])
     except (KeyError, TypeError, ValueError) as exc:
@@ -138,7 +140,7 @@ def _anchor_values(point: dict[str, Any]) -> tuple[float, float, float, dict[str
             pass
     scores_raw = point.get("feature_scores")
     scores = (
-        {str(k): float(v) for k, v in scores_raw.items()}
+        {str(key): float(value) for key, value in scores_raw.items()}
         if isinstance(scores_raw, dict)
         else {}
     )
@@ -169,10 +171,20 @@ def _neighbor_points(
     path: Sequence[dict[str, Any]], mix_before: float, mix_after: float
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     ordered = sorted(path, key=lambda row: float(row.get("mix_center", -1.0)))
-    left = [row for row in ordered if float(row.get("mix_center", -1.0)) <= mix_before + 1e-6]
-    right = [row for row in ordered if float(row.get("mix_center", 1e18)) >= mix_after - 1e-6]
+    left = [
+        row
+        for row in ordered
+        if float(row.get("mix_center", -1.0)) <= mix_before + 1e-6
+    ]
+    right = [
+        row
+        for row in ordered
+        if float(row.get("mix_center", 1e18)) >= mix_after - 1e-6
+    ]
     if not left or not right:
-        raise CutRebuildError("cannot find alignment anchors around confirmed discontinuity")
+        raise CutRebuildError(
+            "cannot find alignment anchors around confirmed discontinuity"
+        )
     return left[-1], right[0]
 
 
@@ -217,7 +229,9 @@ def locate_cut_boundary(
     local_start = max(0.0, mix_before - config.context_seconds)
     local_end = min(mix_duration, mix_after + config.context_seconds)
     if local_end - local_start < config.context_seconds * 2.0:
-        raise CutRebuildError("confirmed cut is too close to mix edge for local boundary evidence")
+        raise CutRebuildError(
+            "confirmed cut is too close to mix edge for local boundary evidence"
+        )
 
     mix_audio_data, _ = librosa.load(
         mix_audio,
@@ -254,16 +268,22 @@ def locate_cut_boundary(
             continue
 
         expected_left_end = source_before + left_slope * (cut_time - mix_before)
-        expected_left_start = expected_left_end - config.context_seconds * left_slope
+        expected_left_start = (
+            expected_left_end - config.context_seconds * left_slope
+        )
         expected_right_start = source_after - right_slope * (mix_after - cut_time)
-        left_search_start = max(0.0, expected_left_start - config.source_radius_seconds)
+        left_search_start = max(
+            0.0, expected_left_start - config.source_radius_seconds
+        )
         left_search_end = min(
             source_features.end_time,
             expected_left_start
             + config.context_seconds * left_slope
             + config.source_radius_seconds,
         )
-        right_search_start = max(0.0, expected_right_start - config.source_radius_seconds)
+        right_search_start = max(
+            0.0, expected_right_start - config.source_radius_seconds
+        )
         right_search_end = min(
             source_features.end_time,
             expected_right_start
@@ -306,11 +326,10 @@ def locate_cut_boundary(
             or right_result.ambiguous
         ):
             continue
-        joint = min(left_top.fused_score, right_top.fused_score)
         scored.append(
             {
                 "cut_time": cut_time,
-                "joint": joint,
+                "joint": min(left_top.fused_score, right_top.fused_score),
                 "left": left_top,
                 "right": right_top,
                 "left_margin": left_result.margin,
@@ -319,8 +338,15 @@ def locate_cut_boundary(
         )
 
     if not scored:
-        raise CutRebuildError("no cut boundary candidate has strong two-sided harmonic evidence")
-    scored.sort(key=lambda row: (row["joint"], row["left_margin"] + row["right_margin"]), reverse=True)
+        raise CutRebuildError(
+            "no cut boundary candidate has strong two-sided harmonic evidence"
+        )
+    scored.sort(
+        key=lambda row: (
+            row["joint"], row["left_margin"] + row["right_margin"]
+        ),
+        reverse=True,
+    )
     best = scored[0]
     separated = [
         row
@@ -362,19 +388,6 @@ def locate_cut_boundary(
     )
 
 
-def _parameters(config: TimeWarpConfig) -> TimeWarpParameters:
-    return TimeWarpParameters(
-        bpm_prior_strength=config.bpm_prior_strength,
-        max_continuous_rate=config.max_continuous_rate,
-        min_excess_source_jump=config.min_excess_source_jump,
-        min_piecewise_improvement=config.min_piecewise_improvement,
-        minimum_feature_families=config.minimum_feature_families,
-        drift_threshold=config.drift_threshold,
-        residual_threshold=config.residual_threshold,
-        complexity_penalty=config.complexity_penalty,
-    )
-
-
 def _synthetic_boundary_anchor(
     mix_time: float, source_time: float, confidence: float
 ) -> AlignmentAnchor:
@@ -385,6 +398,60 @@ def _synthetic_boundary_anchor(
         confidence=confidence,
         feature_scores={"chroma": confidence, "mfcc": confidence},
     )
+
+
+def _select_segment_timewarp(
+    anchors: Sequence[AlignmentAnchor],
+    *,
+    slope_prior: float | None,
+    config: TimeWarpConfig,
+) -> dict[str, Any]:
+    """Call the repository's current TimeWarp API with the versioned profile."""
+
+    return select_timewarp(
+        anchors,
+        bpm_prior=slope_prior,
+        bpm_prior_strength=config.bpm_prior_strength,
+        middle_cut="false",
+        max_continuous_rate=config.max_continuous_rate,
+        min_excess_source_jump=config.min_excess_source_jump,
+        min_piecewise_improvement=config.min_piecewise_improvement,
+        minimum_feature_families=config.minimum_feature_families,
+        drift_threshold=config.drift_threshold,
+        residual_threshold=config.residual_threshold,
+        complexity_penalty=config.complexity_penalty,
+    )
+
+
+def _deduplicate_segment_anchors(
+    anchors: Sequence[AlignmentAnchor],
+    *,
+    left_edge: float,
+    right_edge: float,
+    left_boundary_source: float | None,
+    right_boundary_source: float | None,
+) -> list[AlignmentAnchor]:
+    """Keep exactly one source hypothesis per mix timestamp inside one segment."""
+
+    by_mix: dict[int, AlignmentAnchor] = {}
+    for anchor in anchors:
+        mix_ms = int(round(anchor.mix_time * 1000.0))
+        existing = by_mix.get(mix_ms)
+        if existing is None or anchor.confidence > existing.confidence:
+            by_mix[mix_ms] = anchor
+
+    if left_boundary_source is not None:
+        synthetic = _synthetic_boundary_anchor(
+            left_edge, left_boundary_source, 1.0
+        )
+        by_mix[int(round(left_edge * 1000.0))] = synthetic
+    if right_boundary_source is not None:
+        synthetic = _synthetic_boundary_anchor(
+            right_edge, right_boundary_source, 1.0
+        )
+        by_mix[int(round(right_edge * 1000.0))] = synthetic
+
+    return sorted(by_mix.values(), key=lambda row: row.mix_time)
 
 
 def build_cut_aware_timewarp(
@@ -406,13 +473,23 @@ def build_cut_aware_timewarp(
         right.cut_mix_time <= left.cut_mix_time
         for left, right in zip(boundaries, boundaries[1:])
     ):
-        raise CutRebuildError("localized cut boundaries must be strictly increasing")
-    if boundaries[0].cut_mix_time <= mix_start or boundaries[-1].cut_mix_time >= mix_end:
-        raise CutRebuildError("localized cut must remain inside the occurrence interval")
+        raise CutRebuildError(
+            "localized cut boundaries must be strictly increasing"
+        )
+    if (
+        boundaries[0].cut_mix_time <= mix_start
+        or boundaries[-1].cut_mix_time >= mix_end
+    ):
+        raise CutRebuildError(
+            "localized cut must remain inside the occurrence interval"
+        )
     anchors = alignment_anchors(alignment_path)
-    params = _parameters(timewarp_config)
 
-    segment_edges = [mix_start] + [row.cut_mix_time for row in boundaries] + [mix_end]
+    segment_edges = (
+        [mix_start]
+        + [row.cut_mix_time for row in boundaries]
+        + [mix_end]
+    )
     segments: list[dict[str, Any]] = []
     for index in range(len(segment_edges) - 1):
         left_edge = segment_edges[index]
@@ -422,64 +499,67 @@ def build_cut_aware_timewarp(
             for anchor in anchors
             if left_edge - 1e-6 <= anchor.mix_time <= right_edge + 1e-6
         ]
-        if index > 0:
-            boundary = boundaries[index - 1]
-            segment_anchors.append(
-                _synthetic_boundary_anchor(
-                    left_edge,
-                    boundary.localized_source_gap_end,
-                    min(boundary.left_score, boundary.right_score),
-                )
-            )
-        if index < len(boundaries):
-            boundary = boundaries[index]
-            segment_anchors.append(
-                _synthetic_boundary_anchor(
-                    right_edge,
-                    boundary.localized_source_gap_start,
-                    min(boundary.left_score, boundary.right_score),
-                )
-            )
-        dedup: dict[tuple[int, int], AlignmentAnchor] = {}
-        for anchor in segment_anchors:
-            key = (
-                int(round(anchor.mix_time * 1000.0)),
-                int(round(anchor.source_time * 1000.0)),
-            )
-            existing = dedup.get(key)
-            if existing is None or anchor.confidence > existing.confidence:
-                dedup[key] = anchor
-        segment_anchors = sorted(dedup.values(), key=lambda row: row.mix_time)
+
+        left_boundary = boundaries[index - 1] if index > 0 else None
+        right_boundary = boundaries[index] if index < len(boundaries) else None
+        segment_anchors = _deduplicate_segment_anchors(
+            segment_anchors,
+            left_edge=left_edge,
+            right_edge=right_edge,
+            left_boundary_source=(
+                left_boundary.localized_source_gap_end
+                if left_boundary is not None
+                else None
+            ),
+            right_boundary_source=(
+                right_boundary.localized_source_gap_start
+                if right_boundary is not None
+                else None
+            ),
+        )
         if len(segment_anchors) < 3:
             raise CutRebuildError(
-                f"cut-aware segment {index} has insufficient anchors ({len(segment_anchors)})"
+                f"cut-aware segment {index} has insufficient anchors "
+                f"({len(segment_anchors)})"
             )
-        slope_prior = float(
-            np.median(
-                [
-                    (right.source_time - left.source_time)
-                    / max(1e-6, right.mix_time - left.mix_time)
-                    for left, right in zip(segment_anchors, segment_anchors[1:])
-                    if right.mix_time > left.mix_time
-                    and right.source_time > left.source_time
-                ]
-            )
+
+        local_rates = [
+            (right.source_time - left.source_time)
+            / (right.mix_time - left.mix_time)
+            for left, right in zip(segment_anchors, segment_anchors[1:])
+            if right.mix_time > left.mix_time
+            and right.source_time > left.source_time
+        ]
+        slope_prior = (
+            float(np.median(local_rates)) if local_rates else None
         )
-        selected = select_timewarp(
+        if slope_prior is not None and not np.isfinite(slope_prior):
+            slope_prior = None
+
+        selected = _select_segment_timewarp(
             segment_anchors,
-            bpm_slope_prior=slope_prior if np.isfinite(slope_prior) else None,
-            middle_cut="false",
-            parameters=params,
+            slope_prior=slope_prior,
+            config=timewarp_config,
         )
-        if selected.blocked:
+        if bool(selected.get("blocked")):
             raise CutRebuildError(
-                f"cut-aware segment {index} remains blocked: {selected.selection}"
+                f"cut-aware segment {index} remains blocked: "
+                f"{selected.get('selection', 'UNKNOWN')}"
             )
-        mapping = selected.model.to_dict()
+        mapping = selected.get("mapping")
+        if not isinstance(mapping, dict):
+            raise CutRebuildError(
+                f"cut-aware segment {index} returned no mapping"
+            )
         source_start = source_time_at_mix(mapping, left_edge)
         source_end = source_time_at_mix(mapping, right_edge)
         if source_end <= source_start:
-            raise CutRebuildError(f"cut-aware segment {index} is not monotonic")
+            raise CutRebuildError(
+                f"cut-aware segment {index} is not monotonic"
+            )
+        diagnostics = mapping.get("diagnostics")
+        if not isinstance(diagnostics, dict):
+            diagnostics = {}
         segments.append(
             {
                 "index": index,
@@ -487,10 +567,10 @@ def build_cut_aware_timewarp(
                 "mix_end": right_edge,
                 "source_start": source_start,
                 "source_end": source_end,
-                "model": selected.model.kind,
-                "selection": selected.selection,
+                "model": str(mapping.get("mode") or ""),
+                "selection": str(selected.get("selection") or ""),
                 "mapping": mapping,
-                "diagnostics": selected.diagnostics.to_dict(),
+                "diagnostics": diagnostics,
                 "anchor_count": len(segment_anchors),
             }
         )
@@ -502,7 +582,9 @@ def build_cut_aware_timewarp(
         source_gap_start = float(left_segment["source_end"])
         source_gap_end = float(right_segment["source_start"])
         if source_gap_end <= source_gap_start:
-            raise CutRebuildError("cut-aware segment mappings do not preserve a forward source gap")
+            raise CutRebuildError(
+                "cut-aware segment mappings do not preserve a forward source gap"
+            )
         if source_gap_end - source_gap_start < 0.05:
             raise CutRebuildError("cut-aware mapped source gap is too small")
         cuts.append(
