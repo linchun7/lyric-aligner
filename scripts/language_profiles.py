@@ -8,20 +8,33 @@ import unicodedata
 from typing import Any
 
 
-SUPPORTED_LANGUAGES = {"en", "zh", "ko", "ja", "mixed"}
+SUPPORTED_LANGUAGES = {"en", "zh", "yue", "ko", "ja", "mixed", "auto", "generic"}
 
 LANGUAGE_THRESHOLDS = {
     "en": {"auto_score": 0.88, "review_score": 0.64, "min_coverage": 0.68},
     "zh": {"auto_score": 0.90, "review_score": 0.66, "min_coverage": 0.72},
+    "yue": {"auto_score": 0.92, "review_score": 0.70, "min_coverage": 0.74},
     "ko": {"auto_score": 0.86, "review_score": 0.60, "min_coverage": 0.64},
     "ja": {"auto_score": 0.92, "review_score": 0.68, "min_coverage": 0.74},
     "mixed": {"auto_score": 0.94, "review_score": 0.72, "min_coverage": 0.78},
+    "auto": {"auto_score": 0.95, "review_score": 0.74, "min_coverage": 0.80},
+    "generic": {"auto_score": 0.95, "review_score": 0.74, "min_coverage": 0.80},
 }
 
 
 def language_code(value: str) -> str:
     normalized = value.strip().lower()
-    aliases = {"cn": "zh", "jp": "ja", "kr": "ko", "multi": "mixed"}
+    aliases = {
+        "cn": "zh",
+        "cmn": "zh",
+        "cantonese": "yue",
+        "cant": "yue",
+        "jp": "ja",
+        "kr": "ko",
+        "multi": "mixed",
+        "unknown": "generic",
+        "und": "generic",
+    }
     normalized = aliases.get(normalized, normalized)
     if normalized not in SUPPORTED_LANGUAGES:
         raise ValueError(
@@ -66,6 +79,9 @@ def pronunciation_for_evidence(language: str, text: str) -> tuple[str, bool]:
             return "", False
         readings = kakasi().convert(normalized)
         return " ".join(str(item.get("hira") or item.get("orig") or "") for item in readings), True
+    # Cantonese Jyutping is intentionally not fabricated here. Until a vetted
+    # pronunciation backend is configured, yue relies on canonical text/source
+    # audio evidence rather than Mandarin pinyin.
     return normalized, True
 
 
@@ -93,7 +109,7 @@ def boundary_units_for_language(language: str, text: str) -> list[str]:
     value = _base_text(text)
     if language == "en":
         return re.findall(r"[a-z0-9]+(?:'[a-z0-9]+)?", value)
-    if language in {"zh", "ja"}:
+    if language in {"zh", "yue", "ja"}:
         return [character for character in value if character.isalnum()]
     if language == "ko":
         return re.findall(r"[가-힣]+|[a-z0-9]+", value)
