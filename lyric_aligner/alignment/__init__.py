@@ -1,9 +1,9 @@
 """Planning/contracts for optional local acoustic evidence backends.
 
-The alignment package does not replace canonical lyrics or Source-to-Mix.  It
-selects small evidence jobs, reports backend availability, optionally runs
-bounded evidence executors, and can route weak first-pass local evidence to a
-second local pass without widening scope to the full mix.
+The alignment package does not replace canonical lyrics or Source-to-Mix. It
+selects bounded evidence jobs, reports backend availability, optionally runs
+local ASR, routes weak first-pass evidence, and can compose a second accuracy
+pass without widening scope to the full mix.
 """
 
 from lyric_aligner.alignment.asr_executor import (
@@ -19,6 +19,11 @@ from lyric_aligner.alignment.asr_routing import (
     AsrSecondPassRoutingConfig,
     build_second_pass_plan,
 )
+from lyric_aligner.alignment.asr_second_pass import (
+    ASR_COMPOSITE_SCHEMA_VERSION,
+    AsrSecondPassExecutionError,
+    execute_second_pass_and_compose,
+)
 from lyric_aligner.alignment.backends import (
     BackendCapability,
     BackendStatus,
@@ -33,6 +38,7 @@ from lyric_aligner.alignment.planner import (
 
 __all__ = [
     "ALIGNMENT_PLAN_SCHEMA_VERSION",
+    "ASR_COMPOSITE_SCHEMA_VERSION",
     "ASR_EVIDENCE_SCHEMA_VERSION",
     "ASR_SECOND_PASS_POLICY_ID",
     "ASR_SECOND_PASS_SCHEMA_VERSION",
@@ -40,6 +46,7 @@ __all__ = [
     "AlignmentPlannerConfig",
     "AsrExecutionError",
     "AsrRoutingError",
+    "AsrSecondPassExecutionError",
     "AsrSecondPassRoutingConfig",
     "BackendCapability",
     "BackendStatus",
@@ -47,5 +54,6 @@ __all__ = [
     "build_alignment_plan",
     "build_second_pass_plan",
     "execute_faster_whisper_jobs",
+    "execute_second_pass_and_compose",
     "inspect_backends",
 ]
