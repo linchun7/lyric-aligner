@@ -10,6 +10,9 @@ from typing import Iterable
 from lyric_aligner.io.text import read_task_text
 
 LRC_LINE_RE = re.compile(r"\[(\d{1,3}):(\d{2})(?:[.:](\d{1,3}))?\](.*)")
+QRC_LINE_RE = re.compile(r"^\[(\d+),(\d+)\](.*)$")
+ENHANCED_TOKEN_RE = re.compile(r"<\d{1,3}:\d{2}(?:[.:]\d{1,3})?>")
+QRC_TOKEN_TIME_RE = re.compile(r"\(\d+,\d+\)")
 META_RE = re.compile(
     r"^(?:\[?by:|作词|作曲|编曲|词\s*:|曲\s*:|制作人|人声采样|版权|发行|混音|母带|企划|出品人|op\s*:|sp\s*:)",
     re.IGNORECASE,
@@ -47,6 +50,19 @@ def _fraction_digits(value: str | None) -> int:
 
 def _timestamp_ms(minute: str, second: str, fraction: str | None) -> int:
     return (int(minute) * 60 + int(second)) * 1000 + _fraction_digits(fraction)
+
+
+def _display_text(value: str) -> str:
+    """Remove timing markup before role/script classification.
+
+    The returned text preserves the same alternative ordering as the source
+    file.  Timing markup is evidence metadata, not lyric text and must not hide
+    metadata prefixes or influence script detection.
+    """
+
+    value = ENHANCED_TOKEN_RE.sub("", value)
+    value = QRC_TOKEN_TIME_RE.sub("", value)
+    return re.sub(r"\s+", " ", value).strip()
 
 
 def script_kind(text: str) -> str:
@@ -94,7 +110,9 @@ def classify_alternatives(
     *,
     language: str,
 ) -> list[LyricAlternative]:
-    cleaned = [text.strip() for text in texts if text.strip()]
+    cleaned = [_display_text(text) for text in texts]
+    # Empty timestamp rows do not become alternatives in canonical parsing.
+    cleaned = [text for text in cleaned if text]
     if not cleaned:
         return []
 
@@ -128,13 +146,20 @@ def inspect_lyric_roles(
     original_index_overrides: dict[int, int] | None = None,
 ) -> dict:
     groups: dict[int, list[str]] = {}
+    formats: dict[int, set[str]] = {}
     original_index_overrides = original_index_overrides or {}
-    for line_number, raw in enumerate(
-        read_task_text(path).splitlines(), start=1
-    ):
+    for line_number, raw in enumerate(read_task_text(path).splitlines(), start=1):
         stripped = raw.strip()
         if not stripped:
             continue
+
+        qrc_match = QRC_LINE_RE.match(stripped)
+        if qrc_match:
+            timestamp = int(qrc_match.group(1))
+            groups.setdefault(timestamp, []).append(qrc_match.group(3))
+            formats.setdefault(timestamp, set()).add("qrc")
+            continue
+
         match = LRC_LINE_RE.match(stripped)
         if not match:
             # Header/meta tags without a timestamp are not canonical lyric rows.
@@ -144,7 +169,10 @@ def inspect_lyric_roles(
             timestamp = _timestamp_ms(minute, second, fraction)
         except ValueError as exc:
             raise LyricRoleError(f"invalid LRC timestamp at line {line_number}") from exc
-        groups.setdefault(timestamp, []).append(text.strip())
+        groups.setdefault(timestamp, []).append(text)
+        formats.setdefault(timestamp, set()).add(
+            "enhanced_lrc" if ENHANCED_TOKEN_RE.search(text) else "line_lrc"
+        )
 
     if not groups:
         raise LyricRoleError(f"no timestamped lyric lines in {path}")
@@ -154,6 +182,8 @@ def inspect_lyric_roles(
     original_count = 0
     for timestamp, texts in sorted(groups.items()):
         alternatives = classify_alternatives(timestamp, texts, language=language)
+        if not alternatives:
+            continue
         override_index = original_index_overrides.get(timestamp)
         if override_index is not None:
             if override_index < 0 or override_index >= len(alternatives):
@@ -183,11 +213,14 @@ def inspect_lyric_roles(
         inspected.append(
             {
                 "timestamp_ms": timestamp,
+                "formats": sorted(formats.get(timestamp, set())),
                 "alternatives": [row.to_dict() for row in alternatives],
                 "canonical_original_count": len(originals),
             }
         )
 
+    if not inspected:
+        raise LyricRoleError(f"no lexical timestamped lyric lines in {path}")
     if ambiguous:
         preview = ", ".join(str(value) for value in ambiguous[:5])
         raise LyricRoleError(
