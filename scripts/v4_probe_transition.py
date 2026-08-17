@@ -14,12 +14,14 @@ if str(REPOSITORY_ROOT) not in sys.path:
 
 from lyric_aligner import __version__
 from lyric_aligner.audio.transition import probe_adjacent_transition
+from lyric_aligner.config import DEFAULT_V4_PROFILE
 from lyric_aligner.contracts.artifacts import (
     atomic_write_json,
     build_artifact_manifest,
     validate_artifact_output,
     validate_upstream_artifact,
 )
+from lyric_aligner.pipeline.context import build_pipeline_context
 from task_contract import load_task_manifest, verify_manifest_inputs
 
 
@@ -56,19 +58,8 @@ def _validate_stage(
     return payload, artifact
 
 
-def _ensure_adjacent(track_assets: dict, left_id: str, right_id: str) -> None:
-    ordered = sorted(track_assets.get("occurrences", []), key=lambda item: int(item["ordinal"]))
-    ids = [str(item["occurrence_id"]) for item in ordered]
-    try:
-        left_pos = ids.index(left_id)
-        right_pos = ids.index(right_id)
-    except ValueError as exc:
-        raise ValueError("coarse alignment occurrence is missing from track_assets") from exc
-    if right_pos != left_pos + 1:
-        raise ValueError("transition probe only accepts adjacent TrackOccurrences")
-
-
 def main() -> int:
+    defaults = DEFAULT_V4_PROFILE.transition
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--task-manifest", required=True, type=Path)
     parser.add_argument("--track-assets", required=True, type=Path)
@@ -77,9 +68,13 @@ def main() -> int:
     parser.add_argument("--left-artifact", required=True, type=Path)
     parser.add_argument("--right-coarse", required=True, type=Path)
     parser.add_argument("--right-artifact", required=True, type=Path)
-    parser.add_argument("--min-score", type=float, default=0.72)
-    parser.add_argument("--min-margin", type=float, default=0.02)
-    parser.add_argument("--min-overlap-seconds", type=float, default=0.75)
+    parser.add_argument("--min-score", type=float, default=defaults.min_score)
+    parser.add_argument("--min-margin", type=float, default=defaults.min_margin)
+    parser.add_argument(
+        "--min-overlap-seconds",
+        type=float,
+        default=defaults.min_overlap_seconds,
+    )
     parser.add_argument("--out", required=True, type=Path)
     parser.add_argument("--artifact-out", required=True, type=Path)
     parser.add_argument("--git-commit", default="")
@@ -99,6 +94,12 @@ def main() -> int:
             role="track_assets",
             stage="asset_resolution",
         )
+        context = build_pipeline_context(
+            expected_task_fingerprint=fingerprint,
+            track_assets_payload=track_assets,
+            asset_artifact=asset_artifact,
+            verify_asset_files=True,
+        )
         left, left_artifact = _validate_stage(
             payload_path=args.left_coarse,
             artifact_path=args.left_artifact,
@@ -115,11 +116,30 @@ def main() -> int:
         )
         left_id = str(left["occurrence_id"])
         right_id = str(right["occurrence_id"])
-        _ensure_adjacent(track_assets, left_id, right_id)
-        expected_asset_id = str(asset_artifact["artifact_id"])
-        for label, payload in (("left", left), ("right", right)):
-            if str(payload.get("upstream_asset_artifact_id")) != expected_asset_id:
+        ordered_ids = [item.occurrence_id for item in sorted(context.bindings, key=lambda item: item.ordinal)]
+        try:
+            left_pos = ordered_ids.index(left_id)
+            right_pos = ordered_ids.index(right_id)
+        except ValueError as exc:
+            raise ValueError("coarse alignment occurrence is missing from track_assets") from exc
+        if right_pos != left_pos + 1:
+            raise ValueError("transition probe only accepts adjacent TrackOccurrences")
+
+        left_binding = context.binding_by_occurrence_id[left_id]
+        right_binding = context.binding_by_occurrence_id[right_id]
+        expected_asset_id = context.asset_artifact.artifact_id
+        for label, coarse_payload, binding in (
+            ("left", left, left_binding),
+            ("right", right, right_binding),
+        ):
+            if str(coarse_payload.get("upstream_asset_artifact_id")) != expected_asset_id:
                 raise ValueError(f"{label} coarse alignment came from a different asset artifact")
+            if str(coarse_payload.get("calibration_profile_id")) != context.calibration_profile_id:
+                raise ValueError(f"{label} coarse alignment came from a different calibration profile")
+            if str(coarse_payload.get("track_id")) != binding.track_id:
+                raise ValueError(f"{label} coarse track_id differs from TrackAsset")
+            if str(coarse_payload.get("canonical_selection_sha256")) != binding.canonical_selection_sha256:
+                raise ValueError(f"{label} coarse canonical selection differs from TrackAsset")
 
         result = probe_adjacent_transition(
             left,
@@ -129,11 +149,15 @@ def main() -> int:
             minimum_overlap_seconds=args.min_overlap_seconds,
         )
         payload = {
-            "schema_version": "1.0",
+            "schema_version": "1.1",
             "algorithm_version": __version__,
             "task_fingerprint_sha256": fingerprint,
+            "calibration_profile_version": context.calibration_profile_version,
+            "calibration_profile_id": context.calibration_profile_id,
             "left_occurrence_id": left_id,
             "right_occurrence_id": right_id,
+            "left_track_id": left_binding.track_id,
+            "right_track_id": right_binding.track_id,
             "result": result,
         }
         atomic_write_json(args.out, payload)
@@ -143,6 +167,7 @@ def main() -> int:
             algorithm_version=__version__,
             outputs=(("transition_probe", args.out),),
             normalized_config={
+                **context.artifact_config(),
                 "min_score": args.min_score,
                 "min_margin": args.min_margin,
                 "min_overlap_seconds": args.min_overlap_seconds,
@@ -156,6 +181,8 @@ def main() -> int:
             evidence={
                 "left_occurrence_id": left_id,
                 "right_occurrence_id": right_id,
+                "left_track_id": left_binding.track_id,
+                "right_track_id": right_binding.track_id,
                 "status": result["status"],
                 "blocked": result["blocked"],
                 "overlap_candidate_count": len(result["overlap_candidates"]),
@@ -171,6 +198,7 @@ def main() -> int:
                 "status": result["status"],
                 "blocked": result["blocked"],
                 "overlap_candidate_count": len(result["overlap_candidates"]),
+                "calibration_profile_id": context.calibration_profile_id,
                 "artifact_id": artifact["artifact_id"],
             }
         )
