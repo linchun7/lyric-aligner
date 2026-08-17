@@ -2,168 +2,157 @@
 
 > 所有实质性生产更新必须按 `documentation-contract.md` 在同一 PR 同步本文件。这里只记录已经进入代码的行为、兼容/迁移与验证边界。
 
-## 已合入 main 的主要里程碑
+## 已合入 main
 
 - a3 production-first reconstruction：`cfa43f4c854b699819cd3acb0cfea575cd1a04c8`；
-- a4 package-native final render/release：`236d9d717229147ee1d1a8755d712e54db47a751`；
-- a5 replayable review decisions：`a80a531d6933946484c54d3a589bc55b0cb9e94b`；
-- a6 confirmed-overlap dual-track recomposition：`dfd840b3a6f893531cce8019aae53e803243f95c`；
-- a7 confirmed-cut Source-to-Mix / canonical timeline rebuild：`096210fbdbb8a55ee908b592bba20b1244c2821f`；
-- a8 cut + overlap materialization composition：`5c458d8327d2641ba053423fff3066d7fdd8ba3b`；
-- P1 split-isolated calibration/blind-test framework：`1c6babe37067c217d14a7404aa0ed6a1c4779a00`。
+- a4 package-native render/release：`236d9d717229147ee1d1a8755d712e54db47a751`；
+- a5 replayable review：`a80a531d6933946484c54d3a589bc55b0cb9e94b`；
+- a6 confirmed overlap：`dfd840b3a6f893531cce8019aae53e803243f95c`；
+- a7 confirmed cut/CUT_AWARE：`096210fbdbb8a55ee908b592bba20b1244c2821f`；
+- a8 cut+overlap composition：`5c458d8327d2641ba053423fff3066d7fdd8ba3b`；
+- P1 strict calibration/blind framework：`1c6babe37067c217d14a7404aa0ed6a1c4779a00`；
+- P1.1 private dataset scaffold/readiness：`ad6c403a56209e945a9a61a1eeab1a4bc3c204b4`。
 
-P1 PR #8 latest head `c3ad2e6b2e57655fd69f2edd935ea3f01386a318` 的 validate #447 在 ASR + Python 3.10/3.12/3.14 compile/docs/full unit-E2E/Skill/privacy/environment/diff-check 全绿后 squash merge。
+P1.1 PR #9 head `3f0414bc9f5eebc39374cf1d9c8ba43e0d25f21c` 的 validate #457 在 ASR + Python 3.10/3.12/3.14 compile/docs/full unit-E2E/Skill/privacy/environment/diff-check 全绿后 squash merge。
 
 ---
 
-## 2026-08-18 — P1.1 Private Dataset Readiness / Scaffold（当前分支）
+## 2026-08-18 — P2 Editor Evidence + LanguageSpan Shadow
 
-### 1. 目的
+### 1. 目标
 
-P1 已经能严格评估真实 calibration/blind 数据，但 private dataset 的 manifest、candidate prediction 路径、policy 和 readiness 仍容易手工出错。
+将 task manifest 已 fingerprint 绑定的 editor/Jianying `source_srt` 从“未使用输入”升级成**非权威、可审计、语言感知的 shadow evidence**，用于后续真实 calibration；不重新把 editor text/timing 设为 canonical 或 primary timing truth。
 
-P1.1 新增一个明确不制造假数据的准备工具：
+### 2. 新分层
 
-```text
-scripts/v4_dataset_readiness.py
-```
-
-以及纯逻辑层：
+新增：
 
 ```text
-lyric_aligner/evaluation/readiness.py
+lyric_aligner/evidence/editor.py
+scripts/v4_editor_evidence.py
 ```
 
-### 2. `scaffold`
-
-输入 dataset/revision/case counts/candidate ID，生成：
+Artifact：
 
 ```text
-<private-dataset>/
-  baseline.dataset.json
-  calibration-policy.template.json
-  blind-policy.template.json
-  READINESS.json
-  reference/
-  predictions/baseline/
+stage = editor_evidence_shadow
+role  = editor_evidence
 ```
 
-Manifest 使用 strict schema 1.1，case/source_group 都是 opaque IDs。
-
-关键安全规则：
-
-- calibration 与 blind_test 至少各 1 case；
-- 每个 case 默认使用不同 source_group，避免模板本身产生跨 split 泄漏；
-- candidate ID 禁止 `../` 等路径穿越字符；
-- 已存在 manifest/policy 拒绝覆盖；
-- **只创建目录和 JSON，不创建任何 reference SRT、prediction SRT 或 QA 内容**；
-- initial readiness 因文件缺失而明确为 false。
-
-因此 scaffold 只是“待填真实数据的骨架”，不是测试数据、更不是准确率证据。
-
-### 3. `clone-candidate`
-
-用途：从 baseline manifest 派生候选输出路径，避免人工复制时改坏 ground truth。
-
-保持不变：
+固定语义：
 
 ```text
-dataset / revision
-case id
-source_group
-split / language
-reference_srt
-expected cuts / overlaps / occurrences
-audio duration metadata
+mode = shadow_only
+policy_calibrated = false
+automatic_timing_change_allowed = false
 ```
 
-只重写：
+P2 不修改 timeline、run status、renderer 或 FINAL.srt。
+
+### 3. LanguageSpan 路由
+
+复用 `lyric_aligner/text/language_spans.py`：
 
 ```text
-predicted_srt -> predictions/<candidate>/...
-qa_json       -> predictions/<candidate>/...
-predicted_cuts / predicted_overlaps -> []
+en/zh -> direct_text
+ko/ja -> phonetic_hint
+yue   -> timing_hint
+unknown/generic/und-han -> timing_hint
+mixed -> per-span routing
 ```
 
-候选预测事实不会从 baseline 继承。
+Bootstrap trust 只用于候选排序，不是 auto threshold。
 
-### 4. `check`
+关键收紧：
 
-支持 readiness 级别：
+- YUE text weight=0；
+- KO 内置 Hangul romanization 只算 weak phonetic evidence；
+- JA kana 可保守 romanize；
+- JA Kanji 没有 vetted reading backend 时不猜，返回 `kanji_reading_unavailable`；
+- mixed 不使用整行单一 language text score。
+
+旧 `scripts/editor_evidence.py` 改为 package policy compatibility adapter，不能单独提高 trust。
+
+### 4. Evidence score / privacy
+
+每个 line/candidate 分离保存：
 
 ```text
-metadata
-references
-predictions
-evaluation
+timing_support_score
+direct_text_support_score
+phonetic_support_score
+text_support_score
+effective_text_weight
+effective_timing_weight
+rank_score_uncalibrated
+suggested_onset_delta_ms
+suggested_offset_delta_ms
+best_candidate_margin_uncalibrated
 ```
 
-以及可选单 split：
+同时保存 span mode/language/script 与 canonical/editor text SHA。Artifact 不输出 raw lyric/editor text。
+
+### 5. Lineage
+
+`v4_editor_evidence.py` 必须验证：
+
+- exact task fingerprint / input hashes；
+- source run artifact；
+- source run algorithm/task identity；
+- effective canonical timeline artifacts；
+- timeline IDs 在 run upstream；
+- occurrence/track identity；
+- source_srt SHA 与 task manifest 一致。
+
+可消费：
 
 ```text
-train
-calibration
-blind_test
+production_orchestration
+review_resolution
+overlap_recomposition
+cut_rebuild
+combined_recomposition
 ```
 
-报告：
+发生 source_srt tamper 必须在 evidence stage 前 fail-closed。
 
-- case/language/scenario counts；
-- cut/overlap annotation coverage；
-- missing reference/prediction/QA opaque case IDs；
-- QA runtime identity 是否有效；
-- 同一 selected split 是否出现多个 algorithm/profile identity；
-- selected split 是否真正可交给 `v4_calibration_workflow.py evaluate`。
+### 6. Tests
 
-输出不包含歌词正文和文件系统路径。
+新增：
 
-### 5. Regression coverage
+- EN/ZH direct support；
+- KO Latin phonetic evidence；
+- JA kana support / Kanji no-guess；
+- YUE text authority=0；
+- EN+KO mixed span routing；
+- timing/text candidate ranking；
+- automatic timing change 永远 false；
+- evidence privacy（无 raw lyric/editor text）；
+- artifact-level task/run/timeline lineage；
+- source_srt tamper failure。
 
-新增测试锁定：
+### 7. Algorithm / profile
 
-- scaffold metadata 本身满足 source_group isolation；
-- scaffold 不会伪造 SRT/QA；
-- candidate clone 不修改 ground-truth fields；
-- calibration 可以 ready 而 blind files 不存在；
-- mixed runtime identity 阻断 evaluation readiness；
-- candidate ID 路径穿越拒绝；
-- CLI scaffold/check/clone end-to-end；
-- scaffold 重复执行拒绝覆盖。
-
-### 6. Algorithm / calibration
-
-P1.1 不改变：
+P2 shadow layer不改变 Source-to-Mix、timeline 或 calibrated acoustic thresholds：
 
 ```text
 algorithm_version = 4.0.0a8
-calibration profile = production-bootstrap-2026-08-17-a7
+calibration_profile = production-bootstrap-2026-08-17-a7
+editor shadow policy = editor-shadow-bootstrap-2026-08-18-v1
 ```
 
-这是 private-data workflow tooling，不改变 Source-to-Mix、timeline、renderer 或声学阈值。
+Editor policy 明确 `policy_calibrated=false`。
 
-### 7. GitHub Actions 边界
+### 8. 不能宣称的事项
 
-CI 可以验证 scaffold/readiness 工具、synthetic fixtures、privacy 和既有全部 regression。
+没有真实 private calibration/blind 数据时，不能声称：
 
-CI 当前没有授权 real-song private dataset，因此仍不能产生真实：
+- editor evidence 提高了固定百分比准确率；
+- bootstrap weights 最优；
+- suggested onset/offset delta 可以自动写回最终字幕。
 
-- language accuracy；
-- real boundary MAE/P95；
-- cut/overlap P/R；
-- production runtime/review density。
-
-P1.1 的成功标准是“准确告诉用户缺什么、已有数据是否真的 ready”，不是生成好看的假数字。
-
-### 8. 下一步
-
-P1.1 全绿后：
-
-1. 用户将授权真实 reference/prediction/QA 放入 scaffold 路径；
-2. `v4_dataset_readiness.py check --require evaluation` 通过；
-3. 执行 P1 calibration -> selection -> blind；
-4. 并行推进 P2 Editor Evidence + LanguageSpan shadow artifact；
-5. 根据 real blind error breakdown 决定 calibrated editor refinement / Forced Alignment / ASR v2。
+下一步只有真实 P1 数据证明 editor evidence 对 reference boundary 有稳定增益后，才新增 calibrated boundary fusion。
 
 ## 验证纪律
 
-任何 P1.1 合并结论必须绑定 latest head + latest CI。工具未看到真实 private data 时，不能宣称真实准确率已提升。
+P2 必须用 latest-head GitHub Actions 的 Python 3.10/3.12/3.14、ASR、docs、full unit/E2E、Skill/privacy/environment/diff-check 结果验收。Shadow test 通过不等于真实 accuracy 已提升。

@@ -1,166 +1,169 @@
 # Lyric Aligner v4 当前实施状态
 
 更新日期：2026-08-18  
-当前开发分支：`agent/v4-dataset-readiness`  
-当前 main：`1c6babe37067c217d14a7404aa0ed6a1c4779a00`  
+当前开发分支：`agent/v4-editor-evidence-shadow`  
+当前 main：`ad6c403a56209e945a9a61a1eeab1a4bc3c204b4`  
 主线算法版本：`4.0.0a8`  
-Calibration profile：`production-bootstrap-2026-08-17-a7`  
-TrackAsset schema：`1.1`  
-Review Decision schema：`1.2`
+Calibration profile：`production-bootstrap-2026-08-17-a7`
 
-## 1. main 已完成能力
+## 1. 已进入 main
 
-main 已具备完整 production-first 重建主链：
+生产重建主链已完成：TrackAsset/canonical single truth、HPSS+Chroma/MFCC Source-to-Mix、AFFINE/PIECEWISE_RATE、Selective Fine、candidate review、confirmed overlap、confirmed cut/CUT_AWARE、partial-line fail-closed、cut+overlap safe composition、strict render/release。
 
-- fail-closed TrackAsset / canonical lyric single truth；
-- harmonic HPSS + Chroma CENS/MFCC Source-to-Mix mapping；
-- AFFINE-first / evidence-driven PIECEWISE_RATE；
-- Selective Fine；
-- candidate-level transition / TimeWarp review；
-- confirmed-overlap 双路 canonical timeline recomposition；
-- confirmed middle-cut local boundary localization；
-- CUT_AWARE retained segments + explicit source gaps；
-- line-LRC partial-cut fail-closed 与 Enhanced/QRC canonical fragments；
-- cut + overlap 可证明互不冲突时的 `combined_recomposition`；
-- final SRT / audit / QA / release strict artifact lineage。
-
-## 2. P1 Calibration / Blind Test 已合入 main
-
-PR #8 latest head `c3ad2e6b2e57655fd69f2edd935ea3f01386a318` 经 validate #447 的 ASR + Python 3.10/3.12/3.14 compile/docs/full unit-E2E/Skill/privacy/environment/diff-check 全绿后，squash merge 为：
+P1 calibration/blind framework 已合入：
 
 ```text
 1c6babe37067c217d14a7404aa0ed6a1c4779a00
 ```
 
-正式入口：
+提供 split isolation、dataset/source-group identity、baseline/candidate revision+runtime lock、explicit gates、blind-test discipline 和 sequence/cue/cut/overlap/boundary metrics。
+
+P1.1 private dataset scaffold/readiness 已经 validate #457 全绿并合入：
 
 ```text
-scripts/v4_calibration_workflow.py
+ad6c403a56209e945a9a61a1eeab1a4bc3c204b4
 ```
 
-P1 已机器化约束：
-
-- dataset schema `1.1`；
-- opaque `dataset_revision` / `source_group`；
-- source_group 不得跨 train/calibration/blind_test；
-- calibration 阶段不读取 blind prediction/QA；
-- selected split ground-truth SHA-256；
-- baseline + selected candidate id/revision/runtime identity 冻结；
-- explicit gate policy + deterministic calibration ranking；
-- blind_test 只接受 calibration 锁定 identity；
-- sequence/cue/boundary/cut/overlap/track/review/runtime 指标；
-- matched-cut maximum-cardinality DP + boundary coverage/MAE/P50/P90/P95。
-
-## 3. 当前 P1.1：Dataset Readiness / Scaffold
-
-本分支新增：
+可用：
 
 ```text
-lyric_aligner/evaluation/readiness.py
-scripts/v4_dataset_readiness.py
+scripts/v4_dataset_readiness.py scaffold
+scripts/v4_dataset_readiness.py clone-candidate
+scripts/v4_dataset_readiness.py check
 ```
 
-目的：减少真实 private dataset 手工配置错误，同时保持“没有数据就明确不 ready”。
+工具不会生成假 SRT、QA 或准确率。
 
-### scaffold
+## 2. 当前 P2：Editor Evidence + LanguageSpan Shadow
 
-自动生成：
+目标不是让剪映/编辑器重新拥有字幕时间，而是把 task 中已 fingerprint 绑定的 `source_srt` 变成**独立、可审计、按语言降权的辅助 evidence**。
 
-- strict schema 1.1 manifest；
-- calibration / blind_test 匿名 case IDs；
-- 每 case 独立 opaque source_group；
-- `reference/` 与 `predictions/<candidate>/` 目录；
-- calibration/blind policy 模板；
-- initial `READINESS.json`。
-
-**不会**创建假 reference SRT、prediction SRT、QA 或 accuracy result。
-
-### clone-candidate
-
-从 baseline/candidate manifest 复制同一 ground-truth metadata，只改：
+新增：
 
 ```text
-predicted_srt
-qa_json
-predicted_cuts / predicted_overlaps 清空
+lyric_aligner/evidence/editor.py
+scripts/v4_editor_evidence.py
 ```
 
-不会修改 reference、source_group、split、expected cut/overlap/occurrence truth。
-
-### check
-
-可分别检查：
+Artifact：
 
 ```text
-metadata
-references
-predictions
-evaluation
+editor_evidence_shadow / editor_evidence
 ```
 
-报告：
+强制：
 
-- split/case/language counts；
-- cut/overlap/occurrence/plain scenario coverage；
-- missing reference/prediction/QA 的 opaque case IDs；
-- QA runtime identity 是否有效且 split 内一致；
-- selected split 是否真正可进入 P1 evaluate。
+```text
+mode = shadow_only
+policy_calibrated = false
+automatic_timing_change_allowed = false
+```
 
-输出不包含歌词正文或文件系统路径。
+因此 P2 当前不会改 canonical text、Source-to-Mix、canonical timeline 或 FINAL.srt。
 
-## 4. GitHub Actions 可以验证什么
+## 3. LanguageSpan / editor trust
 
-公开 CI 可以真实验证：
+已有 `lyric_aligner/text/language_spans.py` 作为 script/span 路由基础。
 
-- scaffold metadata 是否满足 split isolation；
-- scaffold 不会生成假 SRT/QA；
-- candidate clone 不改 ground truth；
-- readiness 对真实存在/缺失文件判断是否正确；
-- calibration 可 ready 而 blind 文件尚不存在；
-- mixed/invalid QA runtime identity 是否阻断；
-- CLI overwrite/path traversal 防护；
-- 既有 P1/P0 全部 regression。
+P2 shadow policy：
 
-## 5. 当前明确做不到的真实数据工作
+```text
+en  -> direct_text
+zh  -> direct_text
+ko  -> phonetic_hint
+ja  -> phonetic_hint
+yue -> timing_hint
+generic/unknown/und-han -> timing_hint
+mixed -> per-span routing
+```
 
-仓库/GitHub Actions 当前没有用户授权的真实歌曲音频 + 人工 reference truth。因此不能伪造或宣称：
+关键安全规则：
 
-- 中文/英文/韩文/日文/粤语真实准确率；
-- 真实 cue boundary MAE/P95；
-- 真实 cut/overlap precision/recall；
-- 真实 production runtime/review density；
-- baseline vs candidate 的 real blind improvement。
+- 粤语 editor text weight = 0；没有 vetted Jyutping backend 时不拿普通汉字文本/普通话拼音冒充粤语读音；
+- 韩文只把内置 Hangul romanization 当 weak phonetic evidence；
+- 日文假名可保守 romanize；
+- 日文 Han/Kanji 没有 vetted pronunciation backend 时返回 `kanji_reading_unavailable`，不猜读音；
+- mixed 行按 span 处理，不能把整行 Latin/韩文/汉字混在一起给一个总语言标签。
 
-P1.1 只能让真实数据准备和缺口检查变得可执行，不能替代真实数据本身。
+旧 `scripts/editor_evidence.py` 已改成 compatibility adapter，不能提供高于 package policy 的 trust，避免两套 policy 真源。
 
-## 6. 下一阶段
+## 4. Shadow evidence 输出
 
-### P2 — Editor Evidence + LanguageSpan shadow integration
+每个 canonical line 保存：
 
-已有基础：
+- canonical line index / text SHA；
+- canonical mix start/end；
+- span language/script/mode/text SHA；
+- editor candidate cue number/start/end/text SHA；
+- timing support；
+- direct-text support（仅适用 span）；
+- phonetic support（仅适用 span）；
+- uncalibrated rank score；
+- best-vs-second margin；
+- suggested onset/offset delta；
+- `automatic_timing_change_allowed=false`。
 
-- `lyric_aligner/text/language_spans.py`；
-- `scripts/editor_evidence.py` reliability policy scaffold；
-- task `source_srt` 已被 fingerprint 绑定；
-- v4 canonical timeline 仍由 Source-to-Mix + canonical lyric 决定。
+Evidence JSON 不输出 canonical/editor 歌词正文。
 
-下一步应新增独立 editor evidence artifact，默认 **shadow-only**：
+Bootstrap weights 只用于 shadow candidate 排序，**不是 calibrated production threshold**。
 
-- zh/en direct-text evidence；
-- ko/ja phonetic-hint only；
-- yue/unknown text 低权或禁用；
-- mixed per-span routing；
-- 不改 canonical text；
-- 未经过 real calibration 前不自动重写 final cue timing。
+## 5. Artifact / lineage
 
-### P3 — Forced Alignment / ASR v2
+`v4_editor_evidence.py` 验证：
 
-仍由真实 P1 error breakdown 决定是否进入 production，不先用更大 Whisper 替代 Source-to-Mix。
+- task manifest 与所有 inputs；
+- source SRT SHA 属于 exact task fingerprint；
+- source run artifact；
+- run algorithm/task identity；
+- 每个 effective canonical timeline artifact；
+- timeline artifact 必须是 source run upstream；
+- occurrence/track identity。
 
-### Explicit BLOCK
+支持从以下 effective run 读取 timeline：
 
-same-region cut+overlap joint acoustic model 仍不自动化，除非真实 blind 数据证明其频率与收益值得投入。
+```text
+production_orchestration
+review_resolution
+overlap_recomposition
+cut_rebuild
+combined_recomposition
+```
 
-## 7. 当前正确表述
+若 source_srt 在 manifest 创建后被改动，task verification 必须先失败。
 
-> **P0/a8 重建链和 P1 calibration/blind framework 已进入 main；P1.1 正在把 private dataset scaffold/readiness 做成可直接运行的工具。没有真实授权数据时，只能验证工具和 synthetic contracts，不能生成真实准确率。**
+## 6. 当前测试
+
+新增 regression：
+
+- EN/ZH direct text；
+- KO Latin phonetic hint；
+- JA kana phonetic hint；
+- JA Kanji pronunciation unavailable；
+- YUE text authority=0；
+- mixed EN+KO per-span routing；
+- nearest editor cue ranking + no auto apply；
+- evidence JSON 不泄露 raw lyric/editor text；
+- artifact-level task/run/timeline lineage；
+- source_srt tamper fail-closed。
+
+P2 尚未经过 GitHub Actions 最新 head 全量验收，当前分支不能宣称可合并。
+
+## 7. 真实数据限制
+
+GitHub Actions 当前没有用户授权的真实歌曲 + 人工 reference truth，因此可以验证 P2 的 synthetic multilingual/evidence contracts，但**不能**证明：
+
+- editor evidence 在真实 zh/en/ko/ja/yue 上提高了多少准确率；
+- 哪个 text/timing weight 最优；
+- 哪个 onset/offset delta 可以安全自动应用。
+
+因此 P2 先 shadow-only。只有 P1 real calibration/blind 数据证明收益后，下一版才考虑 calibrated boundary fusion。
+
+## 8. 后续
+
+1. P2 shadow artifact CI 全绿并合入；
+2. 用真实 private dataset 记录 editor evidence 与 reference boundary 的相关性；
+3. 只有通过 calibration/blind gate 才增加 Editor Boundary Fusion；
+4. Forced Alignment / ASR v2 仍由 real error breakdown 决定；
+5. same-region cut+overlap joint acoustic model 继续 BLOCK。
+
+> **当前正确表述：P0、P1、P1.1 已进入 main；P2 正在接入非权威 editor shadow evidence。未经真实校准，editor 建议绝不直接修改最终字幕。**
