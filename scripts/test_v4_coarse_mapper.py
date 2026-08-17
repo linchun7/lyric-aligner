@@ -83,6 +83,52 @@ class V4CoarseMapperTests(unittest.TestCase):
         starts = [point["source_center"] for point in result["path"]]
         self.assertEqual(starts, sorted(starts))
 
+    def test_interval_scoped_features_restore_global_mix_coordinates(self):
+        source = source_song()
+        segment = source[int(4.0 * SR) : int(18.0 * SR)]
+        rate = 1.20
+        stretched = librosa.effects.time_stretch(segment, rate=rate)
+        body = stretched + clicks(len(stretched))
+        prefix_seconds = 7.0
+        suffix_seconds = 5.0
+        mix = np.concatenate(
+            [
+                np.zeros(int(prefix_seconds * SR), dtype=np.float32),
+                body,
+                np.zeros(int(suffix_seconds * SR), dtype=np.float32),
+            ]
+        )
+        mix_start = prefix_seconds
+        mix_end = prefix_seconds + len(body) / SR
+        result = build_coarse_timewarp(
+            mix,
+            source,
+            sr=SR,
+            mix_start=mix_start,
+            mix_end=mix_end,
+            feature_hop_length=512,
+            window_seconds=4.0,
+            step_seconds=2.0,
+            candidate_step_seconds=0.25,
+            slope_minimum=0.9,
+            slope_maximum=1.4,
+            slope_step=0.1,
+            min_score=0.55,
+            min_margin=0.0,
+        )
+        self.assertGreaterEqual(result["windows"][0]["mix_start"], mix_start)
+        self.assertGreater(result["path"][0]["mix_center"], mix_start)
+        self.assertLessEqual(result["path"][-1]["mix_center"], mix_end)
+        scope = result["feature_scope"]
+        self.assertAlmostEqual(scope["mix_feature_start"], mix_start, delta=1 / SR)
+        self.assertLess(
+            scope["mix_feature_end"] - scope["mix_feature_start"],
+            scope["full_mix_duration"],
+        )
+        self.assertAlmostEqual(
+            result["timewarp"]["mapping"]["base_slope"], rate, delta=0.15
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
