@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Render one review-free v4 production run into final SRT/audit/QA artifacts."""
+"""Render one review-free v4 run into final SRT/audit/QA artifacts."""
 
 from __future__ import annotations
 
@@ -71,6 +71,31 @@ def _validate_artifact(
         raise ValueError(f"invalid {stage} artifact: " + "; ".join(issues))
 
 
+def _validate_run_artifact(
+    artifact: dict,
+    *,
+    fingerprint: str,
+    output_path: Path,
+) -> str:
+    stage = str(artifact.get("stage") or "")
+    if stage == "production_orchestration":
+        role = "v4_production_run"
+    elif stage == "review_resolution":
+        role = "v4_reviewed_run"
+    else:
+        raise ValueError(
+            "run artifact must be production_orchestration or review_resolution"
+        )
+    _validate_artifact(
+        artifact,
+        fingerprint=fingerprint,
+        stage=stage,
+        role=role,
+        output_path=output_path,
+    )
+    return stage
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--task-manifest", required=True, type=Path)
@@ -94,24 +119,37 @@ def main() -> int:
 
         run = _load(args.run)
         run_artifact = _load(args.run_artifact)
-        _validate_artifact(
+        run_stage = _validate_run_artifact(
             run_artifact,
             fingerprint=fingerprint,
-            stage="production_orchestration",
-            role="v4_production_run",
             output_path=args.run,
         )
         if run.get("algorithm_version") != __version__:
-            raise ValueError("production run algorithm version mismatch; rerun v4_run")
+            raise ValueError("run algorithm version mismatch; rerun v4_run/review")
         if run.get("task_fingerprint_sha256") != fingerprint:
-            raise ValueError("production run belongs to another task")
+            raise ValueError("run belongs to another task")
         if run.get("status") != "ready_for_render":
-            raise ValueError("production run is not ready_for_render; resolve review issues first")
+            raise ValueError("run is not ready_for_render; resolve review issues first")
         if run.get("issues") not in ([], None):
             raise ValueError("ready_for_render run unexpectedly contains review issues")
         if run.get("legacy_fallback_used") is not False:
             raise ValueError("final v4 render refuses a run that used legacy fallback")
         run_upstreams = {str(value) for value in run_artifact.get("upstream_artifact_ids", [])}
+
+        if run_stage == "review_resolution":
+            resolution = run.get("review_resolution")
+            if not isinstance(resolution, dict):
+                raise ValueError("reviewed run is missing review_resolution metadata")
+            base_run_artifact_id = str(resolution.get("base_run_artifact_id") or "")
+            if not base_run_artifact_id or base_run_artifact_id not in run_upstreams:
+                raise ValueError("reviewed run is not upstream-bound to its base production run")
+            if int(resolution.get("remaining_issue_count", -1)) != 0:
+                raise ValueError("reviewed run still records unresolved review issues")
+            config_base_id = str(
+                run_artifact.get("normalized_config", {}).get("base_run_artifact_id") or ""
+            )
+            if config_base_id != base_run_artifact_id:
+                raise ValueError("review artifact base-run identity mismatch")
 
         track_assets = _load(args.track_assets)
         asset_artifact = _load(args.asset_artifact)
@@ -125,7 +163,7 @@ def main() -> int:
         asset_artifact_id = str(asset_artifact["artifact_id"])
         if asset_artifact_id not in run_upstreams:
             raise ValueError(
-                "supplied TrackAsset artifact is not upstream of this production run"
+                "supplied TrackAsset artifact is not upstream of this run"
             )
         context = build_pipeline_context(
             expected_task_fingerprint=fingerprint,
@@ -134,26 +172,26 @@ def main() -> int:
             verify_asset_files=True,
         )
         if str(run.get("calibration_profile_id") or "") != context.calibration_profile_id:
-            raise ValueError("production run calibration profile differs from TrackAssets")
+            raise ValueError("run calibration profile differs from TrackAssets")
         if str(run.get("calibration_profile_version") or "") != context.calibration_profile_version:
-            raise ValueError("production run calibration profile version differs from TrackAssets")
+            raise ValueError("run calibration profile version differs from TrackAssets")
 
         timeline_payloads: list[dict] = []
         timeline_artifact_ids: list[str] = []
         occurrence_rows = run.get("occurrences")
         if not isinstance(occurrence_rows, list) or not occurrence_rows:
-            raise ValueError("production run has no occurrence summaries")
+            raise ValueError("run has no occurrence summaries")
         seen_occurrences: set[str] = set()
         for occurrence in occurrence_rows:
             occurrence_id = str(occurrence.get("occurrence_id") or "")
             if not occurrence_id or occurrence_id in seen_occurrences:
-                raise ValueError("production run occurrence identity is missing/duplicated")
+                raise ValueError("run occurrence identity is missing/duplicated")
             seen_occurrences.add(occurrence_id)
             binding = context.binding_by_occurrence_id.get(occurrence_id)
             if binding is None:
-                raise ValueError("production run occurrence is missing from TrackAssets")
+                raise ValueError("run occurrence is missing from TrackAssets")
             if bool(occurrence.get("mapping_blocked")):
-                raise ValueError("production run contains a blocked occurrence")
+                raise ValueError("run contains a blocked occurrence")
 
             timeline_raw = occurrence.get("timeline_path")
             artifact_raw = occurrence.get("timeline_artifact_path")
@@ -172,7 +210,7 @@ def main() -> int:
             )
             timeline_artifact_id = str(timeline_artifact["artifact_id"])
             if timeline_artifact_id not in run_upstreams:
-                raise ValueError("canonical timeline artifact is not upstream of production run")
+                raise ValueError("canonical timeline artifact is not upstream of run")
             timeline_upstreams = {
                 str(value) for value in timeline_artifact.get("upstream_artifact_ids", [])
             }
@@ -203,7 +241,7 @@ def main() -> int:
             timeline_artifact_ids.append(timeline_artifact_id)
 
         if set(context.binding_by_occurrence_id) != seen_occurrences:
-            raise ValueError("production run does not contain exactly all resolved TrackOccurrences")
+            raise ValueError("run does not contain exactly all resolved TrackOccurrences")
 
         cues = compose_canonical_timelines(
             timeline_payloads,
@@ -264,6 +302,7 @@ def main() -> int:
             "calibration_profile_version": context.calibration_profile_version,
             "calibration_profile_id": context.calibration_profile_id,
             "source_run_artifact_id": str(run_artifact["artifact_id"]),
+            "source_run_stage": run_stage,
             "source_asset_artifact_id": asset_artifact_id,
             "passed": True,
             "structurally_valid": True,
@@ -287,6 +326,7 @@ def main() -> int:
             normalized_config={
                 **context.artifact_config(),
                 "render": asdict(context.profile.render),
+                "source_run_stage": run_stage,
                 "legacy_fallback": False,
             },
             producer={"git_commit": args.git_commit} if args.git_commit else {},
@@ -299,6 +339,7 @@ def main() -> int:
                 "cue_count": len(cues),
                 "occurrence_count": len(occurrence_rows),
                 "review_candidate_count": 0,
+                "source_run_stage": run_stage,
             },
         )
         atomic_write_json(args.artifact_out, render_artifact)
@@ -318,6 +359,7 @@ def main() -> int:
                 "algorithm_version": __version__,
                 "cue_count": len(cues),
                 "publish_ready": True,
+                "source_run_stage": run_stage,
                 "artifact_id": render_artifact["artifact_id"],
                 "final_srt": str(args.final_srt),
                 "report": str(args.report),
