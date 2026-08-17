@@ -74,9 +74,7 @@ def _validate_artifact(
         expected_algorithm_version=__version__,
         expected_stage=stage,
     )
-    issues.extend(
-        validate_artifact_output(artifact, role=role, path=output_path)
-    )
+    issues.extend(validate_artifact_output(artifact, role=role, path=output_path))
     if issues:
         raise ValueError(f"invalid {stage} artifact: " + "; ".join(issues))
 
@@ -93,12 +91,13 @@ def _validate_run_artifact(
         "review_resolution": "v4_reviewed_run",
         "overlap_recomposition": "v4_recomposed_run",
         "cut_rebuild": "v4_cut_rebuilt_run",
+        "combined_recomposition": "v4_combined_run",
     }
     role = roles.get(stage)
     if role is None:
         raise ValueError(
             "run artifact must be production_orchestration, review_resolution, "
-            "overlap_recomposition, or cut_rebuild"
+            "overlap_recomposition, cut_rebuild, or combined_recomposition"
         )
     _validate_artifact(
         artifact,
@@ -108,6 +107,145 @@ def _validate_run_artifact(
         output_path=output_path,
     )
     return stage
+
+
+def _unique_ids(rows: object, *, label: str, required: bool) -> set[str]:
+    if rows is None and not required:
+        return set()
+    if not isinstance(rows, list) or (required and not rows):
+        raise ValueError(f"{label} must be a non-empty list")
+    values = {str(value).strip() for value in rows if str(value).strip()}
+    if len(values) != len(rows):
+        raise ValueError(f"{label} contains missing/duplicate artifact IDs")
+    return values
+
+
+def _validate_review_only(run: dict, artifact: dict, upstreams: set[str]) -> None:
+    resolution = run.get("review_resolution")
+    if not isinstance(resolution, dict):
+        raise ValueError("reviewed run is missing review_resolution metadata")
+    base_run_artifact_id = str(resolution.get("base_run_artifact_id") or "")
+    if not base_run_artifact_id or base_run_artifact_id not in upstreams:
+        raise ValueError("reviewed run is not upstream-bound to its base production run")
+    if int(resolution.get("remaining_issue_count", -1)) != 0:
+        raise ValueError("reviewed run still records unresolved review issues")
+    config_base_id = str(
+        artifact.get("normalized_config", {}).get("base_run_artifact_id") or ""
+    )
+    if config_base_id != base_run_artifact_id:
+        raise ValueError("review artifact base-run identity mismatch")
+
+
+def _validate_overlap_metadata(
+    run: dict,
+    artifact: dict,
+    upstreams: set[str],
+    *,
+    require_resolved: bool,
+) -> tuple[dict, list[dict], set[str]]:
+    metadata = run.get("overlap_recomposition")
+    if not isinstance(metadata, dict):
+        raise ValueError("run is missing overlap_recomposition metadata")
+    source_review_id = str(metadata.get("source_review_artifact_id") or "")
+    if not source_review_id or source_review_id not in upstreams:
+        raise ValueError("overlap recomposition is not bound to its review artifact")
+    if require_resolved and int(metadata.get("remaining_issue_count", -1)) != 0:
+        raise ValueError("overlap recomposition still records unresolved review issues")
+    config_review_id = str(
+        artifact.get("normalized_config", {}).get("source_review_artifact_id") or ""
+    )
+    if config_review_id != source_review_id:
+        raise ValueError("overlap artifact source-review identity mismatch")
+    regions = run.get("confirmed_overlap_regions")
+    if not isinstance(regions, list) or not regions:
+        raise ValueError("overlap recomposition has no confirmed_overlap_regions")
+    timeline_ids = _unique_ids(
+        metadata.get("new_timeline_artifact_ids"),
+        label="overlap new_timeline_artifact_ids",
+        required=True,
+    )
+    if timeline_ids - upstreams:
+        raise ValueError("overlap timeline artifacts are not upstream of run")
+    return metadata, regions, timeline_ids
+
+
+def _validate_cut_metadata(
+    run: dict,
+    artifact: dict,
+    upstreams: set[str],
+    *,
+    require_resolved: bool,
+) -> tuple[dict, set[str], set[str]]:
+    metadata = run.get("cut_rebuild")
+    if not isinstance(metadata, dict):
+        raise ValueError("run is missing cut_rebuild metadata")
+    source_review_id = str(metadata.get("source_review_artifact_id") or "")
+    if not source_review_id or source_review_id not in upstreams:
+        raise ValueError("cut rebuild is not bound to its review artifact")
+    if require_resolved and int(metadata.get("remaining_issue_count", -1)) != 0:
+        raise ValueError("cut rebuild still records unresolved review issues")
+    if int(metadata.get("canonical_fragment_issue_count", -1)) != 0:
+        raise ValueError("cut rebuild still contains unresolved canonical fragments")
+    if int(metadata.get("rebuilt_occurrence_count", 0)) < 1:
+        raise ValueError("cut rebuild has no rebuilt occurrence")
+    config_review_id = str(
+        artifact.get("normalized_config", {}).get("source_review_artifact_id") or ""
+    )
+    if config_review_id != source_review_id:
+        raise ValueError("cut-rebuild artifact source-review identity mismatch")
+    mapping_ids = _unique_ids(
+        metadata.get("new_mapping_artifact_ids"),
+        label="cut new_mapping_artifact_ids",
+        required=True,
+    )
+    timeline_ids = _unique_ids(
+        metadata.get("new_timeline_artifact_ids"),
+        label="cut new_timeline_artifact_ids",
+        required=True,
+    )
+    if (mapping_ids | timeline_ids) - upstreams:
+        raise ValueError("cut mapping/timeline artifacts are not upstream of run")
+    return metadata, mapping_ids, timeline_ids
+
+
+def _validate_combined_metadata(
+    run: dict,
+    artifact: dict,
+    upstreams: set[str],
+    *,
+    source_review_id: str,
+) -> tuple[dict, set[str]]:
+    metadata = run.get("combined_recomposition")
+    if not isinstance(metadata, dict):
+        raise ValueError("combined run is missing combined_recomposition metadata")
+    if int(metadata.get("remaining_issue_count", -1)) != 0:
+        raise ValueError("combined recomposition still records unresolved review issues")
+    if str(metadata.get("source_review_artifact_id") or "") != source_review_id:
+        raise ValueError("combined recomposition source-review identity mismatch")
+    source_cut_id = str(metadata.get("source_cut_artifact_id") or "")
+    source_overlap_id = str(metadata.get("source_overlap_artifact_id") or "")
+    if not source_cut_id or source_cut_id not in upstreams:
+        raise ValueError("combined run is not upstream-bound to cut_rebuild")
+    if not source_overlap_id or source_overlap_id not in upstreams:
+        raise ValueError("combined run is not upstream-bound to overlap_recomposition")
+    config = artifact.get("normalized_config", {})
+    if str(config.get("source_cut_artifact_id") or "") != source_cut_id:
+        raise ValueError("combined artifact cut source identity mismatch")
+    if str(config.get("source_overlap_artifact_id") or "") != source_overlap_id:
+        raise ValueError("combined artifact overlap source identity mismatch")
+    if str(config.get("source_review_artifact_id") or "") != source_review_id:
+        raise ValueError("combined artifact review source identity mismatch")
+    timeline_ids = _unique_ids(
+        metadata.get("new_timeline_artifact_ids"),
+        label="combined new_timeline_artifact_ids",
+        required=False,
+    )
+    if timeline_ids - upstreams:
+        raise ValueError("combined timeline artifacts are not upstream of run")
+    expected_count = int(metadata.get("combined_occurrence_count", -1))
+    if expected_count < 0 or expected_count != len(timeline_ids):
+        raise ValueError("combined occurrence count differs from combined timeline IDs")
+    return metadata, timeline_ids
 
 
 def main() -> int:
@@ -128,9 +266,7 @@ def main() -> int:
         task = load_task_manifest(args.task_manifest)
         task_issues = verify_manifest_inputs(args.task_manifest, task)
         if task_issues:
-            raise ValueError(
-                "task manifest validation failed: " + "; ".join(task_issues)
-            )
+            raise ValueError("task manifest validation failed: " + "; ".join(task_issues))
         fingerprint = str(task["task_fingerprint_sha256"])
 
         run = _load(args.run)
@@ -141,157 +277,67 @@ def main() -> int:
             output_path=args.run,
         )
         if run.get("algorithm_version") != __version__:
-            raise ValueError(
-                "run algorithm version mismatch; rerun the current v4 chain"
-            )
+            raise ValueError("run algorithm version mismatch; rerun the current v4 chain")
         if run.get("task_fingerprint_sha256") != fingerprint:
             raise ValueError("run belongs to another task")
         if run.get("status") != "ready_for_render":
-            raise ValueError(
-                "run is not ready_for_render; resolve/rebuild review issues first"
-            )
+            raise ValueError("run is not ready_for_render; resolve/rebuild review issues first")
         if run.get("issues") not in ([], None):
-            raise ValueError(
-                "ready_for_render run unexpectedly contains review issues"
-            )
+            raise ValueError("ready_for_render run unexpectedly contains review issues")
         if run.get("legacy_fallback_used") is not False:
-            raise ValueError(
-                "final v4 render refuses a run that used legacy fallback"
-            )
+            raise ValueError("final v4 render refuses a run that used legacy fallback")
         run_upstreams = {
-            str(value)
-            for value in run_artifact.get("upstream_artifact_ids", [])
+            str(value) for value in run_artifact.get("upstream_artifact_ids", [])
         }
 
         if run_stage == "review_resolution":
-            resolution = run.get("review_resolution")
-            if not isinstance(resolution, dict):
-                raise ValueError(
-                    "reviewed run is missing review_resolution metadata"
-                )
-            base_run_artifact_id = str(
-                resolution.get("base_run_artifact_id") or ""
-            )
-            if (
-                not base_run_artifact_id
-                or base_run_artifact_id not in run_upstreams
-            ):
-                raise ValueError(
-                    "reviewed run is not upstream-bound to its base production run"
-                )
-            if int(resolution.get("remaining_issue_count", -1)) != 0:
-                raise ValueError(
-                    "reviewed run still records unresolved review issues"
-                )
-            config_base_id = str(
-                run_artifact.get("normalized_config", {}).get(
-                    "base_run_artifact_id"
-                )
-                or ""
-            )
-            if config_base_id != base_run_artifact_id:
-                raise ValueError("review artifact base-run identity mismatch")
+            _validate_review_only(run, run_artifact, run_upstreams)
 
+        overlap_metadata: dict = {}
         confirmed_overlap_regions: list[dict] = []
-        if run_stage == "overlap_recomposition":
-            metadata = run.get("overlap_recomposition")
-            if not isinstance(metadata, dict):
-                raise ValueError(
-                    "overlap-recomposed run is missing recomposition metadata"
-                )
-            source_review_id = str(
-                metadata.get("source_review_artifact_id") or ""
+        expected_overlap_timeline_ids: set[str] = set()
+        if run_stage in {"overlap_recomposition", "combined_recomposition"}:
+            (
+                overlap_metadata,
+                confirmed_overlap_regions,
+                expected_overlap_timeline_ids,
+            ) = _validate_overlap_metadata(
+                run,
+                run_artifact,
+                run_upstreams,
+                require_resolved=(run_stage == "overlap_recomposition"),
             )
-            if not source_review_id or source_review_id not in run_upstreams:
-                raise ValueError(
-                    "overlap recomposition is not bound to its review artifact"
-                )
-            if int(metadata.get("remaining_issue_count", -1)) != 0:
-                raise ValueError(
-                    "overlap recomposition still records unresolved review issues"
-                )
-            config_review_id = str(
-                run_artifact.get("normalized_config", {}).get(
-                    "source_review_artifact_id"
-                )
-                or ""
-            )
-            if config_review_id != source_review_id:
-                raise ValueError(
-                    "overlap artifact source-review identity mismatch"
-                )
-            regions_raw = run.get("confirmed_overlap_regions")
-            if not isinstance(regions_raw, list) or not regions_raw:
-                raise ValueError(
-                    "overlap recomposition has no confirmed_overlap_regions"
-                )
-            confirmed_overlap_regions = regions_raw
 
         cut_metadata: dict = {}
         expected_cut_mapping_ids: set[str] = set()
         expected_cut_timeline_ids: set[str] = set()
-        if run_stage == "cut_rebuild":
-            metadata = run.get("cut_rebuild")
-            if not isinstance(metadata, dict):
-                raise ValueError(
-                    "cut-rebuilt run is missing cut_rebuild metadata"
-                )
-            source_review_id = str(
-                metadata.get("source_review_artifact_id") or ""
+        if run_stage in {"cut_rebuild", "combined_recomposition"}:
+            (
+                cut_metadata,
+                expected_cut_mapping_ids,
+                expected_cut_timeline_ids,
+            ) = _validate_cut_metadata(
+                run,
+                run_artifact,
+                run_upstreams,
+                require_resolved=(run_stage == "cut_rebuild"),
             )
-            if not source_review_id or source_review_id not in run_upstreams:
-                raise ValueError(
-                    "cut rebuild is not bound to its review artifact"
-                )
-            if int(metadata.get("remaining_issue_count", -1)) != 0:
-                raise ValueError(
-                    "cut rebuild still records unresolved review issues"
-                )
-            if int(metadata.get("canonical_fragment_issue_count", -1)) != 0:
-                raise ValueError(
-                    "cut rebuild still contains unresolved canonical fragments"
-                )
-            if int(metadata.get("rebuilt_occurrence_count", 0)) < 1:
-                raise ValueError("cut rebuild has no rebuilt occurrence")
-            config_review_id = str(
-                run_artifact.get("normalized_config", {}).get(
-                    "source_review_artifact_id"
-                )
-                or ""
+
+        combined_metadata: dict = {}
+        expected_combined_timeline_ids: set[str] = set()
+        if run_stage == "combined_recomposition":
+            cut_review_id = str(cut_metadata.get("source_review_artifact_id") or "")
+            overlap_review_id = str(
+                overlap_metadata.get("source_review_artifact_id") or ""
             )
-            if config_review_id != source_review_id:
-                raise ValueError(
-                    "cut-rebuild artifact source-review identity mismatch"
-                )
-            mapping_ids = metadata.get("new_mapping_artifact_ids")
-            timeline_ids = metadata.get("new_timeline_artifact_ids")
-            if not isinstance(mapping_ids, list) or not mapping_ids:
-                raise ValueError(
-                    "cut rebuild has no cut-aware mapping artifacts"
-                )
-            if not isinstance(timeline_ids, list) or not timeline_ids:
-                raise ValueError(
-                    "cut rebuild has no rebuilt timeline artifacts"
-                )
-            expected_cut_mapping_ids = {
-                str(value) for value in mapping_ids if str(value)
-            }
-            expected_cut_timeline_ids = {
-                str(value) for value in timeline_ids if str(value)
-            }
-            if (
-                len(expected_cut_mapping_ids) != len(mapping_ids)
-                or len(expected_cut_timeline_ids) != len(timeline_ids)
-            ):
-                raise ValueError("cut rebuild artifact IDs are missing/duplicated")
-            missing = (
-                expected_cut_mapping_ids | expected_cut_timeline_ids
-            ) - run_upstreams
-            if missing:
-                raise ValueError(
-                    "cut rebuild artifact is missing rebuilt mapping/timeline upstreams"
-                )
-            cut_metadata = metadata
+            if not cut_review_id or cut_review_id != overlap_review_id:
+                raise ValueError("combined run cut/overlap review identities differ")
+            combined_metadata, expected_combined_timeline_ids = _validate_combined_metadata(
+                run,
+                run_artifact,
+                run_upstreams,
+                source_review_id=cut_review_id,
+            )
 
         track_assets = _load(args.track_assets)
         asset_artifact = _load(args.asset_artifact)
@@ -304,29 +350,19 @@ def main() -> int:
         )
         asset_artifact_id = str(asset_artifact["artifact_id"])
         if asset_artifact_id not in run_upstreams:
-            raise ValueError(
-                "supplied TrackAsset artifact is not upstream of this run"
-            )
+            raise ValueError("supplied TrackAsset artifact is not upstream of this run")
         context = build_pipeline_context(
             expected_task_fingerprint=fingerprint,
             track_assets_payload=track_assets,
             asset_artifact=asset_artifact,
             verify_asset_files=True,
         )
-        if (
-            str(run.get("calibration_profile_id") or "")
-            != context.calibration_profile_id
+        if str(run.get("calibration_profile_id") or "") != context.calibration_profile_id:
+            raise ValueError("run calibration profile differs from TrackAssets")
+        if str(run.get("calibration_profile_version") or "") != (
+            context.calibration_profile_version
         ):
-            raise ValueError(
-                "run calibration profile differs from TrackAssets"
-            )
-        if (
-            str(run.get("calibration_profile_version") or "")
-            != context.calibration_profile_version
-        ):
-            raise ValueError(
-                "run calibration profile version differs from TrackAssets"
-            )
+            raise ValueError("run calibration profile version differs from TrackAssets")
 
         timeline_payloads: list[dict] = []
         timeline_artifact_ids: list[str] = []
@@ -335,45 +371,40 @@ def main() -> int:
             raise ValueError("run has no occurrence summaries")
         seen_occurrences: set[str] = set()
         cut_rebuilt_occurrence_count = 0
+        overlap_recomposed_occurrence_count = 0
+        combined_occurrence_count = 0
+
         for occurrence in occurrence_rows:
             if not isinstance(occurrence, dict):
                 raise ValueError("run occurrence summary must be an object")
             occurrence_id = str(occurrence.get("occurrence_id") or "")
             if not occurrence_id or occurrence_id in seen_occurrences:
-                raise ValueError(
-                    "run occurrence identity is missing/duplicated"
-                )
+                raise ValueError("run occurrence identity is missing/duplicated")
             seen_occurrences.add(occurrence_id)
             binding = context.binding_by_occurrence_id.get(occurrence_id)
             if binding is None:
-                raise ValueError(
-                    "run occurrence is missing from TrackAssets"
-                )
+                raise ValueError("run occurrence is missing from TrackAssets")
             if bool(occurrence.get("mapping_blocked")):
                 raise ValueError("run contains a blocked occurrence")
 
-            timeline_raw = occurrence.get("timeline_path")
-            artifact_raw = occurrence.get("timeline_artifact_path")
-            if not timeline_raw or not artifact_raw:
-                raise ValueError(
-                    "renderable occurrence is missing canonical timeline artifact"
-                )
-            timeline_path = Path(str(timeline_raw))
-            timeline_artifact_path = Path(str(artifact_raw))
+            timeline_path = Path(str(occurrence.get("timeline_path") or ""))
+            timeline_artifact_path = Path(
+                str(occurrence.get("timeline_artifact_path") or "")
+            )
+            if not timeline_path.is_file() or not timeline_artifact_path.is_file():
+                raise ValueError("renderable occurrence is missing canonical timeline artifact")
             timeline = _load(timeline_path)
             timeline_artifact = _load(timeline_artifact_path)
             timeline_stage = str(
-                occurrence.get("timeline_stage")
-                or "canonical_timeline_projection"
+                occurrence.get("timeline_stage") or "canonical_timeline_projection"
             )
             if timeline_stage not in {
                 "canonical_timeline_projection",
                 "overlap_timeline_recomposition",
                 "cut_timeline_rebuild",
+                "combined_timeline_recomposition",
             }:
-                raise ValueError(
-                    "run occurrence uses an unsupported timeline stage"
-                )
+                raise ValueError("run occurrence uses an unsupported timeline stage")
             _validate_artifact(
                 timeline_artifact,
                 fingerprint=fingerprint,
@@ -383,117 +414,115 @@ def main() -> int:
             )
             timeline_artifact_id = str(timeline_artifact["artifact_id"])
             if timeline_artifact_id not in run_upstreams:
-                raise ValueError(
-                    "canonical timeline artifact is not upstream of run"
-                )
+                raise ValueError("canonical timeline artifact is not upstream of run")
             timeline_upstreams = {
-                str(value)
-                for value in timeline_artifact.get("upstream_artifact_ids", [])
+                str(value) for value in timeline_artifact.get("upstream_artifact_ids", [])
             }
             if asset_artifact_id not in timeline_upstreams:
-                raise ValueError(
-                    "canonical timeline is not derived from supplied TrackAssets"
-                )
+                raise ValueError("canonical timeline is not derived from supplied TrackAssets")
             if timeline.get("algorithm_version") != __version__:
-                raise ValueError(
-                    "canonical timeline algorithm version mismatch"
-                )
+                raise ValueError("canonical timeline algorithm version mismatch")
             if timeline.get("task_fingerprint_sha256") != fingerprint:
                 raise ValueError("canonical timeline belongs to another task")
-            if (
-                str(timeline.get("calibration_profile_id") or "")
-                != context.calibration_profile_id
+            if str(timeline.get("calibration_profile_id") or "") != (
+                context.calibration_profile_id
             ):
-                raise ValueError(
-                    "canonical timeline calibration profile mismatch"
-                )
+                raise ValueError("canonical timeline calibration profile mismatch")
 
-            timeline_result = timeline.get("result")
-            if not isinstance(timeline_result, dict):
+            result = timeline.get("result")
+            if not isinstance(result, dict):
                 raise ValueError("canonical timeline result is invalid")
-            if (
-                str(timeline_result.get("occurrence_id") or "")
-                != binding.occurrence_id
+            if str(result.get("occurrence_id") or "") != binding.occurrence_id:
+                raise ValueError("canonical timeline occurrence differs from TrackAsset binding")
+            if str(result.get("track_id") or "") != binding.track_id:
+                raise ValueError("canonical timeline track differs from TrackAsset binding")
+            if str(result.get("canonical_selection_sha256") or "") != (
+                binding.canonical_selection_sha256
             ):
-                raise ValueError(
-                    "canonical timeline occurrence differs from TrackAsset binding"
-                )
-            if (
-                str(timeline_result.get("track_id") or "")
-                != binding.track_id
-            ):
-                raise ValueError(
-                    "canonical timeline track differs from TrackAsset binding"
-                )
-            if (
-                str(timeline_result.get("canonical_selection_sha256") or "")
-                != binding.canonical_selection_sha256
-            ):
-                raise ValueError(
-                    "canonical timeline lyric selection differs from TrackAsset binding"
-                )
-            if int(timeline_result.get("ordinal", -1)) != binding.ordinal:
-                raise ValueError(
-                    "canonical timeline ordinal differs from TrackOccurrence"
-                )
+                raise ValueError("canonical timeline lyric selection differs from TrackAsset binding")
+            if int(result.get("ordinal", -1)) != binding.ordinal:
+                raise ValueError("canonical timeline ordinal differs from TrackOccurrence")
 
-            occurrence_cut_rebuilt = bool(occurrence.get("cut_rebuilt"))
-            if occurrence_cut_rebuilt:
-                cut_rebuilt_occurrence_count += 1
+            cut_rebuilt = bool(occurrence.get("cut_rebuilt"))
+            overlap_recomposed = bool(occurrence.get("overlap_recomposed"))
+            combined_recomposed = bool(occurrence.get("combined_recomposed"))
+            cut_rebuilt_occurrence_count += int(cut_rebuilt)
+            overlap_recomposed_occurrence_count += int(overlap_recomposed)
+            combined_occurrence_count += int(combined_recomposed)
+
             if timeline_stage == "cut_timeline_rebuild":
-                if run_stage != "cut_rebuild" or not occurrence_cut_rebuilt:
-                    raise ValueError(
-                        "cut-rebuilt timeline requires a cut_rebuild run/occurrence"
-                    )
-                if timeline_result.get("cut_aware") is not True:
-                    raise ValueError(
-                        "cut-rebuilt canonical timeline is not marked cut_aware"
-                    )
-                if timeline_result.get("projection_issues") not in ([], None):
-                    raise ValueError(
-                        "cut-rebuilt canonical timeline still contains projection issues"
-                    )
+                if run_stage not in {"cut_rebuild", "combined_recomposition"} or not cut_rebuilt:
+                    raise ValueError("cut timeline requires a cut-capable run/occurrence")
+                if overlap_recomposed:
+                    raise ValueError("overlap-recomposed occurrence cannot end on cut-only timeline")
+                if result.get("cut_aware") is not True:
+                    raise ValueError("cut canonical timeline is not marked cut_aware")
+                if result.get("projection_issues") not in ([], None):
+                    raise ValueError("cut canonical timeline still contains projection issues")
                 if timeline_artifact_id not in expected_cut_timeline_ids:
-                    raise ValueError(
-                        "cut timeline artifact is not declared by cut_rebuild metadata"
-                    )
-                mapping_artifact_id = str(
-                    timeline.get("cut_mapping_artifact_id") or ""
-                )
+                    raise ValueError("cut timeline artifact is not declared by cut metadata")
+                mapping_artifact_id = str(timeline.get("cut_mapping_artifact_id") or "")
                 if not mapping_artifact_id:
-                    raise ValueError(
-                        "cut-rebuilt timeline has no cut mapping artifact identity"
-                    )
+                    raise ValueError("cut timeline has no cut mapping artifact identity")
                 if mapping_artifact_id not in timeline_upstreams:
-                    raise ValueError(
-                        "cut-rebuilt timeline is not upstream-bound to its cut mapping"
-                    )
+                    raise ValueError("cut timeline is not upstream-bound to its cut mapping")
                 if mapping_artifact_id not in expected_cut_mapping_ids:
-                    raise ValueError(
-                        "cut mapping artifact is not declared by cut_rebuild metadata"
-                    )
-                if mapping_artifact_id not in run_upstreams:
-                    raise ValueError(
-                        "cut mapping artifact is not upstream of cut-rebuild run"
-                    )
-            elif occurrence_cut_rebuilt:
-                raise ValueError(
-                    "cut-rebuilt occurrence does not use cut_timeline_rebuild"
+                    raise ValueError("cut mapping artifact is not declared by cut metadata")
+            elif timeline_stage == "overlap_timeline_recomposition":
+                if run_stage not in {"overlap_recomposition", "combined_recomposition"}:
+                    raise ValueError("overlap timeline requires an overlap-capable run")
+                if cut_rebuilt:
+                    raise ValueError("cut-rebuilt occurrence requires combined timeline after overlap")
+                if not overlap_recomposed:
+                    raise ValueError("overlap timeline occurrence is not marked overlap_recomposed")
+                if timeline_artifact_id not in expected_overlap_timeline_ids:
+                    raise ValueError("overlap timeline artifact is not declared by overlap metadata")
+            elif timeline_stage == "combined_timeline_recomposition":
+                if run_stage != "combined_recomposition":
+                    raise ValueError("combined timeline requires combined_recomposition run")
+                if not (cut_rebuilt and overlap_recomposed and combined_recomposed):
+                    raise ValueError("combined timeline occurrence is missing materialization flags")
+                if result.get("cut_aware") is not True:
+                    raise ValueError("combined timeline lost cut-aware state")
+                if result.get("projection_issues") not in ([], None):
+                    raise ValueError("combined timeline still contains projection issues")
+                if timeline_artifact_id not in expected_combined_timeline_ids:
+                    raise ValueError("combined timeline artifact is not declared by combined metadata")
+                source_cut_timeline_id = str(
+                    timeline.get("source_cut_timeline_artifact_id") or ""
                 )
+                source_overlap_timeline_id = str(
+                    timeline.get("source_overlap_timeline_artifact_id") or ""
+                )
+                if not source_cut_timeline_id or source_cut_timeline_id not in timeline_upstreams:
+                    raise ValueError("combined timeline is not bound to source cut timeline")
+                if not source_overlap_timeline_id or source_overlap_timeline_id not in timeline_upstreams:
+                    raise ValueError("combined timeline is not bound to source overlap timeline")
+                if source_cut_timeline_id not in expected_cut_timeline_ids:
+                    raise ValueError("combined timeline source cut timeline is not declared by cut metadata")
+                if source_overlap_timeline_id not in expected_overlap_timeline_ids:
+                    raise ValueError(
+                        "combined timeline source overlap timeline is not declared by overlap metadata"
+                    )
+            else:
+                if cut_rebuilt or overlap_recomposed or combined_recomposed:
+                    raise ValueError("materialized occurrence cannot fall back to primary timeline")
 
             timeline_payloads.append(timeline)
             timeline_artifact_ids.append(timeline_artifact_id)
 
         if set(context.binding_by_occurrence_id) != seen_occurrences:
-            raise ValueError(
-                "run does not contain exactly all resolved TrackOccurrences"
-            )
-        if run_stage == "cut_rebuild" and cut_rebuilt_occurrence_count != int(
+            raise ValueError("run does not contain exactly all resolved TrackOccurrences")
+        if cut_metadata and cut_rebuilt_occurrence_count != int(
             cut_metadata.get("rebuilt_occurrence_count", -1)
         ):
-            raise ValueError(
-                "cut-rebuild occurrence count differs from run metadata"
-            )
+            raise ValueError("cut-rebuild occurrence count differs from cut metadata")
+        if overlap_metadata and overlap_recomposed_occurrence_count < 1:
+            raise ValueError("overlap metadata exists but no occurrence is overlap_recomposed")
+        if combined_metadata and combined_occurrence_count != int(
+            combined_metadata.get("combined_occurrence_count", -1)
+        ):
+            raise ValueError("combined occurrence count differs from combined metadata")
 
         cues = compose_canonical_timelines(
             timeline_payloads,
@@ -519,9 +548,7 @@ def main() -> int:
             "cue_id",
             "text_sha256",
         ]
-        with args.report.open(
-            "w", encoding="utf-8-sig", newline=""
-        ) as handle:
+        with args.report.open("w", encoding="utf-8-sig", newline="") as handle:
             writer = csv.DictWriter(handle, fieldnames=fieldnames)
             writer.writeheader()
             for position, rendered in enumerate(cues, start=1):
@@ -550,9 +577,8 @@ def main() -> int:
                     }
                 )
 
-        rebuilt_cut_count = int(
-            cut_metadata.get("rebuilt_occurrence_count", 0)
-        )
+        rebuilt_cut_count = int(cut_metadata.get("rebuilt_occurrence_count", 0))
+        combined_count = int(combined_metadata.get("combined_occurrence_count", 0))
         qa = {
             "schema_version": "1.0",
             "algorithm_version": __version__,
@@ -570,6 +596,7 @@ def main() -> int:
             "cue_count": len(cues),
             "confirmed_overlap_region_count": len(confirmed_overlap_regions),
             "rebuilt_cut_occurrence_count": rebuilt_cut_count,
+            "combined_recomposition_occurrence_count": combined_count,
             "render_config": asdict(context.profile.render),
         }
         atomic_write_json(args.qa_json, qa)
@@ -587,15 +614,12 @@ def main() -> int:
                 **context.artifact_config(),
                 "render": asdict(context.profile.render),
                 "source_run_stage": run_stage,
-                "confirmed_overlap_region_count": len(
-                    confirmed_overlap_regions
-                ),
+                "confirmed_overlap_region_count": len(confirmed_overlap_regions),
                 "rebuilt_cut_occurrence_count": rebuilt_cut_count,
+                "combined_recomposition_occurrence_count": combined_count,
                 "legacy_fallback": False,
             },
-            producer=(
-                {"git_commit": args.git_commit} if args.git_commit else {}
-            ),
+            producer={"git_commit": args.git_commit} if args.git_commit else {},
             upstream_artifact_ids=(
                 asset_artifact_id,
                 str(run_artifact["artifact_id"]),
@@ -605,10 +629,9 @@ def main() -> int:
                 "cue_count": len(cues),
                 "occurrence_count": len(occurrence_rows),
                 "review_candidate_count": 0,
-                "confirmed_overlap_region_count": len(
-                    confirmed_overlap_regions
-                ),
+                "confirmed_overlap_region_count": len(confirmed_overlap_regions),
                 "rebuilt_cut_occurrence_count": rebuilt_cut_count,
+                "combined_recomposition_occurrence_count": combined_count,
                 "source_run_stage": run_stage,
             },
         )
@@ -633,6 +656,9 @@ def main() -> int:
                 "confirmed_overlap_regions": len(confirmed_overlap_regions),
                 "rebuilt_cut_occurrences": int(
                     cut_metadata.get("rebuilt_occurrence_count", 0)
+                ),
+                "combined_recomposition_occurrences": int(
+                    combined_metadata.get("combined_occurrence_count", 0)
                 ),
                 "artifact_id": render_artifact["artifact_id"],
                 "final_srt": str(args.final_srt),

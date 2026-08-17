@@ -5,4 +5,4 @@ or evidence fail closed into review rather than silently falling back to a
 maintained legacy production algorithm.
 """
 
-__version__ = "4.0.0a7"
+__version__ = "4.0.0a8"
