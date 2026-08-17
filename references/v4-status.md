@@ -45,7 +45,7 @@ calibration split only
   -> explicit gate policy
   -> deterministic passing-candidate ranking
   -> immutable selection artifact
-  -> candidate identity frozen
+  -> candidate + baseline identity frozen
   -> blind_test first evaluation
   -> blind non-regression / acceptance gate
 ```
@@ -68,7 +68,7 @@ source_group
 - selected split ground truth 由 reference-SRT SHA、case metadata、expected cut/overlap/occurrence annotations 等形成 SHA-256 identity；
 - prediction 内容不进入 ground-truth identity，因此 baseline/candidate 可使用不同输出但必须共享同一真值。
 
-## 4. Candidate identity
+## 4. Candidate / baseline identity lock
 
 P1 不只锁 candidate 名字，还锁：
 
@@ -82,7 +82,15 @@ calibration_profile_id
 
 选定 split 内各 case 的 `FINAL.qa.json` 必须报告一致 runtime identity。
 
-Calibration selection artifact 记录 candidate revision/runtime identity；blind_test 若同名 candidate 换了 commit/profile/runtime identity，直接拒绝。
+Calibration selection artifact 同时冻结：
+
+- baseline candidate id/revision/runtime identity；
+- selected candidate id/revision/runtime identity；
+- calibration evaluation SHA；
+- policy SHA；
+- selection payload SHA。
+
+Blind_test 若 candidate 或 baseline 在 calibration 后换了 commit/profile/runtime identity，直接拒绝。
 
 ## 5. Evaluation / gate metrics
 
@@ -102,7 +110,11 @@ Calibration selection artifact 记录 candidate revision/runtime identity；blin
 P1 新增 matched-cut boundary：
 
 ```text
+cut_boundary_expected_count
+cut_boundary_predicted_count
 cut_boundary_match_count
+cut_boundary_reference_coverage
+cut_boundary_prediction_coverage
 cut_boundary_mae_ms
 cut_boundary_p50_ms
 cut_boundary_p90_ms
@@ -111,7 +123,9 @@ cut_boundary_within_250ms_rate
 cut_boundary_within_500ms_rate
 ```
 
-Cut boundary 指标必须与 cut recall/coverage 一起看；不能用“只命中少数容易样本”制造低 MAE。
+Cut matching 使用最大匹配数优先、总绝对误差最小的单调 DP；不再使用可能降低 match cardinality 的局部 greedy nearest-pair。
+
+Cut boundary error 必须与 cut recall/coverage 一起看；不能用“只命中少数容易样本”制造低 MAE。
 
 ## 6. Gate policy
 
@@ -127,7 +141,7 @@ optional min_improvement_abs
 calibration ranking
 ```
 
-代码不内置“为了通过而调松”的隐藏全局阈值。Calibration 只在通过全部 gates 的候选之间按 policy ranking 选择。
+P1 还拒绝 negative / non-finite tolerance 以及无效 ranking direction。代码不内置“为了通过而调松”的隐藏全局阈值。Calibration 只在通过全部 gates 的候选之间按 policy ranking 选择。
 
 ## 7. Privacy
 
@@ -140,22 +154,24 @@ calibration ranking
 
 真实音频、歌词、reference/prediction SRT、逐 case 原始证据继续位于 private 数据目录，不进入公开仓库。
 
-## 8. 当前测试 / CI 状态
+## 8. PR #8 最终 CI
 
-PR #8 首个完整远端 head `57a9634d59a80713cacaf32eb58df0ba13e918d5` 的 validate #431：
+Latest head：
+
+```text
+60bd697477c418c52b044810ecab8ce5dbeea018
+```
+
+validate #445：
 
 - ASR environment：SUCCESS；
-- Python 3.10/3.12/3.14 compileall：SUCCESS；
-- 三套 Python 在 Documentation Contract 失败，因此 unit/E2E 尚未执行；
-- 明确缺失 owning docs：`v4-change-record.md`、`v4-status.md`、以及至少一份 CLI/runtime/workflow 文档。
+- Python 3.10：compileall / Documentation Contract / full unit-E2E / Skill / privacy / environment / diff-check 全绿；
+- Python 3.12：同上，全绿；
+- Python 3.14：同上，全绿。
 
-当前提交正在补齐上述 docs；必须以最新 head 重新跑 CI。旧 #431 不能作为 P1 算法失败，也不能作为通过依据。
+此前 #431 只因 owning docs 缺失在 unit tests 前失败；#443 在 249 tests 中仅暴露一个低层兼容 gate 的 selection self-identity 字段名 bug。Latest head 已修复为 `selection_payload_sha256`（同时兼容旧实验字段）并由 #445 全量验证。
 
 ## 9. 当前仍未完成
-
-### P1-A — framework CI 收口
-
-PR #8 最新 head 还需要真正跑过 Python 3.10/3.12/3.14 full unit/E2E、Skill/privacy/environment/diff-check 后才可合并。
 
 ### P1-B — real private dataset / real blind numbers
 
@@ -170,7 +186,9 @@ PR #8 最新 head 还需要真正跑过 Python 3.10/3.12/3.14 full unit/E2E、Sk
 
 ### P2 — Editor Evidence + LanguageSpan final fusion
 
-尚未进入 final production cue fusion。目标仍为：zh/en direct text；ko/ja phonetic hint；yue/unknown text 降权或禁用；mixed per-span routing。
+尚未进入 final production cue fusion。仓库已有 `language_spans.py` 基础，下一步重点是：editor evidence artifact、语言可靠度权重、与 canonical/source mapping 的边界融合，而不是重新做脚本识别。
+
+目标仍为：zh/en direct text；ko/ja phonetic hint；yue/unknown text 降权或禁用；mixed per-span routing。
 
 ### P3 — Forced Alignment / ASR v2
 
@@ -182,4 +200,4 @@ Overlap 与 localized cut 落在同一声学区域时继续 BLOCK；只有真实
 
 ## 10. 当前正确表述
 
-> **main 已完成 a8 的生产重建闭环；当前 P1 正在建立可审计、split-isolated、candidate-locked 的 calibration/blind-test 框架。没有真实私有数据前，不宣称固定百分比准确率提升。**
+> **main 已完成 a8 的生产重建闭环；P1 calibration/blind-test framework 在 PR #8 latest head `60bd6974...` 已通过 validate #445 全量门禁，可合并。没有真实私有数据前，不宣称固定百分比准确率提升。**
