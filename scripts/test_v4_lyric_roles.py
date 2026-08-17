@@ -87,6 +87,43 @@ class V4LyricRoleTests(unittest.TestCase):
                     original_index_overrides={1000: 0},
                 )
 
+    def test_enhanced_lrc_timing_markup_does_not_hide_metadata(self):
+        result = self.inspect(
+            "[00:01.00]<00:01.00>作词: someone\n"
+            "[00:01.00]<00:01.00>真实歌词\n",
+            "zh",
+        )
+        alternatives = result["groups"][0]["alternatives"]
+        self.assertEqual([row["role"] for row in alternatives], ["metadata", "original"])
+        self.assertIn("enhanced_lrc", result["groups"][0]["formats"])
+
+    def test_qrc_is_supported_by_role_preflight(self):
+        result = self.inspect(
+            "[1000,2000]Hello(0,500) world(500,600)\n",
+            "en",
+        )
+        self.assertEqual(result["timestamp_group_count"], 1)
+        self.assertEqual(result["groups"][0]["timestamp_ms"], 1000)
+        self.assertEqual(result["groups"][0]["alternatives"][0]["text"], "Hello world")
+        self.assertEqual(result["groups"][0]["alternatives"][0]["role"], "original")
+        self.assertIn("qrc", result["groups"][0]["formats"])
+
+    def test_qrc_same_timestamp_alternatives_can_use_explicit_original_index(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "song.lrc"
+            path.write_text(
+                "[1000,2000]translation(0,500)\n"
+                "[1000,2000]canonical(0,500)\n",
+                encoding="utf-8",
+            )
+            result = inspect_lyric_roles(
+                path,
+                language="en",
+                original_index_overrides={1000: 1},
+            )
+            alternatives = result["groups"][0]["alternatives"]
+            self.assertEqual([row["role"] for row in alternatives], ["unknown", "original"])
+
 
 if __name__ == "__main__":
     unittest.main()
