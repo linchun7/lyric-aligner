@@ -1,213 +1,225 @@
 # Lyric Aligner v4 当前实施状态
 
 更新日期：2026-08-17  
-当前开发分支：`agent/v4-overlap-recomposition`  
-基线：`main` 已合入 v4.0.0a5（squash commit `a80a531d6933946484c54d3a589bc55b0cb9e94b`）  
-当前开发版本：`4.0.0a6`  
+当前开发分支：`agent/v4-cut-rebuild`  
+基线：`main` 已合入 v4.0.0a6（squash commit `dfd840b3a6f893531cce8019aae53e803243f95c`）  
+当前开发版本：`4.0.0a7`  
 TrackAsset schema：`1.1`
 
-## 1. production-first 不变
+## 1. main 当前能力
 
-新真实任务继续优先 v4。不确定 mapping/cut/transition 进入 review/BLOCK，不静默回退 v3.9。Canonical lyric 仍是最终文字真源，Source-to-Mix 仍是主要时间真源。
+main 已具备：
 
-## 2. a5 已进入 main
+- fail-closed TrackAsset / canonical lyric single truth；
+- harmonic Chroma/MFCC Source-to-Mix mapping；
+- AFFINE-first / evidence-driven PIECEWISE_RATE；
+- Selective Fine；
+- candidate-level transition review；
+- replayable Review Decision；
+- confirmed-overlap 双路 canonical timeline recomposition；
+- package-native renderer/release integrity。
 
-PR #4：`v4.0.0a5: replayable review decisions and reviewed-run rendering`。
+PR #5 a6 latest head `2b93af319b4b4f32115b20644b2b2525f0f14ca0` 的 validate #349 在 Python 3.10/3.12/3.14 + ASR + docs/Skill/privacy/environment/diff-check 全绿后 squash merge 到 main `dfd840b3...`。
 
-最新 head `66ad787266d3ae7539b6362d870437e44c585f16` 的 GitHub Actions validate #321 **SUCCESS**：
+## 2. a7 当前目标
 
-- Python 3.10 / 3.12 / 3.14 full unittest/E2E；
-- review decision state machine；
-- review CLI template/apply；
-- synthetic `review_resolution → v4_render`；
-- existing run→render→release regressions；
-- Documentation Contract；
-- compileall / Skill / privacy / environment / diff-check；
-- ASR environment。
+解决 remaining P0：**人工确认的 middle cut 如何真正变成可重放 Source-to-Mix mapping + canonical timeline**。
 
-随后 squash merge 到 main：
+现有连续 TimeWarp 只能安全表达 AFFINE/PIECEWISE_RATE，不能把 forward source-position jump 当成连续映射。a7 新增：
 
 ```text
-a80a531d6933946484c54d3a589bc55b0cb9e94b
+continuous segment
+ → explicit source gap
+ → continuous segment
 ```
 
-因此 main 已支持 transition false-positive 通过正式 `review_resolution` artifact 安全解除并进入 renderer；confirmed overlap / blocked TimeWarp 仍 fail-closed。
+称为 `CUT_AWARE` mapping。
 
-## 3. a6 当前目标：confirmed-overlap 双路 canonical timeline
+## 3. Candidate-level TimeWarp discontinuity
 
-a6 解决 a5 的最高优先级缺口：
-
-```text
-confirmed_overlap
- → 不直接 render
- → 用 boundary-local Source-to-Mix evidence 重投影左右 canonical lyrics
- → 生成两路独立 overlap timelines
- → 仅在 exact confirmed region 内允许跨 track cues 时间重叠
-```
-
-不把两首歌词拼成一行。
-
-## 4. Candidate-level Transition review
-
-发现 a5 的“整条 A→B 一个 transition issue”在同一共享窗口出现多个分离 candidate 时粒度过粗。a6 改为：
+`v4_run` 对每个 effective TimeWarp source-position jump 独立产生：
 
 ```text
-每个 overlap / ambiguity interval
- → 独立 candidate_id
- → 独立 issue_id
- → 独立人工 action
-```
-
-`v4_run` schema 当前为 `1.1`，transition issue 类型：
-
-```text
-transition_overlap
-transition_ambiguity
-```
-
-Overlap issue 记录：
-
-- candidate_id；
-- left/right occurrence；
-- exact interval；
-- left/right score；
-- review status/reason。
-
-Ambiguity issue 同样拥有 candidate_id + interval。
-
-Review Decision schema 升到 `1.1`；candidate-level `issue_id` 包含 candidate_id，因此清除一个候选不会清除同一边界上的另一个候选。
-
-## 5. Confirmed-overlap recomposition
-
-新增：
-
-```text
-lyric_aligner/timeline/overlap.py
-scripts/v4_recompose_overlap.py
-```
-
-### 输入
-
-必须是 `review_resolution` run，且 active issue 中存在：
-
-```text
-decision_action = confirmed_overlap
-requires_recomposition = true
-confirmed_interval
+kind=timewarp_discontinuity
+code=source_position_discontinuity
 candidate_id
-issue_id
+occurrence_id
+mix_before/mix_after
+source_before/source_after
 ```
 
-### Exact evidence binding
+Occurrence summary 同时保存 exact primary Coarse/Fine payload + artifact provenance，后续 cut rebuild 不重新猜文件。
 
-每个 region 重新验证：
+## 4. Review Decision 1.2
 
-- issue_id 非空；
-- candidate_id 在原 Transition artifact 中唯一存在；
-- interval 与原 candidate 毫秒级一致；
-- occurrence pair 一致；
-- Transition artifact 属于 reviewed-run lineage；
-- Transition artifact upstream 到 exact TrackAsset artifact；
-- LEFT/RIGHT boundary coarse 分别匹配 exact occurrence/track/canonical-selection；
-- 两份 coarse artifact 都由 exact TrackAsset artifact 派生；
-- Transition artifact upstream 到这两份 exact coarse artifact；
-- 左右 coarse artifact 不得是同一个 artifact。
-
-因此 swapped LEFT/RIGHT mapping 不可进入重组。
-
-### Boundary mapping
-
-每侧先使用共享边界 Coarse；`should_run_fine_alignment()` 认为难例时自动跑现有 Selective Fine。最终 `effective_timewarp(Fine if applied, else Coarse)` 若仍 blocked，recomposition 失败并保持 fail-closed。
-
-### Canonical re-projection
-
-左右 occurrence 分别：
+新增 discontinuity actions：
 
 ```text
-exact canonical TrackAsset
- + boundary effective TimeWarp
- + confirmed overlap interval
- → overlap canonical lines
- → strict clip to confirmed interval
+confirmed_cut
+rejected_requires_remap
 ```
 
-再与 primary canonical timeline 合并，只扩展 occurrence window 到 confirmed region。
-
-新 timeline stage：
+`confirmed_cut`：
 
 ```text
-overlap_timeline_recomposition
+status=confirmed
+confirmed_discontinuity snapshot
+requires_timeline_rebuild=true
+仍 review_required
+```
+
+`rejected_requires_remap` 也保持 BLOCK，因为当前 mapping 已失败；“不是 cut”不能被解释为“mapping 没问题”。
+
+## 5. Local cut boundary localization
+
+新增 `lyric_aligner/audio/cuts.py`。
+
+Coarse discontinuity 只限定 `[mix_before,mix_after]`。a7 不使用中点当 cut 真值，而是在局部区间用：
+
+- 16kHz；
+- HPSS harmonic；
+- Chroma CENS + MFCC；
+- bootstrap 0.8s context；
+- bootstrap 50ms candidate step；
+- source-position/slope local priors；
+- per-side score/margin/feature agreement；
+- boundary best-vs-separated-second margin。
+
+同时要求左窗口匹配 source-before、右窗口匹配 source-after。证据不足、重复段歧义、source gap 非 forward/过小都 BLOCK。
+
+## 6. CUT_AWARE TimeWarp
+
+`build_cut_aware_timewarp()`：
+
+1. 按 localized cut time 划分 retained mix segments；
+2. 每段使用原 effective alignment anchors；
+3. 用 localized source-gap 两侧添加 boundary anchors；
+4. 每段独立运行现有 `select_timewarp()`；
+5. 任一 segment blocked → 整次 rebuild 失败；
+6. 输出 retained segments + explicit source gaps。
+
+Artifact：
+
+```text
+stage=cut_timewarp_rebuild
+role=cut_aware_timewarp
+```
+
+## 7. Cut-aware canonical timeline
+
+新增 `lyric_aligner/timeline/cuts.py`。
+
+### line-LRC
+
+安全规则已收紧为：
+
+- **整个可推断行区间都落在 source gap**：整行 omit；
+- 行起点位于 gap 内但下一行时间越过 gap：partial-line ambiguity，review；
+- 行区间从 retained segment 穿过 gap：review；
+- 最后一行起点在 gap 内且没有 finite end：review；
+- 完整位于 retained segment：正常投影。
+
+因此 a7 不使用“只要 line start 在 gap 就整行删除”的过度推断。
+
+### Enhanced LRC/QRC
+
+- complete token retained → keep；
+- complete token in gap → omit；
+- token 本身被 cut 穿过 → review；
+- 一行剩部分完整 tokens → canonical fragment，文本仍来自规范歌词。
+
+Artifact：
+
+```text
+stage=cut_timeline_rebuild
+role=canonical_timeline
+```
+
+## 8. `v4_rebuild_cut.py`
+
+输入必须是合法 `review_resolution` run，active issues 中存在 `confirmed_cut + requires_timeline_rebuild`。
+
+它重新验证：
+
+- candidate_id 必须对应 current effective TimeWarp 唯一 discontinuity；
+- confirmed snapshot 与 current evidence 一致；
+- exact primary Coarse/Fine occurrence/track/canonical/TrackAsset identity；
+- primary artifacts 属于 reviewed-run lineage。
+
+然后：
+
+```text
+localize cut boundary
+ → CUT_AWARE mapping
+ → cut-aware canonical timeline
+ → cut_rebuild run
 ```
 
 新 run stage：
 
 ```text
-overlap_recomposition
+cut_rebuild / v4_cut_rebuilt_run
+schema_version=1.3
 ```
 
-Processed confirmed-overlap issues 移除；其他 issue 保留。remaining issues=0 时才 `ready_for_render`。
+Projection ambiguity 会转化成新的 active `canonical_fragment` review issues。只有 remaining issues=0 才 `ready_for_render`。
 
-## 6. Renderer / Composer a6 语义
+## 9. Renderer a7
 
-`v4_render.py` 当前接受：
+`v4_render.py` 新增支持：
 
 ```text
-production_orchestration
-review_resolution
-overlap_recomposition
+cut_rebuild / v4_cut_rebuilt_run
 ```
 
-Overlap run 必须：
+额外要求：
 
-- `source_review_artifact_id` 属于 upstream；
-- artifact config 与 payload source-review identity 一致；
-- remaining issue count=0；
-- non-empty confirmed_overlap_regions；
-- supplied TrackAsset / recomposed timelines 全部处于 lineage 中。
+- source-review lineage 完整；
+- remaining_issue_count=0；
+- canonical_fragment_issue_count=0；
+- rebuilt mapping/timeline artifact IDs 都是 run upstream；
+- timeline stage=`cut_timeline_rebuild`；
+- `cut_aware=true`；
+- projection_issues=[]；
+- timeline upstream 到 exact cut mapping artifact。
 
-Composer 不再一律拒绝跨 track cue overlap，但规则极严格：
+QA/Final Render artifact 记录 `source_run_stage=cut_rebuild` 与 rebuilt cut occurrence count。
 
-> 每一个实际跨 track cue intersection，都必须完整落在 exact occurrence pair 的某个 confirmed-overlap region 内。
+## 10. Calibration / migration
 
-检查覆盖**所有相交 cue pair**，不是只看排序后相邻 cue，因此长 cue 与后续第二/第三条 cue 的越界也会 BLOCK。
-
-Final SRT 中两路歌词保持独立 cue，可拥有时间重叠；不拼接文本。
-
-QA/Final Render 记录：
+新增 `CutBoundaryConfig`，profile version：
 
 ```text
-source_run_stage=overlap_recomposition
-confirmed_overlap_region_count
+production-bootstrap-2026-08-17-a7
 ```
 
-## 7. a6 测试覆盖（当前分支，待 CI）
+因此 a6/a5 profile/artifacts 不允许静默复用到 a7；生产任务需要从 a7 `v4_run` 重跑。
 
-新增/扩展：
+## 11. 当前测试 / CI 状态
 
-- `test_v4_transition.py`：stable candidate_id、ambiguity candidate identity；
-- `test_v4_review_decisions.py`：同边界多 candidate 独立 issue；
-- `test_v4_overlap_recomposition.py`：region materialization、strict clipping、timeline merge、confirmed-region composer gate、非相邻 cue 交集；
-- `test_v4_overlap_lineage.py`：swapped occurrence/track/canonical/asset binding BLOCK；
-- `test_v4_overlap_end_to_end.py`：artifact-level real `v4_recompose_overlap → v4_render`，不依赖声学阈值碰巧触发 overlap；
-- CLI bootstrap 加入 `v4_recompose_overlap.py`。
+当前分支已加入：
 
-这些测试尚需最新 head 的完整 GitHub Actions 矩阵验证，当前不能声明 a6 可合并。
+- `test_v4_cut_review.py`；
+- `test_v4_cut_mapping.py`；
+- `test_v4_cut_timeline.py`：whole-gap omission / partial-line review / token fragments；
+- `test_v4_cut_boundary_locator.py`；
+- `test_v4_cut_rebuild_end_to_end.py`：artifact-level `review_resolution → v4_rebuild_cut → v4_render`；
+- CLI bootstrap 加入 `v4_rebuild_cut.py`；
+- renderer cut-rebuild strict lineage/fragment gate。
 
-## 8. Calibration
+PR #6 首轮 validate #362：ASR environment 成功；Python 3.10/3.12/3.14 在 unit tests 之前被 Documentation Contract 阻断。根因是 a7 owning docs 当时没有实际落到分支。当前 PR 已补回 owning docs，需以最新 head 重新跑完整 CI；在最新 head 全绿前不能声明 a7 可合并。
 
-a6 不调整数值阈值，继续使用 `production-bootstrap-2026-08-17-a4` profile 内容。变化属于 algorithm/review/timeline contract，因此 algorithm version 升为 `4.0.0a6`，a5 artifacts 不可与 a6 artifacts 混入同一 release。
+## 12. 当前仍未完成
 
-## 9. 当前仍未完成
+### P0 — cut + overlap unified composition
 
-### P0 — confirmed TimeWarp / middle-cut rebuild
-
-对人工确认的 source discontinuity/cut 生成新的 effective mapping、cut intervals 与 canonical timeline artifact。
+同一任务同时含 confirmed cut + confirmed overlap 时，当前两个 materialization stage 尚不能自动组合成一个 ready run；必须继续 fail-closed。
 
 ### P1 — real-task calibration / blind-test
 
 用真实私有任务评估 mapping residual、onset/offset、review density、cut/overlap P/R、runtime。
 
-### P2 — Editor Evidence + LanguageSpan cue fusion
+### P2 — Editor Evidence + LanguageSpan final cue fusion
 
 只在 canonical/source mapping 后作为辅助边界 evidence。
 
@@ -215,14 +227,6 @@ a6 不调整数值阈值，继续使用 `production-bootstrap-2026-08-17-a4` pro
 
 由真实误差数据决定是否成为下一瓶颈。
 
-## 10. 当前不能宣称
+## 13. 当前正确表述
 
-- a6 已通过 CI 或已合并；
-- candidate detection 等于真实 overlap；
-- confirmed overlap 可以覆盖坏 Source-to-Mix mapping；
-- bootstrap profile 已最优；
-- 真实任务准确率已提升固定百分比。
-
-当前正确表述：
-
-> **v4.0.0a6 正在把已人工确认的 overlap materialize 成两路独立 canonical timeline，并且只在确认区间内允许跨 track subtitle overlap；所有 mapping/lineage 越界继续 fail-closed。**
+> **v4.0.0a7 正在把 confirmed middle cut 从人工事实升级为显式 source-gap TimeWarp + cut-aware canonical timeline；无法证明的部分歌词继续 fail-closed。PR #6 只有最新 head 完整 CI 全绿后才可合并。**
