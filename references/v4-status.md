@@ -1,303 +1,228 @@
 # Lyric Aligner v4 当前实施状态
 
 更新日期：2026-08-17  
-当前开发分支：`agent/v4-review-decisions`  
-基线：`main` 已合入 v4.0.0a4（squash commit `236d9d717229147ee1d1a8755d712e54db47a751`）  
-当前开发版本：`4.0.0a5`  
+当前开发分支：`agent/v4-overlap-recomposition`  
+基线：`main` 已合入 v4.0.0a5（squash commit `a80a531d6933946484c54d3a589bc55b0cb9e94b`）  
+当前开发版本：`4.0.0a6`  
 TrackAsset schema：`1.1`
 
 ## 1. production-first 不变
 
-新真实任务继续优先 v4：
+新真实任务继续优先 v4。不确定 mapping/cut/transition 进入 review/BLOCK，不静默回退 v3.9。Canonical lyric 仍是最终文字真源，Source-to-Mix 仍是主要时间真源。
 
-```text
-Task Manifest
- → Source-to-Mix / Timeline / Transition
- → ready_for_render | review_required
-```
+## 2. a5 已进入 main
 
-不确定性进入 review，不静默回退 v3.9。v3.9 只保留历史比较/仓库级 rollback 价值，不再是正常任务必需路径。
+PR #4：`v4.0.0a5: replayable review decisions and reviewed-run rendering`。
 
-## 2. a4 已进入 main
+最新 head `66ad787266d3ae7539b6362d870437e44c585f16` 的 GitHub Actions validate #321 **SUCCESS**：
 
-PR #3 在 GitHub Billing/Actions 恢复后，对最新 head `a9ab9bc5...` 重新运行 validate #303。
-
-最终全绿：
-
-- Python 3.10 / 3.12 / 3.14 full unittest discovery；
-- synthetic `v4_run → v4_render → v4_validate_release` E2E；
+- Python 3.10 / 3.12 / 3.14 full unittest/E2E；
+- review decision state machine；
+- review CLI template/apply；
+- synthetic `review_resolution → v4_render`；
+- existing run→render→release regressions；
 - Documentation Contract；
-- `compileall lyric_aligner + scripts`；
-- Skill validation；
-- privacy scan；
-- environment validation；
-- `git diff --check`；
+- compileall / Skill / privacy / environment / diff-check；
 - ASR environment。
 
-随后 PR #3 squash merge 到 main，commit：
+随后 squash merge 到 main：
 
 ```text
-236d9d717229147ee1d1a8755d712e54db47a751
+a80a531d6933946484c54d3a589bc55b0cb9e94b
 ```
 
-因此 main 当前已拥有完整 review-free 路径：
+因此 main 已支持 transition false-positive 通过正式 `review_resolution` artifact 安全解除并进入 renderer；confirmed overlap / blocked TimeWarp 仍 fail-closed。
+
+## 3. a6 当前目标：confirmed-overlap 双路 canonical timeline
+
+a6 解决 a5 的最高优先级缺口：
 
 ```text
-Task Manifest
- → v4_run
- → ready_for_render
- → v4_render
- → FINAL.srt + FINAL.csv + FINAL.qa.json + FINAL.render.artifact.json
- → v4_validate_release
- → release.artifact.json
+confirmed_overlap
+ → 不直接 render
+ → 用 boundary-local Source-to-Mix evidence 重投影左右 canonical lyrics
+ → 生成两路独立 overlap timelines
+ → 仅在 exact confirmed region 内允许跨 track cues 时间重叠
 ```
 
-以及严格 final-render/release lineage。
+不把两首歌词拼成一行。
 
-## 3. a5 当前目标：Replayable Review Decision
+## 4. Candidate-level Transition review
 
-之前 `review_required` 只能 BLOCK，人工结论无法成为可重放 artifact。a5 新增：
+发现 a5 的“整条 A→B 一个 transition issue”在同一共享窗口出现多个分离 candidate 时粒度过粗。a6 改为：
 
 ```text
-lyric_aligner/review/
-scripts/v4_review.py
+每个 overlap / ambiguity interval
+ → 独立 candidate_id
+ → 独立 issue_id
+ → 独立人工 action
 ```
 
-目标不是“让人工绕过算法”，而是把人工判断变成：
+`v4_run` schema 当前为 `1.1`，transition issue 类型：
 
 ```text
-task-scoped
-base-run-scoped
-fingerprinted
-immutable-artifact-backed
-replayable
+transition_overlap
+transition_ambiguity
 ```
 
-的正式生产证据。
+Overlap issue 记录：
 
-## 4. Review issue identity
+- candidate_id；
+- left/right occurrence；
+- exact interval；
+- left/right score；
+- review status/reason。
 
-`v4_review template` 会对当前 `v4_run.issues[]` 规范化并生成 deterministic `issue_id`。
+Ambiguity issue 同样拥有 candidate_id + interval。
 
-身份只使用逻辑字段，不使用可读 reason 文案：
+Review Decision schema 升到 `1.1`；candidate-level `issue_id` 包含 candidate_id，因此清除一个候选不会清除同一边界上的另一个候选。
 
-### Transition
+## 5. Confirmed-overlap recomposition
+
+新增：
 
 ```text
-task fingerprint
-kind=transition
-code=transition_overlap_or_ambiguity
-left_occurrence_id
-right_occurrence_id
+lyric_aligner/timeline/overlap.py
+scripts/v4_recompose_overlap.py
 ```
 
-### TimeWarp
+### 输入
+
+必须是 `review_resolution` run，且 active issue 中存在：
 
 ```text
-task fingerprint
-kind=timewarp
-code=effective_mapping_blocked
-occurrence_id
-```
-
-因此：
-
-- 同一任务、同一逻辑 issue 的 reason 文案变化不改变 issue ID；
-- 不同任务的相同边界不会共享 issue ID。
-
-但 review decision 还必须额外绑定 `base_run_artifact_id`，所以旧 production run 的 decision 不能静默套到新 run。
-
-## 5. Review template / apply
-
-### Template
-
-```text
-v4_review.py template
-```
-
-输出：
-
-```text
-schema_version
-algorithm_version
-task_fingerprint_sha256
-base_run_artifact_id
-review_items[]
-```
-
-每个 item 包含：
-
-```text
-issue_id
-issue snapshot
-allowed_actions
-decision=null
-```
-
-### Apply
-
-```text
-v4_review.py apply
-```
-
-会重新验证：
-
-- Task Manifest；
-- production-run artifact stage/version/task/hash；
-- decision task fingerprint；
-- decision algorithm version；
-- exact base run artifact ID；
-- issue snapshot 仍与当前 base run 完全一致；
-- allowed action 未被篡改；
-- rationale 非空；
-- 每个 base issue 都必须出现在 decision file。
-
-输出：
-
-```text
-reviewed_run.json
-reviewed_run.artifact.json
-```
-
-artifact stage：
-
-```text
-review_resolution
-```
-
-同时冻结：
-
-- reviewed-run output hash；
-- decision JSON hash；
-- base production-run artifact；
-- base run 全部 upstream artifact IDs；
-- calibration profile identity。
-
-## 6. 当前安全 action 语义
-
-### Transition：`resolved_clear`
-
-人工确认 candidate 是误报/没有真实 overlap：
-
-```text
-issue resolved
-→ effective review block cleared
-→ 若无其他 issue，可 ready_for_render
-```
-
-原 transition evidence 的 `blocked` 不被改写；reviewed run 新增 `review_resolution` 说明人工覆盖原因。
-
-### Transition：`confirmed_overlap`
-
-```text
-issue.status = confirmed
+decision_action = confirmed_overlap
 requires_recomposition = true
-status 仍为 review_required
+confirmed_interval
+candidate_id
+issue_id
 ```
 
-确认 overlap **不等于可以发布**。必须等待 transition-aware 双路 timeline composition。
+### Exact evidence binding
 
-### TimeWarp：`confirmed_requires_rebuild`
+每个 region 重新验证：
+
+- issue_id 非空；
+- candidate_id 在原 Transition artifact 中唯一存在；
+- interval 与原 candidate 毫秒级一致；
+- occurrence pair 一致；
+- Transition artifact 属于 reviewed-run lineage；
+- Transition artifact upstream 到 exact TrackAsset artifact；
+- LEFT/RIGHT boundary coarse 分别匹配 exact occurrence/track/canonical-selection；
+- 两份 coarse artifact 都由 exact TrackAsset artifact 派生；
+- Transition artifact upstream 到这两份 exact coarse artifact；
+- 左右 coarse artifact 不得是同一个 artifact。
+
+因此 swapped LEFT/RIGHT mapping 不可进入重组。
+
+### Boundary mapping
+
+每侧先使用共享边界 Coarse；`should_run_fine_alignment()` 认为难例时自动跑现有 Selective Fine。最终 `effective_timewarp(Fine if applied, else Coarse)` 若仍 blocked，recomposition 失败并保持 fail-closed。
+
+### Canonical re-projection
+
+左右 occurrence 分别：
 
 ```text
-issue.status = confirmed
-requires_timeline_rebuild = true
-status 仍为 review_required
+exact canonical TrackAsset
+ + boundary effective TimeWarp
+ + confirmed overlap interval
+ → overlap canonical lines
+ → strict clip to confirmed interval
 ```
 
-blocked TimeWarp 没有 `resolved_clear` action。因为该 occurrence 可能没有合法 canonical timeline，不能靠人工布尔 override 直接进入 renderer。
+再与 primary canonical timeline 合并，只扩展 occurrence window 到 confirmed region。
 
-## 7. Renderer 已接受合法 reviewed-run
+新 timeline stage：
 
-`v4_render.py` 当前接受两种 run artifact：
+```text
+overlap_timeline_recomposition
+```
+
+新 run stage：
+
+```text
+overlap_recomposition
+```
+
+Processed confirmed-overlap issues 移除；其他 issue 保留。remaining issues=0 时才 `ready_for_render`。
+
+## 6. Renderer / Composer a6 语义
+
+`v4_render.py` 当前接受：
 
 ```text
 production_orchestration
 review_resolution
+overlap_recomposition
 ```
 
-两者都必须：
+Overlap run 必须：
+
+- `source_review_artifact_id` 属于 upstream；
+- artifact config 与 payload source-review identity 一致；
+- remaining issue count=0；
+- non-empty confirmed_overlap_regions；
+- supplied TrackAsset / recomposed timelines 全部处于 lineage 中。
+
+Composer 不再一律拒绝跨 track cue overlap，但规则极严格：
+
+> 每一个实际跨 track cue intersection，都必须完整落在 exact occurrence pair 的某个 confirmed-overlap region 内。
+
+检查覆盖**所有相交 cue pair**，不是只看排序后相邻 cue，因此长 cue 与后续第二/第三条 cue 的越界也会 BLOCK。
+
+Final SRT 中两路歌词保持独立 cue，可拥有时间重叠；不拼接文本。
+
+QA/Final Render 记录：
 
 ```text
-status == ready_for_render
-issues == []
-legacy_fallback_used == false
+source_run_stage=overlap_recomposition
+confirmed_overlap_region_count
 ```
 
-review_resolution 还必须证明：
+## 7. a6 测试覆盖（当前分支，待 CI）
 
-- `base_run_artifact_id` 存在并属于 upstream；
-- artifact normalized config 与 reviewed payload 的 base-run identity 一致；
-- `remaining_issue_count == 0`；
-- supplied TrackAsset / canonical timeline artifacts 仍属于 review artifact upstream lineage。
+新增/扩展：
 
-QA/Final Render artifact 会记录：
+- `test_v4_transition.py`：stable candidate_id、ambiguity candidate identity；
+- `test_v4_review_decisions.py`：同边界多 candidate 独立 issue；
+- `test_v4_overlap_recomposition.py`：region materialization、strict clipping、timeline merge、confirmed-region composer gate、非相邻 cue 交集；
+- `test_v4_overlap_lineage.py`：swapped occurrence/track/canonical/asset binding BLOCK；
+- `test_v4_overlap_end_to_end.py`：artifact-level real `v4_recompose_overlap → v4_render`，不依赖声学阈值碰巧触发 overlap；
+- CLI bootstrap 加入 `v4_recompose_overlap.py`。
 
-```text
-source_run_stage = production_orchestration | review_resolution
-```
+这些测试尚需最新 head 的完整 GitHub Actions 矩阵验证，当前不能声明 a6 可合并。
 
-## 8. a5 Calibration 状态
+## 8. Calibration
 
-a5 没有修改 calibration 数值；继续使用 a4 profile 内容：
+a6 不调整数值阈值，继续使用 `production-bootstrap-2026-08-17-a4` profile 内容。变化属于 algorithm/review/timeline contract，因此 algorithm version 升为 `4.0.0a6`，a5 artifacts 不可与 a6 artifacts 混入同一 release。
 
-```text
-production-bootstrap-2026-08-17-a4
-```
+## 9. 当前仍未完成
 
-变化是 algorithm/review contract，因此 algorithm version 升到 `4.0.0a5`，新任务仍应重跑整条 a5 artifact chain，不能混用 a4 stage artifacts。
+### P0 — confirmed TimeWarp / middle-cut rebuild
 
-## 9. a5 回归覆盖
+对人工确认的 source discontinuity/cut 生成新的 effective mapping、cut intervals 与 canonical timeline artifact。
 
-新增：
+### P1 — real-task calibration / blind-test
 
-- `scripts/test_v4_review_decisions.py`
-- `scripts/test_v4_review_cli.py`
-- existing `test_v4_render_end_to_end.py` 扩展 reviewed-run path
-- CLI bootstrap 加入 `v4_review.py`
+用真实私有任务评估 mapping residual、onset/offset、review density、cut/overlap P/R、runtime。
 
-关键断言：
+### P2 — Editor Evidence + LanguageSpan cue fusion
 
-- issue ID 对 reason 文案稳定、对 task fingerprint 隔离；
-- transition `resolved_clear` 可让 reviewed run ready；
-- `confirmed_overlap` 仍 BLOCK + `requires_recomposition`；
-- TimeWarp 不允许 `resolved_clear`；
-- confirmed TimeWarp 仍 BLOCK + `requires_timeline_rebuild`；
-- decision 不能跨 base-run artifact 重放；
-- issue snapshot 被改立即 BLOCK；
-- review artifact 继承 base run 的 asset/timeline upstream IDs；
-- synthetic E2E 证明 `review_resolution → v4_render` 可生成同一 canonical SRT。
+只在 canonical/source mapping 后作为辅助边界 evidence。
 
-## 10. 当前还未完成
-
-### P0 — confirmed overlap recomposition
-
-把已确认 overlap 变成两路独立 canonical subtitle streams，而不是合并文本或简单解除 BLOCK。
-
-### P1 — TimeWarp / middle-cut rebuild
-
-对已确认 source discontinuity/cut 生成新的 effective mapping、cut intervals 和 canonical timeline artifact。
-
-### P2 — real-task calibration / blind-test
-
-真实素材验证：mapping residual、onset/offset、review density、cut/overlap P/R、runtime。
-
-### P3 — Editor Evidence + LanguageSpan cue fusion
-
-只在 canonical/source mapping 之后作为辅助边界证据。
-
-### P4 — Forced Alignment / ASR v2
+### P3 — Forced Alignment / ASR v2
 
 由真实误差数据决定是否成为下一瓶颈。
 
-## 11. 当前不能宣称
+## 10. 当前不能宣称
 
-- a5 已 stable；
-- confirmed overlap 已能自动发布；
-- blocked TimeWarp 可以人工强制放行；
+- a6 已通过 CI 或已合并；
+- candidate detection 等于真实 overlap；
+- confirmed overlap 可以覆盖坏 Source-to-Mix mapping；
 - bootstrap profile 已最优；
 - 真实任务准确率已提升固定百分比。
 
 当前正确表述：
 
-> **v4.0.0a5 正在把人工 review 从“临时结论”升级为可重放 artifact：transition false-positive 可以安全解除并进入原生 renderer；confirmed overlap / blocked TimeWarp 仍 fail-closed，等待对应的 timeline recomposition/rebuild。**
+> **v4.0.0a6 正在把已人工确认的 overlap materialize 成两路独立 canonical timeline，并且只在确认区间内允许跨 track subtitle overlap；所有 mapping/lineage 越界继续 fail-closed。**
