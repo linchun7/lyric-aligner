@@ -1,9 +1,10 @@
 """Task-scoped, replayable review decisions for v4 production issues.
 
-Transition evidence is reviewed at candidate granularity. A human may clear one
-false-positive interval without implicitly clearing other intervals on the same
-A→B boundary. Confirmed overlap remains blocked until a dedicated recomposition
-stage materializes new dual-track timeline evidence.
+Transition evidence is reviewed at candidate granularity. Source-position
+TimeWarp discontinuities are also reviewed at candidate granularity: a human
+may confirm that one exact forward jump is a physical cut, but that decision
+never makes the run renderable until a dedicated cut-rebuild stage materializes
+new mapping and canonical-timeline evidence.
 """
 
 from __future__ import annotations
@@ -14,8 +15,9 @@ from typing import Any
 from lyric_aligner.contracts.artifacts import canonical_json_sha256
 
 
-REVIEW_DECISION_SCHEMA_VERSION = "1.1"
+REVIEW_DECISION_SCHEMA_VERSION = "1.2"
 _TRANSITION_KINDS = {"transition", "transition_overlap", "transition_ambiguity"}
+_TIMEWARP_DISCONTINUITY_KIND = "timewarp_discontinuity"
 
 
 class ReviewDecisionError(ValueError):
@@ -36,13 +38,42 @@ def _candidate_interval(issue: dict[str, Any]) -> tuple[float, float] | None:
         start = float(issue["interval_start"])
         end = float(issue["interval_end"])
     except (KeyError, TypeError, ValueError) as exc:
-        raise ReviewDecisionError("transition review issue has invalid candidate interval") from exc
+        raise ReviewDecisionError(
+            "transition review issue has invalid candidate interval"
+        ) from exc
     if start < 0 or end <= start:
-        raise ReviewDecisionError("transition review issue candidate interval is invalid")
+        raise ReviewDecisionError(
+            "transition review issue candidate interval is invalid"
+        )
     return start, end
 
 
-def _issue_identity(issue: dict[str, Any], *, task_fingerprint_sha256: str) -> dict[str, Any]:
+def _discontinuity_snapshot(issue: dict[str, Any]) -> dict[str, float]:
+    try:
+        snapshot = {
+            "mix_before": float(issue["mix_before"]),
+            "mix_after": float(issue["mix_after"]),
+            "source_before": float(issue["source_before"]),
+            "source_after": float(issue["source_after"]),
+        }
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ReviewDecisionError(
+            "timewarp discontinuity issue has invalid physical coordinates"
+        ) from exc
+    if snapshot["mix_before"] < 0 or snapshot["mix_after"] <= snapshot["mix_before"]:
+        raise ReviewDecisionError(
+            "timewarp discontinuity issue has invalid mix interval"
+        )
+    if snapshot["source_after"] <= snapshot["source_before"]:
+        raise ReviewDecisionError(
+            "timewarp discontinuity issue is not a forward source jump"
+        )
+    return snapshot
+
+
+def _issue_identity(
+    issue: dict[str, Any], *, task_fingerprint_sha256: str
+) -> dict[str, Any]:
     kind = _required_text(issue, "kind")
     if kind in _TRANSITION_KINDS:
         identity = {
@@ -55,7 +86,9 @@ def _issue_identity(issue: dict[str, Any], *, task_fingerprint_sha256: str) -> d
         }
         candidate_id = str(issue.get("candidate_id") or "").strip()
         if kind != "transition" and not candidate_id:
-            raise ReviewDecisionError("candidate-level transition issue is missing candidate_id")
+            raise ReviewDecisionError(
+                "candidate-level transition issue is missing candidate_id"
+            )
         if candidate_id:
             identity["candidate_id"] = candidate_id
             _candidate_interval(issue)
@@ -68,6 +101,16 @@ def _issue_identity(issue: dict[str, Any], *, task_fingerprint_sha256: str) -> d
             "code": str(issue.get("code") or "effective_mapping_blocked"),
             "occurrence_id": _required_text(issue, "occurrence_id"),
         }
+    if kind == _TIMEWARP_DISCONTINUITY_KIND:
+        _discontinuity_snapshot(issue)
+        return {
+            "schema_version": REVIEW_DECISION_SCHEMA_VERSION,
+            "task_fingerprint_sha256": task_fingerprint_sha256,
+            "kind": kind,
+            "code": str(issue.get("code") or "source_position_discontinuity"),
+            "occurrence_id": _required_text(issue, "occurrence_id"),
+            "candidate_id": _required_text(issue, "candidate_id"),
+        }
     raise ReviewDecisionError(f"unsupported review issue kind {kind!r}")
 
 
@@ -76,7 +119,9 @@ def normalize_review_issue(
 ) -> dict[str, Any]:
     """Attach a deterministic task-scoped issue_id without hashing display text."""
 
-    identity = _issue_identity(issue, task_fingerprint_sha256=task_fingerprint_sha256)
+    identity = _issue_identity(
+        issue, task_fingerprint_sha256=task_fingerprint_sha256
+    )
     normalized = deepcopy(issue)
     normalized.setdefault("code", identity["code"])
     normalized["issue_id"] = canonical_json_sha256(identity)
@@ -89,6 +134,8 @@ def allowed_actions(issue: dict[str, Any]) -> tuple[str, ...]:
         return ("resolved_clear", "confirmed_overlap")
     if kind == "timewarp":
         return ("confirmed_requires_rebuild",)
+    if kind == _TIMEWARP_DISCONTINUITY_KIND:
+        return ("confirmed_cut", "rejected_requires_remap")
     raise ReviewDecisionError(f"unsupported review issue kind {kind!r}")
 
 
@@ -97,19 +144,26 @@ def build_review_template(
 ) -> dict[str, Any]:
     fingerprint = _required_text(run_payload, "task_fingerprint_sha256")
     if run_payload.get("status") != "review_required":
-        raise ReviewDecisionError("review template requires a review_required production run")
+        raise ReviewDecisionError(
+            "review template requires a review_required production run"
+        )
     if run_payload.get("legacy_fallback_used") is not False:
         raise ReviewDecisionError("review template refuses a run that used legacy fallback")
     issues = run_payload.get("issues")
     if not isinstance(issues, list) or not issues:
-        raise ReviewDecisionError("review_required production run contains no review issues")
+        raise ReviewDecisionError(
+            "review_required production run contains no review issues"
+        )
 
     normalized = [
-        normalize_review_issue(issue, task_fingerprint_sha256=fingerprint) for issue in issues
+        normalize_review_issue(issue, task_fingerprint_sha256=fingerprint)
+        for issue in issues
     ]
     ids = [str(issue["issue_id"]) for issue in normalized]
     if len(ids) != len(set(ids)):
-        raise ReviewDecisionError("production run contains duplicate logical review issue identities")
+        raise ReviewDecisionError(
+            "production run contains duplicate logical review issue identities"
+        )
 
     return {
         "schema_version": REVIEW_DECISION_SCHEMA_VERSION,
@@ -142,7 +196,9 @@ def _validate_template_header(
     if template.get("algorithm_version") != run_payload.get("algorithm_version"):
         raise ReviewDecisionError("review decisions algorithm version mismatch")
     if template.get("base_run_artifact_id") != base_run_artifact_id:
-        raise ReviewDecisionError("review decisions belong to another production run artifact")
+        raise ReviewDecisionError(
+            "review decisions belong to another production run artifact"
+        )
     items = template.get("review_items")
     if not isinstance(items, list) or not items:
         raise ReviewDecisionError("review decision file has no review_items")
@@ -154,7 +210,9 @@ def _decision_action(item: dict[str, Any]) -> tuple[str | None, str]:
     if decision is None:
         return None, ""
     if not isinstance(decision, dict):
-        raise ReviewDecisionError("review item decision must be null or an object")
+        raise ReviewDecisionError(
+            "review item decision must be null or an object"
+        )
     action = str(decision.get("action") or "").strip()
     rationale = str(decision.get("rationale") or "").strip()
     if not action:
@@ -176,10 +234,13 @@ def _annotate_transition(
     matches = [
         row
         for row in transitions
-        if row.get("left_occurrence_id") == left and row.get("right_occurrence_id") == right
+        if row.get("left_occurrence_id") == left
+        and row.get("right_occurrence_id") == right
     ]
     if len(matches) != 1:
-        raise ReviewDecisionError("transition review issue does not map to exactly one transition summary")
+        raise ReviewDecisionError(
+            "transition review issue does not map to exactly one transition summary"
+        )
     resolution = {
         "issue_id": issue["issue_id"],
         "candidate_id": str(issue.get("candidate_id") or ""),
@@ -204,9 +265,13 @@ def apply_review_template(
     """Replay decisions and derive a new immutable reviewed-run payload."""
 
     if run_payload.get("status") != "review_required":
-        raise ReviewDecisionError("review decisions require a review_required production run")
+        raise ReviewDecisionError(
+            "review decisions require a review_required production run"
+        )
     if run_payload.get("legacy_fallback_used") is not False:
-        raise ReviewDecisionError("review decisions refuse a run that used legacy fallback")
+        raise ReviewDecisionError(
+            "review decisions refuse a run that used legacy fallback"
+        )
 
     fingerprint, items = _validate_template_header(
         run_payload,
@@ -222,10 +287,14 @@ def apply_review_template(
     ]
     by_id = {str(issue["issue_id"]): issue for issue in normalized_issues}
     if len(by_id) != len(normalized_issues):
-        raise ReviewDecisionError("production run contains duplicate logical review issue identities")
+        raise ReviewDecisionError(
+            "production run contains duplicate logical review issue identities"
+        )
 
     seen: set[str] = set()
-    active: dict[str, dict[str, Any]] = {key: deepcopy(value) for key, value in by_id.items()}
+    active: dict[str, dict[str, Any]] = {
+        key: deepcopy(value) for key, value in by_id.items()
+    }
     resolved: list[dict[str, Any]] = []
     applied: list[dict[str, Any]] = []
     transitions = deepcopy(run_payload.get("transitions", []))
@@ -239,28 +308,39 @@ def apply_review_template(
         if not issue_id:
             raise ReviewDecisionError("review item is missing issue_id")
         if issue_id in seen:
-            raise ReviewDecisionError(f"duplicate review item for issue_id {issue_id}")
+            raise ReviewDecisionError(
+                f"duplicate review item for issue_id {issue_id}"
+            )
         seen.add(issue_id)
         current = by_id.get(issue_id)
         if current is None:
-            raise ReviewDecisionError(f"review item references unknown issue_id {issue_id}")
+            raise ReviewDecisionError(
+                f"review item references unknown issue_id {issue_id}"
+            )
 
         snapshot = item.get("issue")
         if not isinstance(snapshot, dict):
             raise ReviewDecisionError("review item issue snapshot must be an object")
-        normalized_snapshot = normalize_review_issue(snapshot, task_fingerprint_sha256=fingerprint)
+        normalized_snapshot = normalize_review_issue(
+            snapshot, task_fingerprint_sha256=fingerprint
+        )
         if normalized_snapshot != current:
-            raise ReviewDecisionError(f"review item snapshot no longer matches issue {issue_id}")
+            raise ReviewDecisionError(
+                f"review item snapshot no longer matches issue {issue_id}"
+            )
         expected_actions = list(allowed_actions(current))
         if item.get("allowed_actions") != expected_actions:
-            raise ReviewDecisionError(f"allowed_actions mismatch for issue {issue_id}")
+            raise ReviewDecisionError(
+                f"allowed_actions mismatch for issue {issue_id}"
+            )
 
         action, rationale = _decision_action(item)
         if action is None:
             continue
         if action not in expected_actions:
             raise ReviewDecisionError(
-                f"action {action!r} is not allowed for {current.get('kind')} issue {issue_id}"
+                f"action {action!r} is not allowed for "
+                f"{current.get('kind')} issue {issue_id}"
             )
 
         record = {
@@ -303,6 +383,22 @@ def apply_review_template(
                 "decision_action": action,
                 "requires_timeline_rebuild": True,
             }
+        elif current["kind"] == _TIMEWARP_DISCONTINUITY_KIND:
+            if action == "confirmed_cut":
+                active[issue_id] = {
+                    **active[issue_id],
+                    "status": "confirmed",
+                    "decision_action": action,
+                    "requires_timeline_rebuild": True,
+                    "confirmed_discontinuity": _discontinuity_snapshot(current),
+                }
+            elif action == "rejected_requires_remap":
+                active[issue_id] = {
+                    **active[issue_id],
+                    "status": "rejected",
+                    "decision_action": action,
+                    "requires_timeline_rebuild": True,
+                }
 
     missing_from_template = sorted(set(by_id) - seen)
     if missing_from_template:
@@ -314,7 +410,9 @@ def apply_review_template(
     remaining = [active[key] for key in by_id if key in active]
     status = "review_required" if remaining else "ready_for_render"
     reviewed = deepcopy(run_payload)
-    reviewed["schema_version"] = str(run_payload.get("schema_version") or "1.0")
+    reviewed["schema_version"] = str(
+        run_payload.get("schema_version") or "1.0"
+    )
     reviewed["status"] = status
     reviewed["issues"] = remaining
     reviewed["transitions"] = transitions
