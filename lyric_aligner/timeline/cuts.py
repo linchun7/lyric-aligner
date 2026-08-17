@@ -66,13 +66,20 @@ def _cuts(mapping: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 def _segment_for_source(segments: list[dict[str, Any]], source_seconds: float) -> dict[str, Any] | None:
-    for index, segment in enumerate(segments):
+    for segment in segments:
         start = float(segment["source_start"])
         end = float(segment["source_end"])
         if start - 1e-6 <= source_seconds <= end + 1e-6:
-            if index + 1 < len(segments) and source_seconds > end + 1e-6:
-                continue
             return segment
+    return None
+
+
+def _gap_for_source(mapping: dict[str, Any], source_seconds: float) -> dict[str, Any] | None:
+    for cut in _cuts(mapping):
+        gap_start = float(cut["source_gap_start"])
+        gap_end = float(cut["source_gap_end"])
+        if gap_start - 1e-6 <= source_seconds < gap_end - 1e-6:
+            return cut
     return None
 
 
@@ -241,15 +248,44 @@ def project_cut_aware_lines(
                 )
             continue
 
-        start_segment = _segment_for_source(segments, source_start_ms / 1000.0)
+        start_seconds = source_start_ms / 1000.0
+        start_segment = _segment_for_source(segments, start_seconds)
         if start_segment is None:
-            omitted.append(
-                {
-                    "canonical_line_index": line.index,
-                    "text": line.text,
-                    "reason": "line_start_removed_by_confirmed_cut",
-                }
-            )
+            containing_gap = _gap_for_source(mapping, start_seconds)
+            if containing_gap is not None:
+                gap_end = float(containing_gap["source_gap_end"])
+                if source_end_ms is not None and source_end_ms / 1000.0 <= gap_end + 1e-6:
+                    omitted.append(
+                        {
+                            "canonical_line_index": line.index,
+                            "text": line.text,
+                            "reason": "entire_line_interval_removed_by_confirmed_cut",
+                        }
+                    )
+                else:
+                    issues.append(
+                        {
+                            "kind": "canonical_fragment",
+                            "code": "line_lrc_starts_in_confirmed_cut",
+                            "canonical_line_index": line.index,
+                            "text": line.text,
+                            "status": "review",
+                            "reason": (
+                                "line-LRC starts inside a confirmed source gap but extends beyond "
+                                "the gap or has no finite end; surviving canonical characters cannot "
+                                "be inferred safely"
+                            ),
+                            "cut_candidate_ids": [str(containing_gap.get("candidate_id") or "")],
+                        }
+                    )
+            else:
+                omitted.append(
+                    {
+                        "canonical_line_index": line.index,
+                        "text": line.text,
+                        "reason": "line_outside_retained_source_range",
+                    }
+                )
             continue
 
         crossings = _gap_intersections(mapping, source_start_ms, source_end_ms)
@@ -270,7 +306,7 @@ def project_cut_aware_lines(
             )
             continue
 
-        mix_start = _project_source(start_segment, source_start_ms / 1000.0)
+        mix_start = _project_source(start_segment, start_seconds)
         mix_end = None
         if source_end_ms is not None:
             end_segment = _segment_for_source(segments, source_end_ms / 1000.0)
