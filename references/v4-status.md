@@ -3,49 +3,56 @@
 更新日期：2026-08-17  
 开发分支：`agent/v4-accuracy-foundation`  
 Draft PR：#1  
-v4 package 版本：`4.0.0a1`
+v4 package：`4.0.0a1`
 
-> 本文件回答“目前真正写了什么、测试到了哪里、什么还没接生产”。详细公式/设计见 `v4-implementation.md`，逐项变更见 `v4-change-record.md`，实际命令见 `v4-runtime-guide.md`，已采用/拒绝的声学实验见 `v4-experiments.md`。
+> 本文件只描述**实际已实现/已测试**与**尚未完成**。详细设计见 `v4-implementation.md`，实际命令见 `v4-runtime-guide.md`，变更记录见 `v4-change-record.md`，声学实验见 `v4-experiments.md`。
 
 ## 1. 当前结论
 
-v4 已经不只是方案文档，以下核心已经有实际代码、单元/合成声学回归和 Artifact lineage：
+v4 已经有可运行的独立 package/stage，但**尚未替换 legacy 生产主链**。
+
+已实现：
 
 1. sequence-aware evaluator；
-2. 多语言 Editor Evidence 基础；
-3. strict SRT / release integrity / artifact lineage；
-4. TrackAsset + TrackOccurrence + fail-closed asset resolver；
-5. conservative canonical LRC role preflight；
-6. UTF-8 default fail-closed 文本读取；
-7. Affine-first TimeWarp；
-8. HPSS harmonic + Chroma CENS + MFCC coarse retrieval；
-9. 多窗口全局 source path；
-10. selective high-resolution fine alignment；
-11. 相邻 TrackOccurrence transition/overlap review evidence；
-12. 可直接运行的 v4 stage CLI；
-13. canonical 行内 `LanguageSpan`，支持 ko+en / ja+en / zh/yue+en 等 span 级 Editor Evidence 策略。
+2. zh/en/ko/ja/yue/auto/generic Editor Evidence foundation；
+3. strict SRT / final integrity / Artifact lineage；
+4. `TrackAsset + TrackOccurrence`；
+5. fail-closed LRC/source resolver；
+6. canonical LRC role preflight + 显式任务级 role override；
+7. UTF-8 default fail-closed 文本策略；
+8. Affine-first TimeWarp；
+9. HPSS harmonic + Chroma CENS + MFCC coarse retrieval；
+10. 多窗口 monotonic source path；
+11. selective high-resolution fine alignment；
+12. 相邻歌曲 transition/overlap review evidence；
+13. 行内 `LanguageSpan`；
+14. 可直接运行的 v4 stage CLI。
 
-**尚未完成的关键点：** GitHub 远端 legacy `redo_karaoke_pipeline.py` 仍是已提交 v3.8；之前真实使用的 v3.9 是未提交工作树。v4 package 尚未替换/接入 legacy `audio-align/build/finalize/qa` 主链，因此当前 PR 必须保持 Draft。
+仍然阻止 PR #1 合并为生产替代的核心原因：远端 `scripts/redo_karaoke_pipeline.py` 仍是已提交 v3.8；此前真实使用的完整 v3.9 是未提交工作树。v4 package 尚未接入 legacy `audio-align/build/finalize/qa`。
 
-## 2. 已实现关键代码
+## 2. 关键实现
 
-### 2.1 可信发布链
+### 2.1 发布完整性
+
+关键代码：
 
 - `lyric_aligner/srt.py`
 - `lyric_aligner/contracts/artifacts.py`
 - `lyric_aligner/qa/final_integrity.py`
 - `scripts/v4_validate_release.py`
 
-关键升级：
+能力：
 
-- SRT 坏 block 不再静默跳过；
-- overlay SRT 的时间轴终点使用 `max(cue.end_ms)`；
-- FINAL SRT / audit CSV / QA 必须严格逐行对应；
-- 终稿正文、时间、行数、顺序任何变化都会 BLOCK；
-- ArtifactManifest 绑定 task fingerprint、algorithm version、配置、模型/依赖占位、upstream artifact IDs、输出 SHA-256；
-- 消费上游 artifact 时不仅校验 manifest 自己，还重新校验磁盘实体文件的 size/hash，防止 manifest 生成后文件被修改。
+- 坏 SRT block 立即失败；
+- overlay SRT 时间轴终点使用 `max(cue.end_ms)`；
+- FINAL SRT / audit CSV / QA 的数量、顺序、时间、正文严格绑定；
+- task fingerprint / algorithm version 严格一致；
+- ArtifactManifest 绑定配置、upstream IDs、输出 SHA-256；
+- 下游消费时重新校验磁盘实体文件 size/hash，防止 manifest 生成后文件被修改。
 
-### 2.2 输入可信性
+### 2.2 输入身份
+
+关键代码：
 
 - `lyric_aligner/domain.py`
 - `lyric_aligner/assets/resolver.py`
@@ -53,16 +60,22 @@ v4 已经不只是方案文档，以下核心已经有实际代码、单元/合�
 - `lyric_aligner/io/text.py`
 - `scripts/v4_resolve_assets.py`
 
-关键升级：
+能力：
 
-- 一个录音版本 = `TrackAsset`；本次 mix 中一次出现 = `TrackOccurrence`；
-- 同歌重复出现不会和另一次 occurrence 混淆；
-- LRC/source 不再“最像的就用”：top1 threshold + top1/top2 margin + artist/title identity + 文件唯一占用；
-- 同时间戳多行歌词必须能唯一确认 canonical original；不能确认就 BLOCK；
-- 韩文旁边的拉丁行不会自动猜成“罗马音”或“英文翻译”；
-- v4 文本默认 UTF-8；CP949/Shift-JIS 等必须显式声明/转换，禁止盲猜解码。
+- 一个具体录音+歌词版本 = `TrackAsset`；
+- 在本次 mix 中一次出现 = `TrackOccurrence`；
+- 同歌重复出现可复用 asset，但 occurrence_id 不同；
+- LRC/source 匹配使用 minimum score + top1/top2 margin + artist/title identity + 文件唯一占用；
+- 同一时间戳多条歌词无法唯一确认原文时 BLOCK；
+- 可通过任务级 `--lyric-role-map` 显式指定 canonical original，不让算法猜；
+- language/middle-cut/lyric-role map 的 SHA-256 写入 asset artifact；
+- 默认 UTF-8，legacy encoding 必须显式处理。
+
+显式 role override 规范：`references/v4-lyric-role-overrides.md`。
 
 ### 2.3 Source→Mix 音频映射
+
+关键代码：
 
 - `lyric_aligner/audio/features.py`
 - `lyric_aligner/audio/coarse_mapper.py`
@@ -71,176 +84,159 @@ v4 已经不只是方案文档，以下核心已经有实际代码、单元/合�
 - `scripts/v4_coarse_align.py`
 - `scripts/v4_fine_align.py`
 
-核心链路：
+链路：
 
 ```text
-Mix / Source audio
-    ↓
 HPSS harmonic
-    ↓
-Chroma CENS + MFCC
-    ↓
-每窗口多 source-position / slope 候选
-    ↓
-top1/top2 margin + candidate NMS
-    ↓
-跨窗口单调全局路径
-    ↓
-AlignmentAnchor
-    ↓
-AFFINE first
-    ↓ 仅固定模型解释失败时
-PIECEWISE_RATE
-    ↓ 仅低 margin / blocked / complex 时
-Fine Alignment
+  -> Chroma CENS + MFCC
+  -> 每窗多个 source/slope 候选
+  -> top1/top2 margin + NMS
+  -> 跨窗 monotonic global path
+  -> AlignmentAnchor
+  -> AFFINE first
+  -> 必要时 PIECEWISE_RATE
+  -> 仅不确定/复杂区 Fine Alignment
 ```
 
 关键语义：
 
-- 大多数正常歌曲停在 AFFINE；
-- BPM 只是软 prior，不锁 slope；
-- 错 BPM 不能排除全局 slope 搜索；
-- 同一歌局部 `1.08 -> 1.17 -> 1.43` 可以表示为连续 PIECEWISE_RATE；
-- abrupt slope change 不是 cut；
-- source position jump 才是 middle-cut/discontinuity 候选；
-- `middle_cut=true` 只允许搜索，绝不自动 confirmed；
-- fine alignment 默认跳过 clean AFFINE，只处理不确定/复杂路径或显式 `--force`。
+- 大多数歌曲保持 AFFINE 快路径；
+- BPM 只是 soft prior，不能硬锁 slope；
+- `1.08 -> 1.17 -> 1.43` 可表示为连续 PIECEWISE_RATE；
+- abrupt slope change != cut；
+- source position jump 才是 middle-cut/discontinuity candidate；
+- `middle_cut=true` 只改变搜索策略，仍必须 review；
+- clean AFFINE 默认不跑 fine alignment。
 
-### 2.4 歌曲交界与叠唱
+### 2.4 歌曲交界
+
+关键代码：
 
 - `lyric_aligner/audio/transition.py`
 - `scripts/v4_probe_transition.py`
 
-关键升级：
-
-- `nominal_start_ms` 是搜索先验，不是上一首硬 end；
-- transition 建议在边界前后有限 margin 同时对两首 source 做 coarse alignment；
-- 两首都在同一 mix 区间得到强、非歧义 source evidence 时，只生成：
+`nominal_start_ms` 是搜索先验，不是上一首硬 end。两首相邻 TrackOccurrence 在同一 transition window 都出现强、非歧义 source evidence 时，只生成：
 
 ```text
 cross_track_overlap_candidate
-status = review
+status=review
 ```
 
-- 不自动确认叠唱；
-- 重复副歌导致的 low-margin 高分不会冒充 overlap，只进入 `uncertain_intervals` 并 BLOCK；
-- 明显顺序交接不制造 review candidate。
+重复副歌造成的 low-margin 高分只进入 uncertain/BLOCK，不自动冒充叠唱。
 
 ### 2.5 行内混合语言
 
+关键代码：
+
 - `lyric_aligner/text/language_spans.py`
-- `scripts/test_v4_language_spans.py`
 
-关键语义：
+示例：
 
-- `널 사랑해 baby` -> ko span + en span；
-- `君が好き baby` -> ja span + en span；
-- 粤语汉字 span 保持 yue，内嵌英文可单独使用 `direct_text`；
-- 韩/日 span 仍只使用 `phonetic_hint`；
-- 未知拉丁小语种不会因为 Latin script 就被自动重命名为 English；
-- 未知 Han script 不会自动被重命名为 Mandarin。
+- ko+en：韩文 span `phonetic_hint`，英文 span `direct_text`；
+- ja+en 同理；
+- yue+en：粤语 Han span `timing_hint`，英文 span `direct_text`；
+- 未知 Latin 不自动叫英文；
+- 未知 Han 不自动叫普通话。
 
-这为后续把 Editor Evidence / ASR evidence 从 track/job 级下沉到 span 级打基础，目前尚未全面接入 legacy sequence score。
+目前该策略尚未全面接入 legacy sequence/boundary score。
 
-## 3. Bootstrap 参数声明
+## 3. Evaluator 当前指标
 
-当前所有阈值均是保守初始值，不是生产 calibration 结果，包括但不限于：
+`evaluate_dataset.py` 现在覆盖：
 
-```text
-asset min_score = 0.76
-asset min_margin = 0.08
-coarse slope range = 0.65..1.80
-coarse slope step = 0.10
-coarse fusion = 0.78 * chroma + 0.22 * mfcc
-coarse min_score = 0.72
-coarse min_margin = 0.035
-fine source radius = 1.25s
-fine slope radius = 0.08
-fine slope step = 0.02
-fine candidate step = 0.05s
-transition min_score = 0.72
-transition min_margin = 0.02
-transition min overlap = 0.75s
-TimeWarp max_continuous_rate = 2.0
-TimeWarp min_excess_source_jump = 1.5s
-```
+### 文本/顺序
 
-这些值必须通过私有 calibration/blind-test 调整，不能因为合成测试通过就长期固定。
+- sequence-aware edit / `sequence_wer`；
+- line exact precision/recall/F1；
+- missing/extra/wrong-order line；
+- split/merge count。
+
+### 边界
+
+使用单调 DP group alignment，支持有限 one-to-many / many-to-one：
+
+- onset MAE / P50 / P90 / P95；
+- offset MAE / P50 / P90 / P95；
+- onset/offset 250ms、500ms 命中率；
+- legacy combined boundary MAE/P95 保留。
+
+### Cut / Overlap
+
+- 新 cut 评估按真实 `time_ms + tolerance` 匹配，不要求共享人为 ID；
+- legacy cut IDs 仅兼容；
+- overlap duration precision/recall；
+- overlap IoU；
+- overlap event precision/recall；
+- track attribution accuracy。
+
+协议详见 `references/dataset-protocol.md`。
 
 ## 4. 当前验证
 
-在恢复的 v3.9 工作树 + 当前 v4 package 本地组合执行：
+本地恢复 v3.9 工作树 + 当前 v4 package 的组合回归：
 
 ```text
-python -m compileall -q lyric_aligner scripts
-PYTHONPATH=.:scripts python -m unittest <v4 tests + legacy core/end-to-end>
+104 tests passed
+27.61s
 ```
 
-最新本地结果：
-
-```text
-99 tests passed
-27.31s
-```
-
-覆盖：
+包含：
 
 - legacy v3.9 middle-cut / variable-speed / overlap / end-to-end；
-- sequence-aware evaluator；
-- release false-ready；
-- artifact 磁盘 hash drift；
-- asset 错绑/歧义；
-- LRC 同时间戳原文歧义；
+- evaluator；
+- release false-ready / artifact hash drift；
+- asset 错绑与歧义；
+- LRC role ambiguity / explicit override；
 - CP949 非显式编码；
-- 固定倍率 AFFINE；
-- 错 BPM prior；
-- `1.08 -> 1.17 -> 1.43` 连续局部倍率；
+- AFFINE / wrong BPM prior / PIECEWISE_RATE；
+- `1.08 -> 1.17 -> 1.43`；
 - rate change vs cut；
 - 强 140 BPM click；
-- source 重复 motif top1/top2 ambiguity；
-- 多窗口单调 path；
+- repeated motif ambiguity；
+- global coarse path；
 - selective fine alignment；
-- adjacent transition overlap review evidence；
-- mixed-language span policy；
-- 5 个 v4 CLI 在空环境变量下从 repo root 可正常启动。
+- transition overlap review；
+- mixed-language span；
+- v4 CLI repo-root bootstrap。
 
-GitHub Actions：此前 head 的 `validate` 已成功；当前最新 head 应以对应 workflow run 的最终结果为准，不用旧 CI 结果冒充最新提交已通过。
+一个合成 fine fixture（1.20× time-stretch + 140 BPM click）中：
 
-### 合成 fine alignment 示例
+```text
+coarse source-center median error ≈ 38ms
+fine   source-center median error ≈ 20ms
+refined affine slope ≈ 1.204
+```
 
-一个合成 fixture：source 片段按 1.20 倍 time-stretch，并叠加 140 BPM click。
+这只是合成 fixture，不代表真实歌曲总体准确率。
 
-- coarse source-center median error：约 38ms；
-- fine source-center median error：约 20ms；
-- refined AFFINE slope：约 1.204。
+## 5. 已验证拒绝的方案
 
-**该数字只证明合成 fixture 中精修路径有效，不代表真实歌曲总体准确率。**
+HPSS harmonic 的直接 sample-domain waveform correlation 在 1.20× phase-vocoder time-stretch 后，即使 source 候选正确，相关分也只有约 `0.0008`。因此没有提交为通用第三声学 family。
 
-### 已验证拒绝的方案
+详见 `references/v4-experiments.md`。
 
-尝试把 HPSS harmonic 的直接 sample-domain waveform correlation 作为第三声学 evidence。在同一 source 片段经 1.20× phase-vocoder time-stretch 后，正确候选相关分仅约 `0.0008`，不能稳定作为通用证据。该实验代码未提交，详见 `v4-experiments.md`。
+## 6. Bootstrap 参数
 
-## 5. 尚未完成
+当前 score/margin/slope/residual/fine/transition 阈值均为**初始保守值**，没有 real-data calibration。不得将这些数字解释成生产最优阈值。
 
-### P0/P1 必须完成
+## 7. 下一步关键任务
 
-1. 用本地 Git/Codex 恢复真正 v3.9 legacy 工作树并形成可追溯 commit/tag；
-2. 把 strict SRT / artifact lineage / TrackAsset / TimeWarp 真正接入 legacy 生产 CLI；
-3. 禁止 legacy 3.8/3.9/v4 artifact 静默混用；
-4. 将 Editor Evidence + LanguageSpan profile 接入生产 sequence/boundary score；
-5. 为同脚本 translation/original 增加显式 role override，而不是靠猜。
+### 必须由本地 Git/Codex 完成的迁移
 
-### 音频准确率下一步
+1. 将恢复的真实 v3.9 legacy 工作树形成独立 commit/tag；
+2. 再从该基线把 legacy CLI 接到 v4 package；
+3. 禁止 3.8/3.9/v4 artifact 静默混用；
+4. 跑私有真实 calibration/blind-test。
 
-1. 不把直接 waveform correlation 作为通用第三证据；优先试更稳定的 CQT/spectral/vocal/phonetic evidence，并记录 A/B；
-2. transition margin 自动调度两首 occurrence 的 source search；
-3. fine alignment 增加局部歌词边界输出；
-4. 建立私有 real-song calibration/blind-test；
-5. calibration 后再决定是否引入 source-side Forced Alignment；
-6. ASR v2、双模型、人声分离继续后置。
+### 我们继续开发的算法方向
 
-## 6. 发布状态
+1. 把 Editor Evidence + LanguageSpan 接入实际 production scoring；
+2. 让 transition margin 自动调度相邻 occurrence；
+3. fine alignment 输出可供歌词边界优化使用的局部 timing evidence；
+4. 使用真实 blind-test 重定 bootstrap 阈值；
+5. 之后再评估 source-side Forced Alignment；
+6. ASR v2、双模型和人声分离继续后置。
 
-当前 PR #1：**Draft / 不应合并到 main 作为生产替代。**
+## 8. 发布状态
 
-原因不是当前新模块测试失败，而是 legacy v3.9 的正式 Git 基线与生产接线尚未完成。当前 v4 新模块可以在本地私有任务中并行试跑和收集指标，但不能把它描述成已经替换 v3.x 的正式生产管线。
+PR #1 必须继续保持 **Draft**。当前新模块可用于私有任务并行试跑/收集指标，但不能描述为已经替换 v3.x 正式生产管线。
