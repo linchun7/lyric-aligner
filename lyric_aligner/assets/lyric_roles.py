@@ -8,15 +8,12 @@ from pathlib import Path
 from typing import Iterable
 
 from lyric_aligner.io.text import read_task_text
+from lyric_aligner.text.normalization import META_RE, clean_text
 
 LRC_LINE_RE = re.compile(r"\[(\d{1,3}):(\d{2})(?:[.:](\d{1,3}))?\](.*)")
 QRC_LINE_RE = re.compile(r"^\[(\d+),(\d+)\](.*)$")
 ENHANCED_TOKEN_RE = re.compile(r"<\d{1,3}:\d{2}(?:[.:]\d{1,3})?>")
 QRC_TOKEN_TIME_RE = re.compile(r"\(\d+,\d+\)")
-META_RE = re.compile(
-    r"^(?:\[?by:|作词|作曲|编曲|词\s*:|曲\s*:|制作人|人声采样|版权|发行|混音|母带|企划|出品人|op\s*:|sp\s*:)",
-    re.IGNORECASE,
-)
 HANGUL_RE = re.compile(r"[가-힣]")
 HAN_RE = re.compile(r"[一-鿿]")
 KANA_RE = re.compile(r"[ぁ-ゖァ-ヺ]")
@@ -53,16 +50,11 @@ def _timestamp_ms(minute: str, second: str, fraction: str | None) -> int:
 
 
 def _display_text(value: str) -> str:
-    """Remove timing markup before role/script classification.
-
-    The returned text preserves the same alternative ordering as the source
-    file.  Timing markup is evidence metadata, not lyric text and must not hide
-    metadata prefixes or influence script detection.
-    """
+    """Remove timing markup before role/script classification."""
 
     value = ENHANCED_TOKEN_RE.sub("", value)
     value = QRC_TOKEN_TIME_RE.sub("", value)
-    return re.sub(r"\s+", " ", value).strip()
+    return clean_text(value)
 
 
 def script_kind(text: str) -> str:
@@ -111,7 +103,6 @@ def classify_alternatives(
     language: str,
 ) -> list[LyricAlternative]:
     cleaned = [_display_text(text) for text in texts]
-    # Empty timestamp rows do not become alternatives in canonical parsing.
     cleaned = [text for text in cleaned if text]
     if not cleaned:
         return []
@@ -129,9 +120,6 @@ def classify_alternatives(
         ]
         if len(native) == 1:
             roles[native[0]] = "original"
-        # Every other alternative intentionally remains unknown. Latin text next
-        # to a Korean/Japanese/Chinese original may be a translation OR a
-        # romanization; guessing that role would create false confidence.
 
     return [
         LyricAlternative(timestamp_ms, text, role, script_kind(text))
@@ -162,7 +150,6 @@ def inspect_lyric_roles(
 
         match = LRC_LINE_RE.match(stripped)
         if not match:
-            # Header/meta tags without a timestamp are not canonical lyric rows.
             continue
         minute, second, fraction, text = match.groups()
         try:
