@@ -112,3 +112,20 @@ def validate_upstream_artifact(
     if not artifact_id or artifact_id != canonical_json_sha256(unsigned):
         issues.append("artifact_id does not match manifest contents")
     return issues
+
+
+def validate_artifact_output(payload: dict[str, Any], *, role: str, path: Path) -> list[str]:
+    """Validate one materialized stage output against its manifest record."""
+
+    records = [record for record in payload.get("outputs", []) if record.get("role") == role]
+    if len(records) != 1:
+        return [f"artifact must contain exactly one output role {role!r}"]
+    record = records[0]
+    issues: list[str] = []
+    if not path.is_file():
+        return [f"artifact output {role} does not exist: {path}"]
+    if int(record.get("size", -1)) != path.stat().st_size:
+        issues.append(f"artifact output {role} size mismatch")
+    if str(record.get("sha256", "")) != sha256_file(path):
+        issues.append(f"artifact output {role} hash mismatch")
+    return issues
