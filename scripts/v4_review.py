@@ -105,6 +105,10 @@ def command_apply(args: argparse.Namespace) -> int:
     )
     atomic_write_json(args.out, reviewed)
     resolution = reviewed["review_resolution"]
+    inherited_upstreams = {
+        str(value) for value in artifact.get("upstream_artifact_ids", []) if str(value)
+    }
+    inherited_upstreams.add(str(artifact["artifact_id"]))
     review_artifact = build_artifact_manifest(
         task_fingerprint_sha256=fingerprint,
         stage="review_resolution",
@@ -122,7 +126,7 @@ def command_apply(args: argparse.Namespace) -> int:
             "legacy_fallback": False,
         },
         producer={"git_commit": args.git_commit} if args.git_commit else {},
-        upstream_artifact_ids=(str(artifact["artifact_id"]),),
+        upstream_artifact_ids=tuple(sorted(inherited_upstreams)),
         evidence={
             "status": reviewed["status"],
             "decision_count": int(resolution["decision_count"]),
