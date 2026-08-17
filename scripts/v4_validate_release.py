@@ -77,7 +77,7 @@ def main() -> int:
         type=Path,
         action="append",
         default=[],
-        help="Repeat for asset/coarse/fine/transition artifacts to bind release lineage.",
+        help="Repeat to bind the release to production stage artifacts. v4 requires final_render.",
     )
     parser.add_argument("--git-commit", default="")
     parser.add_argument("--out-manifest", required=True, type=Path)
@@ -92,6 +92,26 @@ def main() -> int:
         upstream_ids, upstream_metadata = _load_upstream_artifacts(
             args.upstream_artifact, fingerprint=fingerprint
         )
+
+        if args.algorithm_version.startswith("4."):
+            upstream_version = upstream_metadata["v4_upstream_algorithm_version"]
+            if not upstream_ids:
+                raise ValueError("v4 release requires at least one upstream artifact")
+            if upstream_version != args.algorithm_version:
+                raise ValueError(
+                    "release algorithm version differs from upstream artifacts: "
+                    f"release={args.algorithm_version}, upstream={upstream_version or '<missing>'}"
+                )
+            if "final_render" not in upstream_metadata["upstream_stages"]:
+                raise ValueError("v4 release requires a final_render upstream artifact")
+            profile_id = upstream_metadata["calibration_profile_id"]
+            profile_version = upstream_metadata["calibration_profile_version"]
+            if not profile_id or not profile_version:
+                raise ValueError("v4 release upstream is missing calibration profile identity")
+        else:
+            profile_id = upstream_metadata["calibration_profile_id"] or None
+            profile_version = upstream_metadata["calibration_profile_version"] or None
+
         manifest = build_release_artifact_manifest(
             final_srt=args.final_srt,
             audit_csv=args.report,
@@ -101,6 +121,8 @@ def main() -> int:
             git_commit=args.git_commit,
             normalized_config=upstream_metadata,
             upstream_artifact_ids=upstream_ids,
+            expected_calibration_profile_id=profile_id,
+            expected_calibration_profile_version=profile_version,
         )
         atomic_write_json(args.out_manifest, manifest)
     except (OSError, KeyError, ValueError, json.JSONDecodeError, FinalIntegrityError) as exc:
