@@ -6,61 +6,60 @@
 v4 package：`4.0.0a2`  
 TrackAsset schema：`1.1`
 
-> 本文件只描述**实际已实现/正在接线/尚未生产启用**。架构复盘见 `v4-architecture-review-2026-08-17.md`；legacy 最小接线任务见 `v4-legacy-rewire-handoff.md`。
+> 本文件只描述实际已实现、仍在 shadow/calibration、以及尚未完成的生产接线。架构复盘见 `v4-architecture-review-2026-08-17.md`；legacy 接线任务见 `v4-legacy-rewire-handoff.md`。
 
-## 1. 当前总体结论
+## 1. 总体决策
 
-### v3.9
+### v3.9：保留并冻结
 
-**保留并冻结，不废弃。**
+v3.9 不因相对 v3.8 的可见准确率提升有限而删除。它保留 middle-cut review/apply、分段变速、Enhanced LRC/QRC、overlap review 和成熟 QA gate，因此继续作为：
 
-v3.9 的价值主要是 compatibility kernel / regression oracle / emergency fallback，而不是未来架构。它已经保留 middle-cut、分段变速、Enhanced LRC/QRC、overlap review 与成熟 QA gate；今后禁止继续把新算法堆进 monolith。
+- compatibility kernel；
+- regression oracle；
+- emergency fallback。
 
-### v4
+今后禁止继续向 `scripts/redo_karaoke_pipeline.py` 堆新算法。
 
-v4 是一次**架构层面的彻底重构**，但采用渐进替换，不采用一次性 rewrite。最终目标是 production truth 全部位于 `lyric_aligner/` package；`scripts/redo_karaoke_pipeline.py` 最终只剩薄兼容入口或归档 fallback。
+### v4：彻底重构，但渐进替换
 
-当前 **TimeWarp / transition / LanguageSpan 仍为 shadow/calibration 能力**，尚未替换 v3.9 正式音频映射。
+v4 的“彻底”是最终 production truth 全部迁入 `lyric_aligner/` 的类型化领域模型、版本化 calibration profile、stage artifacts 和 orchestrator；不是一次性把 5000+ 行 monolith 机械搬家。
 
-## 2. 本轮 deep review 发现并已开始修复的 P0
+当前 TimeWarp / transition / LanguageSpan 仍为 shadow/calibration，不替换 v3.9 正式映射。
 
-### 2.1 source audio 双真源
+## 2. Deep review 已修复/正在修复的关键问题
 
-Codex 已接入 v4 TrackAsset，但 legacy `audio-align` 仍会再次调用旧 `find_source_audio()`。因此 v4 resolver 选中的 source 与实际波形对齐使用的 source 仍可能不同。
+### 单一资产真源
 
-处理：新增 `ResolvedAssetBinding` 与 `legacy.bridge`；下一步本地 monolith 接线必须在 v4 mode 只使用 binding source path/hash。
+Codex 初始接线仍存在：v4 resolver 先选 source，legacy `audio-align` 后续又 `find_source_audio()`。
 
-### 2.2 canonical lyric 双真源
+已建立：
 
-v4 `lyric-role-map` 可指定同时间戳第 N 行为 original，但 legacy `parse_lrc()` 仍固定选择 `alternatives[0]`。
+- `TrackAsset` schema 1.1；
+- `ResolvedAssetBinding`；
+- source/LRC 实体 hash 重验证；
+- `legacy.bridge`。
 
-处理：
+本地 monolith rewire 后，v4 mode 必须只使用 binding source path/hash。
 
-- TrackAsset schema 1.1 将 exact canonical selection 纳入 semantic identity；
-- 新增 `canonical_selection_sha256`；
-- 新增统一 canonical lyric parser；
-- Enhanced LRC/QRC 词级时间仍保留；
-- v4 mode 下 legacy 必须使用 bridge 提供的 canonical lines，禁止重新选第一行。
+### 单一 canonical lyric 真源
 
-### 2.3 semantic identity 不完整
+旧 legacy `parse_lrc()` 会固定拿同时间戳第一行，与 `lyric-role-map` 可能冲突。
 
-旧 TrackAsset ID 只绑定 source hash + raw LRC hash。同一 LRC 文件如果 role override 从 alternative 0 改到 1，asset identity 不变。
+已建立：
 
-已修复：`track_id/version_id` 现在同时包含 `canonical_selection_sha256`。因此修改原文选择会强制产生新 asset identity，旧 artifact 不可静默复用。
+- `canonical_selection_sha256`；
+- canonical selection 纳入 `track_id/version_id`；
+- `CanonicalLine/CanonicalToken`；
+- 普通 LRC / Enhanced LRC / QRC 统一 parser；
+- QRC 与 Enhanced LRC role preflight；
+- metadata 不能被 override 为 original；
+- shared `text/normalization.py`，避免 text 层反向依赖 assets 层。
 
-### 2.4 阈值散落
+因此修改 same-timestamp original 选择会改变资产语义身份，旧 artifact 不可静默复用。
 
-旧 alpha 把 resolver/coarse/fine/transition/TimeWarp bootstrap 数字散在函数与 CLI 默认值中。
+## 3. 可升级结构
 
-已修复基础：新增 `V4CalibrationProfile` 与稳定 `profile_id`。Resolver/Coarse/Fine/Transition artifact 开始记录 profile version/id；Release Guard 可拒绝跨 profile 拼接。
-
-### 2.5 v4 version 重复定义
-
-legacy monolith 仍硬编码 `V4_ALGORITHM_VERSION = 4.0.0a1`，而 package 已进入 `4.0.0a2`。
-
-处理策略：不降级 package；本地 rewire 必须删除第二个 v4 真源，统一从 package/bridge 读取版本。
-
-## 3. 当前新增长期结构
+当前：
 
 ```text
 lyric_aligner/
@@ -83,21 +82,14 @@ lyric_aligner/
   qa/
     final_integrity.py
   text/
+    normalization.py
     canonical_lyrics.py
     language_spans.py
   config.py
   domain.py
 ```
 
-新增关键职责：
-
-- `ResolvedAssetBinding`：一个 occurrence 的 source/LRC/original 单一真源；
-- `CanonicalLine/CanonicalToken`：统一普通 LRC、Enhanced LRC、QRC；
-- `PipelineContext`：绑定 task fingerprint、v4 version、calibration profile、asset artifact、occurrence bindings；
-- `legacy.bridge`：明确依赖方向只能 `legacy -> v4 contracts`；
-- `V4CalibrationProfile`：阈值与算法代码解耦。
-
-仍待建立/成熟：
+仍待成熟：
 
 ```text
 lyric_aligner/evidence/
@@ -106,11 +98,31 @@ lyric_aligner/calibration/
 lyric_aligner/cache/
 ```
 
-因此当前结构是**正确的长期骨架，但不是“已经最优完成态”**。
+当前结构是长期正确骨架，但不是“已经最优、以后不再调整”的完成态。
 
-## 4. Source→Mix 当前状态
+## 4. Calibration profile / 可复现性
 
-已有：
+新增 `V4CalibrationProfile` 与稳定 `profile_id`。
+
+生产规则：
+
+1. Asset Resolution 可通过 `--profile <json>` 输入一个完整 profile；
+2. 完整 profile 嵌入 `track_assets.json`；
+3. 后续 Coarse/Fine/Transition 从 `PipelineContext` 自动恢复同一 profile；
+4. profile 内容改变 -> profile ID 改变；
+5. 临时 CLI 调参可以做实验，但必须记录为 `calibration_overrides`；
+6. Release Guard 遇到任何未固化进 profile 的 override -> BLOCK。
+
+可用：
+
+```bash
+python scripts/v4_profile.py --write-default profile.json
+python scripts/v4_profile.py --validate profile.json
+```
+
+这避免“阈值已经改了，artifact 仍声称是默认 profile”的假复现。
+
+## 5. Source→Mix 当前链路
 
 ```text
 HPSS harmonic
@@ -123,26 +135,26 @@ HPSS harmonic
  -> selective Fine Alignment
 ```
 
-关键语义保持：
+保持原则：
 
-- 大多数固定倍率歌曲停在 AFFINE；
-- BPM 是 soft prior；
+- 普通固定倍率歌曲停在 AFFINE；
+- BPM 只是 soft prior；
 - rate change != cut；
-- source-position jump 才产生 discontinuity/cut candidate；
+- source position jump 才产生 discontinuity candidate；
 - `middle_cut=true` 不等于 confirmed；
-- clean AFFINE 默认不跑 fine。
+- clean AFFINE 默认跳过 fine。
 
-### 本轮性能 hardening
+### 长歌单性能 hardening
 
-此前每个 occurrence 都会对整条 40–60 分钟 mix 重做 HPSS/Chroma/MFCC。
+Coarse 不再对整条 40–60 分钟 mix 每首重算 HPSS/Chroma/MFCC，只计算 occurrence/transition 搜索区间，再恢复全局 mix 坐标。
 
-已改：`build_coarse_timewarp()` 只对当前 `mix_start..mix_end` 搜索区间提取 mix 特征，然后把结果坐标恢复为全局时间。source 仍整曲提特征，因为需要全源检索。
+Fine 也只计算 coarse windows 覆盖的局部高分辨率 mix 特征，不再对整小时做 16kHz/hop256 特征。
 
-这会显著降低长歌单重复特征计算；后续仍计划增加 hash/config keyed feature cache。
+下一步仍需要 source/mix feature cache，以 hash + profile/backend config 为 key，减少同一 source 在 coarse/fine/transition 中重复提取。
 
-## 5. Artifact / Release lineage
+## 6. Artifact / Release lineage
 
-当前 v4 stage 链：
+当前 v4 stage：
 
 ```text
 Task Manifest
@@ -153,93 +165,105 @@ Task Manifest
  -> release
 ```
 
-Resolver/Coarse/Fine/Transition 现在都可携带同一个：
+主要 artifact 记录：
 
 ```text
-calibration_profile_version
-calibration_profile_id
-asset_artifact_id
+task fingerprint
+algorithm version
+calibration profile version/id
+canonical selection identity
+asset artifact ID
+upstream artifact IDs
+normalized effective config
+output hashes
 ```
 
-`v4_validate_release.py` 支持重复传入 `--upstream-artifact`：
+Release Guard：
 
-- 校验 task fingerprint；
-- 校验 artifact_id；
-- 收集 upstream IDs；
-- 若 upstream 使用不同 calibration profile -> BLOCK；
-- 最终 release manifest 绑定这些 upstream IDs。
+- 拒绝跨 task；
+- 拒绝 artifact ID/hash 不一致；
+- 拒绝不同 calibration profile 拼接；
+- 拒绝未固化进 profile 的 CLI calibration overrides。
 
-## 6. 测量能力
+## 7. Evaluator
 
-Evaluator 已覆盖：
+已覆盖：
 
-- sequence WER / line exact precision/recall/F1；
+- sequence WER；
+- line exact precision/recall/F1；
 - missing/extra/wrong-order；
 - split/merge；
-- onset/offset MAE、P50/P90/P95；
+- onset/offset MAE/P50/P90/P95；
 - cut time-tolerance precision/recall；
 - overlap duration precision/recall/IoU；
 - track attribution accuracy。
 
-这些指标是后续 TimeWarp 从 shadow 升 production 的门槛，不再用“看几个字幕觉得更准”代替 A/B。
+这些指标是 TimeWarp 从 shadow 升 production 的门槛。
 
-## 7. 已验证拒绝的方向
+## 8. 当前生产接线还差什么
 
-HPSS harmonic 的 sample-domain waveform correlation 在 phase-vocoder 变速后不稳定；合成验证中正确 candidate 的相关分仍接近零。因此没有作为第三声学 family 上线。详见 `v4-experiments.md`。
+`references/v4-legacy-rewire-handoff.md` 已给本地 Codex 精确任务。
 
-## 8. 当前必须完成的下一步
+P0 只做 adapter seam：
 
-### P0：legacy integration seam
+- 删除 legacy 内第二个 v4 version 真源；
+- v4 mode source 只从 `ResolvedAssetBinding`；
+- v4 mode canonical lyrics 只从 `canonical_lines_for_ordinal()`；
+- prepare/audio-align/build/refine/finalize/qa 共享同一 v4 context；
+- strict SRT + max timeline end；
+- asset/profile lineage 贯穿 release；
+- 不传 v4 参数时 pure v3.9 行为保持不变。
 
-任务书：`references/v4-legacy-rewire-handoff.md`
+禁止在这一步：
 
-只允许接线，不允许加算法：
+- TimeWarp production cutover；
+- Forced Alignment；
+- 新 ASR 模型；
+- 调 bootstrap 阈值。
 
-1. 删除 legacy 内独立 v4 version 真源；
-2. 所有 v4 mode source audio 来自 `ResolvedAssetBinding`；
-3. 所有 v4 mode canonical lyric 来自 `canonical_lines_for_ordinal()`；
-4. build/refine/finalize/qa 统一收到同一个 v4 context；
-5. v4 mode strict SRT + max timeline end；
-6. lineage 从 asset 一直传播到 release；
-7. pure v3.9 mode 完全保持原行为。
+## 9. 下一阶段
 
-### P1：TimeWarp shadow A/B
+### P1 TimeWarp shadow A/B
 
-P0 完成后：
+同一 occurrence 同时生成 v3.9 mapping 与 v4 TimeWarp，build 仍先用 v3.9。收集：
 
-- 同一 occurrence 同时生成 v3.9 mapping 与 v4 TimeWarp；
-- build 暂时仍使用 v3.9；
-- 收集 mapping residual、边界、cut/overlap、review density、runtime；
-- calibration/blind-test 达标后按 occurrence gated adoption；
-- 不允许一次切换所有歌曲。
+- mapping residual；
+- onset/offset；
+- cut/rate-change；
+- overlap；
+- review density；
+- runtime。
 
-### P2：Timeline / Evidence
+blind-test 达标后按 occurrence gated adoption，不能一次性全切。
 
-之后再进入：
+### P2 Timeline / Evidence
 
-- TrackOccurrence active states `{A, B, A+B, silence}`；
-- Editor/ASR/audio/forced-align EvidenceRecord；
+之后再建立：
+
+- TrackOccurrence active state `{A,B,A+B,silence}`；
+- EvidenceRecord / DecisionRecord；
+- Editor/ASR/audio evidence fusion；
 - source-side Forced Alignment；
 - mix vocal local refinement；
 - canonical fragment。
 
-## 9. “v4 已彻底完成”的退出条件
+## 10. v4 完成定义
 
-只有同时满足才可宣称 v4 正式替代 v3.9：
+只有同时满足才可宣布 v4 正式替代 v3.9：
 
 - production CLI 只调用 package orchestrator；
 - monolith 不再决定 asset/canonical lyric/timewarp/timeline/release；
-- stage artifact 全部有 version/profile/upstream lineage；
+- stage artifacts 全部有 version/profile/upstream lineage；
 - real calibration + blind-test 完成；
 - fixed-speed 普通歌曲不退化；
 - rate-change/cut/overlap 独立指标达标；
-- zh/en/ko/ja/yue/mixed 分层结果达标；
+- zh/en/ko/ja/yue/mixed 分层指标达标；
 - v3.9 只作为 regression/fallback。
 
-## 10. 当前发布状态
+## 11. 当前分支策略
 
-- `codex/v4-v3.9-integration`：建议作为冻结 v3.9 + 初始 v4 integration 基线，不废弃。
-- `agent/v4-integration-hardening` / PR #2：继续 Draft，当前正在完成 P0 architecture hardening。
+- `codex/v4-v3.9-integration`：保留，作为冻结 v3.9 + 初始 v4 integration 基线；
+- `agent/v4-integration-hardening` / PR #2：继续 Draft，完成 P0 architecture hardening；
 - `main`：暂不修改。
 
-CI 与测试数字只以当前 head 的实际 GitHub Actions 结果为准；旧 head 的成功不自动继承到新提交。
+CI/测试状态必须以 PR 当前 head 为准，旧 head 的成功不能自动继承。

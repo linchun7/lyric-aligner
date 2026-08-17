@@ -16,36 +16,21 @@ import librosa
 
 from lyric_aligner import __version__
 from lyric_aligner.audio.coarse_mapper import build_coarse_timewarp
-from lyric_aligner.config import DEFAULT_V4_PROFILE
-from lyric_aligner.contracts.artifacts import (
-    atomic_write_json,
-    build_artifact_manifest,
-    sha256_file,
-    validate_artifact_output,
-)
+from lyric_aligner.config import calibration_overrides
+from lyric_aligner.contracts.artifacts import atomic_write_json, build_artifact_manifest, sha256_file, validate_artifact_output
 from lyric_aligner.pipeline.context import build_pipeline_context
 from task_contract import assert_manifest_paths, load_task_manifest, resolve_manifest_record
 
 
 def _default_interval(bindings, binding, mix_duration: float) -> tuple[float, float]:
     ordered = sorted(bindings, key=lambda item: item.ordinal)
-    position = next(
-        index
-        for index, item in enumerate(ordered)
-        if item.occurrence_id == binding.occurrence_id
-    )
+    position = next(index for index, item in enumerate(ordered) if item.occurrence_id == binding.occurrence_id)
     start = float(binding.nominal_start_ms) / 1000.0
-    end = (
-        float(ordered[position + 1].nominal_start_ms) / 1000.0
-        if position + 1 < len(ordered)
-        else mix_duration
-    )
+    end = float(ordered[position + 1].nominal_start_ms) / 1000.0 if position + 1 < len(ordered) else mix_duration
     return max(0.0, start), min(mix_duration, end)
 
 
 def main() -> int:
-    defaults = DEFAULT_V4_PROFILE.coarse
-    timewarp_defaults = DEFAULT_V4_PROFILE.timewarp
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--task-manifest", required=True, type=Path)
     parser.add_argument("--mix-audio", required=True, type=Path)
@@ -55,15 +40,11 @@ def main() -> int:
     parser.add_argument("--bpm-prior", type=float)
     parser.add_argument("--mix-start", type=float)
     parser.add_argument("--mix-end", type=float)
-    parser.add_argument("--sr", type=int, default=defaults.sr)
-    parser.add_argument("--hop-length", type=int, default=defaults.hop_length)
-    parser.add_argument("--window-seconds", type=float, default=defaults.window_seconds)
-    parser.add_argument("--step-seconds", type=float, default=defaults.step_seconds)
-    parser.add_argument(
-        "--candidate-step-seconds",
-        type=float,
-        default=defaults.candidate_step_seconds,
-    )
+    parser.add_argument("--sr", type=int)
+    parser.add_argument("--hop-length", type=int)
+    parser.add_argument("--window-seconds", type=float)
+    parser.add_argument("--step-seconds", type=float)
+    parser.add_argument("--candidate-step-seconds", type=float)
     parser.add_argument("--out", required=True, type=Path)
     parser.add_argument("--artifact-out", required=True, type=Path)
     parser.add_argument("--git-commit", default="")
@@ -73,14 +54,9 @@ def main() -> int:
         task = load_task_manifest(args.task_manifest)
         assert_manifest_paths(args.task_manifest, task, {"audio": args.mix_audio})
         fingerprint = str(task["task_fingerprint_sha256"])
-
         assets = json.loads(args.track_assets.read_text(encoding="utf-8-sig"))
         asset_artifact = json.loads(args.asset_artifact.read_text(encoding="utf-8-sig"))
-        output_issues = validate_artifact_output(
-            asset_artifact,
-            role="track_assets",
-            path=args.track_assets,
-        )
+        output_issues = validate_artifact_output(asset_artifact, role="track_assets", path=args.track_assets)
         if output_issues:
             raise ValueError("invalid asset artifact output: " + "; ".join(output_issues))
         context = build_pipeline_context(
@@ -92,8 +68,21 @@ def main() -> int:
         binding = context.binding_by_occurrence_id.get(args.occurrence_id)
         if binding is None:
             raise ValueError(f"occurrence_id not found in track assets: {args.occurrence_id}")
+        defaults = context.profile.coarse
+        timewarp_defaults = context.profile.timewarp
+        sr = defaults.sr if args.sr is None else args.sr
+        hop_length = defaults.hop_length if args.hop_length is None else args.hop_length
+        window_seconds = defaults.window_seconds if args.window_seconds is None else args.window_seconds
+        step_seconds = defaults.step_seconds if args.step_seconds is None else args.step_seconds
+        candidate_step_seconds = defaults.candidate_step_seconds if args.candidate_step_seconds is None else args.candidate_step_seconds
+        overrides = calibration_overrides(defaults, {
+            "sr": sr,
+            "hop_length": hop_length,
+            "window_seconds": window_seconds,
+            "step_seconds": step_seconds,
+            "candidate_step_seconds": candidate_step_seconds,
+        })
         source_path = Path(binding.source_audio_path)
-
         source_dir_record = task["inputs"].get("source_audio_dir")
         if source_dir_record is not None:
             source_dir = resolve_manifest_record(args.task_manifest, source_dir_record).resolve()
@@ -102,9 +91,9 @@ def main() -> int:
             except ValueError as exc:
                 raise ValueError("TrackAsset source audio is outside task source_audio_dir") from exc
 
-        mix_audio, _ = librosa.load(args.mix_audio, sr=args.sr, mono=True)
-        source_audio, _ = librosa.load(source_path, sr=args.sr, mono=True)
-        mix_duration = len(mix_audio) / args.sr
+        mix_audio, _ = librosa.load(args.mix_audio, sr=sr, mono=True)
+        source_audio, _ = librosa.load(source_path, sr=sr, mono=True)
+        mix_duration = len(mix_audio) / sr
         default_start, default_end = _default_interval(context.bindings, binding, mix_duration)
         mix_start = default_start if args.mix_start is None else args.mix_start
         mix_end = default_end if args.mix_end is None else args.mix_end
@@ -114,15 +103,15 @@ def main() -> int:
         mapping = build_coarse_timewarp(
             mix_audio,
             source_audio,
-            sr=args.sr,
+            sr=sr,
             mix_start=mix_start,
             mix_end=mix_end,
             bpm_prior=args.bpm_prior,
             middle_cut=binding.middle_cut,
-            feature_hop_length=args.hop_length,
-            window_seconds=args.window_seconds,
-            step_seconds=args.step_seconds,
-            candidate_step_seconds=args.candidate_step_seconds,
+            feature_hop_length=hop_length,
+            window_seconds=window_seconds,
+            step_seconds=step_seconds,
+            candidate_step_seconds=candidate_step_seconds,
             slope_minimum=defaults.slope_minimum,
             slope_maximum=defaults.slope_maximum,
             slope_step=defaults.slope_step,
@@ -143,6 +132,7 @@ def main() -> int:
             "task_fingerprint_sha256": fingerprint,
             "calibration_profile_version": context.calibration_profile_version,
             "calibration_profile_id": context.calibration_profile_id,
+            "calibration_overrides": overrides,
             "occurrence_id": binding.occurrence_id,
             "track_id": binding.track_id,
             "canonical_selection_sha256": binding.canonical_selection_sha256,
@@ -154,26 +144,18 @@ def main() -> int:
         atomic_write_json(args.out, payload)
         normalized_config = {
             **context.artifact_config(),
-            "sr": args.sr,
-            "hop_length": args.hop_length,
-            "window_seconds": args.window_seconds,
-            "step_seconds": args.step_seconds,
-            "candidate_step_seconds": args.candidate_step_seconds,
+            "calibration_overrides": overrides,
+            "sr": sr,
+            "hop_length": hop_length,
+            "window_seconds": window_seconds,
+            "step_seconds": step_seconds,
+            "candidate_step_seconds": candidate_step_seconds,
             "slope_minimum": defaults.slope_minimum,
             "slope_maximum": defaults.slope_maximum,
             "slope_step": defaults.slope_step,
             "min_score": defaults.min_score,
             "min_margin": defaults.min_margin,
-            "timewarp": {
-                "bpm_prior_strength": timewarp_defaults.bpm_prior_strength,
-                "max_continuous_rate": timewarp_defaults.max_continuous_rate,
-                "min_excess_source_jump": timewarp_defaults.min_excess_source_jump,
-                "min_piecewise_improvement": timewarp_defaults.min_piecewise_improvement,
-                "minimum_feature_families": timewarp_defaults.minimum_feature_families,
-                "drift_threshold": timewarp_defaults.drift_threshold,
-                "residual_threshold": timewarp_defaults.residual_threshold,
-                "complexity_penalty": timewarp_defaults.complexity_penalty,
-            },
+            "timewarp": timewarp_defaults.__dict__,
             "bpm_prior": args.bpm_prior,
             "mix_start": mix_start,
             "mix_end": mix_end,
@@ -197,17 +179,14 @@ def main() -> int:
     except (OSError, KeyError, ValueError, json.JSONDecodeError) as exc:
         parser.error(str(exc))
 
-    print(
-        json.dumps(
-            {
-                "occurrence_id": binding.occurrence_id,
-                "selection": mapping["timewarp"]["selection"],
-                "blocked": mapping["timewarp"]["blocked"],
-                "calibration_profile_id": context.calibration_profile_id,
-                "artifact_id": artifact["artifact_id"],
-            }
-        )
-    )
+    print(json.dumps({
+        "occurrence_id": binding.occurrence_id,
+        "selection": mapping["timewarp"]["selection"],
+        "blocked": mapping["timewarp"]["blocked"],
+        "calibration_profile_id": context.calibration_profile_id,
+        "calibration_override": bool(overrides),
+        "artifact_id": artifact["artifact_id"],
+    }))
     return 0
 
 

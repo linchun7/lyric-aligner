@@ -14,13 +14,8 @@ if str(REPOSITORY_ROOT) not in sys.path:
 
 from lyric_aligner import __version__
 from lyric_aligner.audio.transition import probe_adjacent_transition
-from lyric_aligner.config import DEFAULT_V4_PROFILE
-from lyric_aligner.contracts.artifacts import (
-    atomic_write_json,
-    build_artifact_manifest,
-    validate_artifact_output,
-    validate_upstream_artifact,
-)
+from lyric_aligner.config import calibration_overrides
+from lyric_aligner.contracts.artifacts import atomic_write_json, build_artifact_manifest, validate_artifact_output, validate_upstream_artifact
 from lyric_aligner.pipeline.context import build_pipeline_context
 from task_contract import load_task_manifest, verify_manifest_inputs
 
@@ -32,14 +27,7 @@ def _load(path: Path) -> dict:
     return payload
 
 
-def _validate_stage(
-    *,
-    payload_path: Path,
-    artifact_path: Path,
-    fingerprint: str,
-    role: str,
-    stage: str,
-) -> tuple[dict, dict]:
+def _validate_stage(*, payload_path: Path, artifact_path: Path, fingerprint: str, role: str, stage: str) -> tuple[dict, dict]:
     payload = _load(payload_path)
     if payload.get("task_fingerprint_sha256") != fingerprint:
         raise ValueError(f"{role} task fingerprint mismatch")
@@ -59,7 +47,6 @@ def _validate_stage(
 
 
 def main() -> int:
-    defaults = DEFAULT_V4_PROFILE.transition
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--task-manifest", required=True, type=Path)
     parser.add_argument("--track-assets", required=True, type=Path)
@@ -68,13 +55,9 @@ def main() -> int:
     parser.add_argument("--left-artifact", required=True, type=Path)
     parser.add_argument("--right-coarse", required=True, type=Path)
     parser.add_argument("--right-artifact", required=True, type=Path)
-    parser.add_argument("--min-score", type=float, default=defaults.min_score)
-    parser.add_argument("--min-margin", type=float, default=defaults.min_margin)
-    parser.add_argument(
-        "--min-overlap-seconds",
-        type=float,
-        default=defaults.min_overlap_seconds,
-    )
+    parser.add_argument("--min-score", type=float, help="Experimental override; release is blocked until moved into the asset profile.")
+    parser.add_argument("--min-margin", type=float, help="Experimental override; release is blocked until moved into the asset profile.")
+    parser.add_argument("--min-overlap-seconds", type=float, help="Experimental override; release is blocked until moved into the asset profile.")
     parser.add_argument("--out", required=True, type=Path)
     parser.add_argument("--artifact-out", required=True, type=Path)
     parser.add_argument("--git-commit", default="")
@@ -86,7 +69,6 @@ def main() -> int:
         if task_issues:
             raise ValueError("task manifest validation failed: " + "; ".join(task_issues))
         fingerprint = str(task["task_fingerprint_sha256"])
-
         track_assets, asset_artifact = _validate_stage(
             payload_path=args.track_assets,
             artifact_path=args.asset_artifact,
@@ -100,6 +82,15 @@ def main() -> int:
             asset_artifact=asset_artifact,
             verify_asset_files=True,
         )
+        defaults = context.profile.transition
+        min_score = defaults.min_score if args.min_score is None else args.min_score
+        min_margin = defaults.min_margin if args.min_margin is None else args.min_margin
+        min_overlap_seconds = defaults.min_overlap_seconds if args.min_overlap_seconds is None else args.min_overlap_seconds
+        overrides = calibration_overrides(defaults, {
+            "min_score": min_score,
+            "min_margin": min_margin,
+            "min_overlap_seconds": min_overlap_seconds,
+        })
         left, left_artifact = _validate_stage(
             payload_path=args.left_coarse,
             artifact_path=args.left_artifact,
@@ -124,14 +115,10 @@ def main() -> int:
             raise ValueError("coarse alignment occurrence is missing from track_assets") from exc
         if right_pos != left_pos + 1:
             raise ValueError("transition probe only accepts adjacent TrackOccurrences")
-
         left_binding = context.binding_by_occurrence_id[left_id]
         right_binding = context.binding_by_occurrence_id[right_id]
         expected_asset_id = context.asset_artifact.artifact_id
-        for label, coarse_payload, binding in (
-            ("left", left, left_binding),
-            ("right", right, right_binding),
-        ):
+        for label, coarse_payload, binding in (("left", left, left_binding), ("right", right, right_binding)):
             if str(coarse_payload.get("upstream_asset_artifact_id")) != expected_asset_id:
                 raise ValueError(f"{label} coarse alignment came from a different asset artifact")
             if str(coarse_payload.get("calibration_profile_id")) != context.calibration_profile_id:
@@ -144,9 +131,9 @@ def main() -> int:
         result = probe_adjacent_transition(
             left,
             right,
-            min_fused_score=args.min_score,
-            min_margin=args.min_margin,
-            minimum_overlap_seconds=args.min_overlap_seconds,
+            min_fused_score=min_score,
+            min_margin=min_margin,
+            minimum_overlap_seconds=min_overlap_seconds,
         )
         payload = {
             "schema_version": "1.1",
@@ -154,6 +141,7 @@ def main() -> int:
             "task_fingerprint_sha256": fingerprint,
             "calibration_profile_version": context.calibration_profile_version,
             "calibration_profile_id": context.calibration_profile_id,
+            "calibration_overrides": overrides,
             "left_occurrence_id": left_id,
             "right_occurrence_id": right_id,
             "left_track_id": left_binding.track_id,
@@ -168,16 +156,13 @@ def main() -> int:
             outputs=(("transition_probe", args.out),),
             normalized_config={
                 **context.artifact_config(),
-                "min_score": args.min_score,
-                "min_margin": args.min_margin,
-                "min_overlap_seconds": args.min_overlap_seconds,
+                "calibration_overrides": overrides,
+                "min_score": min_score,
+                "min_margin": min_margin,
+                "min_overlap_seconds": min_overlap_seconds,
             },
             producer={"git_commit": args.git_commit} if args.git_commit else {},
-            upstream_artifact_ids=(
-                expected_asset_id,
-                str(left_artifact["artifact_id"]),
-                str(right_artifact["artifact_id"]),
-            ),
+            upstream_artifact_ids=(expected_asset_id, str(left_artifact["artifact_id"]), str(right_artifact["artifact_id"])),
             evidence={
                 "left_occurrence_id": left_id,
                 "right_occurrence_id": right_id,
@@ -192,17 +177,14 @@ def main() -> int:
     except (OSError, KeyError, ValueError, json.JSONDecodeError) as exc:
         parser.error(str(exc))
 
-    print(
-        json.dumps(
-            {
-                "status": result["status"],
-                "blocked": result["blocked"],
-                "overlap_candidate_count": len(result["overlap_candidates"]),
-                "calibration_profile_id": context.calibration_profile_id,
-                "artifact_id": artifact["artifact_id"],
-            }
-        )
-    )
+    print(json.dumps({
+        "status": result["status"],
+        "blocked": result["blocked"],
+        "overlap_candidate_count": len(result["overlap_candidates"]),
+        "calibration_profile_id": context.calibration_profile_id,
+        "calibration_override": bool(overrides),
+        "artifact_id": artifact["artifact_id"],
+    }))
     return 0
 
 

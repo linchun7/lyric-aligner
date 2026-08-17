@@ -12,36 +12,25 @@ REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 if str(REPOSITORY_ROOT) not in sys.path:
     sys.path.insert(0, str(REPOSITORY_ROOT))
 
-from lyric_aligner.contracts.artifacts import (
-    atomic_write_json,
-    validate_upstream_artifact,
-)
-from lyric_aligner.qa.final_integrity import (
-    FinalIntegrityError,
-    build_release_artifact_manifest,
-)
+from lyric_aligner.contracts.artifacts import atomic_write_json, validate_upstream_artifact
+from lyric_aligner.qa.final_integrity import FinalIntegrityError, build_release_artifact_manifest
 from task_contract import load_task_manifest, verify_manifest_inputs
 
 
-def _load_upstream_artifacts(
-    paths: list[Path],
-    *,
-    fingerprint: str,
-) -> tuple[tuple[str, ...], dict]:
+def _load_upstream_artifacts(paths: list[Path], *, fingerprint: str) -> tuple[tuple[str, ...], dict]:
     ids: list[str] = []
     profile_ids: set[str] = set()
     profile_versions: set[str] = set()
     stages: list[str] = []
+    unprofiled_overrides: list[dict] = []
     for path in paths:
         payload = json.loads(path.read_text(encoding="utf-8-sig"))
-        issues = validate_upstream_artifact(
-            payload,
-            expected_task_fingerprint=fingerprint,
-        )
+        issues = validate_upstream_artifact(payload, expected_task_fingerprint=fingerprint)
         if issues:
             raise ValueError(f"invalid upstream artifact {path}: " + "; ".join(issues))
         ids.append(str(payload["artifact_id"]))
-        stages.append(str(payload.get("stage", "")))
+        stage = str(payload.get("stage", ""))
+        stages.append(stage)
         config = payload.get("normalized_config", {})
         profile_id = str(config.get("calibration_profile_id") or "").strip()
         profile_version = str(config.get("calibration_profile_version") or "").strip()
@@ -49,18 +38,23 @@ def _load_upstream_artifacts(
             profile_ids.add(profile_id)
         if profile_version:
             profile_versions.add(profile_version)
+        overrides = config.get("calibration_overrides") or {}
+        if overrides:
+            unprofiled_overrides.append({"stage": stage, "overrides": overrides})
     if len(profile_ids) > 1:
-        raise ValueError(
-            "release upstream artifacts use different calibration_profile_id values"
-        )
+        raise ValueError("release upstream artifacts use different calibration_profile_id values")
     if len(profile_versions) > 1:
+        raise ValueError("release upstream artifacts use different calibration_profile_version values")
+    if unprofiled_overrides:
         raise ValueError(
-            "release upstream artifacts use different calibration_profile_version values"
+            "release blocked: calibration CLI overrides are not a named profile; "
+            "move them into a complete v4 profile and rerun all stages"
         )
     return tuple(ids), {
         "calibration_profile_id": next(iter(profile_ids), ""),
         "calibration_profile_version": next(iter(profile_versions), ""),
         "upstream_stages": stages,
+        "calibration_overrides": {},
     }
 
 
@@ -89,8 +83,7 @@ def main() -> int:
             raise ValueError("task manifest validation failed: " + "; ".join(issues))
         fingerprint = str(task["task_fingerprint_sha256"])
         upstream_ids, upstream_metadata = _load_upstream_artifacts(
-            args.upstream_artifact,
-            fingerprint=fingerprint,
+            args.upstream_artifact, fingerprint=fingerprint
         )
         manifest = build_release_artifact_manifest(
             final_srt=args.final_srt,
@@ -103,27 +96,15 @@ def main() -> int:
             upstream_artifact_ids=upstream_ids,
         )
         atomic_write_json(args.out_manifest, manifest)
-    except (
-        OSError,
-        KeyError,
-        ValueError,
-        json.JSONDecodeError,
-        FinalIntegrityError,
-    ) as exc:
+    except (OSError, KeyError, ValueError, json.JSONDecodeError, FinalIntegrityError) as exc:
         parser.error(str(exc))
 
-    print(
-        json.dumps(
-            {
-                "artifact_id": manifest["artifact_id"],
-                "release_status": "ready",
-                "upstream_artifact_count": len(upstream_ids),
-                "calibration_profile_id": upstream_metadata[
-                    "calibration_profile_id"
-                ],
-            }
-        )
-    )
+    print(json.dumps({
+        "artifact_id": manifest["artifact_id"],
+        "release_status": "ready",
+        "upstream_artifact_count": len(upstream_ids),
+        "calibration_profile_id": upstream_metadata["calibration_profile_id"],
+    }))
     return 0
 
 
