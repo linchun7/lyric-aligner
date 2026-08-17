@@ -160,13 +160,17 @@ def inspect_lyric_roles(
                 raise LyricRoleError(
                     f"original_index override {override_index} is out of range at {timestamp}ms"
                 )
+            if alternatives[override_index].role == "metadata":
+                raise LyricRoleError(
+                    f"original_index override {override_index} selects metadata at {timestamp}ms"
+                )
             alternatives = [
                 LyricAlternative(
                     row.timestamp_ms,
                     row.text,
-                    "original" if index == override_index else (
-                        "metadata" if row.role == "metadata" else "unknown"
-                    ),
+                    "original"
+                    if index == override_index
+                    else ("metadata" if row.role == "metadata" else "unknown"),
                     row.script,
                 )
                 for index, row in enumerate(alternatives)
