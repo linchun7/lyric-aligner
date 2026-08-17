@@ -41,12 +41,16 @@ def cut_result():
             {
                 "canonical_line_index": 0,
                 "text": "before",
+                "source_start_ms": 1000,
+                "source_end_ms": 3000,
                 "mix_start_ms": 1000,
                 "mix_end_ms": 3000,
             },
             {
                 "canonical_line_index": 2,
                 "text": "after",
+                "source_start_ms": 9000,
+                "source_end_ms": 11000,
                 "mix_start_ms": 6000,
                 "mix_end_ms": 8000,
             },
@@ -67,18 +71,24 @@ def overlap_result():
             {
                 "canonical_line_index": 0,
                 "text": "before",
+                "source_start_ms": 1000,
+                "source_end_ms": 3000,
                 "mix_start_ms": 1000,
                 "mix_end_ms": 3000,
             },
             {
                 "canonical_line_index": 2,
                 "text": "after",
+                "source_start_ms": 9000,
+                "source_end_ms": 11000,
                 "mix_start_ms": 6000,
                 "mix_end_ms": 8000,
             },
             {
                 "canonical_line_index": 3,
                 "text": "transition tail",
+                "source_start_ms": 12000,
+                "source_end_ms": 13500,
                 "mix_start_ms": 9500,
                 "mix_end_ms": 10500,
                 "overlap_region_id": region().region_id,
@@ -122,6 +132,36 @@ class V4CutOverlapCompositionTests(unittest.TestCase):
                 cut_timeline_result=cut_result(),
                 occurrence_id="occ-a",
                 regions=[crossing],
+            )
+
+    def test_overlap_delta_source_interval_cannot_reintroduce_cut_gap(self):
+        overlap = overlap_result()
+        delta = overlap["lines"][-1]
+        delta["source_start_ms"] = 6000
+        delta["source_end_ms"] = 7000
+        with self.assertRaisesRegex(
+            TimelineCompositionError,
+            "source interval intersects a confirmed cut gap",
+        ):
+            compose_cut_and_overlap_result(
+                cut_timeline_result=cut_result(),
+                overlap_timeline_result=overlap,
+                occurrence_id="occ-a",
+                regions=[region()],
+            )
+
+    def test_overlap_delta_without_source_provenance_is_fail_closed(self):
+        overlap = overlap_result()
+        overlap["lines"][-1].pop("source_start_ms")
+        with self.assertRaisesRegex(
+            TimelineCompositionError,
+            "missing canonical source_start_ms",
+        ):
+            compose_cut_and_overlap_result(
+                cut_timeline_result=cut_result(),
+                overlap_timeline_result=overlap,
+                occurrence_id="occ-a",
+                regions=[region()],
             )
 
     def test_only_overlap_materialized_lines_are_extracted_as_delta(self):
