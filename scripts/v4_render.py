@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Render one review-free v4 run into final SRT/audit/QA artifacts."""
+"""Render one effective review-free v4 run into final SRT/audit/QA artifacts."""
 
 from __future__ import annotations
 
@@ -78,13 +78,16 @@ def _validate_run_artifact(
     output_path: Path,
 ) -> str:
     stage = str(artifact.get("stage") or "")
-    if stage == "production_orchestration":
-        role = "v4_production_run"
-    elif stage == "review_resolution":
-        role = "v4_reviewed_run"
-    else:
+    roles = {
+        "production_orchestration": "v4_production_run",
+        "review_resolution": "v4_reviewed_run",
+        "overlap_recomposition": "v4_recomposed_run",
+    }
+    role = roles.get(stage)
+    if role is None:
         raise ValueError(
-            "run artifact must be production_orchestration or review_resolution"
+            "run artifact must be production_orchestration, review_resolution, "
+            "or overlap_recomposition"
         )
     _validate_artifact(
         artifact,
@@ -125,11 +128,11 @@ def main() -> int:
             output_path=args.run,
         )
         if run.get("algorithm_version") != __version__:
-            raise ValueError("run algorithm version mismatch; rerun v4_run/review")
+            raise ValueError("run algorithm version mismatch; rerun the current v4 chain")
         if run.get("task_fingerprint_sha256") != fingerprint:
             raise ValueError("run belongs to another task")
         if run.get("status") != "ready_for_render":
-            raise ValueError("run is not ready_for_render; resolve review issues first")
+            raise ValueError("run is not ready_for_render; resolve/recompose review issues first")
         if run.get("issues") not in ([], None):
             raise ValueError("ready_for_render run unexpectedly contains review issues")
         if run.get("legacy_fallback_used") is not False:
@@ -151,6 +154,26 @@ def main() -> int:
             if config_base_id != base_run_artifact_id:
                 raise ValueError("review artifact base-run identity mismatch")
 
+        confirmed_overlap_regions: list[dict] = []
+        if run_stage == "overlap_recomposition":
+            metadata = run.get("overlap_recomposition")
+            if not isinstance(metadata, dict):
+                raise ValueError("overlap-recomposed run is missing recomposition metadata")
+            source_review_id = str(metadata.get("source_review_artifact_id") or "")
+            if not source_review_id or source_review_id not in run_upstreams:
+                raise ValueError("overlap recomposition is not bound to its review artifact")
+            if int(metadata.get("remaining_issue_count", -1)) != 0:
+                raise ValueError("overlap recomposition still records unresolved review issues")
+            config_review_id = str(
+                run_artifact.get("normalized_config", {}).get("source_review_artifact_id") or ""
+            )
+            if config_review_id != source_review_id:
+                raise ValueError("overlap artifact source-review identity mismatch")
+            regions_raw = run.get("confirmed_overlap_regions")
+            if not isinstance(regions_raw, list) or not regions_raw:
+                raise ValueError("overlap recomposition has no confirmed_overlap_regions")
+            confirmed_overlap_regions = regions_raw
+
         track_assets = _load(args.track_assets)
         asset_artifact = _load(args.asset_artifact)
         _validate_artifact(
@@ -162,9 +185,7 @@ def main() -> int:
         )
         asset_artifact_id = str(asset_artifact["artifact_id"])
         if asset_artifact_id not in run_upstreams:
-            raise ValueError(
-                "supplied TrackAsset artifact is not upstream of this run"
-            )
+            raise ValueError("supplied TrackAsset artifact is not upstream of this run")
         context = build_pipeline_context(
             expected_task_fingerprint=fingerprint,
             track_assets_payload=track_assets,
@@ -201,10 +222,18 @@ def main() -> int:
             timeline_artifact_path = Path(str(artifact_raw))
             timeline = _load(timeline_path)
             timeline_artifact = _load(timeline_artifact_path)
+            timeline_stage = str(
+                occurrence.get("timeline_stage") or "canonical_timeline_projection"
+            )
+            if timeline_stage not in {
+                "canonical_timeline_projection",
+                "overlap_timeline_recomposition",
+            }:
+                raise ValueError("run occurrence uses an unsupported timeline stage")
             _validate_artifact(
                 timeline_artifact,
                 fingerprint=fingerprint,
-                stage="canonical_timeline_projection",
+                stage=timeline_stage,
                 role="canonical_timeline",
                 output_path=timeline_path,
             )
@@ -231,9 +260,7 @@ def main() -> int:
             if str(timeline_result.get("track_id") or "") != binding.track_id:
                 raise ValueError("canonical timeline track differs from TrackAsset binding")
             if str(timeline_result.get("canonical_selection_sha256") or "") != binding.canonical_selection_sha256:
-                raise ValueError(
-                    "canonical timeline lyric selection differs from TrackAsset binding"
-                )
+                raise ValueError("canonical timeline lyric selection differs from TrackAsset binding")
             if int(timeline_result.get("ordinal", -1)) != binding.ordinal:
                 raise ValueError("canonical timeline ordinal differs from TrackOccurrence")
 
@@ -246,6 +273,7 @@ def main() -> int:
         cues = compose_canonical_timelines(
             timeline_payloads,
             config=context.profile.render,
+            confirmed_overlap_regions=confirmed_overlap_regions,
         )
         _write_srt(args.final_srt, cues)
 
@@ -310,6 +338,7 @@ def main() -> int:
             "publish_ready": True,
             "review_candidate_count": 0,
             "cue_count": len(cues),
+            "confirmed_overlap_region_count": len(confirmed_overlap_regions),
             "render_config": asdict(context.profile.render),
         }
         atomic_write_json(args.qa_json, qa)
@@ -327,6 +356,7 @@ def main() -> int:
                 **context.artifact_config(),
                 "render": asdict(context.profile.render),
                 "source_run_stage": run_stage,
+                "confirmed_overlap_region_count": len(confirmed_overlap_regions),
                 "legacy_fallback": False,
             },
             producer={"git_commit": args.git_commit} if args.git_commit else {},
@@ -339,6 +369,7 @@ def main() -> int:
                 "cue_count": len(cues),
                 "occurrence_count": len(occurrence_rows),
                 "review_candidate_count": 0,
+                "confirmed_overlap_region_count": len(confirmed_overlap_regions),
                 "source_run_stage": run_stage,
             },
         )
@@ -360,6 +391,7 @@ def main() -> int:
                 "cue_count": len(cues),
                 "publish_ready": True,
                 "source_run_stage": run_stage,
+                "confirmed_overlap_regions": len(confirmed_overlap_regions),
                 "artifact_id": render_artifact["artifact_id"],
                 "final_srt": str(args.final_srt),
                 "report": str(args.report),
