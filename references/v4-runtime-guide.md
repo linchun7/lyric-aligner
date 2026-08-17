@@ -73,11 +73,14 @@ Renderer 会重新验证：
 - v4 algorithm version；
 - calibration profile version/id；
 - run artifact materialized hash；
-- TrackAsset artifact；
-- 每个 canonical timeline artifact；
-- timeline artifact 必须确实是 production run 的 upstream。
+- supplied TrackAsset artifact **必须就是该 production run 的 upstream**；
+- 每个 canonical timeline artifact 必须属于 production-run upstream；
+- 每个 timeline artifact 必须由同一 TrackAsset artifact 派生；
+- timeline 的 occurrence/track/ordinal/canonical-selection 必须与 `ResolvedAssetBinding` 一致；
+- run occurrence set 必须精确覆盖全部 resolved TrackOccurrences；
+- timeline/entity/materialized hash 不得漂移。
 
-只要 run 是 `review_required`、含 issue、发生 legacy fallback、timeline 被修改或 profile/version 不一致，就拒绝 render。
+只要 run 是 `review_required`、含 issue、发生 legacy fallback、资产链被替换、timeline 被修改或 profile/version 不一致，就拒绝 render。
 
 ## 4. a4 Final Timeline Composer 规则
 
@@ -126,7 +129,7 @@ publish_ready=true
 review_candidate_count=0
 ```
 
-这里的 `publish_ready` 仍必须经过下一步 release integrity 验证后才成为实际 release artifact。
+QA 同时记录 a4 calibration profile id/version。这里的 `publish_ready` 仍必须经过下一步 release integrity 验证后才成为实际 release artifact。
 
 ## 6. Release Integrity
 
@@ -141,7 +144,19 @@ python scripts/v4_validate_release.py `
   --out-manifest "output/<任务>/v4/final/release.artifact.json"
 ```
 
-Release guard 会再次校验 SRT/audit/QA 绑定、task/version/profile、上游 artifact 和 materialized SHA。成功生成 `release.artifact.json` 后，才视为该 v4 产物通过当前发布完整性门禁。
+对于 v4，Release Guard 现在要求：
+
+1. 至少一个 upstream artifact；
+2. **恰好一个 `final_render` upstream**；
+3. `--algorithm-version` 必须与 upstream algorithm version 完全一致；
+4. upstream calibration profile id/version 必须存在，并与 `FINAL.qa.json` 完全一致；
+5. `final_render` artifact 中的 `final_srt` / `audit_csv` / `qa_json` size 与 SHA-256 必须逐一匹配当前三个实体文件；
+6. SRT 与 audit 仍要逐 cue 核对时间、文本、cue id、text hash；
+7. QA 必须 `passed/structurally_valid/fully_reviewed/publish_ready=true` 且 `review_candidate_count=0`。
+
+因此即使有人把 SRT、CSV、QA 三份文件一起协调修改，使三者彼此仍然一致，只要没有重新生成与之对应的 `FINAL.render.artifact.json`，release 仍必须失败。
+
+成功生成 `release.artifact.json` 后，才视为该 v4 产物通过当前发布完整性门禁。
 
 ## 7. a3 → a4 迁移
 
@@ -185,7 +200,11 @@ production-bootstrap-2026-08-17-a4
 v4_run → v4_render → v4_validate_release
 ```
 
-## 10. 当前下一步
+## 10. 当前验证状态
+
+PR #3 的 GitHub Actions 当前被账户付款/Spending Limit 阻断，runner 没有启动；这不是代码测试失败。Actions 恢复后必须对**最新 a4 head**重新执行 Python 3.10/3.12/3.14、run→render→release synthetic E2E、Documentation Contract、Skill/privacy/environment/diff-check 与 ASR environment。未全绿前不合 main。
+
+## 11. 当前下一步
 
 1. Replayable Review Decision artifact；
 2. confirmed-overlap transition timeline composition；
