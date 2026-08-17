@@ -148,7 +148,7 @@ class V4TimelineComposerTests(unittest.TestCase):
                 }
             ],
         )
-        with self.assertRaisesRegex(TimelineComposeError, "confirmed-overlap decision"):
+        with self.assertRaisesRegex(TimelineComposeError, "confirmed-overlap evidence"):
             compose_canonical_timelines([left, right], config=CONFIG)
 
     def test_too_short_cue_blocks_instead_of_extending_through_next_line(self):
