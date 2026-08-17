@@ -7,6 +7,8 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Iterable
 
+from lyric_aligner.io.text import read_task_text
+
 LRC_LINE_RE = re.compile(r"\[(\d{1,3}):(\d{2})(?:[.:](\d{1,3}))?\](.*)")
 META_RE = re.compile(
     r"^(?:\[?by:|作词|作曲|编曲|词\s*:|曲\s*:|制作人|人声采样|版权|发行|混音|母带|企划|出品人|op\s*:|sp\s*:)",
@@ -121,15 +123,12 @@ def classify_alternatives(
 
 def inspect_lyric_roles(path: Path, *, language: str) -> dict:
     groups: dict[int, list[str]] = {}
-    for line_number, raw in enumerate(
-        path.read_text(encoding="utf-8-sig").splitlines(), start=1
-    ):
+    for line_number, raw in enumerate(read_task_text(path).splitlines(), start=1):
         stripped = raw.strip()
         if not stripped:
             continue
         match = LRC_LINE_RE.match(stripped)
         if not match:
-            # Header/meta tags without a timestamp are not canonical lyric rows.
             continue
         minute, second, fraction, text = match.groups()
         try:
