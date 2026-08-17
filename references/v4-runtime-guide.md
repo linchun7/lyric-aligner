@@ -1,68 +1,146 @@
-# Lyric Aligner v4 实验 Stage 运行手册
+# Lyric Aligner v4 生产运行手册
 
-更新：2026-08-17
+更新：2026-08-17  
+适用版本：`4.0.0a3`
 
-> 当前 v4 package 尚未替换 legacy 主流水线。本手册用于在**私有任务**上并行运行 v4 stage、生成可追溯 artifact、收集 calibration/blind-test 数据。真实歌词、媒体和任务级人工结论必须保留在 `private/` / `output/`。
+> v4 已采用 **production-first** 策略。新真实任务优先运行 v4；遇到不确定 Source-to-Mix、cut、transition/overlap 等情况时进入 `review_required`，**不静默回退 v3.9**。v3.9 只保留历史 commit/tag 作为比较与仓库级回滚点，不再维护第二套生产运行路径。
 
-## 1. 当前可运行 Stage
+## 1. 默认入口
+
+新任务默认使用：
+
+```powershell
+python scripts/v4_run.py `
+  --task-manifest "private/<任务>/qa/task_manifest.json" `
+  --out-dir "output/<任务>/v4" `
+  --git-commit "<当前commit>"
+```
+
+可选任务级配置：
+
+```powershell
+  --profile "private/<任务>/qa/v4_profile.json" `
+  --language-map "private/<任务>/qa/language_map.json" `
+  --middle-cut-map "private/<任务>/qa/middle_cut_map.json" `
+  --lyric-role-map "private/<任务>/qa/lyric_role_map.json"
+```
+
+`v4_run.py` 会从 task manifest 读取 mix audio、song list、lyrics directory、source-audio directory，并按同一 task fingerprint 执行完整 v4 evidence/timeline 链。
+
+## 2. `v4_run` 当前实际执行链
 
 ```text
 schema 2.0 Task Manifest
         ↓
-v4_resolve_assets.py
+Asset Resolution
+TrackAsset + TrackOccurrence
         ↓
-TrackAsset / TrackOccurrence + asset artifact
+每首 Primary Coarse Alignment
         ↓
-v4_coarse_align.py（每个 occurrence）
+AFFINE first
+  ├─ clean/high-confidence → 保持 AFFINE
+  └─ ambiguous/complex → Selective Fine Alignment
         ↓
-coarse audio alignment + TimeWarp artifact
+Effective TimeWarp
         ↓
-[按需] v4_fine_align.py
+Canonical Timeline Projection
         ↓
-[歌曲交界] v4_probe_transition.py
+每个相邻歌曲边界：
+LEFT source  ┐
+             ├─ 同一个 boundary ± margin 搜索窗口
+RIGHT source ┘
         ↓
-legacy build/finalize/qa（当前尚未接线 v4 mapping）
+Transition / overlap evidence
         ↓
-v4_validate_release.py
+v4_run.json + production_orchestration artifact
 ```
 
-## 2. 任务级辅助配置
+当前默认 transition search margin 为 calibration profile 中的 `10s`，不是硬编码业务真理；以后通过 real calibration 修改 profile，而不是直接改算法代码。
 
-### 2.1 language_map.json
+## 3. Primary interval 与 Transition window 的区别
 
-```json
-{
-  "Artist A - Song A": "ko",
-  "Artist B - Song B": "yue",
-  "Artist C - Song C": "en"
-}
+主歌曲区间仍使用：
+
+```text
+当前 nominal_start → 下一首 nominal_start
 ```
 
-未知语言可以 `auto`。非中英文不会把剪映文字直接当 canonical truth。
+用于生成当前单曲主 TimeWarp / canonical timeline。
 
-### 2.2 middle_cut_map.json
+但 **nominal_start 不是歌曲真实硬边界**。对于 A→B 交界，v4 另外建立：
 
-key 是 occurrence ordinal：
-
-```json
-{
-  "3": "true",
-  "7": "unknown"
-}
+```text
+boundary - search_margin → boundary + search_margin
 ```
 
-未列出默认为 `false`。
+并让 A、B 两个 source 都在同一个 mix 区间独立取证。
 
-语义：
+因此：
 
-- `false`：默认没有中段剪切；出现强 source discontinuity -> BLOCK；
-- `true`：允许重点搜索 cut，但**仍必须 review，绝不自动 confirmed**；
-- `unknown`：可生成 cut candidate，必须 review；
-- trim-start/trim-end 不属于 middle cut。
+- 搜索窗口重叠 ≠ 已确认叠唱；
+- A/B 同时有强、非歧义声学证据 → `cross_track_overlap_candidate`；
+- repeated chorus 等造成低 margin → `uncertain_intervals`；
+- 两种情况都会进入 review，不能自动发布。
 
-### 2.3 lyric_role_map.json
+## 4. TimeWarp 生产语义
 
-仅在同一 LRC 时间戳有多条候选、系统无法唯一确认 canonical original 时使用：
+### 普通歌曲
+
+优先拟合：
+
+```text
+source_time = intercept + slope * mix_time
+```
+
+即 `AFFINE`。
+
+### 自动升级分段倍率
+
+用户不需要声明歌曲是不是动态 BPM。只有 AFFINE 在 residual / drift / coverage 上明显不足，并且多个独立音频特征共同支持更复杂模型时，才升级：
+
+```text
+PIECEWISE_RATE
+```
+
+例如可表达：
+
+```text
+1.08 → 1.17 → 1.43
+```
+
+局部倍率突然改变本身 **不是 cut**。
+
+### Middle cut
+
+默认：
+
+```text
+middle_cut = false
+```
+
+任务明确知道中间剪过时可声明 `true`；不确定可声明 `unknown`。
+
+无论哪个值，系统发现 source-position jump 后都不能自动确认删除歌词：
+
+- `false` + discontinuity → BLOCK；
+- `true` / `unknown` → review candidate；
+- trim-start / trim-end 不属于 middle cut。
+
+## 5. Canonical lyric 真源
+
+生产文本来自 `TrackAsset` 已确认的 canonical lyric interpretation：
+
+```text
+raw LRC / Enhanced LRC / QRC
+        +
+same-timestamp original selection
+        ↓
+CanonicalLine / CanonicalToken
+```
+
+v4 下游不得重新猜 LRC 文件，也不得重新选择同时间戳第一行。
+
+如果系统无法唯一判断原文，可用：
 
 ```json
 {
@@ -73,185 +151,132 @@ key 是 occurrence ordinal：
 }
 ```
 
-含义：`timestamp_ms -> zero-based alternative index`。
+通过 `--lyric-role-map` 明确选择。该选择参与 `track_id/version_id/canonical_selection_sha256`，改变选择后旧 artifact 不可静默复用。
 
-例如 `"1000": 1` 表示 1000ms 这一组中第二行是 canonical original。其他非 metadata 行保持 `unknown`，不会被擅自猜成 translation/romanization。
+## 6. Calibration profile
 
-完整规范见 `references/v4-lyric-role-overrides.md`。
-
-## 3. 解析 TrackAsset / TrackOccurrence
+导出默认 a3 profile：
 
 ```powershell
-python scripts/v4_resolve_assets.py `
-  --task-manifest "private/<任务>/qa/task_manifest.json" `
-  --song-list "private/<任务>/输入/歌曲清单.txt" `
-  --lyrics-dir "private/<任务>/歌词" `
-  --source-dir "private/<任务>/原曲音频" `
-  --language-map "private/<任务>/qa/language_map.json" `
-  --middle-cut-map "private/<任务>/qa/middle_cut_map.json" `
-  --lyric-role-map "private/<任务>/qa/lyric_role_map.json" `
-  --out "output/<任务>/v4/track_assets.json" `
-  --artifact-out "output/<任务>/v4/track_assets.artifact.json" `
-  --git-commit "<当前commit>"
+python scripts/v4_profile.py --write-default "private/<任务>/qa/v4_profile.json"
 ```
 
-三个 map 参数均可省略。提供时，其 SHA-256 会写入 asset artifact 配置。
-
-会 BLOCK 的典型情况：
-
-- LRC/source top1 太弱；
-- top1/top2 太接近；
-- 同标题不同艺人争用同一 generic 文件；
-- 同一个源文件被两个不同 TrackAsset 静默复用；
-- 同时间戳存在多个可能 original 且没有显式 override；
-- role override index 越界；
-- task manifest 与磁盘 song list/lyrics/source 不一致。
-
-后续 stage 使用稳定 `occurrence_id`，不要继续用曲名作为唯一身份。
-
-## 4. 普通歌曲：Coarse Alignment
+验证：
 
 ```powershell
-python scripts/v4_coarse_align.py `
-  --task-manifest "private/<任务>/qa/task_manifest.json" `
-  --mix-audio "private/<任务>/输入/最终混音.wav" `
-  --track-assets "output/<任务>/v4/track_assets.json" `
-  --asset-artifact "output/<任务>/v4/track_assets.artifact.json" `
-  --occurrence-id "occ_xxxxxxxxx" `
-  --bpm-prior 1.1667 `
-  --out "output/<任务>/v4/occ_x_coarse.json" `
-  --artifact-out "output/<任务>/v4/occ_x_coarse.artifact.json" `
-  --git-commit "<当前commit>"
+python scripts/v4_profile.py --validate "private/<任务>/qa/v4_profile.json"
 ```
 
-`--bpm-prior` 可省略。它只作为 soft prior / slope-search 局部加密，不锁最终 slope，也不删除全局 slope 候选。
-
-若不提供 `--mix-start/--mix-end`，当前 CLI 用：
+生产链只承认同一个 profile identity：
 
 ```text
-当前 nominal_start -> 下一 occurrence nominal_start
+profile_version
+profile_id = SHA-256(profile complete content)
 ```
 
-作为**普通曲段 coarse seed interval**。这不是最终 active end；歌曲交界必须另行做 transition margin 搜索。
+临时 CLI override 只用于实验；出现未固化 override 的 artifact 时 release guard 必须 BLOCK。
 
-## 5. 非匀速 / 不确定歌曲：Fine Alignment
+## 7. 输出目录
 
-```powershell
-python scripts/v4_fine_align.py `
-  --task-manifest "private/<任务>/qa/task_manifest.json" `
-  --mix-audio "private/<任务>/输入/最终混音.wav" `
-  --track-assets "output/<任务>/v4/track_assets.json" `
-  --asset-artifact "output/<任务>/v4/track_assets.artifact.json" `
-  --coarse "output/<任务>/v4/occ_x_coarse.json" `
-  --coarse-artifact "output/<任务>/v4/occ_x_coarse.artifact.json" `
-  --out "output/<任务>/v4/occ_x_fine.json" `
-  --artifact-out "output/<任务>/v4/occ_x_fine.artifact.json" `
-  --git-commit "<当前commit>"
-```
-
-默认行为：
-
-- clean `AFFINE_ACCEPTED` + 无 ambiguous window -> `skipped_clean_affine`；
-- coarse blocked / piecewise / ambiguous -> 自动局部高分辨率精修；
-- 难例诊断可加 `--force`；
-- fine 只在 coarse source/slope 附近搜索，不重新做全曲昂贵检索。
-
-## 6. 歌曲交界：nominal_start 不是硬边界
-
-假设 B nominal start=600s，建议对 A、B 都重新搜索同一 transition window，例如 590–610s：
-
-```powershell
-python scripts/v4_coarse_align.py ... `
-  --occurrence-id "occ_A" --mix-start 590 --mix-end 610 `
-  --out ".../A_transition_coarse.json" `
-  --artifact-out ".../A_transition_coarse.artifact.json"
-
-python scripts/v4_coarse_align.py ... `
-  --occurrence-id "occ_B" --mix-start 590 --mix-end 610 `
-  --out ".../B_transition_coarse.json" `
-  --artifact-out ".../B_transition_coarse.artifact.json"
-```
-
-然后：
-
-```powershell
-python scripts/v4_probe_transition.py `
-  --task-manifest "private/<任务>/qa/task_manifest.json" `
-  --track-assets "output/<任务>/v4/track_assets.json" `
-  --asset-artifact "output/<任务>/v4/track_assets.artifact.json" `
-  --left-coarse ".../A_transition_coarse.json" `
-  --left-artifact ".../A_transition_coarse.artifact.json" `
-  --right-coarse ".../B_transition_coarse.json" `
-  --right-artifact ".../B_transition_coarse.artifact.json" `
-  --out "output/<任务>/v4/A_B_transition.json" `
-  --artifact-out "output/<任务>/v4/A_B_transition.artifact.json"
-```
-
-结果：
-
-- `clear_sequential_or_no_overlap`：没有足够双曲并行证据；
-- `cross_track_overlap_candidate / review`：两首 source 在同一 mix 区间都有强、非歧义证据；必须确认/拒绝；
-- `uncertain_intervals`：两边得分高但 source occurrence 有歧义，例如重复副歌；BLOCK，但不冒充 overlap。
-
-当前 stage **不自动确认叠唱，也不自动生成正式同期双字幕**。
-
-## 7. Release Integrity Guard
-
-legacy 最终 SRT/审计/QA 生成后：
-
-```powershell
-python scripts/v4_validate_release.py `
-  --task-manifest "private/<任务>/qa/task_manifest.json" `
-  --final-srt "output/<任务>/<任务>_FINAL.srt" `
-  --report "output/<任务>/<任务>_FINAL_审计.csv" `
-  --qa-json "output/<任务>/<任务>_FINAL_QA.json" `
-  --algorithm-version "<该QA实际算法版本>" `
-  --git-commit "<当前commit>" `
-  --out-manifest "output/<任务>/<任务>_RELEASE_ARTIFACT.json"
-```
-
-该 guard 会重新检查 task inputs，并严格绑定 FINAL SRT/CSV/QA 的正文、时间、数量、顺序和 SHA-256。
-
-## 8. Artifact Chain
+`v4_run --out-dir output/<任务>/v4` 当前生成：
 
 ```text
-Task Manifest
-  ↓
-asset_resolution artifact
-  ↓
-coarse_audio_alignment artifact(s)
-  ↓
-[fine_audio_alignment artifact]
-  ↓
-[transition_probe artifact]
+assets/
+  track_assets.json
+  track_assets.artifact.json
+
+primary/
+  <occ>.coarse.json
+  <occ>.coarse.artifact.json
+  [<occ>.fine.json]
+  [<occ>.fine.artifact.json]
+
+transitions/
+  <A>__<B>/
+    left.coarse.json
+    right.coarse.json
+    transition.json
+    *.artifact.json
+
+timelines/
+  <occ>.timeline.json
+  <occ>.timeline.artifact.json
+
+v4_run.json
+v4_run.artifact.json
 ```
 
-每个下游 stage 都应：
+所有主要 stage 都绑定：
 
-1. 校验 task fingerprint；
-2. 校验 algorithm version；
-3. 校验 artifact_id；
-4. 重新校验磁盘上游输出 size/SHA-256；
-5. 记录 upstream artifact IDs。
+- task fingerprint；
+- v4 algorithm version；
+- calibration profile version/id；
+- TrackAsset/canonical identity；
+- upstream artifact IDs；
+- output SHA-256。
 
-因此不能把上一任务、上一算法版本或后来被修改过的 JSON 静默拼进当前结果。
+## 8. `v4_run` 状态
 
-## 9. `blocked=true` 的含义
+### `ready_for_render`
 
-它通常意味着“有产物可审查，但不能自动发布”，例如：
+表示当前 v4 Source-to-Mix、Fine、Transition 和 canonical timeline 阶段没有未解决 review issue。
 
-- 需要 review 的 source discontinuity；
-- piecewise 模型证据不足；
-- transition 可能叠唱；
-- 重复 source 导致 occurrence ambiguity；
-- fine refinement 有 unresolved window。
+**它不等于 `publish_ready`。**
 
-## 10. 当前不能做的声明
+当前 a3 尚缺 package-native 的最终 SRT composer/renderer + 完整 release path，因此不能把 `ready_for_render` 当成最终发布批准。
 
-完成真实私有 calibration/blind-test 和 legacy 接线前，禁止宣称：
+### `review_required`
 
-- v4 已替代生产 v3.9；
-- 真实歌词准确率提高某个百分比；
-- bootstrap 阈值已最优；
-- transition candidate 等于已确认叠唱；
-- `middle_cut=true` 等于系统可自动删除歌词。
+表示至少存在：
+
+- blocked TimeWarp；
+- source discontinuity / middle-cut candidate；
+- repeated occurrence ambiguity；
+- transition overlap candidate；
+- transition uncertain interval；
+- fine unresolved window。
+
+必须处理证据或更新任务级明确声明后重跑。不得自动切回 v3.9 获取一个“看起来可发布”的结果。
+
+## 9. 单 Stage CLI 的定位
+
+以下脚本继续保留：
+
+- `v4_resolve_assets.py`
+- `v4_coarse_align.py`
+- `v4_fine_align.py`
+- `v4_probe_transition.py`
+- `v4_profile.py`
+- `v4_validate_release.py`
+
+它们主要用于：
+
+- 调试具体 stage；
+- calibration / A-B；
+- 重现某个 artifact；
+- 难例诊断。
+
+普通新任务应优先使用 `v4_run.py`，避免人工漏跑 transition/fine 或混用不同 profile/artifact。
+
+## 10. 当前仍未完成
+
+a3 已让 v4 真正拥有 Source-to-Mix 与 canonical timeline 生产链，但还没有完成最终字幕全链：
+
+1. package-native timeline composer / final SRT renderer；
+2. review decision artifact（cut/overlap 等确认后的可重放决策）；
+3. Editor Evidence / LanguageSpan 全面进入最终 cue scoring；
+4. final render 与 `v4_validate_release` 的原生一键接线；
+5. real private calibration / blind-test；
+6. 之后再按数据决定 Forced Alignment / ASR v2 的投入顺序。
+
+因此当前正确表述是：
+
+> **v4.0.0a3 已进入真实任务 production-first 使用，用于实际 Source-to-Mix、transition evidence 和 canonical timeline reconstruction；最终字幕 renderer/release 仍在迁移中。**
+
+不能宣称：
+
+- a3 已是稳定版；
+- bootstrap profile 已经最优；
+- overlap candidate 等于已确认叠唱；
+- middle-cut candidate 可自动删除歌词；
+- 真实歌词/时间准确率已经提高某个固定百分比。
