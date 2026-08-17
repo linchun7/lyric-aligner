@@ -1,10 +1,9 @@
 """Task-scoped, replayable review decisions for v4 production issues.
 
-The review layer is deliberately conservative. A human may clear a transition
-false-positive because the primary per-track timelines already exist. Decisions
-that confirm overlap or a blocked TimeWarp never turn into ready-for-render by
-flipping a boolean; they remain blocked until a dedicated recomposition/rebuild
-stage materializes new downstream evidence.
+Transition evidence is reviewed at candidate granularity. A human may clear one
+false-positive interval without implicitly clearing other intervals on the same
+A→B boundary. Confirmed overlap remains blocked until a dedicated recomposition
+stage materializes new dual-track timeline evidence.
 """
 
 from __future__ import annotations
@@ -15,7 +14,8 @@ from typing import Any
 from lyric_aligner.contracts.artifacts import canonical_json_sha256
 
 
-REVIEW_DECISION_SCHEMA_VERSION = "1.0"
+REVIEW_DECISION_SCHEMA_VERSION = "1.1"
+_TRANSITION_KINDS = {"transition", "transition_overlap", "transition_ambiguity"}
 
 
 class ReviewDecisionError(ValueError):
@@ -29,10 +29,23 @@ def _required_text(payload: dict[str, Any], key: str) -> str:
     return value
 
 
+def _candidate_interval(issue: dict[str, Any]) -> tuple[float, float] | None:
+    if "interval_start" not in issue and "interval_end" not in issue:
+        return None
+    try:
+        start = float(issue["interval_start"])
+        end = float(issue["interval_end"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ReviewDecisionError("transition review issue has invalid candidate interval") from exc
+    if start < 0 or end <= start:
+        raise ReviewDecisionError("transition review issue candidate interval is invalid")
+    return start, end
+
+
 def _issue_identity(issue: dict[str, Any], *, task_fingerprint_sha256: str) -> dict[str, Any]:
     kind = _required_text(issue, "kind")
-    if kind == "transition":
-        return {
+    if kind in _TRANSITION_KINDS:
+        identity = {
             "schema_version": REVIEW_DECISION_SCHEMA_VERSION,
             "task_fingerprint_sha256": task_fingerprint_sha256,
             "kind": kind,
@@ -40,6 +53,13 @@ def _issue_identity(issue: dict[str, Any], *, task_fingerprint_sha256: str) -> d
             "left_occurrence_id": _required_text(issue, "left_occurrence_id"),
             "right_occurrence_id": _required_text(issue, "right_occurrence_id"),
         }
+        candidate_id = str(issue.get("candidate_id") or "").strip()
+        if kind != "transition" and not candidate_id:
+            raise ReviewDecisionError("candidate-level transition issue is missing candidate_id")
+        if candidate_id:
+            identity["candidate_id"] = candidate_id
+            _candidate_interval(issue)
+        return identity
     if kind == "timewarp":
         return {
             "schema_version": REVIEW_DECISION_SCHEMA_VERSION,
@@ -65,7 +85,7 @@ def normalize_review_issue(
 
 def allowed_actions(issue: dict[str, Any]) -> tuple[str, ...]:
     kind = _required_text(issue, "kind")
-    if kind == "transition":
+    if kind in _TRANSITION_KINDS:
         return ("resolved_clear", "confirmed_overlap")
     if kind == "timewarp":
         return ("confirmed_requires_rebuild",)
@@ -160,12 +180,19 @@ def _annotate_transition(
     ]
     if len(matches) != 1:
         raise ReviewDecisionError("transition review issue does not map to exactly one transition summary")
-    matches[0]["review_resolution"] = {
+    resolution = {
         "issue_id": issue["issue_id"],
+        "candidate_id": str(issue.get("candidate_id") or ""),
+        "kind": issue["kind"],
         "action": action,
         "rationale": rationale,
         "effective_blocked": action != "resolved_clear",
     }
+    interval = _candidate_interval(issue)
+    if interval is not None:
+        resolution["interval_start"] = interval[0]
+        resolution["interval_end"] = interval[1]
+    matches[0].setdefault("review_resolutions", []).append(resolution)
 
 
 def apply_review_template(
@@ -239,12 +266,17 @@ def apply_review_template(
         record = {
             "issue_id": issue_id,
             "kind": current["kind"],
+            "candidate_id": str(current.get("candidate_id") or ""),
             "action": action,
             "rationale": rationale,
         }
+        interval = _candidate_interval(current)
+        if interval is not None:
+            record["interval_start"] = interval[0]
+            record["interval_end"] = interval[1]
         applied.append(record)
 
-        if current["kind"] == "transition":
+        if current["kind"] in _TRANSITION_KINDS:
             _annotate_transition(
                 transitions,
                 current,
@@ -255,12 +287,15 @@ def apply_review_template(
                 resolved.append({**record, "effect": "clear_review_block"})
                 del active[issue_id]
             elif action == "confirmed_overlap":
-                active[issue_id] = {
+                updated = {
                     **active[issue_id],
                     "status": "confirmed",
                     "decision_action": action,
                     "requires_recomposition": True,
                 }
+                if interval is not None:
+                    updated["confirmed_interval"] = [interval[0], interval[1]]
+                active[issue_id] = updated
         elif current["kind"] == "timewarp":
             active[issue_id] = {
                 **active[issue_id],
@@ -279,7 +314,7 @@ def apply_review_template(
     remaining = [active[key] for key in by_id if key in active]
     status = "review_required" if remaining else "ready_for_render"
     reviewed = deepcopy(run_payload)
-    reviewed["schema_version"] = "1.0"
+    reviewed["schema_version"] = str(run_payload.get("schema_version") or "1.0")
     reviewed["status"] = status
     reviewed["issues"] = remaining
     reviewed["transitions"] = transitions
