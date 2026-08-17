@@ -14,7 +14,7 @@ if str(REPOSITORY_ROOT) not in sys.path:
 
 from lyric_aligner import __version__
 from lyric_aligner.assets.resolver import AssetResolutionError, resolve_assets, write_assets_manifest
-from lyric_aligner.contracts.artifacts import atomic_write_json, build_artifact_manifest
+from lyric_aligner.contracts.artifacts import atomic_write_json, build_artifact_manifest, sha256_file
 from task_contract import assert_manifest_paths, load_task_manifest
 
 
@@ -27,6 +27,16 @@ def _load_json_map(path: Path | None) -> dict:
     return payload
 
 
+def _load_role_overrides(path: Path | None) -> dict[str, dict[int, int]]:
+    payload = _load_json_map(path)
+    normalized: dict[str, dict[int, int]] = {}
+    for track, values in payload.items():
+        if not isinstance(values, dict):
+            raise ValueError(f"lyric role overrides for {track!r} must be an object")
+        normalized[str(track)] = {int(timestamp): int(index) for timestamp, index in values.items()}
+    return normalized
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--task-manifest", required=True, type=Path)
@@ -35,6 +45,7 @@ def main() -> int:
     parser.add_argument("--source-dir", required=True, type=Path)
     parser.add_argument("--language-map", type=Path)
     parser.add_argument("--middle-cut-map", type=Path)
+    parser.add_argument("--lyric-role-map", type=Path)
     parser.add_argument("--min-score", type=float, default=0.76)
     parser.add_argument("--min-margin", type=float, default=0.08)
     parser.add_argument("--out", required=True, type=Path)
@@ -66,6 +77,7 @@ def main() -> int:
                 for key, value in _load_json_map(args.language_map).items()
             },
             middle_cut_by_occurrence=middle_cut,
+            lyric_role_overrides_by_track=_load_role_overrides(args.lyric_role_map),
             min_score=args.min_score,
             min_margin=args.min_margin,
         )
@@ -80,8 +92,9 @@ def main() -> int:
             normalized_config={
                 "min_score": args.min_score,
                 "min_margin": args.min_margin,
-                "language_map": bool(args.language_map),
-                "middle_cut_map": bool(args.middle_cut_map),
+                "language_map_sha256": sha256_file(args.language_map) if args.language_map else None,
+                "middle_cut_map_sha256": sha256_file(args.middle_cut_map) if args.middle_cut_map else None,
+                "lyric_role_map_sha256": sha256_file(args.lyric_role_map) if args.lyric_role_map else None,
             },
             producer={"git_commit": args.git_commit} if args.git_commit else {},
             evidence={
