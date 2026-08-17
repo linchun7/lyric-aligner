@@ -7,6 +7,8 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Iterable
 
+from lyric_aligner.io.text import read_task_text
+
 LRC_LINE_RE = re.compile(r"\[(\d{1,3}):(\d{2})(?:[.:](\d{1,3}))?\](.*)")
 META_RE = re.compile(
     r"^(?:\[?by:|作词|作曲|编曲|词\s*:|曲\s*:|制作人|人声采样|版权|发行|混音|母带|企划|出品人|op\s*:|sp\s*:)",
@@ -119,10 +121,16 @@ def classify_alternatives(
     ]
 
 
-def inspect_lyric_roles(path: Path, *, language: str) -> dict:
+def inspect_lyric_roles(
+    path: Path,
+    *,
+    language: str,
+    original_index_overrides: dict[int, int] | None = None,
+) -> dict:
     groups: dict[int, list[str]] = {}
+    original_index_overrides = original_index_overrides or {}
     for line_number, raw in enumerate(
-        path.read_text(encoding="utf-8-sig").splitlines(), start=1
+        read_task_text(path).splitlines(), start=1
     ):
         stripped = raw.strip()
         if not stripped:
@@ -146,6 +154,23 @@ def inspect_lyric_roles(path: Path, *, language: str) -> dict:
     original_count = 0
     for timestamp, texts in sorted(groups.items()):
         alternatives = classify_alternatives(timestamp, texts, language=language)
+        override_index = original_index_overrides.get(timestamp)
+        if override_index is not None:
+            if override_index < 0 or override_index >= len(alternatives):
+                raise LyricRoleError(
+                    f"original_index override {override_index} is out of range at {timestamp}ms"
+                )
+            alternatives = [
+                LyricAlternative(
+                    row.timestamp_ms,
+                    row.text,
+                    "original" if index == override_index else (
+                        "metadata" if row.role == "metadata" else "unknown"
+                    ),
+                    row.script,
+                )
+                for index, row in enumerate(alternatives)
+            ]
         originals = [row for row in alternatives if row.role == "original"]
         if len(originals) != 1:
             ambiguous.append(timestamp)

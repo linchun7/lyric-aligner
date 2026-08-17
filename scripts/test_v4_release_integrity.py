@@ -4,7 +4,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from lyric_aligner.contracts.artifacts import validate_upstream_artifact
+from lyric_aligner.contracts.artifacts import validate_artifact_output, validate_upstream_artifact
 from lyric_aligner.qa.final_integrity import (
     FinalIntegrityError,
     build_release_artifact_manifest,
@@ -152,6 +152,27 @@ class V4ReleaseIntegrityTests(unittest.TestCase):
                     expected_algorithm_version="3.9",
                     expected_stage="release",
                 ),
+            )
+
+    def test_artifact_output_hash_detects_materialized_file_change(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            srt, report, qa = write_case(root)
+            manifest = build_release_artifact_manifest(
+                final_srt=srt,
+                audit_csv=report,
+                qa_json=qa,
+                task_fingerprint_sha256=FINGERPRINT,
+                algorithm_version="3.9",
+            )
+            self.assertEqual(
+                validate_artifact_output(manifest, role="final_srt", path=srt), []
+            )
+            srt.write_text(
+                srt.read_text(encoding="utf-8-sig") + "\n", encoding="utf-8-sig"
+            )
+            self.assertTrue(
+                validate_artifact_output(manifest, role="final_srt", path=srt)
             )
 
     def test_malformed_srt_block_fails_closed(self):

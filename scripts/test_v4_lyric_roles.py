@@ -47,6 +47,32 @@ class V4LyricRoleTests(unittest.TestCase):
                 "auto",
             )
 
+    def test_explicit_original_index_resolves_same_script_ambiguity(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "song.lrc"
+            path.write_text(
+                "[00:01.00]我们一起走\n[00:01.00]我們一起走\n",
+                encoding="utf-8",
+            )
+            result = inspect_lyric_roles(
+                path,
+                language="zh",
+                original_index_overrides={1000: 1},
+            )
+            alternatives = result["groups"][0]["alternatives"]
+            self.assertEqual([row["role"] for row in alternatives], ["unknown", "original"])
+
+    def test_invalid_original_index_override_fails_closed(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "song.lrc"
+            path.write_text("[00:01.00]line\n", encoding="utf-8")
+            with self.assertRaisesRegex(LyricRoleError, "out of range"):
+                inspect_lyric_roles(
+                    path,
+                    language="en",
+                    original_index_overrides={1000: 4},
+                )
+
 
 if __name__ == "__main__":
     unittest.main()

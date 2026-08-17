@@ -11,9 +11,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
 
-from lyric_aligner.assets.lyric_roles import inspect_lyric_roles
 from lyric_aligner.contracts.artifacts import sha256_file
+from lyric_aligner.assets.lyric_roles import inspect_lyric_roles
 from lyric_aligner.domain import TrackAsset, TrackOccurrence
+from lyric_aligner.io.text import read_task_text
 
 ASSET_SCHEMA_VERSION = "1.0"
 AUDIO_SUFFIXES = {".flac", ".wav", ".mp3", ".m4a", ".aac", ".ogg"}
@@ -49,7 +50,7 @@ def stable_id(*parts: str, prefix: str) -> str:
 
 def parse_song_list(path: Path) -> list[SongEntry]:
     entries: list[SongEntry] = []
-    for line_number, raw in enumerate(path.read_text(encoding="utf-8-sig").splitlines(), start=1):
+    for line_number, raw in enumerate(read_task_text(path).splitlines(), start=1):
         line = raw.strip()
         if not line:
             continue
@@ -81,7 +82,7 @@ def parse_song_list(path: Path) -> list[SongEntry]:
 def _candidate_score(entry: SongEntry, path: Path) -> float:
     """Score one filename without letting a shared title swamp artist identity.
 
-    Exact Artist+Title is strongest. A filename that contains both artist and
+    Exact Artist+Title is strongest.  A filename that contains both artist and
     title is a strong candidate but intentionally stays below exact so an
     alternate live/studio/version file remains visible through the margin gate.
     Title-only matches are useful for uniquely named files, but are deliberately
@@ -104,10 +105,13 @@ def _candidate_score(entry: SongEntry, path: Path) -> float:
     has_artist = bool(artist and artist in stem)
 
     if has_title and has_artist:
+        # Strong but not exact: suffixes such as live/remaster/version must still
+        # compete with each other and can intentionally trigger the margin gate.
         return min(0.91, 0.86 + 0.05 * combined_score)
     if stem == title:
         return 0.88
     if has_title:
+        # Never let the common title alone dominate an explicit artist mismatch.
         return min(0.84, 0.76 + 0.08 * title_score)
     return min(0.75, max(title_score, combined_score) * 0.75)
 
@@ -128,12 +132,6 @@ def choose_candidate(
     min_score: float = 0.76,
     min_margin: float = 0.08,
 ) -> tuple[Path, dict]:
-    """Choose a unique candidate or fail closed.
-
-    Defaults are conservative bootstrap values, not calibrated production
-    thresholds. They must be re-tuned against calibration/blind-test data.
-    """
-
     ranked = rank_candidates(entry, candidates)
     if not ranked:
         raise AssetResolutionError(f"no {label} candidates for {entry.artist} - {entry.title}")
@@ -176,6 +174,7 @@ def resolve_assets(
     source_audio_dir: Path,
     language_by_track: dict[str, str] | None = None,
     middle_cut_by_occurrence: dict[int, str] | None = None,
+    lyric_role_overrides_by_track: dict[str, dict[int, int]] | None = None,
     min_score: float = 0.76,
     min_margin: float = 0.08,
 ) -> dict:
@@ -192,6 +191,7 @@ def resolve_assets(
 
     language_by_track = language_by_track or {}
     middle_cut_by_occurrence = middle_cut_by_occurrence or {}
+    lyric_role_overrides_by_track = lyric_role_overrides_by_track or {}
     assets: dict[tuple[str, str], TrackAsset] = {}
     resolution: dict[tuple[str, str], dict] = {}
     occurrences: list[TrackOccurrence] = []
@@ -219,13 +219,21 @@ def resolve_assets(
                         f"{previous} and {identity}; provide explicit unique assets"
                     )
                 claims[chosen] = identity
-
             language = str(
                 language_by_track.get(f"{entry.artist} - {entry.title}")
                 or language_by_track.get(entry.title)
                 or "auto"
             )
-            lyric_role_summary = inspect_lyric_roles(lyric_path, language=language)
+            role_overrides = (
+                lyric_role_overrides_by_track.get(f"{entry.artist} - {entry.title}")
+                or lyric_role_overrides_by_track.get(entry.title)
+                or {}
+            )
+            lyric_role_summary = inspect_lyric_roles(
+                lyric_path,
+                language=language,
+                original_index_overrides=role_overrides,
+            )
             lyric_hash = sha256_file(lyric_path)
             source_hash = sha256_file(source_path)
             version_id = stable_id(source_hash, lyric_hash, prefix="ver")
@@ -248,11 +256,7 @@ def resolve_assets(
                 language=language,
             )
             assets[identity] = asset
-            resolution[identity] = {
-                "lrc": lyric_diag,
-                "source_audio": source_diag,
-                "lyric_roles": lyric_role_summary,
-            }
+            resolution[identity] = {"lrc": lyric_diag, "source_audio": source_diag, "lyric_roles": lyric_role_summary}
 
         occurrence_id = stable_id(
             asset.track_id,
@@ -275,6 +279,8 @@ def resolve_assets(
         "schema_version": ASSET_SCHEMA_VERSION,
         "status": "resolved",
         "song_list": str(song_list.resolve()),
+        "song_list_sha256": sha256_file(song_list),
+        "resolver_config": {"min_score": min_score, "min_margin": min_margin},
         "assets": [asset.to_dict() for asset in assets.values()],
         "occurrences": [occurrence.to_dict() for occurrence in occurrences],
         "resolution": [
