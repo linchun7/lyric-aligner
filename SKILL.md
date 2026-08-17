@@ -1,43 +1,37 @@
 ---
 name: lyric-aligner
-description: Reconstruct, review, recompose and render multilingual canonical lyric subtitles for edited music mixes using fingerprinted TrackAssets, Source-to-Mix TimeWarp, confirmed-overlap dual-track timelines, confirmed-cut local boundary localization, cut-aware canonical projection, strict final SRT/audit/QA binding, and immutable release lineage.
+description: Reconstruct, review, materialize and render multilingual canonical lyric subtitles for edited music mixes using fingerprinted TrackAssets, Source-to-Mix TimeWarp, confirmed-overlap dual-track timelines, confirmed-cut CUT_AWARE timelines, fail-closed cut+overlap composition, and immutable release lineage.
 ---
 
 # Lyric Aligner
 
-当前开发架构为 **v4.0.0a7 production-first**。新真实任务优先 v4；不可可靠解释的 mapping、cut、transition/overlap 必须 review/BLOCK，**不得静默回退 v3.9**。
+当前开发版本为 **v4.0.0a8 production-first**。`main` 已合入 a7 confirmed-cut rebuild；a8 新增同一 reviewed task 的 cut/overlap materialization composition。任何无法由现有证据安全组合的情况继续 review/BLOCK，**不得静默回退 v3.9，也不得人工拼 artifact**。
 
 ## 不可违反的原则
 
-1. **Canonical lyric 是最终文字与顺序真源。** ASR、剪映/编辑器只提供 evidence。
+1. **Canonical lyric 是最终文字与顺序真源。** ASR、编辑器只提供 evidence。
 2. **Source-to-Mix audio mapping 是主要时间真源。** 编辑器 SRT 时间不是默认权威。
-3. 普通歌曲先 AFFINE；证据证明固定倍率不足时才升级 PIECEWISE_RATE。BPM 只作 soft prior。
-4. `rate change != cut`。只有 source-position discontinuity 才产生 cut candidate。
-5. **confirmed_cut 不等于直接删除歌词。** 人工只确认 source jump 是物理剪切；系统仍必须局部定位真实 mix cut boundary，并重建显式 source-gap mapping/timeline。
-6. Cut boundary 不允许使用 coarse `(mix_before + mix_after)/2` 当真值。a7 使用 harmonic Chroma/MFCC 在 confirmed discontinuity 小区间细步长定位；证据不足继续 BLOCK。
-7. CUT_AWARE mapping 由多个连续 AFFINE/PIECEWISE_RATE segment + 显式 source gaps 组成。任何 segment 仍 blocked，整次 cut rebuild 失败。
-8. Confirmed source gap 内的 canonical lyric 只能按可证明程度处理：
-   - 普通 line-LRC 的**整个可推断行区间**都位于 gap：可省略整行；
-   - line-LRC 行从 gap 内开始但可能延续到 cut 后，或行区间穿过 gap：继续 review，禁止猜 surviving characters；
-   - Enhanced LRC/QRC 有完整 token timing：只保留完整幸存 token，生成 canonical fragment；
-   - cut 穿过某个 timed token：继续 review。
-9. `TrackAsset / TrackOccurrence / ResolvedAssetBinding` 确定后，下游不得重新猜 source、LRC 或 same-timestamp original。
-10. Transition/overlap 继续使用 candidate-level review；confirmed overlap 必须经过 `v4_recompose_overlap.py`，两路歌词保持独立。
-11. Review Decision 必须 task-scoped + exact base-run-scoped；禁止口头确认后直接改 run JSON。
-12. TimeWarp discontinuity candidate 独立 `candidate_id/issue_id`；`confirmed_cut` 或 `rejected_requires_remap` 都不会直接解除 BLOCK。
-13. Final renderer 只能消费 effective `ready_for_render` 的 production/review/overlap/cut-rebuild run；任何 canonical fragment issue 都阻止 cut-rebuilt run 发布。
-14. 最终 SRT、audit CSV、QA JSON 必须逐 cue 绑定并经过 release-integrity manifest。
-15. 通用代码不得硬编码具体歌曲、cue、时间点、错词或任务名称。
-16. 所有 stage 必须绑定 task fingerprint、algorithm version、calibration profile、upstream IDs、materialized SHA-256。
-17. 所有实质性更新必须按 `references/documentation-contract.md` 同步 owning docs；CI 不通过不得合并。
+3. `rate change != cut`；forward source-position discontinuity 才能进入 candidate-level cut review。
+4. `confirmed_cut` 只确认物理 cut，仍必须经过 local cut locator → CUT_AWARE mapping → cut-aware canonical timeline。
+5. line-LRC 只有整个可推断行区间都位于 source gap 才可整行删除；partial-line 一律 review。
+6. confirmed overlap 保持左右两条独立 canonical cue stream，所有跨轨实际交集必须完整位于 exact confirmed region。
+7. **a8 不重新跑 cut/overlap 声学，也不互相改写 a6/a7 materializer。** 两边先从同一个 `review_resolution` 独立物化，再通过第三层 composition stage 合并。
+8. Cut + overlap 只有在以下两层都安全时才自动组合：
+   - overlap mix interval 不穿过该 occurrence 的 localized cut boundary；
+   - overlap delta canonical source interval 不与任何 confirmed source gap 相交。
+9. overlap delta 缺 canonical source provenance 时不得自动组合；open source interval 不能证明未穿 gap 时继续 BLOCK。
+10. `TrackAsset / TrackOccurrence / ResolvedAssetBinding` 确定后，下游不得重新猜 source/LRC/canonical selection。
+11. Review Decision 必须 task-scoped + exact base-run-scoped；cut/overlap materializations 必须绑定同一个 source review artifact。
+12. Final renderer 只接受 `ready_for_render + issues=[] + legacy_fallback_used=false`，并验证 exact task/profile/artifact lineage。
+13. 所有 stage 都绑定 task fingerprint、algorithm version、calibration profile、upstream IDs、materialized SHA-256。
+14. 所有实质性更新必须同步 owning docs；CI 不通过不得合并。
 
 ## 权威文档
 
 - 运行：`references/v4-runtime-guide.md`
 - 状态：`references/v4-status.md`
-- 架构/算法：`references/v4-implementation.md`
-- 关键变更：`references/v4-change-record.md`
-- 架构复盘：`references/v4-architecture-review-2026-08-17.md`
+- 架构：`references/v4-implementation.md`
+- 变更：`references/v4-change-record.md`
 - 文档契约：`references/documentation-contract.md`
 - 数据/盲测：`references/dataset-protocol.md`
 
@@ -52,7 +46,7 @@ python scripts/v4_run.py `
   --git-commit "<commit>"
 ```
 
-`v4_run` 会把每个 source-position jump 独立 materialize 为 `timewarp_discontinuity` candidate，并在 occurrence summary 中记录 exact primary Coarse/Fine path + artifact provenance。
+输出 `ready_for_render` 或 candidate-level `review_required`。
 
 ### 2. Review
 
@@ -61,149 +55,114 @@ python scripts/v4_review.py template ...
 python scripts/v4_review.py apply ...
 ```
 
-Review Decision schema 当前为 `1.2`。
-
-TimeWarp discontinuity actions：
+Review Decision schema=`1.2`。主要 actions：
 
 ```text
-confirmed_cut
- → status=confirmed
- → confirmed_discontinuity snapshot
- → requires_timeline_rebuild=true
- → 仍 review_required
-
-rejected_requires_remap
- → 不是物理 cut
- → 当前 mapping 仍不可发布
- → requires_timeline_rebuild=true
+transition candidate: resolved_clear | confirmed_overlap
+timewarp discontinuity: confirmed_cut | rejected_requires_remap
+generic blocked timewarp: confirmed_requires_rebuild
 ```
 
-### 3. Confirmed overlap
+### 3. 单类 materialization
 
-沿用 a6：
+Confirmed overlap：
 
 ```powershell
 python scripts/v4_recompose_overlap.py ...
 ```
 
-只有 exact confirmed regions 可允许跨 track SRT cue 时间重叠。
-
-### 4. Confirmed cut rebuild
+Confirmed cut：
 
 ```powershell
-python scripts/v4_rebuild_cut.py `
+python scripts/v4_rebuild_cut.py ...
+```
+
+如果 reviewed task 只有其中一类 issue，单个 materializer 清空剩余 issue 后可直接进入 renderer。
+
+### 4. 同一任务同时有 confirmed cut + confirmed overlap
+
+两条 materializer **都从同一个 reviewed run 启动**：
+
+```text
+review_resolution
+ ├─ v4_rebuild_cut       → cut_rebuild
+ └─ v4_recompose_overlap → overlap_recomposition
+```
+
+然后：
+
+```powershell
+python scripts/v4_compose_materializations.py `
   --task-manifest "private/<任务>/qa/task_manifest.json" `
-  --run "output/<任务>/v4/reviewed_run.json" `
-  --run-artifact "output/<任务>/v4/reviewed_run.artifact.json" `
+  --cut-run "output/<任务>/v4/cut_rebuilt_run.json" `
+  --cut-artifact "output/<任务>/v4/cut_rebuilt_run.artifact.json" `
+  --overlap-run "output/<任务>/v4/recomposed_run.json" `
+  --overlap-artifact "output/<任务>/v4/recomposed_run.artifact.json" `
   --track-assets "output/<任务>/v4/assets/track_assets.json" `
   --asset-artifact "output/<任务>/v4/assets/track_assets.artifact.json" `
-  --out-dir "output/<任务>/v4/cuts" `
-  --out "output/<任务>/v4/cut_rebuilt_run.json" `
-  --artifact-out "output/<任务>/v4/cut_rebuilt_run.artifact.json" `
+  --out-dir "output/<任务>/v4/combined" `
+  --out "output/<任务>/v4/combined_run.json" `
+  --artifact-out "output/<任务>/v4/combined_run.artifact.json" `
   --git-commit "<commit>"
 ```
 
-每个 confirmed cut：
+新 artifacts：
 
 ```text
-exact primary Coarse/Fine path
- + exact confirmed discontinuity
- + local mix/source harmonic Chroma/MFCC
-        ↓
-50ms bootstrap candidate search
-        ↓
-validated local cut boundary
-        ↓
-continuous segment 1
-explicit source gap
-continuous segment 2 [ ... ]
-        ↓
-CUT_AWARE mapping
-        ↓
-cut-aware canonical timeline
+combined_timeline_recomposition / canonical_timeline
+combined_recomposition          / v4_combined_run
 ```
 
-产物：
+组合 stage：
 
-```text
-cut_timewarp_rebuild / cut_aware_timewarp
-cut_timeline_rebuild / canonical_timeline
-cut_rebuild          / v4_cut_rebuilt_run
-```
+- 要求 cut/overlap 两个 run 来自同一个 review artifact；
+- 要求同一个 TrackAsset artifact、task fingerprint、profile；
+- 用两边 `processed_issue_ids` 抵消已经物化的问题，真正未解决 issue 继续保留；
+- cut-only occurrence 保留 cut timeline；
+- overlap-only occurrence 保留 overlap timeline；
+- 同一 occurrence 同时受 cut+overlap 影响时生成 combined timeline；
+- overlap interval 穿 cut boundary 或 overlap delta source interval 穿 source gap 时 BLOCK。
 
-只有所有 confirmed cuts 成功 materialize、其他 issue=0 且 canonical fragment issue=0 时，cut rebuilt run 才 `ready_for_render`。
+### 5. Final Render / Release
 
-### 5. Cut-aware canonical text
-
-普通 line-LRC：
-
-```text
-entire inferred line interval inside source gap
- → whole line omitted
-
-line starts inside gap but can extend beyond gap
-or line interval intersects source gap
- → canonical_fragment review issue
- → 不输出猜测文本
-```
-
-Enhanced LRC/QRC：
-
-```text
-complete token inside retained segment → keep
-complete token inside source gap       → omit
-token itself crossed by cut            → canonical_fragment review issue
-```
-
-当一行只剩部分完整 token 时，输出文本是 canonical fragment，仍来自规范歌词，不使用 ASR 猜词。
-
-### 6. Final Render / Release
-
-`v4_render.py` 当前可消费：
+`v4_render.py` 当前接受：
 
 ```text
 production_orchestration
 review_resolution
 overlap_recomposition
 cut_rebuild
+combined_recomposition
 ```
 
-Cut run 额外要求：
-
-```text
-remaining_issue_count = 0
-canonical_fragment_issue_count = 0
-rebuilt_occurrence_count >= 1
-cut mapping/timeline artifact IDs 均在 run lineage 中
-```
-
-`cut_timeline_rebuild` timeline 必须 `cut_aware=true` 且没有 projection issues。
+`combined_recomposition` 同时验证 cut metadata、overlap metadata、combined metadata，以及 source cut/overlap timeline lineage。
 
 ```powershell
 python scripts/v4_render.py ...
 python scripts/v4_validate_release.py `
   ... `
-  --algorithm-version "4.0.0a7" `
+  --algorithm-version "4.0.0a8" `
   --upstream-artifact "output/<任务>/v4/final/FINAL.render.artifact.json"
 ```
 
 ## Calibration / migration
 
-a7 新增 `CutBoundaryConfig`，默认 profile version：
+a8 **不修改声学阈值**，继续使用：
 
 ```text
-production-bootstrap-2026-08-17-a7
+profile = production-bootstrap-2026-08-17-a7
 ```
 
-Bootstrap cut locator：16kHz、0.8s 左右 context、50ms candidate step、Chroma/MFCC 双特征 evidence。具体阈值尚未真实校准。
+但 algorithm version 已变为 `4.0.0a8`，因此 a7 artifacts 不能直接冒充 a8 artifact；需要按 a8 chain 重跑/重新物化。
 
-由于完整 profile 内容改变：**a6/a5 artifacts 不允许与 a7 stage artifacts 混用**，升级后从 `v4_run` 重跑。
+## 当前仍 BLOCK 的边界
 
-## 当前已知边界
-
-- 普通 line-LRC partial-line cut 仍不能自动确定 surviving characters；
-- timed token 本身被 cut 穿过仍需 review；
-- 同一任务同时存在 confirmed overlap + confirmed cut 的 unified stage composition 尚未自动编排，必须保持 fail-closed；
+- overlap interval 与 localized cut boundary 相交；
+- overlap delta canonical source interval 与 confirmed source gap 相交；
+- overlap delta 缺 source provenance；
+- line-LRC partial-line cut；
+- timed token 本身被 cut 穿过；
+- 任一 cut/overlap mapping 或 lineage 仍不确定；
 - real private calibration / blind-test 尚未完成。
 
 ## 回归纪律
@@ -218,11 +177,9 @@ python scripts/check_environment.py
 git diff --check
 ```
 
-CI 覆盖 Python 3.10 / 3.12 / 3.14，并单独检查 ASR 环境。
-
 ## 后续优先级
 
-1. confirmed overlap + confirmed cut 的统一 stage composition；
-2. real-task calibration / blind-test；
-3. Editor Evidence + LanguageSpan 最终 cue fusion；
-4. 根据真实误差决定 Forced Alignment / ASR v2 / vocal local alignment。
+1. real-task calibration / blind-test；
+2. Editor Evidence + LanguageSpan final cue fusion；
+3. 根据真实误差决定 Forced Alignment / ASR v2 / vocal local alignment；
+4. 如真实任务证明有必要，再研究 cut boundary 与 overlap 同一区域的 joint acoustic composition。
