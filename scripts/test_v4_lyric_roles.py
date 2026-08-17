@@ -73,6 +73,20 @@ class V4LyricRoleTests(unittest.TestCase):
                     original_index_overrides={1000: 4},
                 )
 
+    def test_original_index_override_cannot_select_metadata(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "song.lrc"
+            path.write_text(
+                "[00:01.00]作词: someone\n[00:01.00]real lyric\n",
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(LyricRoleError, "selects metadata"):
+                inspect_lyric_roles(
+                    path,
+                    language="zh",
+                    original_index_overrides={1000: 0},
+                )
+
 
 if __name__ == "__main__":
     unittest.main()
