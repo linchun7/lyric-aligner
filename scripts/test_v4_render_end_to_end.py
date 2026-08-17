@@ -9,6 +9,7 @@ from pathlib import Path
 import numpy as np
 
 from lyric_aligner import __version__
+from lyric_aligner.contracts.artifacts import build_artifact_manifest
 from lyric_aligner.srt import parse_srt_strict
 from task_contract import build_task_manifest, write_json_atomic
 
@@ -155,6 +156,7 @@ class V4RenderEndToEndTests(unittest.TestCase):
             self.assertTrue(qa["publish_ready"])
             self.assertEqual(qa["review_candidate_count"], 0)
             self.assertEqual(qa["algorithm_version"], __version__)
+            self.assertEqual(qa["source_run_stage"], "production_orchestration")
 
             release_manifest = final_dir / "release.artifact.json"
             release_result = run_command(
@@ -186,6 +188,147 @@ class V4RenderEndToEndTests(unittest.TestCase):
             self.assertEqual(
                 release["task_fingerprint_sha256"],
                 manifest["task_fingerprint_sha256"],
+            )
+
+            # Exercise the replayable review path without re-running audio stages.
+            # We wrap the already valid production evidence in a synthetic
+            # transition review issue, clear it through v4_review, then prove the
+            # reviewed-run artifact is accepted by the same final renderer.
+            production_artifact_path = out_dir / "v4_run.artifact.json"
+            production_artifact = json.loads(
+                production_artifact_path.read_text(encoding="utf-8")
+            )
+            occurrence_id = run_payload["occurrences"][0]["occurrence_id"]
+            review_base = json.loads(json.dumps(run_payload))
+            review_base["status"] = "review_required"
+            review_base["transitions"] = [
+                {
+                    "left_occurrence_id": occurrence_id,
+                    "right_occurrence_id": "synthetic-review-shadow",
+                    "blocked": True,
+                }
+            ]
+            review_base["issues"] = [
+                {
+                    "kind": "transition",
+                    "left_occurrence_id": occurrence_id,
+                    "right_occurrence_id": "synthetic-review-shadow",
+                    "status": "review",
+                    "reason": "synthetic transition candidate for review contract testing",
+                    "overlap_candidate_count": 1,
+                }
+            ]
+            review_base_path = out_dir / "review_base_run.json"
+            review_base_path.write_text(json.dumps(review_base), encoding="utf-8")
+            review_base_artifact = build_artifact_manifest(
+                task_fingerprint_sha256=manifest["task_fingerprint_sha256"],
+                stage="production_orchestration",
+                algorithm_version=__version__,
+                outputs=(("v4_production_run", review_base_path),),
+                normalized_config=production_artifact["normalized_config"],
+                upstream_artifact_ids=tuple(production_artifact["upstream_artifact_ids"]),
+                evidence={"status": "review_required", "synthetic_review_fixture": True},
+            )
+            review_base_artifact_path = out_dir / "review_base_run.artifact.json"
+            review_base_artifact_path.write_text(
+                json.dumps(review_base_artifact), encoding="utf-8"
+            )
+
+            decisions_path = out_dir / "review_decisions.json"
+            template_result = run_command(
+                [
+                    sys.executable,
+                    str(ROOT / "scripts" / "v4_review.py"),
+                    "template",
+                    "--task-manifest",
+                    str(manifest_path),
+                    "--run",
+                    str(review_base_path),
+                    "--run-artifact",
+                    str(review_base_artifact_path),
+                    "--out",
+                    str(decisions_path),
+                ]
+            )
+            self.assertEqual(template_result.returncode, 0, msg=template_result.stderr)
+            decisions = json.loads(decisions_path.read_text(encoding="utf-8"))
+            decisions["review_items"][0]["decision"] = {
+                "action": "resolved_clear",
+                "rationale": "Synthetic reviewer rejected the transition overlap candidate.",
+            }
+            decisions_path.write_text(json.dumps(decisions), encoding="utf-8")
+
+            reviewed_run_path = out_dir / "reviewed_run.json"
+            reviewed_artifact_path = out_dir / "reviewed_run.artifact.json"
+            apply_result = run_command(
+                [
+                    sys.executable,
+                    str(ROOT / "scripts" / "v4_review.py"),
+                    "apply",
+                    "--task-manifest",
+                    str(manifest_path),
+                    "--run",
+                    str(review_base_path),
+                    "--run-artifact",
+                    str(review_base_artifact_path),
+                    "--decisions",
+                    str(decisions_path),
+                    "--out",
+                    str(reviewed_run_path),
+                    "--artifact-out",
+                    str(reviewed_artifact_path),
+                    "--git-commit",
+                    "synthetic-review-render-test",
+                ]
+            )
+            self.assertEqual(apply_result.returncode, 0, msg=apply_result.stderr)
+            reviewed_run = json.loads(reviewed_run_path.read_text(encoding="utf-8"))
+            self.assertEqual(reviewed_run["status"], "ready_for_render")
+            self.assertEqual(reviewed_run["issues"], [])
+
+            reviewed_final_srt = final_dir / "REVIEWED_FINAL.srt"
+            reviewed_report = final_dir / "REVIEWED_FINAL.csv"
+            reviewed_qa = final_dir / "REVIEWED_FINAL.qa.json"
+            reviewed_render_artifact = final_dir / "REVIEWED_FINAL.render.artifact.json"
+            reviewed_render_result = run_command(
+                [
+                    sys.executable,
+                    str(ROOT / "scripts" / "v4_render.py"),
+                    "--task-manifest",
+                    str(manifest_path),
+                    "--run",
+                    str(reviewed_run_path),
+                    "--run-artifact",
+                    str(reviewed_artifact_path),
+                    "--track-assets",
+                    str(out_dir / "assets" / "track_assets.json"),
+                    "--asset-artifact",
+                    str(out_dir / "assets" / "track_assets.artifact.json"),
+                    "--final-srt",
+                    str(reviewed_final_srt),
+                    "--report",
+                    str(reviewed_report),
+                    "--qa-json",
+                    str(reviewed_qa),
+                    "--artifact-out",
+                    str(reviewed_render_artifact),
+                    "--git-commit",
+                    "synthetic-review-render-test",
+                ]
+            )
+            self.assertEqual(
+                reviewed_render_result.returncode,
+                0,
+                msg=reviewed_render_result.stderr,
+            )
+            reviewed_qa_payload = json.loads(reviewed_qa.read_text(encoding="utf-8"))
+            self.assertTrue(reviewed_qa_payload["publish_ready"])
+            self.assertEqual(
+                reviewed_qa_payload["source_run_stage"], "review_resolution"
+            )
+            self.assertEqual(
+                [cue.text for cue in parse_srt_strict(reviewed_final_srt)],
+                ["alpha line", "beta line", "gamma line"],
             )
 
 
