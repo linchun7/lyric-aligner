@@ -1,7 +1,7 @@
 """Canonical lyric parsing with explicit same-timestamp original selection.
 
-This is the v4 lyric truth layer.  Downstream stages must not pick the first
-same-timestamp LRC row or re-run language heuristics.  Asset resolution decides
+This is the v4 lyric truth layer. Downstream stages must not pick the first
+same-timestamp LRC row or re-run language heuristics. Asset resolution decides
 the original once; this parser consumes that decision while preserving
 Enhanced-LRC/QRC token timing when available.
 """
@@ -127,6 +127,28 @@ def _qrc(
     return clean_text("".join(pieces)), tuple(tokens)
 
 
+def _select_index(
+    start: int,
+    candidates: list,
+    *,
+    original_index_by_timestamp: dict[int, int],
+    lexical_predicate,
+) -> int:
+    selected_index = original_index_by_timestamp.get(start)
+    if selected_index is None:
+        lexical = [index for index, item in enumerate(candidates) if lexical_predicate(item)]
+        if len(lexical) != 1:
+            raise CanonicalLyricError(
+                f"canonical original is ambiguous at {start}ms; consume TrackAsset selection"
+            )
+        selected_index = lexical[0]
+    if selected_index < 0 or selected_index >= len(candidates):
+        raise CanonicalLyricError(
+            f"canonical alternative index {selected_index} is out of range at {start}ms"
+        )
+    return selected_index
+
+
 def parse_canonical_lyrics(
     path: Path,
     *,
@@ -135,7 +157,7 @@ def parse_canonical_lyrics(
     """Parse canonical lines without ever guessing among alternatives.
 
     ``original_index_by_timestamp`` uses the exact alternative index emitted by
-    ``track_assets.json``.  When a timestamp has multiple lexical alternatives
+    ``track_assets.json``. When a timestamp has multiple lexical alternatives
     and no explicit selection is supplied, parsing fails closed.
     """
 
@@ -152,7 +174,7 @@ def parse_canonical_lyrics(
             start = int(qrc_match.group(1))
             duration = int(qrc_match.group(2))
             text, tokens = _qrc(start, duration, qrc_match.group(3))
-            if text and not META_RE.match(text):
+            if text:
                 qrc_groups.setdefault(start, []).append((text, tokens))
             continue
 
@@ -167,9 +189,10 @@ def parse_canonical_lyrics(
                 f"invalid LRC timestamp at line {line_number}"
             ) from exc
         text, tokens = _enhanced(body.strip())
-        # Keep metadata alternatives in the indexed group so the alternative
-        # index exactly matches lyric-role preflight.  Metadata can never be
-        # selected as the canonical original.
+        if not text:
+            # Lyric-role preflight also excludes empty timestamp rows; keep the
+            # alternative index spaces identical between resolver and parser.
+            continue
         lrc_groups.setdefault(start, []).append(
             (body.strip(), text, tokens, "enhanced_lrc" if tokens else "line_lrc")
         )
@@ -179,33 +202,29 @@ def parse_canonical_lyrics(
     for start in timestamps:
         if start in qrc_groups:
             candidates = qrc_groups[start]
-            if len(candidates) != 1:
+            selected_index = _select_index(
+                start,
+                candidates,
+                original_index_by_timestamp=original_index_by_timestamp,
+                lexical_predicate=lambda item: bool(item[0]) and not META_RE.match(item[0]),
+            )
+            text, tokens = candidates[selected_index]
+            if not text or META_RE.match(text):
                 raise CanonicalLyricError(
-                    f"multiple QRC alternatives at {start}ms require explicit normalization"
+                    f"canonical selection points to metadata/blank QRC text at {start}ms"
                 )
-            text, tokens = candidates[0]
             result.append(
                 CanonicalLine(len(result), start, text, tokens, "qrc_word_timing")
             )
             continue
 
         alternatives = lrc_groups[start]
-        selected_index = original_index_by_timestamp.get(start)
-        if selected_index is None:
-            lexical = [
-                index
-                for index, (_, text, _, _) in enumerate(alternatives)
-                if text and not META_RE.match(text)
-            ]
-            if len(lexical) != 1:
-                raise CanonicalLyricError(
-                    f"canonical original is ambiguous at {start}ms; consume TrackAsset selection"
-                )
-            selected_index = lexical[0]
-        if selected_index < 0 or selected_index >= len(alternatives):
-            raise CanonicalLyricError(
-                f"canonical alternative index {selected_index} is out of range at {start}ms"
-            )
+        selected_index = _select_index(
+            start,
+            alternatives,
+            original_index_by_timestamp=original_index_by_timestamp,
+            lexical_predicate=lambda item: bool(item[1]) and not META_RE.match(item[1]),
+        )
         _, text, tokens, timing_format = alternatives[selected_index]
         if not text or META_RE.match(text):
             raise CanonicalLyricError(
