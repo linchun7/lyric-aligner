@@ -42,7 +42,14 @@ class V4TimeWarpTests(unittest.TestCase):
         self.assertEqual(result["selection"], "PIECEWISE_RATE_ACCEPTED")
         self.assertTrue(result["escalated"])
         self.assertEqual(result["discontinuities"], [])
-        self.assertGreaterEqual(len(result["mapping"]["segment_slopes"]), 2)
+        mapping = result["mapping"]
+        self.assertGreaterEqual(len(mapping["breakpoints"]), 1)
+        self.assertEqual(len(mapping["breakpoints"]), len(mapping["slope_deltas"]))
+        segment_slopes = [mapping["base_slope"]]
+        for delta in mapping["slope_deltas"]:
+            segment_slopes.append(segment_slopes[-1] + delta)
+        self.assertGreaterEqual(len(segment_slopes), 2)
+        self.assertTrue(all(slope > 0 for slope in segment_slopes))
 
     def test_abrupt_rate_change_is_not_cut(self):
         points = [
