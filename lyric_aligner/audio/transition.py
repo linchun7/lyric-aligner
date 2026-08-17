@@ -7,6 +7,8 @@ candidates when both tracks are independently supported in the same mix time.
 
 from __future__ import annotations
 
+import hashlib
+import json
 from dataclasses import asdict, dataclass
 from typing import Any
 
@@ -28,6 +30,7 @@ class ActivityWindow:
 
 @dataclass(frozen=True)
 class TransitionCandidate:
+    candidate_id: str
     type: str
     status: str
     start: float
@@ -41,6 +44,26 @@ class TransitionCandidate:
         payload = asdict(self)
         payload["occurrences"] = list(self.occurrences)
         return payload
+
+
+def transition_candidate_id(
+    candidate_type: str,
+    left_occurrence_id: str,
+    right_occurrence_id: str,
+    start: float,
+    end: float,
+) -> str:
+    """Return a deterministic ID for one interval within an exact algorithm run."""
+
+    core = {
+        "type": str(candidate_type),
+        "left_occurrence_id": str(left_occurrence_id),
+        "right_occurrence_id": str(right_occurrence_id),
+        "start_ms": int(round(float(start) * 1000.0)),
+        "end_ms": int(round(float(end) * 1000.0)),
+    }
+    encoded = json.dumps(core, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
 
 
 def transition_search_interval(
@@ -187,6 +210,9 @@ def probe_adjacent_transition(
     merged = _merge_intervals(simultaneous, max_gap=merge_gap_seconds)
     candidates = [
         TransitionCandidate(
+            candidate_id=transition_candidate_id(
+                "cross_track_overlap_candidate", left_id, right_id, start, end
+            ),
             type="cross_track_overlap_candidate",
             status="review",
             start=start,
@@ -210,6 +236,18 @@ def probe_adjacent_transition(
         else:
             uncertain_merged.append([start, end])
 
+    uncertain_rows = [
+        {
+            "candidate_id": transition_candidate_id(
+                "transition_ambiguity", left_id, right_id, start, end
+            ),
+            "start": start,
+            "end": end,
+            "reason": "high audio score but ambiguous source occurrence",
+        }
+        for start, end in uncertain_merged
+    ]
+
     return {
         "left_occurrence_id": left_id,
         "right_occurrence_id": right_id,
@@ -222,18 +260,11 @@ def probe_adjacent_transition(
         "left_activity": [row.to_dict() for row in left],
         "right_activity": [row.to_dict() for row in right],
         "overlap_candidates": candidates,
-        "uncertain_intervals": [
-            {
-                "start": start,
-                "end": end,
-                "reason": "high audio score but ambiguous source occurrence",
-            }
-            for start, end in uncertain_merged
-        ],
-        "blocked": bool(candidates or uncertain_merged),
+        "uncertain_intervals": uncertain_rows,
+        "blocked": bool(candidates or uncertain_rows),
         "status": (
             "review_required"
-            if (candidates or uncertain_merged)
+            if (candidates or uncertain_rows)
             else "clear_sequential_or_no_overlap"
         ),
     }

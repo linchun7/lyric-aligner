@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """Run the production-first Lyric Aligner v4 evidence/timeline chain for one task.
 
-This command does not silently fall back to v3.9.  It resolves immutable assets,
+This command does not silently fall back to v3.9. It resolves immutable assets,
 builds one primary Source-to-Mix mapping per occurrence, selectively refines
 uncertain mappings, probes every adjacent boundary with a shared transition
-window, and projects canonical lyrics onto the v4 timeline.  Uncertainty is
+window, and projects canonical lyrics onto the v4 timeline. Uncertainty is
 returned as review_required.
 """
 
@@ -269,11 +269,14 @@ def main() -> int:
             fine_artifacts[item.occurrence_id] = fine_artifact_path
 
             mapping, mapping_blocked, mapping_source = effective_timewarp(coarse, fine)
-            coarse_selection = str(coarse.get("result", {}).get("timewarp", {}).get("selection", ""))
+            coarse_selection = str(
+                coarse.get("result", {}).get("timewarp", {}).get("selection", "")
+            )
             if mapping_blocked:
                 issues.append(
                     {
                         "kind": "timewarp",
+                        "code": "effective_mapping_blocked",
                         "occurrence_id": item.occurrence_id,
                         "status": "review",
                         "selection": coarse_selection,
@@ -348,13 +351,21 @@ def main() -> int:
                     "mapping_blocked": mapping_blocked,
                     "timeline_line_count": timeline_line_count,
                     "timeline_path": str(timeline_path) if timeline_path else None,
-                    "timeline_artifact_path": str(timeline_artifact_path) if timeline_artifact_path else None,
+                    "timeline_artifact_path": (
+                        str(timeline_artifact_path) if timeline_artifact_path else None
+                    ),
+                    "timeline_stage": (
+                        "canonical_timeline_projection" if timeline_artifact_path else None
+                    ),
                 }
             )
 
         transition_summaries: list[dict] = []
         for index, transition in enumerate(plan.transitions, start=1):
-            stage_dir = transition_dir / f"{index:02d}_{_safe(transition.left_occurrence_id)}__{_safe(transition.right_occurrence_id)}"
+            stage_dir = transition_dir / (
+                f"{index:02d}_{_safe(transition.left_occurrence_id)}__"
+                f"{_safe(transition.right_occurrence_id)}"
+            )
             stage_dir.mkdir(parents=True, exist_ok=True)
             boundary_coarse: dict[str, tuple[Path, Path]] = {}
             for side, occurrence_id in (
@@ -410,28 +421,61 @@ def main() -> int:
             transition_payload = _load(transition_path)
             transition_result = transition_payload.get("result", {})
             transition_blocked = bool(transition_result.get("blocked", False))
-            if transition_blocked:
+            overlap_candidates = list(transition_result.get("overlap_candidates", []))
+            uncertain_intervals = list(transition_result.get("uncertain_intervals", []))
+            if transition_blocked and not (overlap_candidates or uncertain_intervals):
+                raise ValueError("blocked transition has no materialized review candidates")
+
+            for candidate in overlap_candidates:
+                candidate_id = str(candidate.get("candidate_id") or "").strip()
+                if not candidate_id:
+                    raise ValueError("transition overlap candidate is missing candidate_id")
                 issues.append(
                     {
-                        "kind": "transition",
+                        "kind": "transition_overlap",
+                        "code": "cross_track_overlap_candidate",
+                        "candidate_id": candidate_id,
                         "left_occurrence_id": transition.left_occurrence_id,
                         "right_occurrence_id": transition.right_occurrence_id,
+                        "interval_start": float(candidate["start"]),
+                        "interval_end": float(candidate["end"]),
                         "status": "review",
-                        "reason": "adjacent transition has overlap/ambiguity evidence",
-                        "overlap_candidate_count": len(
-                            transition_result.get("overlap_candidates", [])
-                        ),
+                        "reason": str(candidate.get("reason") or "overlap candidate"),
+                        "left_score": float(candidate.get("left_score", 0.0)),
+                        "right_score": float(candidate.get("right_score", 0.0)),
                     }
                 )
+
+            for candidate in uncertain_intervals:
+                candidate_id = str(candidate.get("candidate_id") or "").strip()
+                if not candidate_id:
+                    raise ValueError("transition ambiguity candidate is missing candidate_id")
+                issues.append(
+                    {
+                        "kind": "transition_ambiguity",
+                        "code": "ambiguous_source_occurrence",
+                        "candidate_id": candidate_id,
+                        "left_occurrence_id": transition.left_occurrence_id,
+                        "right_occurrence_id": transition.right_occurrence_id,
+                        "interval_start": float(candidate["start"]),
+                        "interval_end": float(candidate["end"]),
+                        "status": "review",
+                        "reason": str(candidate.get("reason") or "transition ambiguity"),
+                    }
+                )
+
             upstream_artifact_ids.append(_artifact_id(transition_artifact_path))
             transition_summaries.append(
                 {
                     **transition.to_dict(),
                     "status": transition_result.get("status"),
                     "blocked": transition_blocked,
-                    "overlap_candidate_count": len(
-                        transition_result.get("overlap_candidates", [])
-                    ),
+                    "overlap_candidate_count": len(overlap_candidates),
+                    "uncertain_interval_count": len(uncertain_intervals),
+                    "left_coarse_path": str(boundary_coarse["left"][0]),
+                    "left_coarse_artifact_path": str(boundary_coarse["left"][1]),
+                    "right_coarse_path": str(boundary_coarse["right"][0]),
+                    "right_coarse_artifact_path": str(boundary_coarse["right"][1]),
                     "transition_path": str(transition_path),
                     "transition_artifact_path": str(transition_artifact_path),
                 }
@@ -440,7 +484,7 @@ def main() -> int:
         status = readiness_status(issues=issues)
         run_path = out_dir / "v4_run.json"
         run_payload = {
-            "schema_version": "1.0",
+            "schema_version": "1.1",
             "algorithm_version": __version__,
             "task_fingerprint_sha256": fingerprint,
             "calibration_profile_version": context.calibration_profile_version,
@@ -461,7 +505,10 @@ def main() -> int:
             outputs=(("v4_production_run", run_path),),
             normalized_config={
                 **context.artifact_config(),
-                "transition_search_margin_seconds": context.profile.transition.search_margin_seconds,
+                "transition_search_margin_seconds": (
+                    context.profile.transition.search_margin_seconds
+                ),
+                "transition_issue_granularity": "candidate",
                 "legacy_fallback": False,
             },
             producer={"git_commit": args.git_commit} if args.git_commit else {},
