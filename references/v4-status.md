@@ -5,7 +5,7 @@
 Draft PR：#1  
 v4 package 版本：`4.0.0a1`
 
-> 本文件回答“目前真正写了什么、测试到了哪里、什么还没接生产”。详细公式/设计见 `v4-implementation.md`，逐项变更见 `v4-change-record.md`，实际命令见 `v4-runtime-guide.md`。
+> 本文件回答“目前真正写了什么、测试到了哪里、什么还没接生产”。详细公式/设计见 `v4-implementation.md`，逐项变更见 `v4-change-record.md`，实际命令见 `v4-runtime-guide.md`，已采用/拒绝的声学实验见 `v4-experiments.md`。
 
 ## 1. 当前结论
 
@@ -22,7 +22,8 @@ v4 已经不只是方案文档，以下核心已经有实际代码、单元/合�
 9. 多窗口全局 source path；
 10. selective high-resolution fine alignment；
 11. 相邻 TrackOccurrence transition/overlap review evidence；
-12. 可直接运行的 v4 stage CLI。
+12. 可直接运行的 v4 stage CLI；
+13. canonical 行内 `LanguageSpan`，支持 ko+en / ja+en / zh/yue+en 等 span 级 Editor Evidence 策略。
 
 **尚未完成的关键点：** GitHub 远端 legacy `redo_karaoke_pipeline.py` 仍是已提交 v3.8；之前真实使用的 v3.9 是未提交工作树。v4 package 尚未替换/接入 legacy `audio-align/build/finalize/qa` 主链，因此当前 PR 必须保持 Draft。
 
@@ -125,6 +126,22 @@ status = review
 - 重复副歌导致的 low-margin 高分不会冒充 overlap，只进入 `uncertain_intervals` 并 BLOCK；
 - 明显顺序交接不制造 review candidate。
 
+### 2.5 行内混合语言
+
+- `lyric_aligner/text/language_spans.py`
+- `scripts/test_v4_language_spans.py`
+
+关键语义：
+
+- `널 사랑해 baby` -> ko span + en span；
+- `君が好き baby` -> ja span + en span；
+- 粤语汉字 span 保持 yue，内嵌英文可单独使用 `direct_text`；
+- 韩/日 span 仍只使用 `phonetic_hint`；
+- 未知拉丁小语种不会因为 Latin script 就被自动重命名为 English；
+- 未知 Han script 不会自动被重命名为 Mandarin。
+
+这为后续把 Editor Evidence / ASR evidence 从 track/job 级下沉到 span 级打基础，目前尚未全面接入 legacy sequence score。
+
 ## 3. Bootstrap 参数声明
 
 当前所有阈值均是保守初始值，不是生产 calibration 结果，包括但不限于：
@@ -159,11 +176,11 @@ python -m compileall -q lyric_aligner scripts
 PYTHONPATH=.:scripts python -m unittest <v4 tests + legacy core/end-to-end>
 ```
 
-最新结果：
+最新本地结果：
 
 ```text
-94 tests passed
-26.65s
+99 tests passed
+27.31s
 ```
 
 覆盖：
@@ -184,7 +201,10 @@ PYTHONPATH=.:scripts python -m unittest <v4 tests + legacy core/end-to-end>
 - 多窗口单调 path；
 - selective fine alignment；
 - adjacent transition overlap review evidence；
+- mixed-language span policy；
 - 5 个 v4 CLI 在空环境变量下从 repo root 可正常启动。
+
+GitHub Actions：此前 head 的 `validate` 已成功；当前最新 head 应以对应 workflow run 的最终结果为准，不用旧 CI 结果冒充最新提交已通过。
 
 ### 合成 fine alignment 示例
 
@@ -196,6 +216,10 @@ PYTHONPATH=.:scripts python -m unittest <v4 tests + legacy core/end-to-end>
 
 **该数字只证明合成 fixture 中精修路径有效，不代表真实歌曲总体准确率。**
 
+### 已验证拒绝的方案
+
+尝试把 HPSS harmonic 的直接 sample-domain waveform correlation 作为第三声学 evidence。在同一 source 片段经 1.20× phase-vocoder time-stretch 后，正确候选相关分仅约 `0.0008`，不能稳定作为通用证据。该实验代码未提交，详见 `v4-experiments.md`。
+
 ## 5. 尚未完成
 
 ### P0/P1 必须完成
@@ -203,14 +227,14 @@ PYTHONPATH=.:scripts python -m unittest <v4 tests + legacy core/end-to-end>
 1. 用本地 Git/Codex 恢复真正 v3.9 legacy 工作树并形成可追溯 commit/tag；
 2. 把 strict SRT / artifact lineage / TrackAsset / TimeWarp 真正接入 legacy 生产 CLI；
 3. 禁止 legacy 3.8/3.9/v4 artifact 静默混用；
-4. 将 Editor Evidence profile 接入生产 sequence/boundary score；
+4. 将 Editor Evidence + LanguageSpan profile 接入生产 sequence/boundary score；
 5. 为同脚本 translation/original 增加显式 role override，而不是靠猜。
 
 ### 音频准确率下一步
 
-1. 把 legacy waveform NCC 作为独立 evidence channel 融入 v4，不直接删除；
+1. 不把直接 waveform correlation 作为通用第三证据；优先试更稳定的 CQT/spectral/vocal/phonetic evidence，并记录 A/B；
 2. transition margin 自动调度两首 occurrence 的 source search；
-3. fine alignment 只在不确定窗口运行，增加局部边界输出；
+3. fine alignment 增加局部歌词边界输出；
 4. 建立私有 real-song calibration/blind-test；
 5. calibration 后再决定是否引入 source-side Forced Alignment；
 6. ASR v2、双模型、人声分离继续后置。
