@@ -3,7 +3,8 @@
 The second pass never widens the original P3 local windows. An empty P5
 selection means execute zero jobs (and therefore load no model), never
 "execute all". Unselected first-pass results are retained; selected jobs are
-replaced by second-pass evidence.
+replaced by second-pass evidence. Composite privacy is controlled by the P6
+execution config, so private text from an earlier pass cannot leak by accident.
 """
 
 from __future__ import annotations
@@ -91,7 +92,9 @@ def _validate_second_plan(
     if second_pass_plan.get("backend_execution_performed") is not False:
         raise AsrSecondPassExecutionError("second-pass plan already reports execution")
     if second_pass_plan.get("scope_policy") != "reuse_exact_first_pass_local_windows":
-        raise AsrSecondPassExecutionError("second-pass scope policy is not exact-window reuse")
+        raise AsrSecondPassExecutionError(
+            "second-pass scope policy is not exact-window reuse"
+        )
 
     expected_model = str(second_pass_plan.get("second_pass_model_id") or "").strip()
     if not expected_model:
@@ -108,7 +111,9 @@ def _validate_second_plan(
         if not isinstance(declared, list):
             raise AsrSecondPassExecutionError("selected_job_ids must be a list")
         declared_ids = [str(value or "").strip() for value in declared]
-        if any(not value for value in declared_ids) or len(set(declared_ids)) != len(declared_ids):
+        if any(not value for value in declared_ids) or len(set(declared_ids)) != len(
+            declared_ids
+        ):
             raise AsrSecondPassExecutionError(
                 "selected_job_ids must be unique/non-empty"
             )
@@ -138,7 +143,6 @@ def _validate_second_plan(
                 f"second-pass job {job_id} does not request mix_asr"
             )
 
-    # Preserve original planner order rather than P5 routing order in final evidence.
     selected_order = [job_id for job_id in original if job_id in selected_rows]
     return selected_rows, selected_order
 
@@ -188,6 +192,27 @@ def _validate_first_pass(
                 f"first-pass job {job_id} mix window mismatch"
             )
     return first, first_model
+
+
+def _apply_output_privacy(row: dict[str, Any], *, include_private_text: bool) -> dict[str, Any]:
+    """Return a detached ASR row that obeys the *current* composite privacy flag."""
+
+    output = deepcopy(row)
+    if include_private_text:
+        return output
+    output.pop("observed_text", None)
+    segments = output.get("segments")
+    if isinstance(segments, list):
+        for segment in segments:
+            if not isinstance(segment, dict):
+                continue
+            segment.pop("text", None)
+            words = segment.get("words")
+            if isinstance(words, list):
+                for word in words:
+                    if isinstance(word, dict):
+                        word.pop("text", None)
+    return output
 
 
 def execute_second_pass_and_compose(
@@ -244,13 +269,17 @@ def execute_second_pass_and_compose(
     replaced = 0
     for job_id in original_order:
         if job_id in second_rows:
-            row = deepcopy(second_rows[job_id])
+            row = _apply_output_privacy(
+                second_rows[job_id], include_private_text=config.include_private_text
+            )
             row["evidence_pass"] = "second"
             row["evidence_model_id"] = config.model_id
             composite_rows.append(row)
             replaced += 1
         elif job_id in first_rows:
-            row = deepcopy(first_rows[job_id])
+            row = _apply_output_privacy(
+                first_rows[job_id], include_private_text=config.include_private_text
+            )
             row["evidence_pass"] = "first"
             row["evidence_model_id"] = first_model
             composite_rows.append(row)
@@ -277,8 +306,8 @@ def execute_second_pass_and_compose(
         "job_count": len(composite_rows),
         "jobs": composite_rows,
         "privacy": (
-            "private ASR text may be included because include_private_text=true"
+            "private ASR text included only because P6 include_private_text=true"
             if config.include_private_text
-            else "raw ASR text omitted; hashes/confidence/timing/support only"
+            else "raw ASR text omitted from both retained first-pass and second-pass jobs"
         ),
     }
