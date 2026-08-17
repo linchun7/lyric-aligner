@@ -51,7 +51,10 @@ def load_jobs(
         if start < 0 or end <= start:
             raise ValueError(f"ASR job {index} has invalid window: {start}-{end}")
         language = language_code(str(job.get("language") or default_language or ""))
-        mode = str(job.get("language_mode") or ("detect" if language == "mixed" else "fixed"))
+        mode = str(
+            job.get("language_mode")
+            or ("detect" if language in {"mixed", "auto", "generic"} else "fixed")
+        )
         if mode not in {"fixed", "detect"}:
             raise ValueError(f"ASR job {index} language_mode must be fixed or detect")
         normalized.append(
