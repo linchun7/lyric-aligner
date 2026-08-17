@@ -1,7 +1,8 @@
-"""Accuracy-first core package for Lyric Aligner v4.
+"""Production-first core package for Lyric Aligner v4.
 
-The legacy scripts remain compatibility entry points while v4 capabilities are
-implemented in typed, independently testable modules under this package.
+v4 is the default path for new real tasks. Uncertain mapping, cuts, transitions
+or evidence fail closed into review rather than silently falling back to a
+maintained legacy production algorithm.
 """
 
-__version__ = "4.0.0a2"
+__version__ = "4.0.0a3"
