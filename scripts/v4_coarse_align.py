@@ -28,8 +28,6 @@ from task_contract import assert_manifest_paths, load_task_manifest, resolve_man
 
 
 def _default_interval(bindings, binding, mix_duration: float) -> tuple[float, float]:
-    """Return a coarse seed interval, not a final active-track boundary."""
-
     ordered = sorted(bindings, key=lambda item: item.ordinal)
     position = next(
         index
@@ -47,6 +45,7 @@ def _default_interval(bindings, binding, mix_duration: float) -> tuple[float, fl
 
 def main() -> int:
     defaults = DEFAULT_V4_PROFILE.coarse
+    timewarp_defaults = DEFAULT_V4_PROFILE.timewarp
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--task-manifest", required=True, type=Path)
     parser.add_argument("--mix-audio", required=True, type=Path)
@@ -76,18 +75,14 @@ def main() -> int:
         fingerprint = str(task["task_fingerprint_sha256"])
 
         assets = json.loads(args.track_assets.read_text(encoding="utf-8-sig"))
-        asset_artifact = json.loads(
-            args.asset_artifact.read_text(encoding="utf-8-sig")
-        )
+        asset_artifact = json.loads(args.asset_artifact.read_text(encoding="utf-8-sig"))
         output_issues = validate_artifact_output(
             asset_artifact,
             role="track_assets",
             path=args.track_assets,
         )
         if output_issues:
-            raise ValueError(
-                "invalid asset artifact output: " + "; ".join(output_issues)
-            )
+            raise ValueError("invalid asset artifact output: " + "; ".join(output_issues))
         context = build_pipeline_context(
             expected_task_fingerprint=fingerprint,
             track_assets_payload=assets,
@@ -96,29 +91,21 @@ def main() -> int:
         )
         binding = context.binding_by_occurrence_id.get(args.occurrence_id)
         if binding is None:
-            raise ValueError(
-                f"occurrence_id not found in track assets: {args.occurrence_id}"
-            )
+            raise ValueError(f"occurrence_id not found in track assets: {args.occurrence_id}")
         source_path = Path(binding.source_audio_path)
 
         source_dir_record = task["inputs"].get("source_audio_dir")
         if source_dir_record is not None:
-            source_dir = resolve_manifest_record(
-                args.task_manifest, source_dir_record
-            ).resolve()
+            source_dir = resolve_manifest_record(args.task_manifest, source_dir_record).resolve()
             try:
                 source_path.resolve().relative_to(source_dir)
             except ValueError as exc:
-                raise ValueError(
-                    "TrackAsset source audio is outside task source_audio_dir"
-                ) from exc
+                raise ValueError("TrackAsset source audio is outside task source_audio_dir") from exc
 
         mix_audio, _ = librosa.load(args.mix_audio, sr=args.sr, mono=True)
         source_audio, _ = librosa.load(source_path, sr=args.sr, mono=True)
         mix_duration = len(mix_audio) / args.sr
-        default_start, default_end = _default_interval(
-            context.bindings, binding, mix_duration
-        )
+        default_start, default_end = _default_interval(context.bindings, binding, mix_duration)
         mix_start = default_start if args.mix_start is None else args.mix_start
         mix_end = default_end if args.mix_end is None else args.mix_end
         if mix_start < 0 or mix_end > mix_duration or mix_end <= mix_start:
@@ -141,6 +128,14 @@ def main() -> int:
             slope_step=defaults.slope_step,
             min_score=defaults.min_score,
             min_margin=defaults.min_margin,
+            bpm_prior_strength=timewarp_defaults.bpm_prior_strength,
+            max_continuous_rate=timewarp_defaults.max_continuous_rate,
+            min_excess_source_jump=timewarp_defaults.min_excess_source_jump,
+            min_piecewise_improvement=timewarp_defaults.min_piecewise_improvement,
+            minimum_feature_families=timewarp_defaults.minimum_feature_families,
+            drift_threshold=timewarp_defaults.drift_threshold,
+            residual_threshold=timewarp_defaults.residual_threshold,
+            complexity_penalty=timewarp_defaults.complexity_penalty,
         )
         payload = {
             "schema_version": "1.1",
@@ -169,6 +164,16 @@ def main() -> int:
             "slope_step": defaults.slope_step,
             "min_score": defaults.min_score,
             "min_margin": defaults.min_margin,
+            "timewarp": {
+                "bpm_prior_strength": timewarp_defaults.bpm_prior_strength,
+                "max_continuous_rate": timewarp_defaults.max_continuous_rate,
+                "min_excess_source_jump": timewarp_defaults.min_excess_source_jump,
+                "min_piecewise_improvement": timewarp_defaults.min_piecewise_improvement,
+                "minimum_feature_families": timewarp_defaults.minimum_feature_families,
+                "drift_threshold": timewarp_defaults.drift_threshold,
+                "residual_threshold": timewarp_defaults.residual_threshold,
+                "complexity_penalty": timewarp_defaults.complexity_penalty,
+            },
             "bpm_prior": args.bpm_prior,
             "mix_start": mix_start,
             "mix_end": mix_end,
