@@ -68,6 +68,21 @@ class V4OverlapRecompositionTests(unittest.TestCase):
                 }
             )
 
+    def test_confirmed_overlap_issue_requires_replayable_issue_id(self):
+        with self.assertRaisesRegex(OverlapRecompositionError, "missing issue_id"):
+            region_from_issue(
+                {
+                    "candidate_id": "candidate-1",
+                    "left_occurrence_id": "left",
+                    "right_occurrence_id": "right",
+                    "interval_start": 9.0,
+                    "interval_end": 11.0,
+                    "confirmed_interval": [9.0, 11.0],
+                    "decision_action": "confirmed_overlap",
+                    "requires_recomposition": True,
+                }
+            )
+
     def test_projected_overlap_line_is_clipped_to_confirmed_region(self):
         region = ConfirmedOverlapRegion(
             candidate_id="candidate-1",
@@ -159,6 +174,58 @@ class V4OverlapRecompositionTests(unittest.TestCase):
                 config=config,
                 confirmed_overlap_regions=[too_narrow],
             )
+
+    def test_composer_checks_non_adjacent_cross_track_intersections(self):
+        config = RenderConfig()
+        left = timeline(
+            "left",
+            "track-left",
+            1,
+            0,
+            15000,
+            [line(0, "long left", 9000, 14000)],
+        )
+        right = timeline(
+            "right",
+            "track-right",
+            2,
+            9000,
+            16000,
+            [
+                line(0, "right first", 9500, 10500),
+                line(1, "right second", 12000, 13000),
+            ],
+        )
+        first_only = ConfirmedOverlapRegion(
+            candidate_id="candidate-first",
+            left_occurrence_id="left",
+            right_occurrence_id="right",
+            start_ms=9000,
+            end_ms=11000,
+        )
+        with self.assertRaisesRegex(TimelineComposeError, "outside confirmed-overlap"):
+            compose_canonical_timelines(
+                [left, right],
+                config=config,
+                confirmed_overlap_regions=[first_only],
+            )
+
+        second = ConfirmedOverlapRegion(
+            candidate_id="candidate-second",
+            left_occurrence_id="left",
+            right_occurrence_id="right",
+            start_ms=12000,
+            end_ms=13000,
+        )
+        cues = compose_canonical_timelines(
+            [left, right],
+            config=config,
+            confirmed_overlap_regions=[first_only, second],
+        )
+        self.assertEqual(
+            [cue.text for cue in cues],
+            ["long left", "right first", "right second"],
+        )
 
 
 if __name__ == "__main__":
