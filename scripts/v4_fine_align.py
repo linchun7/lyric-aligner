@@ -35,14 +35,7 @@ def _load(path: Path) -> dict:
     return payload
 
 
-def _validate_stage(
-    path: Path,
-    artifact_path: Path,
-    *,
-    fingerprint: str,
-    role: str,
-    stage: str,
-):
+def _validate_stage(path: Path, artifact_path: Path, *, fingerprint: str, role: str, stage: str):
     payload = _load(path)
     if payload.get("task_fingerprint_sha256") != fingerprint:
         raise ValueError(f"{role} task fingerprint mismatch")
@@ -63,6 +56,7 @@ def _validate_stage(
 
 def main() -> int:
     defaults = DEFAULT_V4_PROFILE.fine
+    timewarp_defaults = DEFAULT_V4_PROFILE.timewarp
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--task-manifest", required=True, type=Path)
     parser.add_argument("--mix-audio", required=True, type=Path)
@@ -73,18 +67,10 @@ def main() -> int:
     parser.add_argument("--force", action="store_true")
     parser.add_argument("--sr", type=int, default=defaults.sr)
     parser.add_argument("--hop-length", type=int, default=defaults.hop_length)
-    parser.add_argument(
-        "--source-radius-seconds",
-        type=float,
-        default=defaults.source_radius_seconds,
-    )
+    parser.add_argument("--source-radius-seconds", type=float, default=defaults.source_radius_seconds)
     parser.add_argument("--slope-radius", type=float, default=defaults.slope_radius)
     parser.add_argument("--slope-step", type=float, default=defaults.slope_step)
-    parser.add_argument(
-        "--candidate-step-seconds",
-        type=float,
-        default=defaults.candidate_step_seconds,
-    )
+    parser.add_argument("--candidate-step-seconds", type=float, default=defaults.candidate_step_seconds)
     parser.add_argument("--min-score", type=float, default=defaults.min_score)
     parser.add_argument("--min-margin", type=float, default=defaults.min_margin)
     parser.add_argument("--bpm-prior", type=float)
@@ -155,6 +141,14 @@ def main() -> int:
             min_margin=args.min_margin,
             bpm_prior=args.bpm_prior,
             middle_cut=binding.middle_cut,
+            bpm_prior_strength=timewarp_defaults.bpm_prior_strength,
+            max_continuous_rate=timewarp_defaults.max_continuous_rate,
+            min_excess_source_jump=timewarp_defaults.min_excess_source_jump,
+            min_piecewise_improvement=timewarp_defaults.min_piecewise_improvement,
+            minimum_feature_families=timewarp_defaults.minimum_feature_families,
+            drift_threshold=timewarp_defaults.drift_threshold,
+            residual_threshold=timewarp_defaults.residual_threshold,
+            complexity_penalty=timewarp_defaults.complexity_penalty,
         )
         payload = {
             "schema_version": "1.1",
@@ -188,6 +182,16 @@ def main() -> int:
                 "candidate_step_seconds": args.candidate_step_seconds,
                 "min_score": args.min_score,
                 "min_margin": args.min_margin,
+                "timewarp": {
+                    "bpm_prior_strength": timewarp_defaults.bpm_prior_strength,
+                    "max_continuous_rate": timewarp_defaults.max_continuous_rate,
+                    "min_excess_source_jump": timewarp_defaults.min_excess_source_jump,
+                    "min_piecewise_improvement": timewarp_defaults.min_piecewise_improvement,
+                    "minimum_feature_families": timewarp_defaults.minimum_feature_families,
+                    "drift_threshold": timewarp_defaults.drift_threshold,
+                    "residual_threshold": timewarp_defaults.residual_threshold,
+                    "complexity_penalty": timewarp_defaults.complexity_penalty,
+                },
                 "bpm_prior": args.bpm_prior,
             },
             producer={"git_commit": args.git_commit} if args.git_commit else {},
@@ -207,17 +211,13 @@ def main() -> int:
     except (OSError, KeyError, ValueError, json.JSONDecodeError) as exc:
         parser.error(str(exc))
 
-    print(
-        json.dumps(
-            {
-                "occurrence_id": occurrence_id,
-                "applied": fine["applied"],
-                "status": fine["status"],
-                "calibration_profile_id": context.calibration_profile_id,
-                "artifact_id": artifact["artifact_id"],
-            }
-        )
-    )
+    print(json.dumps({
+        "occurrence_id": occurrence_id,
+        "applied": fine["applied"],
+        "status": fine["status"],
+        "calibration_profile_id": context.calibration_profile_id,
+        "artifact_id": artifact["artifact_id"],
+    }))
     return 0
 
 
