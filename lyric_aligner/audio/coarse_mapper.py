@@ -82,7 +82,10 @@ def select_monotonic_candidate_path(
     if not results:
         return []
     ordered = sorted(results, key=lambda item: item.mix_center)
-    if any(right.mix_center <= left.mix_center for left, right in zip(ordered, ordered[1:])):
+    if any(
+        right.mix_center <= left.mix_center
+        for left, right in zip(ordered, ordered[1:])
+    ):
         raise ValueError("retrieval windows must have strictly increasing centers")
 
     scores: list[list[float]] = []
@@ -168,6 +171,23 @@ def _windows(start: float, end: float, window_seconds: float, step_seconds: floa
         cursor += step_seconds
 
 
+def _absolute_result(result: RetrievalResult, offset: float) -> RetrievalResult:
+    """Restore global mix coordinates after interval-local feature extraction."""
+
+    return RetrievalResult(
+        mix_start=result.mix_start + offset,
+        mix_end=result.mix_end + offset,
+        mix_center=result.mix_center + offset,
+        top1=result.top1,
+        top2=result.top2,
+        candidates=result.candidates,
+        margin=result.margin,
+        ambiguous=result.ambiguous,
+        min_score=result.min_score,
+        min_margin=result.min_margin,
+    )
+
+
 def build_coarse_timewarp(
     mix_audio: np.ndarray,
     source_audio: np.ndarray,
@@ -187,8 +207,22 @@ def build_coarse_timewarp(
     min_score: float = 0.72,
     min_margin: float = 0.035,
 ) -> dict[str, Any]:
+    mix_duration = len(mix_audio) / sr
+    if mix_start < 0 or mix_end > mix_duration or mix_end <= mix_start:
+        raise ValueError("coarse mapping interval is outside mix audio")
+
+    # Do not HPSS/chroma/MFCC the full 40-60 minute mix once per song.  Extract
+    # only the occurrence/transition interval; result coordinates are restored
+    # to global mix time below.  Source features remain full-song because
+    # retrieval must locate the surviving source region.
+    sample_start = max(0, int(np.floor(mix_start * sr)))
+    sample_end = min(len(mix_audio), int(np.ceil(mix_end * sr)))
+    local_mix_audio = np.asarray(mix_audio[sample_start:sample_end], dtype=np.float32)
+    local_offset = sample_start / sr
+    local_duration = len(local_mix_audio) / sr
+
     mix_features = extract_harmonic_features(
-        mix_audio, sr=sr, hop_length=feature_hop_length
+        local_mix_audio, sr=sr, hop_length=feature_hop_length
     )
     source_features = extract_harmonic_features(
         source_audio, sr=sr, hop_length=feature_hop_length
@@ -200,20 +234,26 @@ def build_coarse_timewarp(
         bpm_prior=bpm_prior,
     )
     results: list[RetrievalResult] = []
-    for start, end in _windows(mix_start, mix_end, window_seconds, step_seconds):
-        results.append(
-            retrieve_coarse_window(
-                mix_features,
-                source_features,
-                mix_start=start,
-                mix_end=end,
-                slopes=slopes,
-                bpm_prior=bpm_prior,
-                candidate_step_seconds=candidate_step_seconds,
-                min_score=min_score,
-                min_margin=min_margin,
-            )
+    local_search_start = max(0.0, mix_start - local_offset)
+    local_search_end = min(local_duration, mix_end - local_offset)
+    for start, end in _windows(
+        local_search_start,
+        local_search_end,
+        window_seconds,
+        step_seconds,
+    ):
+        local_result = retrieve_coarse_window(
+            mix_features,
+            source_features,
+            mix_start=start,
+            mix_end=end,
+            slopes=slopes,
+            bpm_prior=bpm_prior,
+            candidate_step_seconds=candidate_step_seconds,
+            min_score=min_score,
+            min_margin=min_margin,
         )
+        results.append(_absolute_result(local_result, local_offset))
     if len(results) < 2:
         raise ValueError("coarse mapping requires at least two retrieval windows")
 
@@ -238,6 +278,11 @@ def build_coarse_timewarp(
     return {
         "stage": "coarse_timewarp",
         "mix_interval": [mix_start, mix_end],
+        "feature_scope": {
+            "mix_feature_start": local_offset,
+            "mix_feature_end": local_offset + local_duration,
+            "full_mix_duration": mix_duration,
+        },
         "feature_config": {
             "sr": sr,
             "hop_length": feature_hop_length,
