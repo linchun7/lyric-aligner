@@ -1,62 +1,71 @@
 ---
 name: lyric-aligner
-description: Align multilingual lyrics to edited-song subtitle timelines using editor SRT anchors, canonical line- or word-timed lyrics, source-audio waveform and variable-speed mapping, multilingual ASR evidence, task-scoped overrides, regression cases, and release-blocking QA. Use for music mixes, karaoke subtitles, lyric timing correction, missing lyric lines, split or merged cues, repeated choruses, middle cuts, speed ramps, and overlapping song transitions.
+description: Reconstruct multilingual canonical lyric timelines for edited music mixes using fingerprinted TrackAssets, source-to-mix audio TimeWarp, selective fine alignment, transition/overlap evidence, editor/ASR evidence, review-blocking QA, and immutable artifact lineage. Use for music mixes, karaoke subtitles, lyric timing correction, repeated choruses, local speed changes, middle cuts, and overlapping song transitions.
 ---
 
 # Lyric Aligner
 
-使用本 Skill 将中、英、韩、日及混合语言歌词对齐到经过剪辑的混音与字幕时间轴，并生成可审计的 SRT、CSV、映射 JSON 和 QA 结果。
+使用本 Skill 将中、英、韩、日、粤及其他语言的规范歌词对齐到经过调速、裁切、混剪和加节拍器的音乐 mix。
+
+当前默认架构为 **v4.0.0a3 production-first**：新真实任务优先进入 v4；无法可靠解释的片段进入 review/BLOCK，**不得静默回退 v3.9**。
 
 ## 不可违反的原则
 
-1. 编辑器 SRT 是主要时间锚点，但其文字和边界都可能错误；不得只按 BPM 推算字幕时间。
-2. 规范 LRC 是最终歌词文字与顺序来源；ASR 只能作为发音、顺序和边界证据，不能替代规范歌词。
-3. 原曲音频用于波形对齐、变速和剪切检测；不得修改原始输入。
-4. 被确认剪掉的原曲区间不得补回终稿。
-5. 只有没有可靠字幕格的空档才新增 cue；修改既有边界必须有更强音频证据或任务级人工证据。
-6. 重复副歌按实际出现次数保留，不能仅因文本相同而去重。
-7. LRC 未收录的 `Uh/Oh/Yeah/Ah/Ooh/Huh/Na-na` 等发声不得自动加入字幕。
-8. 通用算法不得包含某首歌、某个 cue、某个时间点或具体错词的硬编码修补。
-9. 所有任务 QA 必须绑定完整任务指纹；音频、SRT、歌单、LRC、BPM 或原曲任一变化都不得静默复用旧结论。
-10. 只有 `passed=true`、`fully_reviewed=true`、`publish_ready=true` 且 `review_candidate_count=0` 时才可称为可发布。
-11. 逐字/逐词时间只作整行歌词的起止、边界和映射证据；正式 SRT 始终输出完整逐行歌词，不生成逐字卡拉 OK cue。
-12. 两首歌曲同时演唱时不得把两路歌词猜拼成一行；候选必须由任务级 `_cross_track_overlap_reviews` 确认或拒绝，确认后还需用 `_confirmed_overlap_intervals` 限定两条同期逐行 cue 的精确范围。
+1. **Canonical lyric 是最终文字与顺序真源。** ASR、剪映/编辑器文字只能提供证据，不能替代规范歌词。
+2. **Source-to-Mix audio mapping 是主要时间真源。** 编辑器 SRT 时间可以作为 evidence，但不再拥有默认时间权威。
+3. 大多数歌曲先走 AFFINE；只有真实声学 evidence 证明固定倍率解释不足时才升级 PIECEWISE_RATE。
+4. BPM 只允许作为 soft prior。不得用一个全曲 BPM ratio 强制锁死 Source-to-Mix mapping。
+5. 局部 rate change 可以突然发生；`rate change != cut`。只有 source-position discontinuity 才能产生 cut candidate。
+6. `middle_cut=false|true|unknown` 只改变检测/review策略。任何 middle cut 都不得自动 confirmed 或自动删除歌词。
+7. 曲首/曲尾 trim 不属于 middle cut，可由 Source-to-Mix entry/exit 自然解释。
+8. `TrackAsset / TrackOccurrence / ResolvedAssetBinding` 一旦确定，下游不得重新 fuzzy resolve source audio、LRC 或 same-timestamp original。
+9. 重复副歌按实际 occurrence 区分；不得仅因文本相同去重，也不得在 repeated source occurrence 歧义下强行选一个高分候选。
+10. 相邻歌曲 nominal start 是 prior，不是硬边界。左右 source 必须可以在同一个 transition search window 取证。
+11. overlap candidate 不等于 overlap truth。未确认的 cut/overlap/mapping conflict 必须 BLOCK/review。
+12. 两首歌曲同时演唱时不得把两路歌词拼成一行；最终应保留两个独立 canonical lyric stream。
+13. LRC 未收录的 `Uh/Oh/Yeah/Ah/Ooh/Huh/Na-na` 等发声不得自动加入最终字幕。
+14. 通用算法不得包含某首歌、某个 cue、具体时间点、具体错词或当前任务名称的硬编码修补。
+15. 所有任务与 stage artifacts 必须绑定 task fingerprint、algorithm version、calibration profile、upstream artifact IDs 和 materialized output SHA-256。
+16. 所有实质性/关键性生产变更必须按 `references/documentation-contract.md` 同步 owning docs；CI 不通过不得合入主线。
+17. `ready_for_render` 不等于 `publish_ready`。最终发布仍必须经过 final SRT/QA/release integrity gate。
 
-不能保证所有物理不可辨片段达到绝对 100%。正确策略是自动发现不确定性并阻止发布，而不是猜测。
+不能保证物理不可辨片段绝对 100% 自动判断正确。系统应该暴露不确定性并阻止错误发布，而不是猜测。
 
 ## 源码与私有数据边界
 
-可提交的 Skill 源码包括：
+可提交：
 
-- `SKILL.md` 与 `agents/openai.yaml`
-- `scripts/` 中的算法、环境检查、任务契约、迁移、ASR、评估和测试代码
-- `references/` 中的工作流、模板、变更记录和数据协议
-- `.github/workflows/validate.yml`
-- `.gitignore` 与依赖声明
+- `lyric_aligner/` package；
+- `scripts/` 通用 CLI、算法、测试、环境/任务契约；
+- `references/` 架构、运行、变更、数据协议；
+- CI / dependency / Skill metadata。
 
 默认不得提交：
 
-- `private/`：原始字幕、音频、LRC、歌单、BPM、任务 manifest、人工覆盖和回归案例
-- `output/`：草稿、终稿、ASR、映射、审计、QA、缓存和回滚包
-- 根目录散落的 `*.srt`、`*.lrc`、音视频、任务 QA JSON 与任务清单
-- 本机绝对路径、账号、凭据、访问令牌和个人配置
+- `private/` 中的真实音频、SRT、LRC、歌单、BPM、任务 QA/人工结论；
+- `output/` 中的任务产物、缓存和回滚包；
+- 本机绝对路径、账号、token、凭据和个人配置。
 
-已获授权的真实素材可以在私有环境中用于训练、校准和回归。数据量不是唯一目标；优先收集音频、规范歌词、准确边界、版本、语言和错误类型相互对应的高质量标注。读取 `references/dataset-protocol.md` 了解拆分、盲测和聚合评估方式。未经用户明确要求，不上传 `private/`。
+已获用户授权的真实素材可在私有环境用于 calibration、blind-test 和 regression；未经明确要求不得上传真实任务数据。
 
-仓库根目录是 Skill 源码，不等于已经安装。只有用户明确要求安装时，才安装到支持的 Skill 发现位置。
+## 权威资源导航
 
-## 资源导航
+新 v4 工作首先读取：
 
-- 完整命令链与 QA 字段：`references/workflow.md`
-- 全局变更和 schema 2.0：`references/change-record.md`
-- 新任务输入模板：`references/task-template.md`
-- 可复制提示词：`references/prompt-template.txt`
-- 多语言状态与下一阶段：`references/multilingual-roadmap.md`
-- 私有训练/回归数据：`references/dataset-protocol.md`
+- **真实运行：** `references/v4-runtime-guide.md`
+- **当前状态：** `references/v4-status.md`
+- **架构与算法：** `references/v4-implementation.md`
+- **架构复盘：** `references/v4-architecture-review-2026-08-17.md`
+- **关键变更：** `references/v4-change-record.md`
+- **文档同步契约：** `references/documentation-contract.md`
+- **真实数据/盲测协议：** `references/dataset-protocol.md`
+- **歌词 role override：** `references/v4-lyric-role-overrides.md`
+
+`references/workflow.md` 与 `references/change-record.md` 仍保存 schema 2.0 / legacy QA 历史和迁移信息，但 **v4 新任务运行方式以 `v4-runtime-guide.md` 为准**。
 
 ## 标准执行顺序
 
-### 1. 检查环境并初始化任务
+### 1. 环境与任务 manifest
 
 ```powershell
 python scripts/check_environment.py
@@ -68,47 +77,140 @@ python scripts/init_task.py `
   --audio "private/任务名/input/mix.wav" `
   --song-list "private/任务名/input/songs.txt" `
   --lyrics-dir "private/任务名/input/lyrics" `
-  --bpm-changes "private/任务名/input/bpm.txt" `
   --source-audio-dir "private/任务名/input/source-audio"
 ```
 
-不存在的可选输入不要传。初始化会创建 `private/<任务名>/qa/task_manifest.json`、schema 2.0 的 QA 骨架和 `output/<任务名>/`。
+`--bpm-changes` 是可选输入，不存在就不要传。BPM 不是 v4 正确结果的必要条件。
 
-旧任务不得由生产命令静默兼容；使用 `scripts/migrate_task.py` 显式迁移。迁移会先生成 `.schema1.bak`。
+任务初始化后以：
 
-### 2. 按完整工作流处理
+```text
+private/<任务>/qa/task_manifest.json
+```
 
-依次运行：
+作为所有 stage 的身份根。
 
-1. `prepare`
-2. `audio-align`（有原曲时）
-3. 检查剪切候选；将精确决定写入 `_audio_edit_reviews` 后运行 `review-audio-edits`
-4. `build`，并始终使用已复核的 alignment JSON
-5. `validate_multilingual_asr.py` 与 `refine-asr`（有低证据片段时；`refine-korean` 是兼容别名）
-6. `finalize`
-7. `qa`
-
-所有阶段都必须传入同一个 `--task-manifest`。中间 JSON 和 CSV 也携带同一 `task_fingerprint_sha256`；不匹配时立即停止。
-
-韩文旧作业可继续通过 `validate_korean_asr.py` 兼容入口运行。新任务优先使用 `validate_multilingual_asr.py`，语言可设为 `zh`、`en`、`ko`、`ja` 或 `mixed`。
-
-### 3. 交付
-
-只交付一个名称明确的 `<任务名>_FINAL.srt`，同时保留 `<任务名>_FINAL_QA.json` 与审计 CSV。任何低、中、高风险候选都会令 `fully_reviewed=false` 和 `publish_ready=false`。
-
-## 版本与回归
-
-- 当前生产算法版本：`v3.9`。
-- `v3.7` 是迁移前基线，不再作为新任务默认入口。
-- 当前公开 Git 历史从脱敏根提交 `4ce42eb` 开始；更早历史已清理，不能通过普通 Git 历史回滚。
-- 每次全局改动必须更新 `references/change-record.md`，并运行：
+### 2. 新任务默认运行 v4
 
 ```powershell
-python -m compileall -q scripts
+python scripts/v4_run.py `
+  --task-manifest "private/<任务>/qa/task_manifest.json" `
+  --out-dir "output/<任务>/v4" `
+  --git-commit "<当前commit>"
+```
+
+可选：
+
+- `--profile`
+- `--language-map`
+- `--middle-cut-map`
+- `--lyric-role-map`
+
+`v4_run` 当前负责：
+
+```text
+Asset Resolution
+ → Primary Coarse
+ → AFFINE / evidence-driven PIECEWISE_RATE
+ → Selective Fine
+ → Canonical Timeline Projection
+ → shared-boundary Transition Evidence
+ → v4_run summary/artifact
+```
+
+输出：
+
+- `ready_for_render`：mapping/timeline 前置链没有 unresolved review；
+- `review_required`：至少一个 mapping/cut/transition/ambiguity 需要处理。
+
+明确记录：
+
+```json
+"legacy_fallback_used": false
+```
+
+### 3. 单 Stage CLI
+
+以下命令用于诊断、calibration、重现 artifact，不应成为普通任务的手工必跑链：
+
+- `v4_resolve_assets.py`
+- `v4_coarse_align.py`
+- `v4_fine_align.py`
+- `v4_probe_transition.py`
+- `v4_profile.py`
+- `v4_validate_release.py`
+
+不要因为单 stage 看起来成功就跳过 `v4_run` 的其他 evidence/review 阶段。
+
+### 4. 当前 a3 最终字幕边界
+
+`v4.0.0a3` 已实际接管：
+
+- asset/canonical identity；
+- Source-to-Mix mapping；
+- selective fine alignment；
+- transition evidence；
+- canonical timeline reconstruction。
+
+但 package-native 的 final timeline composer / SRT renderer 仍在下一阶段建设。
+
+因此当前不得把：
+
+```text
+ready_for_render
+```
+
+解释成：
+
+```text
+publish_ready
+```
+
+最终 SRT 一旦由当前/后续 renderer 生成，必须仍通过严格 release integrity 校验，且 unresolved review count 必须为 0。
+
+## Calibration 原则
+
+所有生产阈值进入完整 `V4CalibrationProfile`，不能散落在 AI 提示、CLI 临时参数或隐藏函数默认值里。
+
+```powershell
+python scripts/v4_profile.py --write-default profile.json
+python scripts/v4_profile.py --validate profile.json
+```
+
+真实任务发现问题后：
+
+1. 先记录匿名 failure/regression case；
+2. 判断是通用算法、profile、语言策略还是任务级明确事实；
+3. 通用改动增加/更新测试；
+4. profile 改动生成新的 named profile/version；
+5. blind-test 不得参与调参；
+6. 更新相关文档并通过 Documentation Contract。
+
+## 当前版本与回归
+
+- 当前 v4 package：`4.0.0a3`。
+- v3.9 不再是新任务默认生产算法；只保留历史比较/仓库级 rollback 价值。
+- 当前公开 Git 历史从脱敏根提交 `4ce42eb` 开始；更早已清理历史不能用普通 Git 恢复。
+- 每次实质性改动至少运行：
+
+```powershell
+python -m compileall -q lyric_aligner scripts
+python scripts/validate_docs_contract.py
 python -m unittest discover -s scripts -p "test_*.py"
 python scripts/validate_skill.py .
+python scripts/privacy_scan.py
 python scripts/check_environment.py
 git diff --check
 ```
 
-需要完整 YAML 校验时先安装 `requirements-dev.txt`；需要 ASR 时安装 `requirements-asr.txt`；需要中文拼音和日文读音层时安装 `requirements-language.txt`。
+CI 当前覆盖 Python 3.10 / 3.12 / 3.14，并单独检查 ASR 环境。
+
+## 后续优先级
+
+1. package-native final timeline composer / SRT renderer；
+2. review decision artifact（cut / overlap 等人工确认可重放）；
+3. real-task calibration / blind-test；
+4. Editor Evidence + LanguageSpan 进入最终 cue decision；
+5. 根据真实误差再决定 Forced Alignment / ASR v2 / vocal local alignment。
+
+不要在前四项尚未形成真实数据闭环时，为“模型更高级”而无条件增加重型依赖。
