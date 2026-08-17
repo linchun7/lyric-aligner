@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
 
+from lyric_aligner.assets.lyric_roles import inspect_lyric_roles
 from lyric_aligner.contracts.artifacts import sha256_file
 from lyric_aligner.domain import TrackAsset, TrackOccurrence
 
@@ -103,13 +104,10 @@ def _candidate_score(entry: SongEntry, path: Path) -> float:
     has_artist = bool(artist and artist in stem)
 
     if has_title and has_artist:
-        # Strong but not exact: suffixes such as live/remaster/version must still
-        # compete with each other and can intentionally trigger the margin gate.
         return min(0.91, 0.86 + 0.05 * combined_score)
     if stem == title:
         return 0.88
     if has_title:
-        # Never let the common title alone dominate an explicit artist mismatch.
         return min(0.84, 0.76 + 0.08 * title_score)
     return min(0.75, max(title_score, combined_score) * 0.75)
 
@@ -222,6 +220,12 @@ def resolve_assets(
                     )
                 claims[chosen] = identity
 
+            language = str(
+                language_by_track.get(f"{entry.artist} - {entry.title}")
+                or language_by_track.get(entry.title)
+                or "auto"
+            )
+            lyric_role_summary = inspect_lyric_roles(lyric_path, language=language)
             lyric_hash = sha256_file(lyric_path)
             source_hash = sha256_file(source_path)
             version_id = stable_id(source_hash, lyric_hash, prefix="ver")
@@ -231,11 +235,6 @@ def resolve_assets(
                 source_hash,
                 lyric_hash,
                 prefix="track",
-            )
-            language = str(
-                language_by_track.get(f"{entry.artist} - {entry.title}")
-                or language_by_track.get(entry.title)
-                or "auto"
             )
             asset = TrackAsset(
                 track_id=track_id,
@@ -249,7 +248,11 @@ def resolve_assets(
                 language=language,
             )
             assets[identity] = asset
-            resolution[identity] = {"lrc": lyric_diag, "source_audio": source_diag}
+            resolution[identity] = {
+                "lrc": lyric_diag,
+                "source_audio": source_diag,
+                "lyric_roles": lyric_role_summary,
+            }
 
         occurrence_id = stable_id(
             asset.track_id,
