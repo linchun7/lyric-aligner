@@ -58,6 +58,9 @@ def region_from_issue(issue: dict[str, Any]) -> ConfirmedOverlapRegion:
         raise OverlapRecompositionError("review issue is not confirmed_overlap")
     if not bool(issue.get("requires_recomposition")):
         raise OverlapRecompositionError("confirmed overlap issue is missing recomposition flag")
+    issue_id = str(issue.get("issue_id") or "").strip()
+    if not issue_id:
+        raise OverlapRecompositionError("confirmed overlap issue is missing issue_id")
     candidate_id = str(issue.get("candidate_id") or "").strip()
     interval = issue.get("confirmed_interval")
     if not isinstance(interval, list) or len(interval) != 2:
@@ -78,7 +81,7 @@ def region_from_issue(issue: dict[str, Any]) -> ConfirmedOverlapRegion:
         right_occurrence_id=str(issue.get("right_occurrence_id") or ""),
         start_ms=start_ms,
         end_ms=end_ms,
-        issue_id=str(issue.get("issue_id") or ""),
+        issue_id=issue_id,
     )
 
 
@@ -116,11 +119,7 @@ def _clip_line_to_region(line: dict[str, Any], region: ConfirmedOverlapRegion) -
             except (KeyError, TypeError, ValueError):
                 continue
             token_end_raw = token.get("mix_end_ms")
-            token_end = (
-                region.end_ms
-                if token_end_raw is None
-                else int(token_end_raw)
-            )
+            token_end = region.end_ms if token_end_raw is None else int(token_end_raw)
             token_start = max(token_start, region.start_ms)
             token_end = min(token_end, region.end_ms)
             if token_end > token_start:
