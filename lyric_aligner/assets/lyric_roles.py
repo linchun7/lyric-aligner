@@ -121,14 +121,23 @@ def classify_alternatives(
     ]
 
 
-def inspect_lyric_roles(path: Path, *, language: str) -> dict:
+def inspect_lyric_roles(
+    path: Path,
+    *,
+    language: str,
+    original_index_overrides: dict[int, int] | None = None,
+) -> dict:
     groups: dict[int, list[str]] = {}
-    for line_number, raw in enumerate(read_task_text(path).splitlines(), start=1):
+    original_index_overrides = original_index_overrides or {}
+    for line_number, raw in enumerate(
+        read_task_text(path).splitlines(), start=1
+    ):
         stripped = raw.strip()
         if not stripped:
             continue
         match = LRC_LINE_RE.match(stripped)
         if not match:
+            # Header/meta tags without a timestamp are not canonical lyric rows.
             continue
         minute, second, fraction, text = match.groups()
         try:
@@ -145,6 +154,23 @@ def inspect_lyric_roles(path: Path, *, language: str) -> dict:
     original_count = 0
     for timestamp, texts in sorted(groups.items()):
         alternatives = classify_alternatives(timestamp, texts, language=language)
+        override_index = original_index_overrides.get(timestamp)
+        if override_index is not None:
+            if override_index < 0 or override_index >= len(alternatives):
+                raise LyricRoleError(
+                    f"original_index override {override_index} is out of range at {timestamp}ms"
+                )
+            alternatives = [
+                LyricAlternative(
+                    row.timestamp_ms,
+                    row.text,
+                    "original" if index == override_index else (
+                        "metadata" if row.role == "metadata" else "unknown"
+                    ),
+                    row.script,
+                )
+                for index, row in enumerate(alternatives)
+            ]
         originals = [row for row in alternatives if row.role == "original"]
         if len(originals) != 1:
             ambiguous.append(timestamp)
