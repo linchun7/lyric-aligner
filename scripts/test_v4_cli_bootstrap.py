@@ -14,6 +14,7 @@ class V4CLIBootstrapTests(unittest.TestCase):
             "scripts/v4_resolve_assets.py",
             "scripts/v4_coarse_align.py",
             "scripts/v4_probe_transition.py",
+            "scripts/v4_fine_align.py",
         ):
             completed = subprocess.run(
                 [sys.executable, script, "--help"],
