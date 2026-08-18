@@ -227,3 +227,145 @@ CI 不能证明：
 - auxiliary evidence 可以自动改 final timing。
 
 真实 backend 上线必须锁定 package/command version、model/checkpoint revision、language/G2P resources、runtime/device、license/source identity，并用 private real-song calibration/blind 验证。
+
+## 11. Production Doctor：先判断任务做到哪一步
+
+真实任务开始或中断恢复时，先运行只读 doctor。**已有 artifact manifest 时必须与 payload 一起传入**，这样 doctor 才能验证 manifest 自身 `artifact_id`、payload output SHA/size、task fingerprint、algorithm identity，以及 auxiliary artifact 是否确实 upstream 到当前 effective run。
+
+```powershell
+python scripts/v4_doctor.py `
+  --task-manifest "private/<任务>/qa/task_manifest.json" `
+  --run "output/<任务>/v4/<effective-run>.json" `
+  --run-artifact "output/<任务>/v4/<effective-run>.artifact.json" `
+  --editor-evidence "output/<任务>/v4/evidence/editor.json" `
+  --editor-evidence-artifact "output/<任务>/v4/evidence/editor.artifact.json" `
+  --alignment-plan "output/<任务>/v4/alignment/plan.json" `
+  --alignment-plan-artifact "output/<任务>/v4/alignment/plan.artifact.json" `
+  --asr-evidence "output/<任务>/v4/alignment/asr_composite.json" `
+  --asr-evidence-artifact "output/<任务>/v4/alignment/asr_composite.artifact.json" `
+  --forced-evidence "output/<任务>/v4/alignment/forced_evidence.json" `
+  --forced-evidence-artifact "output/<任务>/v4/alignment/forced_evidence.artifact.json" `
+  --forced-mix-evidence "output/<任务>/v4/alignment/forced_mix_evidence.json" `
+  --forced-mix-evidence-artifact "output/<任务>/v4/alignment/forced_mix_evidence.artifact.json" `
+  --fusion "output/<任务>/v4/evidence/fusion.json" `
+  --fusion-artifact "output/<任务>/v4/evidence/fusion.artifact.json" `
+  --runtime-snapshot "output/<任务>/v4/runtime.snapshot.json" `
+  --require lineage `
+  --out "output/<任务>/v4/doctor.json"
+```
+
+未做到的 stage 可以整对省略；不要只传 payload 不传对应 artifact 再把结果当作 lineage 已验证。`--require lineage` 会把 task/run fingerprint 漂移、payload/artifact 不成对、artifact 内容签名错误、output hash/size 漂移、或 auxiliary artifact 未绑定当前 run 变成非零退出。
+
+如果需要 CI/Codex 机器判断，例如 forced backend 必须能执行：
+
+```powershell
+python scripts/v4_doctor.py `
+  --external-forced-aligner-command '"<executable>" <adapter-args>' `
+  --require backend:source_forced_alignment
+```
+
+Doctor 输出 `requirements.passed`、每个 stage 的 `valid/detail`、`artifacts`、`lineage`、`recommended_next_action` 与 `next_actions`。它不读取/输出 raw lyric，不输出 absolute local path、artifact output path、backend resolved path 或完整 external command。`execution_ready=true` 仍不是真实 singing accuracy 结论。
+
+## 12. Runtime Snapshot：每个 calibration 候选先锁环境
+
+在第一次真实跑、换模型、换 backend、换 Python/ffmpeg 或换设备后生成新的 snapshot：
+
+```powershell
+python scripts/v4_runtime_snapshot.py `
+  --model "asr=Systran/faster-whisper-large-v3" `
+  --model "forced=<logical-model-id>" `
+  --external-forced-aligner-command '"<executable>" <adapter-args>' `
+  --device "cuda" `
+  --out "output/<任务>/v4/runtime.snapshot.json"
+```
+
+Snapshot 记录 Git commit/dirty、Python、OS/arch、ffmpeg/ffprobe、关键 package versions、logical model IDs、device request 与 forced command hash/basename，并生成 `runtime_identity_sha256`。读取时会重新计算 identity，修改 snapshot 内容但保留旧 hash 会 fail closed。Absolute model path 会 redaction，只保留 basename+hash；hostname/username/absolute repo path/full command 不进入输出。
+
+Calibration/blind 对比时，候选如果 runtime identity 不同，应把它当成不同运行候选，不要把差异偷偷归因给某一个 threshold。
+
+## 13. Evidence Family Calibration：真实数据后直接比较四套时间
+
+Family evaluator 只接受已经投影到 mix-time 的 P9 fusion 与私有人工 truth。Dataset manifest 是单 split，必须是 `calibration` 或 `blind_test`，并且绑定本候选的 runtime snapshot：
+
+```json
+{
+  "schema_version": "1.0",
+  "dataset": "private-v4",
+  "dataset_revision": "r1",
+  "split": "calibration",
+  "runtime_snapshot_json": "runtime.snapshot.json",
+  "cases": [
+    {
+      "id": "cal-001",
+      "source_group": "opaque-group-001",
+      "language": "zh",
+      "risk_buckets": ["cut", "weak_vocal"],
+      "truth_json": "truth/cal-001.json",
+      "fusion_json": "fusion/cal-001.json"
+    }
+  ]
+}
+```
+
+Truth 文件不需要歌词文本，只需要 hash-bound line identity 与人工边界：
+
+```json
+{
+  "schema_version": "1.0",
+  "lines": [
+    {
+      "occurrence_id": "<occurrence-id>",
+      "canonical_line_index": 12,
+      "canonical_text_sha256": "<64-hex>",
+      "truth_start_ms": 12340,
+      "truth_end_ms": 15670
+    }
+  ]
+}
+```
+
+执行：
+
+```powershell
+python scripts/v4_evaluate_evidence_families.py `
+  --dataset "private/calibration/family.dataset.json" `
+  --out "private/calibration/family.report.json"
+```
+
+报告按 overall / language / risk bucket 给出四 family：
+
+```text
+source_timeline
+editor
+asr
+forced_alignment
+```
+
+并统计 coverage、onset/offset/boundary MAE、P50/P90/P95、line max-error P95、≤250ms/≤500ms rate、CONFLICT rate、forced unprojectable rate。报告不包含 raw lyric 或本地路径，同时保存 `runtime_identity_sha256` 与 `fusion_policy_identity_sha256`。同一个 family dataset 内如果混入不同 algorithm / P9 policy / config（例如不同 `conflict_boundary_ms`），会 fail closed；runtime snapshot 内容与其 hash 不一致同样 fail closed，避免把不可比或被篡改的候选结果聚合到一起。
+
+这个 family evaluator **不替代** `v4_calibration_workflow.py` 的 source-group split isolation 与 calibration→blind 锁定流程。正确顺序仍是：严格 dataset protocol 保证 split 隔离 → calibration 比较候选 → 锁定 backend/model/profile/threshold/runtime identity → 独立 blind_test → 只有 blind 证明收益后才另行设计 authority promotion。
+
+## 14. 给本地 Codex 的推荐开场指令
+
+新会话可以直接给：
+
+```text
+你现在负责仓库 linchun7/lyric-aligner 的真实生产任务。不要重新设计架构，也不要从旧分支恢复代码。
+
+先读取并遵守：
+1. SKILL.md
+2. references/v4-runtime-guide.md
+3. references/v4-status.md
+4. references/v4-implementation.md
+5. references/dataset-protocol.md
+
+原则：canonical lyric 是 final text/order truth；Source-to-Mix 是 primary timing truth；P9 fusion 仍是 uncalibrated shadow-only，HIGH 不能自动改字幕或充当 release confidence；任何 artifact/identity/provenance 不一致必须 fail closed，禁止手改 JSON 绕过 lineage。
+
+先确认当前 checkout 是最新 main，不要 checkout 或恢复任何旧 agent/* / codex/* 分支。先运行 scripts/v4_runtime_snapshot.py。然后把当前已有的 payload 与对应 *.artifact.json 成对传给 scripts/v4_doctor.py，并要求 --require lineage；告诉我当前 stage、缺失输入、BLOCK/lineage 原因、recommended_next_action。除非 doctor/现有 artifact 明确需要，不要从头重复已经完成的 stage。
+
+之后按 v4-runtime-guide 的标准顺序完成 reconstruction/review/materialization/editor/ASR/forced projection/P9 fusion/render/release。真实人工 truth 到位后，用 v4_evaluate_evidence_families.py 生成 family metrics。没有独立 blind_test 结果前，不允许提升 auxiliary timing authority、调成自动 release gate，或声称真实模型已达到生产准确率。
+
+每完成一个阶段，汇报：执行命令、输入 artifact IDs/SHAs、输出文件、是否 BLOCK、下一步。遇到不确定项先停止并说明证据缺口，不要猜。
+```
+
+这段指令的核心是让 Codex **续跑当前 production state**，而不是把仓库当成新项目重新发明一遍。

@@ -133,3 +133,50 @@ automatic_timing_change_allowed = false
 ```
 
 这就是代码阶段的刻意收口点。下一阶段必须使用 private real-song calibration/blind 来决定 family 的实际独立性、不同语言/风险类型阈值，以及是否允许任何自动 timing refinement。公共 synthetic CI 不得用于宣称真实 accuracy。
+
+---
+
+## 2026-08-18 — Production Readiness Tooling
+
+本轮不改变 Source-to-Mix、P9 shadow policy 或 release authority，只补齐真实数据生产前的可操作性、可测量性和可复现性。
+
+新增：
+
+```text
+lyric_aligner/doctor.py
+scripts/v4_doctor.py
+lyric_aligner/evaluation/family_calibration.py
+scripts/v4_evaluate_evidence_families.py
+lyric_aligner/runtime_snapshot.py
+scripts/v4_runtime_snapshot.py
+```
+
+### Production Doctor
+
+`v4_doctor.py` 使用当前真实 schema-2.0 task 与 effective-run shape 做只读检查，并可接收 run/editor/plan/ASR/forced source/forced mix/fusion 的 payload + artifact manifest 配对。除 stage readiness 外，它验证 artifact 自签名、task fingerprint、algorithm identity、exact payload output SHA/size、current run upstream，以及 payload 的 `source_run_artifact_id`（存在时）。`--require lineage` / `artifact:*` 可将这些条件变成机器可判定非零退出。
+
+报告只保留必要的 basename、artifact ID prefix 与无敏感 diagnostics；不输出歌词、absolute local/artifact output paths、backend resolved paths 或完整 external command。Backend `available/execution_ready` 仍只表示运行前提可发现，不代表 singing accuracy。
+
+### Evidence Family Calibration Evaluator
+
+`v4_evaluate_evidence_families.py` 直接消费 P9 fusion 的统一 mix-time family boundaries 与 private hash-bound line truth；按 overall / language / risk bucket 输出 Source-to-Mix、editor、ASR、forced 的 coverage、onset/offset/boundary MAE、P50/P90/P95、250/500ms 命中率，以及 `CONFLICT` / forced `unprojectable` rate。输出不包含 raw lyric 或本地路径。
+
+每份 family dataset 必须绑定一个 self-validating runtime snapshot；runtime 内容被修改但继续使用旧 `runtime_identity_sha256` 时 fail closed。跨 case 的 fusion policy identity 包含 algorithm、policy ID 与 semantic config，但排除每首歌必然不同的 `*_artifact_id` lineage 字段；因此同一 policy 的不同歌曲可以聚合，而不同 `conflict_boundary_ms` / conflict policy 等语义设置不能混算。
+
+该 evaluator 要求 `canonical_text_sha256` 与 truth 精确匹配，并固定：
+
+```text
+policy_calibrated = false
+release_gate_eligible = false
+automatic_timing_change_allowed = false
+```
+
+因此 calibration 报告本身不能提升 auxiliary timing authority；P1 strict workflow 仍负责 source-group split isolation 与 calibration→blind lock，冻结候选 backend/model/profile/threshold/runtime identity 后必须在独立 blind set 验证。
+
+### Runtime Snapshot
+
+`v4_runtime_snapshot.py` 记录 Git commit/dirty state、Python、OS/arch、ffmpeg/ffprobe、关键 package versions、logical model IDs、device request 与 external forced-aligner command hash/basename，并生成稳定 `runtime_identity_sha256`。读取时会重新计算 canonical identity hash；clean worktree 明确记录 `dirty=false`。Hostname/username/absolute repo path/local model path/full external command 不进入 formal snapshot。
+
+### Compatibility / rollback
+
+这些工具都是 additive diagnostics/evaluation metadata，不改变现有 artifacts、renderer 或 release contracts；如需回滚可删除上述新增模块/CLI，而不会改变 P9 之前的 authoritative production output。真实数据出现前仍禁止凭 synthetic CI 调整 family threshold 或自动写回 timeline。
