@@ -16,9 +16,50 @@ def _sha(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
+def _canonical_sha(payload: dict) -> str:
+    return hashlib.sha256(
+        json.dumps(
+            payload,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+
+
 class EvidenceFamilyEvaluationTests(unittest.TestCase):
     def _write(self, path: Path, payload: dict) -> None:
         path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+
+    def _runtime_snapshot(self) -> dict:
+        core = {
+            "schema_version": "1.0",
+            "git": {"commit_sha": "a" * 40, "branch": "main", "dirty": False},
+            "python": {
+                "implementation": "CPython",
+                "version": "3.12.0",
+                "executable_basename": "python",
+            },
+            "platform": {
+                "system": "TestOS",
+                "release": "1",
+                "machine": "test-machine",
+            },
+            "binaries": {
+                "ffmpeg": {"available": True, "version_line": "ffmpeg version test"},
+                "ffprobe": {"available": True, "version_line": "ffprobe version test"},
+            },
+            "packages": {"numpy": "2.0"},
+            "models": {"asr": {"kind": "logical_id", "id": "test-asr"}},
+            "external_forced_aligner": None,
+            "device_requested": "cpu",
+        }
+        return {
+            **core,
+            "runtime_identity_sha256": _canonical_sha(core),
+            "privacy": "test fixture",
+            "accuracy_boundary": "test fixture",
+        }
 
     def _fusion(self) -> dict:
         return {
@@ -110,13 +151,7 @@ class EvidenceFamilyEvaluationTests(unittest.TestCase):
         }
         self._write(root / "truth.json", truth)
         self._write(root / "fusion.json", self._fusion())
-        self._write(
-            root / "runtime.json",
-            {
-                "schema_version": "1.0",
-                "runtime_identity_sha256": "b" * 64,
-            },
-        )
+        self._write(root / "runtime.json", self._runtime_snapshot())
         manifest = {
             "schema_version": "1.0",
             "dataset": "private-calibration",
@@ -140,7 +175,9 @@ class EvidenceFamilyEvaluationTests(unittest.TestCase):
 
     def test_metrics_cover_all_four_families_and_risk_groups(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            report = evaluate_family_dataset(self._fixture(Path(tmp)))
+            root = Path(tmp)
+            report = evaluate_family_dataset(self._fixture(root))
+            expected_runtime = json.loads((root / "runtime.json").read_text())["runtime_identity_sha256"]
         overall = report["overall"]
         self.assertEqual(overall["truth_line_count"], 2)
         self.assertEqual(overall["conflict_line_count"], 1)
@@ -160,7 +197,7 @@ class EvidenceFamilyEvaluationTests(unittest.TestCase):
         self.assertEqual(overall["families"]["asr"]["boundary_mae_ms"], 175.0)
         self.assertIn("zh", report["groups"]["language"])
         self.assertIn("cut", report["groups"]["risk_bucket"])
-        self.assertEqual(report["runtime_identity_sha256"], "b" * 64)
+        self.assertEqual(report["runtime_identity_sha256"], expected_runtime)
         self.assertEqual(report["algorithm_version"], "4.0.0a8")
         self.assertFalse(report["automatic_timing_change_allowed"])
 
@@ -208,11 +245,25 @@ class EvidenceFamilyEvaluationTests(unittest.TestCase):
             with self.assertRaises(FamilyCalibrationError):
                 evaluate_family_dataset(manifest)
 
+    def test_tampered_runtime_snapshot_fails_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            manifest = self._fixture(root)
+            runtime_path = root / "runtime.json"
+            runtime = json.loads(runtime_path.read_text(encoding="utf-8"))
+            runtime["packages"]["numpy"] = "9.9-tampered"
+            self._write(runtime_path, runtime)
+            with self.assertRaises(FamilyCalibrationError):
+                evaluate_family_dataset(manifest)
+
     def test_mixed_fusion_policy_config_fails_closed(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             manifest = self._fixture(root)
-            self._write(root / "truth2.json", json.loads((root / "truth.json").read_text()))
+            self._write(
+                root / "truth2.json",
+                json.loads((root / "truth.json").read_text()),
+            )
             second = self._fusion()
             second["config"]["conflict_boundary_ms"] = 350.0
             self._write(root / "fusion2.json", second)
