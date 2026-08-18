@@ -2,7 +2,7 @@
 
 The project stores external aligner commands as strings but always executes
 parsed argv with ``shell=False``. Windows ``shlex`` parsing preserves matching
-outer quotes, so normalize those tokens before executable discovery or runtime
+double quotes, so normalize those tokens before executable discovery or runtime
 identity calculation. All callers share this helper to avoid readiness/runtime
 identity disagreeing with actual execution.
 """
@@ -17,8 +17,8 @@ class CommandLineParseError(ValueError):
     """Raised when a configured command cannot be parsed safely."""
 
 
-def _strip_matching_outer_quotes(value: str) -> str:
-    if len(value) >= 2 and value[0] == value[-1] and value[0] in {'"', "'"}:
+def _strip_windows_outer_double_quotes(value: str) -> str:
+    if len(value) >= 2 and value[0] == value[-1] == '"':
         return value[1:-1]
     return value
 
@@ -33,6 +33,10 @@ def split_external_command(
     ``windows`` is injectable for deterministic contract tests; production
     callers leave it as ``None`` so the current OS decides the parsing mode.
     Malformed quoting fails closed instead of falling back to shell parsing.
+
+    On Windows only matching *double* quotes are normalized. Single quotes are
+    deliberately left intact because native Windows process parsing does not use
+    them as shell-style grouping characters.
     """
 
     text = str(command or "").strip()
@@ -48,7 +52,7 @@ def split_external_command(
     for raw in values:
         value = str(raw)
         if is_windows:
-            value = _strip_matching_outer_quotes(value)
+            value = _strip_windows_outer_double_quotes(value)
         if value:
             normalized.append(value)
     return normalized
