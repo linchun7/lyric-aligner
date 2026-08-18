@@ -40,7 +40,10 @@ class V4TextRepairTests(unittest.TestCase):
     def test_multiple_lrc_timestamps_duplicate_canonical_occurrence(self):
         with tempfile.TemporaryDirectory() as directory:
             lrc = Path(directory) / "repeat.lrc"
-            lrc.write_text("[00:01.00][00:20.00]副歌一句\n", encoding="utf-8")
+            lrc.write_text(
+                "[00:01.00][00:20.00]副歌一句\n",
+                encoding="utf-8",
+            )
             canonical = parse_canonical_files([lrc])
 
         self.assertEqual(
@@ -48,8 +51,22 @@ class V4TextRepairTests(unittest.TestCase):
             ["副歌一句", "副歌一句"],
         )
 
+    def test_qrc_token_timing_is_removed_from_canonical_text(self):
+        with tempfile.TemporaryDirectory() as directory:
+            qrc = Path(directory) / "song.qrc"
+            qrc.write_text(
+                "[1000,2000]你(1000,500)好(1500,500)\n",
+                encoding="utf-8",
+            )
+            canonical = parse_canonical_files([qrc])
+
+        self.assertEqual([line.text for line in canonical], ["你好"])
+
     def test_ambiguous_or_bad_length_is_left_unchanged_for_review(self):
-        source = "1\n00:00:01,000 --> 00:00:02,000\n完全不同的一整句字幕\n"
+        source = (
+            "1\n00:00:01,000 --> 00:00:02,000\n"
+            "完全不同的一整句字幕\n"
+        )
         with tempfile.TemporaryDirectory() as directory:
             lrc = Path(directory) / "song.lrc"
             lrc.write_text("[00:01.00]你好\n", encoding="utf-8")
@@ -73,7 +90,9 @@ class V4TextRepairTests(unittest.TestCase):
         self.assertEqual([line.text for line in canonical], ["你好"])
 
     def test_exact_text_needs_no_replacement(self):
-        source = "1\n00:00:01,000 --> 00:00:02,000\nHello, world!\n"
+        source = (
+            "1\n00:00:01,000 --> 00:00:02,000\nHello, world!\n"
+        )
         with tempfile.TemporaryDirectory() as directory:
             lyric = Path(directory) / "song.txt"
             lyric.write_text("Hello, world!\n", encoding="utf-8")
@@ -92,7 +111,9 @@ class V4TextRepairTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             lyric = Path(directory) / "song.lrc"
             lyric.write_text(
-                "[00:01.00]第一句\n[00:02.00]第二句\n[00:03.00]第三句\n",
+                "[00:01.00]第一句\n"
+                "[00:02.00]第二句\n"
+                "[00:03.00]第三句\n",
                 encoding="utf-8",
             )
             canonical = parse_canonical_files([lyric])
