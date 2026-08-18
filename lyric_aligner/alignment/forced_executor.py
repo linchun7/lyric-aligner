@@ -11,8 +11,6 @@ from __future__ import annotations
 import hashlib
 import json
 import math
-import os
-import shlex
 import shutil
 import subprocess
 import tempfile
@@ -21,6 +19,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from lyric_aligner.assets.bindings import ResolvedAssetBinding
+from lyric_aligner.command_line import CommandLineParseError, split_external_command
 from lyric_aligner.contracts.artifacts import sha256_file
 
 
@@ -61,14 +60,10 @@ class ExternalForcedAlignmentConfig:
 def command_argv(command: str) -> list[str]:
     """Split a configured command without invoking a shell."""
 
-    command = str(command or "").strip()
-    if not command:
-        return []
     try:
-        values = shlex.split(command, posix=os.name != "nt")
-    except ValueError as exc:
+        return split_external_command(command)
+    except CommandLineParseError as exc:
         raise ForcedAlignmentExecutionError("external command cannot be parsed") from exc
-    return [str(value) for value in values if str(value)]
 
 
 def resolve_command(command: str) -> list[str]:

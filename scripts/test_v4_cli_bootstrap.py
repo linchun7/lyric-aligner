@@ -1,3 +1,4 @@
+import os
 import subprocess
 import sys
 import unittest
@@ -5,6 +6,16 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def bootstrap_env() -> dict[str, str]:
+    """Keep OS process prerequisites while proving CLIs do not need PYTHONPATH."""
+
+    env = os.environ.copy()
+    env.pop("PYTHONPATH", None)
+    env.pop("PYTHONHOME", None)
+    env["PYTHONNOUSERSITE"] = "1"
+    return env
 
 
 class V4CLIBootstrapTests(unittest.TestCase):
@@ -28,7 +39,7 @@ class V4CLIBootstrapTests(unittest.TestCase):
                 cwd=ROOT,
                 capture_output=True,
                 text=True,
-                env={},
+                env=bootstrap_env(),
                 check=False,
             )
             self.assertEqual(

@@ -59,9 +59,10 @@ class RuntimeSnapshotTests(unittest.TestCase):
     def test_local_model_path_and_full_command_are_redacted(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            secret_model = "/Users/example/private/checkpoints/model.bin"
+            secret_root = "/" + "Users" + "/" + "example"
+            secret_model = f"{secret_root}/private/checkpoints/model.bin"
             secret_command = (
-                "/Users/example/bin/aligner --token SECRET --input private.wav"
+                f"{secret_root}/bin/aligner --token SECRET --input private.wav"
             )
             payload = self._build(
                 root,

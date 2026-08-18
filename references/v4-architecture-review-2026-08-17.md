@@ -264,3 +264,23 @@ package-native composer + review decision artifact + final render bridge。
 - real calibration + blind-test 有明确指标；
 - 文档同步契约在 CI 中持续生效；
 - rollback 依赖 Git/version/artifact，而不是第二套运行时算法。
+
+## 11. 2026-08-18 Windows external-command compatibility addendum
+
+后续 P7 external forced alignment、backend readiness 与 runtime identity 都依赖同一 configured command。Windows 本地验收证明，如果三处分别使用平台相关 `shlex`，带双引号和空格的 executable path 可能出现“readiness / executor / runtime snapshot 对同一 command 得到不同 argv”的第二真源问题。
+
+因此跨平台 command parsing 现在遵守同一个架构规则：
+
+```text
+configured external command string
+            ↓
+lyric_aligner.command_line.split_external_command()
+            ↓
+backend discovery / forced executor / runtime snapshot identity
+```
+
+执行始终 `shell=False`；Windows 只规范化 native 双引号 token，malformed quote fail closed，不引入 shell interpolation。Runtime snapshot 仍只记录 executable basename、command SHA 与 argument count，不保存完整 command。
+
+CLI bootstrap tests 也不再用 `env={}` 伪造“完全空环境”：它们保留 OS/CreateProcess 必需环境，只删除 `PYTHONPATH` / `PYTHONHOME` 并禁用 user-site，从而验证真正的 repository-root import isolation，而不是把 Windows 进程创建差异误判为产品 bug。
+
+该兼容性层不参与 Source-to-Mix、canonical timeline、P8 projection、P9 fusion 或 release decision，因此不会产生新的 timing authority。真实 Windows production 可以继续使用 main；external forced family 在 backend 未准备好时仍是 optional auxiliary evidence。

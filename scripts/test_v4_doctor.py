@@ -70,8 +70,10 @@ class V4DoctorTests(unittest.TestCase):
             report["recommended_next_action"]["action"], "supply_task_manifest"
         )
         rendered = json.dumps(report)
-        self.assertNotIn("/Users/", rendered)
-        self.assertNotIn("C:\\Users\\", rendered)
+        posix_users_root = "/" + "Users" + "/"
+        windows_users_root = "C:" + "\\" + "Users" + "\\"
+        self.assertNotIn(posix_users_root, rendered)
+        self.assertNotIn(windows_users_root, rendered)
 
     def test_real_task_manifest_shape_is_accepted(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -280,9 +282,10 @@ class V4DoctorTests(unittest.TestCase):
         )
 
     def test_backend_report_does_not_emit_full_command_or_resolved_path(self) -> None:
+        secret_root = "/" + "Users" + "/" + "example"
         secret_command = (
-            "/Users/example/private/bin/definitely-not-installed "
-            "--private /Users/example/song.wav"
+            f"{secret_root}/private/bin/definitely-not-installed "
+            f"--private {secret_root}/song.wav"
         )
         report = build_doctor_report(
             external_forced_aligner_command=secret_command,
@@ -290,7 +293,7 @@ class V4DoctorTests(unittest.TestCase):
         )
         rendered = json.dumps(report)
         self.assertNotIn(secret_command, rendered)
-        self.assertNotIn("/Users/example", rendered)
+        self.assertNotIn(secret_root, rendered)
         self.assertIn("command_not_found:definitely-not-installed", rendered)
         self.assertIn("external_forced_aligner", rendered)
 

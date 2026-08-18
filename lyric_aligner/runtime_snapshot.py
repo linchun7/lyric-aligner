@@ -11,14 +11,14 @@ import hashlib
 import hmac
 import importlib.metadata
 import json
-import os
 import platform
 import re
-import shlex
 import subprocess
 import sys
 from pathlib import Path
 from typing import Any, Iterable
+
+from lyric_aligner.command_line import CommandLineParseError, split_external_command
 
 
 RUNTIME_SNAPSHOT_SCHEMA_VERSION = "1.0"
@@ -187,8 +187,8 @@ def _external_command_identity(command: str | None) -> dict[str, Any] | None:
     if not command:
         return None
     try:
-        argv = shlex.split(command, posix=os.name != "nt")
-    except ValueError:
+        argv = split_external_command(command)
+    except CommandLineParseError:
         argv = []
     executable = str(argv[0]) if argv else ""
     basename = (

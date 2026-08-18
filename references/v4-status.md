@@ -1,9 +1,10 @@
 # Lyric Aligner v4 当前实施状态
 
 更新日期：2026-08-18  
-当前 main：P9 已合入；production readiness tooling 正在本轮收口  
+当前 main：P9 + Production Readiness Tooling 已合入；真实私有任务可从 V4 production path 开始  
 P8 merge：`00585a07b658ffea93509c4ed1a4b129deafd0a3`  
 P9 merge：`efbdbb926b03efdf1d91622d5c23cabef1f9850c`  
+PR21 merge：`04e0802156f62006c6b6af5b4ef59b1acc81ce86`  
 主线算法版本：`4.0.0a8`  
 Calibration profile：`production-bootstrap-2026-08-17-a7`
 
@@ -23,9 +24,10 @@ P6    ASR second-pass execution + composite evidence
 P7    external source forced alignment
 P8    forced alignment source-to-mix projection
 P9    editor/ASR/forced multi-family shadow fusion
+PR21  production doctor + family evaluator + runtime snapshot
 ```
 
-P3 validate #493、P4 #517、P5 #530、P6 #545、P7 #560 均在各自 merge 前全绿。P8 latest result tree 的 fast-core #1 完成 compile、documentation contract、完整 unit/E2E、Skill、privacy、diff-check 全绿后合入。P9 result tree 的 fast-core #2 同样全绿，日志显示 **Ran 324 tests / OK**；随后 P9 branch 与已经合入的 P8 main 同步 ancestry，再以 PR #19 合入。
+P3 validate #493、P4 #517、P5 #530、P6 #545、P7 #560 均在各自 merge 前全绿。P8 latest result tree 的 fast-core #1 完成 compile、documentation contract、完整 unit/E2E、Skill、privacy、diff-check 全绿后合入。P9 result tree 的 fast-core #2 同样全绿，日志显示 **Ran 324 tests / OK**；随后 P9 branch 与已经合入的 P8 main 同步 ancestry，再以 PR #19 合入。PR21 以 merge `04e0802156f62006c6b6af5b4ef59b1acc81ce86` 进入 main，补齐 Doctor、runtime snapshot 与 family calibration tooling。
 
 CI 同时增加：
 
@@ -167,9 +169,9 @@ references/dataset-protocol.md
 
 公共 Actions、fake external subprocess 和 synthetic fixtures 能证明 contract/math/lineage/privacy，但不能证明 WhisperX/SOFA/MFA 或任何真实 checkpoint 对歌声的准确率。
 
-## 7. 本轮 Production Readiness Tooling
+## 7. Production Readiness Tooling
 
-本轮新增三个只读/评估型能力，目的是让本地 Codex 能可靠续跑真实任务并积累 calibration 数据，而不是继续凭 synthetic 数据改算法：
+已进入 main 的三个只读/评估型能力，目的是让本地 Codex 能可靠续跑真实任务并积累 calibration 数据，而不是继续凭 synthetic 数据改算法：
 
 ```text
 scripts/v4_doctor.py
@@ -185,4 +187,15 @@ scripts/v4_runtime_snapshot.py
 
 推荐本地真实任务在开始时先运行 runtime snapshot；已有 artifact 时运行 doctor；完成 P9 fusion 并有人工作 truth 后运行 family evaluator。这样下一轮决定 backend/checkpoint/threshold 时有机器可比的数据，而不是凭肉眼印象。
 
-> **当前结论：核心 timing authority 已在 P9 前收口；本轮再补齐 doctor + family evaluator + runtime snapshot 后，仓库就应转入本地真实私有数据 production/calibration/blind，而不是继续增加未校准自动 timing 行为。**
+## 8. Windows validation hardening（当前修复分支）
+
+`agent/v4-windows-validation-fix` 只处理真实 Windows 本地验收暴露的跨平台问题，不扩大 timing scope：
+
+- external forced-aligner command parsing 由 backend readiness、P7 executor、runtime snapshot 共用同一 helper；
+- Windows 双引号 executable path / quoted arguments 在 `shell=False` 下保持一致 argv 语义，malformed quoting fail closed；
+- CLI bootstrap tests 保留 Windows CreateProcess 必需环境，同时删除 `PYTHONPATH/PYTHONHOME` 并禁用 user-site，继续验证 repository-root bootstrap；
+- privacy scanner 恢复严格本地路径规则，测试 fixture 改为运行时拼接敏感示例，不再通过 allowlist 削弱 scanner。
+
+该修复不改变 canonical lyric、Source-to-Mix、P7/P8/P9 authority、threshold、release gate 或 automatic timing behavior。真实字幕生产可以继续使用已经合入的 main；forced backend 若未准备好可作为 optional auxiliary family 延后。
+
+> **当前结论：代码主线已具备真实 V4 生产条件；先跑真实字幕并积累 evidence。Windows validation hardening 属于兼容性/CI 收口，不应阻塞 Source-to-Mix + canonical + editor/ASR 的第一版生产。**

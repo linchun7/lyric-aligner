@@ -8,12 +8,12 @@ validated on singing. Executors must still validate model/config prerequisites.
 from __future__ import annotations
 
 import importlib.util
-import os
-import shlex
 import shutil
 from dataclasses import asdict, dataclass
 from enum import Enum
 from typing import Any, Iterable
+
+from lyric_aligner.command_line import CommandLineParseError, split_external_command
 
 
 class BackendCapability(str, Enum):
@@ -102,12 +102,8 @@ def _whisperx_status(model_id: str | None, align_model_id: str | None) -> Backen
 
 def _command_argv(command: str) -> list[str]:
     try:
-        return [
-            str(value)
-            for value in shlex.split(str(command or "").strip(), posix=os.name != "nt")
-            if str(value)
-        ]
-    except ValueError:
+        return split_external_command(command)
+    except CommandLineParseError:
         return []
 
 
