@@ -125,14 +125,18 @@ class SafeStageRunner:
         git_commit: str,
         workers: int = 2,
         resume: bool = True,
+        git_identity_verified: bool = False,
     ) -> None:
         if workers < 1 or workers > 4:
             raise ValueError("workers must be between 1 and 4")
         self.repository_root = repository_root.resolve()
         self.task_fingerprint_sha256 = task_fingerprint_sha256
         self.git_commit = git_commit.strip()
+        self.git_identity_verified = bool(git_identity_verified)
         self.workers = workers
-        self.resume_enabled = bool(resume and self.git_commit)
+        self.resume_enabled = bool(
+            resume and self.git_commit and self.git_identity_verified
+        )
         self.runtime_identity_sha256 = _runtime_identity_sha256()
         self._memo: dict[tuple[str, ...], str] = {}
         self._lock = threading.Lock()
@@ -201,7 +205,7 @@ class SafeStageRunner:
         )
 
     def _write_resume_sidecar(self, command: list[str]) -> None:
-        if not self.git_commit or len(command) < 2:
+        if not self.git_commit or not self.git_identity_verified or len(command) < 2:
             return
         script = Path(command[1]).name
         if script not in _RESUMABLE_SCRIPTS:
