@@ -26,6 +26,13 @@ class ExternalCommandLineTests(unittest.TestCase):
             ["aligner", "--model", "model with spaces"],
         )
 
+    def test_windows_single_quotes_are_not_normalized_as_shell_quotes(self) -> None:
+        command = "'C:\\Program Files\\Aligner\\aligner.exe' --foo bar"
+        self.assertEqual(
+            split_external_command(command, windows=True),
+            ["'C:\\Program Files\\Aligner\\aligner.exe'", "--foo", "bar"],
+        )
+
     def test_posix_quoted_argument_with_spaces(self) -> None:
         command = 'aligner --model "model with spaces"'
         self.assertEqual(
