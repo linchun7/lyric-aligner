@@ -15,6 +15,7 @@ import zipfile
 from dataclasses import dataclass
 from pathlib import Path
 
+import librosa
 import numpy as np
 
 from lyric_aligner.audio.features import FeatureBundle
@@ -31,6 +32,7 @@ class FeatureCacheSpec:
     hop_length: int
     n_mfcc: int = 13
     implementation_id: str = FEATURE_IMPLEMENTATION_ID
+    librosa_version: str = librosa.__version__
 
     def __post_init__(self) -> None:
         digest = self.audio_sha256.lower().strip()
@@ -38,13 +40,14 @@ class FeatureCacheSpec:
             raise ValueError("audio_sha256 must be a 64-character hexadecimal digest")
         if self.sr <= 0 or self.hop_length <= 0 or self.n_mfcc < 2:
             raise ValueError("invalid feature cache sampling parameters")
-        if not self.implementation_id.strip():
-            raise ValueError("feature cache implementation_id must not be empty")
+        if not self.implementation_id.strip() or not self.librosa_version.strip():
+            raise ValueError("feature cache implementation/runtime identity must not be empty")
 
     def normalized(self) -> dict[str, object]:
         return {
             "schema_version": CACHE_SCHEMA_VERSION,
             "implementation_id": self.implementation_id,
+            "librosa_version": self.librosa_version,
             "audio_sha256": self.audio_sha256.lower().strip(),
             "sr": int(self.sr),
             "hop_length": int(self.hop_length),
