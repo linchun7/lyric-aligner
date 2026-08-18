@@ -208,9 +208,9 @@ def build_coarse_timewarp(
     buffer_duration = len(mix_audio) / sr
     buffer_end = buffer_start + buffer_duration
     mix_duration = buffer_end if full_mix_duration is None else float(full_mix_duration)
-    if mix_duration <= 0 or mix_duration + 1e-9 < buffer_end:
+    tolerance = max(0.1, 1.0 / sr + 1e-9)
+    if mix_duration <= 0 or mix_duration + tolerance < buffer_end:
         raise ValueError("full_mix_duration is shorter than supplied mix audio buffer")
-    tolerance = 1.0 / sr + 1e-9
     if (
         mix_start < buffer_start - tolerance
         or mix_end > buffer_end + tolerance
@@ -285,7 +285,7 @@ def build_coarse_timewarp(
         "mix_interval": [mix_start, mix_end],
         "feature_scope": {
             "mix_feature_start": local_offset,
-            "mix_feature_end": local_offset + local_duration,
+            "mix_feature_end": min(mix_duration, local_offset + local_duration),
             "full_mix_duration": mix_duration,
         },
         "feature_config": {
