@@ -4,6 +4,7 @@ import librosa
 import numpy as np
 
 from lyric_aligner.audio.coarse_mapper import build_coarse_timewarp
+from lyric_aligner.audio.features import extract_harmonic_features
 
 
 SR = 8000
@@ -180,6 +181,34 @@ class V4CoarseMapperTests(unittest.TestCase):
             cropped["feature_scope"]["full_mix_duration"],
             full["feature_scope"]["full_mix_duration"],
         )
+
+    def test_precomputed_source_features_match_direct_extraction(self):
+        source = source_song()
+        segment = source[int(3.0 * SR) : int(19.0 * SR)]
+        mix = librosa.effects.time_stretch(segment, rate=1.20)
+        kwargs = {
+            "sr": SR,
+            "mix_start": 0.0,
+            "mix_end": len(mix) / SR,
+            "feature_hop_length": 512,
+            "window_seconds": 4.0,
+            "step_seconds": 2.0,
+            "candidate_step_seconds": 0.25,
+            "slope_minimum": 0.9,
+            "slope_maximum": 1.4,
+            "slope_step": 0.1,
+            "min_score": 0.55,
+            "min_margin": 0.0,
+        }
+        direct = build_coarse_timewarp(mix, source, **kwargs)
+        source_features = extract_harmonic_features(source, sr=SR, hop_length=512)
+        cached = build_coarse_timewarp(
+            mix,
+            None,
+            source_feature_bundle=source_features,
+            **kwargs,
+        )
+        self.assertEqual(cached, direct)
 
 
 if __name__ == "__main__":
