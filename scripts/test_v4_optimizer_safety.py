@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import os
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -103,6 +104,19 @@ class OptimizerSafetyTests(unittest.TestCase):
             self.assertNotIn(str(audio.resolve()), serialized)
             self.assertNotIn("manifest_path", payload)
             self.assertIn("manifest_path_identity_sha256", payload)
+
+    def test_arbitrary_legacy_git_metadata_does_not_authorize_resume(self):
+        self.assertFalse(OPTIMIZER.resume_git_identity_verified("synthetic-test"))
+
+    def test_exact_clean_head_can_authorize_resume(self):
+        head = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout.strip()
+        self.assertTrue(OPTIMIZER.resume_git_identity_verified(head))
 
 
 if __name__ == "__main__":
