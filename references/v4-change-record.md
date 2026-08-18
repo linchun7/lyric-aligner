@@ -17,9 +17,11 @@
 - P4 evidence fusion shadow：`bc4e10760ffee2e5990ca580d5edbadd7d561eaf`；
 - P5 ASR second-pass routing：`1abef200c3dbfe711dacf5432bb51ee7ac1bbe5d`；
 - P6 ASR second-pass execution/composite：`6eacacc50e885684b0265e3abea729b19b1b7725`；
-- P7 external source forced alignment：`9ad6df4f04b396871f757422bcb35f1fa7676678`。
+- P7 external source forced alignment：`9ad6df4f04b396871f757422bcb35f1fa7676678`；
+- P8 forced alignment source-to-mix projection：PR #17，merge `00585a07b658ffea93509c4ed1a4b129deafd0a3`；
+- P9 forced alignment multi-family shadow fusion：PR #19，merge `efbdbb926b03efdf1d91622d5c23cabef1f9850c`。
 
-P7 head `2ee9e1d2ced75c3d24b5a00353e9f275fc9dc9f9` 的 validate #560 全绿后合入。
+P7 head `2ee9e1d2ced75c3d24b5a00353e9f275fc9dc9f9` 的 validate #560 全绿后合入。P8 latest result tree 在 fast-core #1 完成 compile、documentation contract、完整 unit/E2E、Skill、privacy、diff-check 全绿后合入。P9 result tree 在 fast-core #2 完成同级验证并跑完 **324 tests** 全绿后，与 P8 main 同步 ancestry，再合入 main。
 
 ---
 
@@ -117,11 +119,11 @@ summary.forced_alignment_line_counts
 --forced-mix-evidence-artifact
 ```
 
-P8 artifact 必须与当前 source run 同 task、同 algorithm version、同 source_run_artifact_id，并把 source run 放在 upstream。fusion artifact 继续保存所有实际输入 artifacts 的 lineage，并记录 forced artifact ID 与 `any_auxiliary_pair_over_threshold_blocks` conflict policy。
+P8 artifact 必须与当前 source run 同 task、同 algorithm version、同 source_run_artifact_id，并把 source run 放在 upstream。fusion artifact 保存所有实际输入 artifacts 的 lineage，并记录 forced artifact ID 与 `any_auxiliary_pair_over_threshold_blocks` conflict policy。
 
 ### 5. Safety boundary
 
-P9 仍固定：
+P9 固定：
 
 ```text
 mode = shadow_only
@@ -130,4 +132,4 @@ release_gate_eligible = false
 automatic_timing_change_allowed = false
 ```
 
-真实生产数据上线后必须先做 private real-song calibration/blind，才能决定 family 的实际独立性、不同语言/风险类型阈值和是否允许任何自动 timing refinement。公共 synthetic CI 不得用于宣称真实 accuracy。
+这就是代码阶段的刻意收口点。下一阶段必须使用 private real-song calibration/blind 来决定 family 的实际独立性、不同语言/风险类型阈值，以及是否允许任何自动 timing refinement。公共 synthetic CI 不得用于宣称真实 accuracy。
