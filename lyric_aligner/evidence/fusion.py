@@ -1,6 +1,6 @@
 """Uncalibrated shadow fusion of independent lyric timing evidence families.
 
-This layer is diagnostic only.  It never changes canonical text or canonical
+This layer is diagnostic only. It never changes canonical text or canonical
 Source-to-Mix timing, and its LOW/MEDIUM/HIGH/CONFLICT labels are *shadow
 support states*, not calibrated release confidence.
 """
@@ -13,8 +13,8 @@ from dataclasses import asdict, dataclass
 from typing import Any, Iterable
 
 
-FUSION_SCHEMA_VERSION = "1.0"
-FUSION_POLICY_ID = "evidence-fusion-shadow-2026-08-18-v1"
+FUSION_SCHEMA_VERSION = "1.1"
+FUSION_POLICY_ID = "evidence-fusion-shadow-2026-08-18-v2-forced"
 
 
 class EvidenceFusionError(ValueError):
@@ -159,6 +159,48 @@ def _asr_index(asr_evidence: dict[str, Any] | None) -> dict[tuple[str, int], lis
     return output
 
 
+def _forced_index(
+    forced_mix_evidence: dict[str, Any] | None,
+) -> dict[tuple[str, int], dict[str, Any]]:
+    if forced_mix_evidence is None:
+        return {}
+    if forced_mix_evidence.get("mode") != "forced_alignment_mix_projection":
+        raise EvidenceFusionError("forced evidence must be projected into mix time")
+    if str(forced_mix_evidence.get("source_evidence_backend") or "") != "external_forced_aligner":
+        raise EvidenceFusionError("unsupported forced-alignment evidence backend")
+    if forced_mix_evidence.get("primary_timing_authority") != "source_to_mix_only":
+        raise EvidenceFusionError("forced evidence unexpectedly changes primary timing authority")
+    if forced_mix_evidence.get("forced_alignment_authority") != "auxiliary_acoustic_evidence_only":
+        raise EvidenceFusionError("forced evidence unexpectedly owns timing authority")
+    jobs = forced_mix_evidence.get("jobs")
+    if not isinstance(jobs, list):
+        raise EvidenceFusionError("forced mix evidence jobs must be a list")
+    output: dict[tuple[str, int], dict[str, Any]] = {}
+    seen_job_ids: set[str] = set()
+    for job in jobs:
+        if not isinstance(job, dict):
+            raise EvidenceFusionError("forced mix evidence job must be an object")
+        job_id = str(job.get("job_id") or "").strip()
+        occurrence_id = str(job.get("occurrence_id") or "").strip()
+        if not job_id or job_id in seen_job_ids:
+            raise EvidenceFusionError("forced mix evidence job IDs must be unique/non-empty")
+        seen_job_ids.add(job_id)
+        if not occurrence_id:
+            raise EvidenceFusionError("forced mix evidence job has no occurrence_id")
+        try:
+            line_index = int(job["canonical_line_index"])
+        except (KeyError, TypeError, ValueError) as exc:
+            raise EvidenceFusionError("forced mix evidence line index is invalid") from exc
+        key = (occurrence_id, line_index)
+        if key in output:
+            raise EvidenceFusionError("duplicate forced evidence canonical line identity")
+        status = str(job.get("projection_status") or "")
+        if status not in {"projected", "unprojectable"}:
+            raise EvidenceFusionError("forced mix evidence projection status is invalid")
+        output[key] = job
+    return output
+
+
 def _asr_boundary(job: dict[str, Any]) -> tuple[int, int] | None:
     segments = job.get("segments")
     if not isinstance(segments, list) or not segments:
@@ -198,10 +240,41 @@ def _best_asr(jobs: list[dict[str, Any]]) -> tuple[dict[str, Any], tuple[int, in
     return job, boundary
 
 
+def _forced_boundary(job: dict[str, Any]) -> tuple[int, int] | None:
+    status = str(job.get("projection_status") or "")
+    if status == "unprojectable":
+        if job.get("mix_start_ms") is not None or job.get("mix_end_ms") is not None:
+            raise EvidenceFusionError("unprojectable forced evidence contains mix boundary")
+        return None
+    if status != "projected":
+        raise EvidenceFusionError("forced mix evidence projection status is invalid")
+    start = _int_or_none(job.get("mix_start_ms"), label="forced mix start")
+    end = _int_or_none(job.get("mix_end_ms"), label="forced mix end")
+    if start is None or end is None or end <= start:
+        raise EvidenceFusionError("projected forced mix boundary is invalid")
+    confidence = job.get("line_confidence")
+    if confidence is not None:
+        try:
+            score = float(confidence)
+        except (TypeError, ValueError) as exc:
+            raise EvidenceFusionError("forced line confidence is invalid") from exc
+        if not math.isfinite(score) or not 0.0 <= score <= 1.0:
+            raise EvidenceFusionError("forced line confidence must be within [0, 1]")
+    return start, end
+
+
 def _max_boundary_disagreement(
     left: tuple[int, int], right: tuple[int, int]
 ) -> int:
     return max(abs(left[0] - right[0]), abs(left[1] - right[1]))
+
+
+def _pair_disagreement(
+    proposals: dict[str, tuple[int, int]], left: str, right: str
+) -> int | None:
+    if left not in proposals or right not in proposals:
+        return None
+    return _max_boundary_disagreement(proposals[left], proposals[right])
 
 
 def _fuse_line(
@@ -209,6 +282,7 @@ def _fuse_line(
     *,
     editor: dict[str, Any] | None,
     asr_jobs: list[dict[str, Any]],
+    forced: dict[str, Any] | None,
     config: EvidenceFusionConfig,
 ) -> dict[str, Any]:
     source_boundary = (
@@ -302,13 +376,54 @@ def _fuse_line(
             }
         )
 
-    conflict = False
-    disagreement_ms = None
-    if "editor" in proposals and "asr" in proposals:
-        disagreement_ms = _max_boundary_disagreement(
-            proposals["editor"], proposals["asr"]
-        )
-        conflict = disagreement_ms > config.conflict_boundary_ms
+    if forced is not None:
+        if forced.get("canonical_text_sha256") != canonical["canonical_text_sha256"]:
+            raise EvidenceFusionError("forced/canonical text identity mismatch")
+        if str(forced.get("track_id") or "") != canonical["track_id"]:
+            raise EvidenceFusionError("forced/canonical track identity mismatch")
+        boundary = _forced_boundary(forced)
+        if boundary is not None:
+            proposals["forced_alignment"] = boundary
+            families.append(
+                {
+                    "family": "forced_alignment",
+                    "available": True,
+                    "authoritative_for_primary_timing": False,
+                    "boundary_ms": list(boundary),
+                    "job_id": str(forced.get("job_id") or ""),
+                    "line_confidence": forced.get("line_confidence"),
+                    "backend_id": str(forced.get("backend_id") or ""),
+                    "backend_version": str(forced.get("backend_version") or ""),
+                    "model_id": str(forced.get("model_id") or ""),
+                    "model_revision": str(forced.get("model_revision") or ""),
+                    "projection_status": "projected",
+                }
+            )
+        else:
+            families.append(
+                {
+                    "family": "forced_alignment",
+                    "available": False,
+                    "authoritative_for_primary_timing": False,
+                    "job_id": str(forced.get("job_id") or ""),
+                    "projection_status": "unprojectable",
+                    "reason": str(forced.get("projection_reason") or "unprojectable"),
+                }
+            )
+
+    editor_asr = _pair_disagreement(proposals, "editor", "asr")
+    editor_forced = _pair_disagreement(proposals, "editor", "forced_alignment")
+    asr_forced = _pair_disagreement(proposals, "asr", "forced_alignment")
+    disagreement_values = [
+        value
+        for value in (editor_asr, editor_forced, asr_forced)
+        if value is not None
+    ]
+    max_disagreement = max(disagreement_values) if disagreement_values else None
+    conflict = (
+        max_disagreement is not None
+        and max_disagreement > config.conflict_boundary_ms
+    )
 
     auxiliary_count = len(proposals)
     if conflict:
@@ -332,7 +447,10 @@ def _fuse_line(
         "shadow_level": level,
         "shadow_level_calibrated": False,
         "auxiliary_boundary_family_count": auxiliary_count,
-        "editor_asr_boundary_disagreement_ms": disagreement_ms,
+        "editor_asr_boundary_disagreement_ms": editor_asr,
+        "editor_forced_boundary_disagreement_ms": editor_forced,
+        "asr_forced_boundary_disagreement_ms": asr_forced,
+        "max_auxiliary_boundary_disagreement_ms": max_disagreement,
         "families": families,
         "release_gate_eligible": False,
         "automatic_timing_change_allowed": False,
@@ -344,6 +462,7 @@ def build_evidence_fusion(
     timeline_payloads: Iterable[dict[str, Any]],
     editor_evidence: dict[str, Any] | None = None,
     asr_evidence: dict[str, Any] | None = None,
+    forced_mix_evidence: dict[str, Any] | None = None,
     config: EvidenceFusionConfig | None = None,
 ) -> dict[str, Any]:
     config = config or EvidenceFusionConfig()
@@ -351,19 +470,24 @@ def build_evidence_fusion(
     canonical, occurrences = _timeline_index(timeline_payloads)
     editor = _editor_index(editor_evidence)
     asr = _asr_index(asr_evidence)
+    forced = _forced_index(forced_mix_evidence)
 
     unknown_editor = sorted(set(editor) - set(canonical))
     unknown_asr = sorted(set(asr) - set(canonical))
+    unknown_forced = sorted(set(forced) - set(canonical))
     if unknown_editor:
         raise EvidenceFusionError("editor evidence references unknown canonical line")
     if unknown_asr:
         raise EvidenceFusionError("ASR evidence references unknown canonical line")
+    if unknown_forced:
+        raise EvidenceFusionError("forced evidence references unknown canonical line")
 
     rows = [
         _fuse_line(
             canonical[key],
             editor=editor.get(key),
             asr_jobs=asr.get(key, []),
+            forced=forced.get(key),
             config=config,
         )
         for key in sorted(
@@ -376,8 +500,19 @@ def build_evidence_fusion(
         )
     ]
     counts = {level: 0 for level in ("LOW", "MEDIUM", "HIGH", "CONFLICT")}
+    forced_counts = {"projected": 0, "unprojectable": 0, "absent": 0}
     for row in rows:
         counts[row["shadow_level"]] += 1
+        forced_family = next(
+            (family for family in row["families"] if family.get("family") == "forced_alignment"),
+            None,
+        )
+        if forced_family is None:
+            forced_counts["absent"] += 1
+        elif forced_family.get("available"):
+            forced_counts["projected"] += 1
+        else:
+            forced_counts["unprojectable"] += 1
     return {
         "schema_version": FUSION_SCHEMA_VERSION,
         "policy_id": FUSION_POLICY_ID,
@@ -390,6 +525,7 @@ def build_evidence_fusion(
             "occurrence_count": len(occurrences),
             "canonical_line_count": len(rows),
             "shadow_level_counts": counts,
+            "forced_alignment_line_counts": forced_counts,
         },
         "lines": rows,
         "authority": {
@@ -397,5 +533,6 @@ def build_evidence_fusion(
             "primary_timing": "source_to_mix_only",
             "editor": "auxiliary_shadow_family",
             "asr": "auxiliary_shadow_family",
+            "forced_alignment": "auxiliary_shadow_family_mix_time",
         },
     }
