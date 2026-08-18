@@ -25,6 +25,14 @@ _REQUIRE_CHOICES = (
     "forced_mix",
     "fusion",
     "runtime_snapshot",
+    "lineage",
+    "artifact:run",
+    "artifact:editor",
+    "artifact:alignment_plan",
+    "artifact:asr",
+    "artifact:forced_source",
+    "artifact:forced_mix",
+    "artifact:fusion",
     "dataset:metadata",
     "dataset:references",
     "dataset:predictions",
@@ -42,12 +50,19 @@ def main() -> int:
     parser.add_argument("--dataset", type=Path)
     parser.add_argument("--dataset-split", choices=("train", "calibration", "blind_test"))
     parser.add_argument("--run", type=Path)
+    parser.add_argument("--run-artifact", type=Path)
     parser.add_argument("--editor-evidence", type=Path)
+    parser.add_argument("--editor-evidence-artifact", type=Path)
     parser.add_argument("--alignment-plan", type=Path)
+    parser.add_argument("--alignment-plan-artifact", type=Path)
     parser.add_argument("--asr-evidence", type=Path)
+    parser.add_argument("--asr-evidence-artifact", type=Path)
     parser.add_argument("--forced-evidence", type=Path)
+    parser.add_argument("--forced-evidence-artifact", type=Path)
     parser.add_argument("--forced-mix-evidence", type=Path)
+    parser.add_argument("--forced-mix-evidence-artifact", type=Path)
     parser.add_argument("--fusion", type=Path)
+    parser.add_argument("--fusion-artifact", type=Path)
     parser.add_argument("--runtime-snapshot", type=Path)
     parser.add_argument("--no-backend-check", action="store_true")
     parser.add_argument("--faster-whisper-model-id")
@@ -64,12 +79,19 @@ def main() -> int:
             dataset=args.dataset,
             dataset_split=args.dataset_split,
             run=args.run,
+            run_artifact=args.run_artifact,
             editor_evidence=args.editor_evidence,
+            editor_evidence_artifact=args.editor_evidence_artifact,
             alignment_plan=args.alignment_plan,
+            alignment_plan_artifact=args.alignment_plan_artifact,
             asr_evidence=args.asr_evidence,
+            asr_evidence_artifact=args.asr_evidence_artifact,
             forced_evidence=args.forced_evidence,
+            forced_evidence_artifact=args.forced_evidence_artifact,
             forced_mix_evidence=args.forced_mix_evidence,
+            forced_mix_evidence_artifact=args.forced_mix_evidence_artifact,
             fusion=args.fusion,
+            fusion_artifact=args.fusion_artifact,
             runtime_snapshot=args.runtime_snapshot,
             inspect_backend_status=not args.no_backend_check,
             faster_whisper_model_id=args.faster_whisper_model_id,
