@@ -46,7 +46,7 @@ def write_artifact(
 
 
 class V4EvidenceFusionEndToEndTests(unittest.TestCase):
-    def test_editor_and_asr_artifacts_fuse_without_timeline_mutation(self):
+    def test_editor_asr_and_forced_artifacts_fuse_without_timeline_mutation(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             task_root = root / "private" / "fusion-task"
@@ -210,6 +210,46 @@ class V4EvidenceFusionEndToEndTests(unittest.TestCase):
                 upstreams=(run_artifact["artifact_id"], timeline_artifact["artifact_id"]),
             )
 
+            forced_payload = {
+                "schema_version": "1.0",
+                "algorithm_version": __version__,
+                "task_fingerprint_sha256": fingerprint,
+                "mode": "forced_alignment_mix_projection",
+                "source_evidence_backend": "external_forced_aligner",
+                "canonical_text_authority": "canonical_lyrics_only",
+                "primary_timing_authority": "source_to_mix_only",
+                "forced_alignment_authority": "auxiliary_acoustic_evidence_only",
+                "source_run_artifact_id": run_artifact["artifact_id"],
+                "jobs": [
+                    {
+                        "job_id": "forced-1",
+                        "occurrence_id": "occ-1",
+                        "track_id": "track-1",
+                        "canonical_line_index": 0,
+                        "canonical_text_sha256": canonical_sha,
+                        "projection_status": "projected",
+                        "projection_reason": None,
+                        "mix_start_ms": 5110,
+                        "mix_end_ms": 6300,
+                        "line_confidence": 0.9,
+                        "backend_id": "fake-forced",
+                        "backend_version": "1",
+                        "model_id": "fake-model",
+                        "model_revision": "r1",
+                    }
+                ],
+            }
+            forced_path = root / "forced_mix.json"
+            forced_path.write_text(json.dumps(forced_payload), encoding="utf-8")
+            forced_artifact_path, forced_artifact = write_artifact(
+                root,
+                payload_path=forced_path,
+                stage="forced_alignment_mix_projection",
+                role="forced_alignment_mix_evidence",
+                fingerprint=fingerprint,
+                upstreams=(run_artifact["artifact_id"],),
+            )
+
             output = root / "fusion.json"
             output_artifact = root / "fusion.artifact.json"
             result = run_command(
@@ -220,13 +260,25 @@ class V4EvidenceFusionEndToEndTests(unittest.TestCase):
                 "--editor-evidence-artifact", str(editor_artifact_path),
                 "--asr-evidence", str(asr_path),
                 "--asr-evidence-artifact", str(asr_artifact_path),
+                "--forced-mix-evidence", str(forced_path),
+                "--forced-mix-evidence-artifact", str(forced_artifact_path),
                 "--out", str(output),
                 "--artifact-out", str(output_artifact),
             )
             self.assertEqual(result.returncode, 0, msg=result.stderr)
             fusion = json.loads(output.read_text(encoding="utf-8"))
             artifact = json.loads(output_artifact.read_text(encoding="utf-8"))
-            self.assertEqual(fusion["lines"][0]["shadow_level"], "HIGH")
+            line = fusion["lines"][0]
+            self.assertEqual(line["shadow_level"], "HIGH")
+            self.assertEqual(line["auxiliary_boundary_family_count"], 3)
+            self.assertLessEqual(line["max_auxiliary_boundary_disagreement_ms"], 500)
+            self.assertEqual(
+                fusion["summary"]["forced_alignment_line_counts"]["projected"], 1
+            )
+            self.assertEqual(
+                fusion["source_forced_mix_evidence_artifact_id"],
+                forced_artifact["artifact_id"],
+            )
             self.assertFalse(fusion["release_gate_eligible"])
             self.assertFalse(fusion["automatic_timing_change_allowed"])
             serialized = json.dumps(fusion, ensure_ascii=False)
@@ -238,10 +290,11 @@ class V4EvidenceFusionEndToEndTests(unittest.TestCase):
                 timeline_artifact["artifact_id"],
                 editor_artifact["artifact_id"],
                 asr_artifact["artifact_id"],
+                forced_artifact["artifact_id"],
             ):
                 self.assertIn(expected, artifact["upstream_artifact_ids"])
 
-            # Auxiliary evidence from another run must fail before fusion.
+            # Auxiliary evidence modified after artifact creation must fail closed.
             asr_payload["source_run_artifact_id"] = "another-run"
             asr_path.write_text(json.dumps(asr_payload), encoding="utf-8")
             bad = run_command(
