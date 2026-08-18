@@ -1,10 +1,11 @@
 # Lyric Aligner v4 当前实施状态
 
 更新日期：2026-08-18  
-当前 main：P9 + Production Readiness Tooling 已合入；真实私有任务可从 V4 production path 开始  
+当前 main：P9 + Production Readiness Tooling + Windows validation hardening 已合入；真实私有任务可从 V4 production path 开始  
 P8 merge：`00585a07b658ffea93509c4ed1a4b129deafd0a3`  
 P9 merge：`efbdbb926b03efdf1d91622d5c23cabef1f9850c`  
 PR21 merge：`04e0802156f62006c6b6af5b4ef59b1acc81ce86`  
+PR22 merge：`2b4a13132e95a551392811407f48573b36edab95`  
 主线算法版本：`4.0.0a8`  
 Calibration profile：`production-bootstrap-2026-08-17-a7`
 
@@ -25,9 +26,10 @@ P7    external source forced alignment
 P8    forced alignment source-to-mix projection
 P9    editor/ASR/forced multi-family shadow fusion
 PR21  production doctor + family evaluator + runtime snapshot
+PR22  Windows command/bootstrap/privacy validation hardening
 ```
 
-P3 validate #493、P4 #517、P5 #530、P6 #545、P7 #560 均在各自 merge 前全绿。P8 latest result tree 的 fast-core #1 完成 compile、documentation contract、完整 unit/E2E、Skill、privacy、diff-check 全绿后合入。P9 result tree 的 fast-core #2 同样全绿，日志显示 **Ran 324 tests / OK**；随后 P9 branch 与已经合入的 P8 main 同步 ancestry，再以 PR #19 合入。PR21 以 merge `04e0802156f62006c6b6af5b4ef59b1acc81ce86` 进入 main，补齐 Doctor、runtime snapshot 与 family calibration tooling。
+P3 validate #493、P4 #517、P5 #530、P6 #545、P7 #560 均在各自 merge 前全绿。P8 latest result tree 的 fast-core #1 完成 compile、documentation contract、完整 unit/E2E、Skill、privacy、diff-check 全绿后合入。P9 result tree 的 fast-core #2 同样全绿，日志显示 **Ran 324 tests / OK**；随后 P9 branch 与已经合入的 P8 main 同步 ancestry，再以 PR #19 合入。PR21 以 merge `04e0802156f62006c6b6af5b4ef59b1acc81ce86` 进入 main，补齐 Doctor、runtime snapshot 与 family calibration tooling。PR22 exact-head fast-core 与 Python 3.10/3.12/3.14 + ASR validate 全绿后，以 merge `2b4a13132e95a551392811407f48573b36edab95` 进入 main。
 
 CI 同时增加：
 
@@ -187,15 +189,29 @@ scripts/v4_runtime_snapshot.py
 
 推荐本地真实任务在开始时先运行 runtime snapshot；已有 artifact 时运行 doctor；完成 P9 fusion 并有人工作 truth 后运行 family evaluator。这样下一轮决定 backend/checkpoint/threshold 时有机器可比的数据，而不是凭肉眼印象。
 
-## 8. Windows validation hardening（当前修复分支）
+## 8. Windows validation hardening（已合入 PR22）
 
-`agent/v4-windows-validation-fix` 只处理真实 Windows 本地验收暴露的跨平台问题，不扩大 timing scope：
+PR22 只处理真实 Windows 本地验收暴露的跨平台问题，不扩大 timing scope：
 
 - external forced-aligner command parsing 由 backend readiness、P7 executor、runtime snapshot 共用同一 helper；
 - Windows 双引号 executable path / quoted arguments 在 `shell=False` 下保持一致 argv 语义，malformed quoting fail closed；
 - CLI bootstrap tests 保留 Windows CreateProcess 必需环境，同时删除 `PYTHONPATH/PYTHONHOME` 并禁用 user-site，继续验证 repository-root bootstrap；
 - privacy scanner 恢复严格本地路径规则，测试 fixture 改为运行时拼接敏感示例，不再通过 allowlist 削弱 scanner。
 
-该修复不改变 canonical lyric、Source-to-Mix、P7/P8/P9 authority、threshold、release gate 或 automatic timing behavior。真实字幕生产可以继续使用已经合入的 main；forced backend 若未准备好可作为 optional auxiliary family 延后。
+该修复不改变 canonical lyric、Source-to-Mix、P7/P8/P9 authority、threshold、release gate 或 automatic timing behavior。
 
-> **当前结论：代码主线已具备真实 V4 生产条件；先跑真实字幕并积累 evidence。Windows validation hardening 属于兼容性/CI 收口，不应阻塞 Source-to-Mix + canonical + editor/ASR 的第一版生产。**
+## 9. Production fast path（当前性能优化分支）
+
+真实 12 首私有生产任务证明当前串行 V4 的重复整段 mix 解码成本过高：每个 occurrence 的 coarse/fine CLI 都会重新解码最终长 mix，虽然核心 feature 提取本来只需要当前 occurrence 的局部时间窗。
+
+`agent/v4-production-fast-path` 第一阶段只做 **同算法语义的 bounded decode**：
+
+- coarse CLI 先读取完整 mix duration，再只解码当前 occurrence 区间及 2 秒保护 padding；
+- fine CLI 只解码 coarse retrieval windows 覆盖区间及 2 秒保护 padding；
+- `build_coarse_timewarp()` / `refine_coarse_mapping()` 接受带 absolute start 的 bounded mix buffer，仍输出全局 mix 坐标；
+- 正式 payload 继续绑定完整 `mix_audio_sha256`，Source-to-Mix selection、threshold、cut/review、artifact lineage 与 release 语义不变；
+- 新增 full-buffer ↔ bounded-buffer 等价测试，证明同一内存音频区间不会因为 buffer origin 改变 path/timewarp。
+
+本阶段不引入低精度“中文模式”，也不放宽 fail-closed。后续性能工作按优先级是：artifact resume/cache → bounded workers → 经真实数据验证的 sparse fast probe + 自动 fallback。任何 fast probe 在校准前都不能取代当前 authoritative Source-to-Mix path。
+
+> **当前结论：主线已经可生产；性能优化首先消除无意义的重复长 mix 解码，而不是牺牲 accuracy。当前正在运行的本地任务不要中途切换 commit；下一次任务在性能 PR 合入后再同步 main。**
