@@ -1,9 +1,9 @@
 """Privacy-safe production readiness and resume diagnostics for v4.
 
-The doctor is deliberately observational: it reads local artifacts, validates
-basic stage contracts, inspects optional backend availability without loading
-models, and recommends the next production action. It never mutates task or
-evidence artifacts and never treats backend discovery as an accuracy claim.
+The doctor is observational: it reads supplied artifacts, performs lightweight
+contract checks, optionally inspects backend execution readiness, and recommends
+what to do next. It never mutates artifacts and never treats backend discovery
+as an accuracy claim.
 """
 
 from __future__ import annotations
@@ -18,6 +18,8 @@ from lyric_aligner.runtime_snapshot import validate_runtime_snapshot
 
 
 DOCTOR_SCHEMA_VERSION = "1.0"
+_TASK_SCHEMA_VERSION = "2.0"
+_TASK_REQUIRED_INPUTS = ("source_srt", "audio", "song_list", "lyrics_dir")
 
 
 class DoctorError(ValueError):
@@ -31,8 +33,9 @@ def _load_json(path: Path, *, label: str) -> dict[str, Any]:
     return payload
 
 
-def _file_label(path: Path | None) -> str | None:
-    return path.name if path is not None else None
+def _is_sha256(value: str) -> bool:
+    value = str(value).lower()
+    return len(value) == 64 and all(char in "0123456789abcdef" for char in value)
 
 
 def _stage(
@@ -53,7 +56,7 @@ def _stage(
     if not resolved.is_file():
         return {
             "provided": True,
-            "file": _file_label(path),
+            "file": path.name,
             "exists": False,
             "valid": False,
             "detail": "file_not_found",
@@ -62,7 +65,7 @@ def _stage(
     valid, detail = validator(payload)
     return {
         "provided": True,
-        "file": _file_label(path),
+        "file": path.name,
         "exists": True,
         "valid": bool(valid),
         "detail": str(detail),
@@ -70,28 +73,35 @@ def _stage(
 
 
 def _task(payload: dict[str, Any]) -> tuple[bool, str]:
-    tracks = payload.get("tracks")
-    if not isinstance(tracks, list) or not tracks:
-        return False, "task_manifest_missing_tracks"
+    """Check the real schema-2.0 task-manifest shape used by init_task.py."""
+
+    if payload.get("schema_version") != _TASK_SCHEMA_VERSION:
+        return False, "task_manifest_schema_invalid"
+    project = payload.get("project")
+    if not isinstance(project, str) or not project.strip():
+        return False, "task_manifest_project_invalid"
+    if not _is_sha256(str(payload.get("task_fingerprint_sha256") or "")):
+        return False, "task_manifest_fingerprint_invalid"
+    inputs = payload.get("inputs")
+    if not isinstance(inputs, dict):
+        return False, "task_manifest_inputs_invalid"
+    for role in _TASK_REQUIRED_INPUTS:
+        if not isinstance(inputs.get(role), dict):
+            return False, f"task_manifest_missing_required_input:{role}"
     return True, "task_manifest_shape_ok"
 
 
 def _run(payload: dict[str, Any]) -> tuple[bool, str]:
-    """Validate the common effective-run shape, not an artifact stage field.
-
-    `v4_run.json` itself has no `stage`; stage belongs to its artifact manifest.
-    Review/materialized effective runs also preserve a status plus exact runtime
-    identity, so requiring a payload stage would reject a valid production run.
-    """
+    """Validate an effective run; payload `stage` belongs to its artifact, not run."""
 
     status = str(payload.get("status") or "").strip()
     algorithm_version = str(payload.get("algorithm_version") or "").strip()
-    task_fingerprint = str(payload.get("task_fingerprint_sha256") or "").strip()
+    fingerprint = str(payload.get("task_fingerprint_sha256") or "")
     if not status:
         return False, "run_missing_status"
     if not algorithm_version:
         return False, "run_missing_algorithm_version"
-    if len(task_fingerprint) != 64:
+    if not _is_sha256(fingerprint):
         return False, "run_missing_task_fingerprint"
     return True, f"status={status};algorithm={algorithm_version}"
 
@@ -102,7 +112,10 @@ def _editor(payload: dict[str, Any]) -> tuple[bool, str]:
     authority = payload.get("authority")
     if isinstance(authority, dict) and authority.get("automatic_timing_change_allowed") is True:
         return False, "editor_unexpected_timing_authority"
-    return True, "editor_shadow_evidence"
+    occurrences = payload.get("occurrences")
+    if not isinstance(occurrences, list):
+        return False, "editor_occurrences_not_list"
+    return True, f"editor_occurrences={len(occurrences)}"
 
 
 def _plan(payload: dict[str, Any]) -> tuple[bool, str]:
@@ -141,14 +154,12 @@ def _forced_mix(payload: dict[str, Any]) -> tuple[bool, str]:
     if not isinstance(jobs, list):
         return False, "forced_mix_jobs_not_list"
     projected = sum(
-        str(row.get("projection_status") or "") == "projected"
+        isinstance(row, dict) and row.get("projection_status") == "projected"
         for row in jobs
-        if isinstance(row, dict)
     )
     unprojectable = sum(
-        str(row.get("projection_status") or "") == "unprojectable"
+        isinstance(row, dict) and row.get("projection_status") == "unprojectable"
         for row in jobs
-        if isinstance(row, dict)
     )
     return True, f"projected={projected};unprojectable={unprojectable}"
 
@@ -179,7 +190,8 @@ def _runtime_snapshot(payload: dict[str, Any]) -> tuple[bool, str]:
 
 
 def _dataset_summary(
-    path: Path | None, split: str | None
+    path: Path | None,
+    split: str | None,
 ) -> tuple[dict[str, Any], dict[str, bool]]:
     readiness = {
         "metadata": False,
@@ -198,13 +210,13 @@ def _dataset_summary(
     if not resolved.is_file():
         return {
             "provided": True,
-            "file": _file_label(path),
+            "file": path.name,
             "valid": False,
             "detail": "file_not_found",
         }, readiness
     report = inspect_dataset_readiness(resolved, split=split)
-    rows = report.get("splits") or {}
-    selected = [rows[split]] if split is not None else list(rows.values())
+    split_rows = report.get("splits") or {}
+    selected = [split_rows[split]] if split is not None else list(split_rows.values())
     readiness["metadata"] = bool(report.get("metadata_ready"))
     readiness["references"] = bool(selected) and all(
         bool(row.get("reference_ready")) for row in selected
@@ -217,7 +229,7 @@ def _dataset_summary(
     )
     return {
         "provided": True,
-        "file": _file_label(path),
+        "file": path.name,
         "valid": True,
         "detail": "dataset_readiness_inspected",
         "dataset": str(report.get("dataset") or ""),
@@ -236,8 +248,7 @@ def _safe_missing_requirement(value: str) -> str:
     if not text.startswith(prefix):
         return text
     executable = text[len(prefix) :].replace("\\", "/")
-    basename = executable.rsplit("/", 1)[-1]
-    return prefix + (basename or "<redacted>")
+    return prefix + (executable.rsplit("/", 1)[-1] or "<redacted>")
 
 
 def _backend_report(
@@ -281,34 +292,31 @@ def _next_actions(
     stages: dict[str, dict[str, Any]],
     run_payload: dict[str, Any] | None,
 ) -> list[dict[str, str]]:
-    actions: list[dict[str, str]] = []
     if not stages["task"]["valid"]:
-        actions.append(
+        return [
             {
                 "action": "supply_task_manifest",
                 "command": "python scripts/init_task.py ...",
             }
-        )
-        return actions
+        ]
     if not stages["run"]["valid"]:
-        actions.append(
+        return [
             {
                 "action": "reconstruct_source_to_mix",
                 "command": "python scripts/v4_run.py ...",
             }
-        )
-        return actions
+        ]
 
     status = str((run_payload or {}).get("status") or "")
     if status == "review_required":
-        actions.append(
+        return [
             {
                 "action": "resolve_review",
                 "command": "python scripts/v4_review.py template ...",
             }
-        )
-        return actions
+        ]
 
+    actions: list[dict[str, str]] = []
     if not stages["alignment_plan"]["valid"]:
         actions.append(
             {
@@ -323,10 +331,7 @@ def _next_actions(
                 "command": "python scripts/v4_project_forced_alignment.py ...",
             }
         )
-    auxiliary_present = any(
-        stages[name]["valid"] for name in ("editor", "asr", "forced_mix")
-    )
-    if auxiliary_present and not stages["fusion"]["valid"]:
+    if any(stages[name]["valid"] for name in ("editor", "asr", "forced_mix")) and not stages["fusion"]["valid"]:
         actions.append(
             {
                 "action": "build_shadow_fusion",
@@ -340,14 +345,12 @@ def _next_actions(
                 "command": "python scripts/v4_render.py ...",
             }
         )
-    if not actions:
-        actions.append(
-            {
-                "action": "inspect_current_artifacts",
-                "command": "python scripts/v4_doctor.py ...",
-            }
-        )
-    return actions
+    return actions or [
+        {
+            "action": "inspect_current_artifacts",
+            "command": "python scripts/v4_doctor.py ...",
+        }
+    ]
 
 
 def build_doctor_report(
@@ -417,12 +420,11 @@ def build_doctor_report(
         requirement_results[value] = bool(passed)
 
     next_actions = _next_actions(stages, payloads["run"])
-    passed = all(requirement_results.values()) if requirement_results else True
     return {
         "schema_version": DOCTOR_SCHEMA_VERSION,
         "mode": "read_only_diagnostic",
         "requirements": {
-            "passed": passed,
+            "passed": all(requirement_results.values()) if requirement_results else True,
             "results": requirement_results,
         },
         "stages": stages,
