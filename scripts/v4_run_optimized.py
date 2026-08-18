@@ -66,6 +66,43 @@ def load(path: Path) -> dict:
     return value
 
 
+def _stat_identity(path: Path) -> tuple[int, int]:
+    stat = path.stat()
+    if not path.is_file():
+        raise ValueError(f"task input is no longer a file: {path}")
+    return int(stat.st_size), int(stat.st_mtime_ns)
+
+
+def manifest_stat_snapshot(manifest_path: Path, manifest: dict) -> dict[str, tuple[int, int]]:
+    """Capture cheap task-input identity around the one full hash verification.
+
+    This closes the accidental TOCTOU window between the parent's SHA-256 pass
+    and creation of the same-invocation verification session without adding a
+    second content read. Directory membership is included so added/removed files
+    are detected as well as size/mtime changes.
+    """
+
+    root = task_contract.manifest_root(manifest_path)
+    snapshot: dict[str, tuple[int, int]] = {
+        str(manifest_path.resolve()): _stat_identity(manifest_path.resolve())
+    }
+    for record in manifest.get("inputs", {}).values():
+        if record is None:
+            continue
+        base = (root / str(record["path"])).resolve()
+        if record.get("kind") == "file":
+            snapshot[str(base)] = _stat_identity(base)
+            continue
+        if record.get("kind") != "directory":
+            raise ValueError(f"unsupported task input kind: {record.get('kind')!r}")
+        if not base.is_dir():
+            raise ValueError(f"task input directory no longer exists: {base}")
+        for item in sorted(base.rglob("*"), key=lambda value: value.as_posix().casefold()):
+            if item.is_file():
+                snapshot[str(item.resolve())] = _stat_identity(item.resolve())
+    return snapshot
+
+
 def asset_files_attested(payload: dict) -> bool:
     assets = payload.get("assets", [])
     if not isinstance(assets, list) or not assets:
@@ -114,15 +151,20 @@ def prestage(a: argparse.Namespace) -> VerifiedStageRunner:
         raise ValueError("workers must be between 1 and 4")
     clear_verified_input_session()
     manifest = task_contract.load_task_manifest(a.task_manifest)
+    before_verify = manifest_stat_snapshot(a.task_manifest, manifest)
     problems = task_contract.verify_manifest_inputs(a.task_manifest, manifest)
     if problems:
         raise ValueError("task manifest validation failed: " + "; ".join(problems))
+    if manifest_stat_snapshot(a.task_manifest, manifest) != before_verify:
+        raise ValueError("task inputs changed while the parent verification pass was running")
     fingerprint = str(manifest["task_fingerprint_sha256"])
     out_dir = a.out_dir.resolve()
     cache = out_dir / "cache"
     cache.mkdir(parents=True, exist_ok=True)
     session = cache / "verified-inputs-session.json"
     token = create_verified_input_session(manifest_path=a.task_manifest, manifest=manifest, repository_root=task_contract.manifest_root(a.task_manifest), session_path=session)
+    if manifest_stat_snapshot(a.task_manifest, manifest) != before_verify:
+        raise ValueError("task inputs changed while the verified-input session was created")
     install_verified_input_session(session, token)
     runner = VerifiedStageRunner(repository_root=ROOT, task_fingerprint_sha256=fingerprint, git_commit=a.git_commit, workers=a.workers, resume=not a.no_resume)
 
@@ -192,21 +234,24 @@ def main() -> int:
     p = parser()
     a = p.parse_args()
     try:
-        runner = prestage(a)
-    except (OSError, KeyError, ValueError, RuntimeError, json.JSONDecodeError) as exc:
-        p.error(str(exc))
-    CORE._run = runner.run
-    CORE.verify_manifest_inputs = verified_manifest_inputs
-    CORE.build_pipeline_context = fast_context
-    original = sys.argv
-    try:
-        sys.argv = legacy_argv(a)
-        result = CORE.main()
+        try:
+            runner = prestage(a)
+        except (OSError, KeyError, ValueError, RuntimeError, json.JSONDecodeError) as exc:
+            p.error(str(exc))
+        CORE._run = runner.run
+        CORE.verify_manifest_inputs = verified_manifest_inputs
+        CORE.build_pipeline_context = fast_context
+        original = sys.argv
+        try:
+            sys.argv = legacy_argv(a)
+            result = CORE.main()
+        finally:
+            sys.argv = original
+        write_summary(a.out_dir, runner)
+        print(json.dumps({"execution_optimization": runner.summary().to_dict()}), file=sys.stderr)
+        return result
     finally:
-        sys.argv = original
-    write_summary(a.out_dir, runner)
-    print(json.dumps({"execution_optimization": runner.summary().to_dict()}), file=sys.stderr)
-    return result
+        clear_verified_input_session()
 
 
 if __name__ == "__main__":
