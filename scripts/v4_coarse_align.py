@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import sys
 from pathlib import Path
 
@@ -22,12 +23,38 @@ from lyric_aligner.pipeline.context import build_pipeline_context
 from task_contract import assert_manifest_paths, load_task_manifest, resolve_manifest_record
 
 
+MIX_DECODE_PADDING_SECONDS = 2.0
+
+
 def _default_interval(bindings, binding, mix_duration: float) -> tuple[float, float]:
     ordered = sorted(bindings, key=lambda item: item.ordinal)
     position = next(index for index, item in enumerate(ordered) if item.occurrence_id == binding.occurrence_id)
     start = float(binding.nominal_start_ms) / 1000.0
     end = float(ordered[position + 1].nominal_start_ms) / 1000.0 if position + 1 < len(ordered) else mix_duration
     return max(0.0, start), min(mix_duration, end)
+
+
+def _load_bounded_mix(
+    path: Path,
+    *,
+    sr: int,
+    mix_start: float,
+    mix_end: float,
+    full_mix_duration: float,
+) -> tuple[object, float]:
+    decode_start = max(0.0, mix_start - MIX_DECODE_PADDING_SECONDS)
+    decode_end = min(full_mix_duration, mix_end + MIX_DECODE_PADDING_SECONDS)
+    audio, _ = librosa.load(
+        path,
+        sr=sr,
+        mono=True,
+        offset=decode_start,
+        duration=max(0.0, decode_end - decode_start),
+    )
+    required_samples = int(math.ceil((mix_end - decode_start) * sr))
+    if len(audio) + 1 < required_samples:
+        raise ValueError("bounded mix decode ended before requested occurrence interval")
+    return audio, decode_start
 
 
 def main() -> int:
@@ -91,14 +118,20 @@ def main() -> int:
             except ValueError as exc:
                 raise ValueError("TrackAsset source audio is outside task source_audio_dir") from exc
 
-        mix_audio, _ = librosa.load(args.mix_audio, sr=sr, mono=True)
-        source_audio, _ = librosa.load(source_path, sr=sr, mono=True)
-        mix_duration = len(mix_audio) / sr
+        mix_duration = float(librosa.get_duration(path=str(args.mix_audio)))
         default_start, default_end = _default_interval(context.bindings, binding, mix_duration)
         mix_start = default_start if args.mix_start is None else args.mix_start
         mix_end = default_end if args.mix_end is None else args.mix_end
         if mix_start < 0 or mix_end > mix_duration or mix_end <= mix_start:
             raise ValueError("invalid occurrence mix interval")
+        mix_audio, mix_audio_start = _load_bounded_mix(
+            args.mix_audio,
+            sr=sr,
+            mix_start=mix_start,
+            mix_end=mix_end,
+            full_mix_duration=mix_duration,
+        )
+        source_audio, _ = librosa.load(source_path, sr=sr, mono=True)
 
         mapping = build_coarse_timewarp(
             mix_audio,
@@ -106,6 +139,8 @@ def main() -> int:
             sr=sr,
             mix_start=mix_start,
             mix_end=mix_end,
+            mix_audio_start=mix_audio_start,
+            full_mix_duration=mix_duration,
             bpm_prior=args.bpm_prior,
             middle_cut=binding.middle_cut,
             feature_hop_length=hop_length,
