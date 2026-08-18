@@ -129,6 +129,58 @@ class V4CoarseMapperTests(unittest.TestCase):
             result["timewarp"]["mapping"]["base_slope"], rate, delta=0.15
         )
 
+    def test_bounded_mix_buffer_matches_full_mix_result(self):
+        source = source_song()
+        segment = source[int(4.0 * SR) : int(18.0 * SR)]
+        rate = 1.20
+        body = librosa.effects.time_stretch(segment, rate=rate)
+        body = body + clicks(len(body))
+        prefix_seconds = 7.0
+        suffix_seconds = 5.0
+        mix = np.concatenate(
+            [
+                np.zeros(int(prefix_seconds * SR), dtype=np.float32),
+                body,
+                np.zeros(int(suffix_seconds * SR), dtype=np.float32),
+            ]
+        )
+        mix_start = prefix_seconds
+        mix_end = prefix_seconds + len(body) / SR
+        kwargs = {
+            "sr": SR,
+            "mix_start": mix_start,
+            "mix_end": mix_end,
+            "feature_hop_length": 512,
+            "window_seconds": 4.0,
+            "step_seconds": 2.0,
+            "candidate_step_seconds": 0.25,
+            "slope_minimum": 0.9,
+            "slope_maximum": 1.4,
+            "slope_step": 0.1,
+            "min_score": 0.55,
+            "min_margin": 0.0,
+        }
+        full = build_coarse_timewarp(mix, source, **kwargs)
+
+        buffer_start = 6.0
+        buffer_end = min(len(mix) / SR, mix_end + 1.0)
+        bounded = mix[int(buffer_start * SR) : int(buffer_end * SR)]
+        cropped = build_coarse_timewarp(
+            bounded,
+            source,
+            mix_audio_start=buffer_start,
+            full_mix_duration=len(mix) / SR,
+            **kwargs,
+        )
+
+        self.assertEqual(cropped["windows"], full["windows"])
+        self.assertEqual(cropped["path"], full["path"])
+        self.assertEqual(cropped["timewarp"], full["timewarp"])
+        self.assertEqual(
+            cropped["feature_scope"]["full_mix_duration"],
+            full["feature_scope"]["full_mix_duration"],
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

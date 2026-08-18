@@ -178,6 +178,8 @@ def build_coarse_timewarp(
     sr: int,
     mix_start: float,
     mix_end: float,
+    mix_audio_start: float = 0.0,
+    full_mix_duration: float | None = None,
     bpm_prior: float | None = None,
     middle_cut: str = "false",
     feature_hop_length: int = 2048,
@@ -198,14 +200,30 @@ def build_coarse_timewarp(
     residual_threshold: float = 0.25,
     complexity_penalty: float = 0.035,
 ) -> dict[str, Any]:
-    mix_duration = len(mix_audio) / sr
-    if mix_start < 0 or mix_end > mix_duration or mix_end <= mix_start:
-        raise ValueError("coarse mapping interval is outside mix audio")
+    if sr <= 0:
+        raise ValueError("sample rate must be positive")
+    buffer_start = float(mix_audio_start)
+    if buffer_start < 0:
+        raise ValueError("mix_audio_start must be non-negative")
+    buffer_duration = len(mix_audio) / sr
+    buffer_end = buffer_start + buffer_duration
+    mix_duration = buffer_end if full_mix_duration is None else float(full_mix_duration)
+    tolerance = max(0.1, 1.0 / sr + 1e-9)
+    if mix_duration <= 0 or mix_duration + tolerance < buffer_end:
+        raise ValueError("full_mix_duration is shorter than supplied mix audio buffer")
+    if (
+        mix_start < buffer_start - tolerance
+        or mix_end > buffer_end + tolerance
+        or mix_start < 0
+        or mix_end > mix_duration + tolerance
+        or mix_end <= mix_start
+    ):
+        raise ValueError("coarse mapping interval is outside supplied mix audio buffer")
 
-    sample_start = max(0, int(np.floor(mix_start * sr)))
-    sample_end = min(len(mix_audio), int(np.ceil(mix_end * sr)))
+    sample_start = max(0, int(np.floor((mix_start - buffer_start) * sr)))
+    sample_end = min(len(mix_audio), int(np.ceil((mix_end - buffer_start) * sr)))
     local_mix_audio = np.asarray(mix_audio[sample_start:sample_end], dtype=np.float32)
-    local_offset = sample_start / sr
+    local_offset = buffer_start + sample_start / sr
     local_duration = len(local_mix_audio) / sr
 
     mix_features = extract_harmonic_features(local_mix_audio, sr=sr, hop_length=feature_hop_length)
@@ -267,7 +285,7 @@ def build_coarse_timewarp(
         "mix_interval": [mix_start, mix_end],
         "feature_scope": {
             "mix_feature_start": local_offset,
-            "mix_feature_end": local_offset + local_duration,
+            "mix_feature_end": min(mix_duration, local_offset + local_duration),
             "full_mix_duration": mix_duration,
         },
         "feature_config": {
