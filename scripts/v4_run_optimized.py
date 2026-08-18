@@ -202,7 +202,14 @@ def prestage(a: argparse.Namespace) -> VerifiedStageRunner:
     if manifest_stat_snapshot(a.task_manifest, manifest) != before_verify:
         raise ValueError("task inputs changed while the verified-input session was created")
     install_verified_input_session(session, token)
-    runner = VerifiedStageRunner(repository_root=ROOT, task_fingerprint_sha256=fingerprint, git_commit=a.git_commit, workers=a.workers, resume=not a.no_resume)
+    runner = VerifiedStageRunner(
+        repository_root=ROOT,
+        task_fingerprint_sha256=fingerprint,
+        git_commit=a.git_commit,
+        workers=a.workers,
+        resume=not a.no_resume,
+        git_identity_verified=bool(a.git_commit),
+    )
 
     mix = CORE._manifest_path(a.task_manifest, manifest, "audio")
     song_list = CORE._manifest_path(a.task_manifest, manifest, "song_list")
