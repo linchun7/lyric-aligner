@@ -17,10 +17,14 @@ lyric_aligner/
   evidence/
     editor.py
     fusion.py            # P4 + P9 multi-family shadow fusion
-  assets/ audio/ contracts/ evaluation/ pipeline/ review/ text/ timeline/ qa/
+  evaluation/
+    family_calibration.py # real-data per-family boundary metrics
+  doctor.py              # read-only resume/readiness diagnostics
+  runtime_snapshot.py    # reproducible runtime identity
+  assets/ audio/ contracts/ pipeline/ review/ text/ timeline/ qa/
 ```
 
-关键 evidence CLI：
+关键 evidence / readiness CLI：
 
 ```text
 v4_editor_evidence.py
@@ -32,6 +36,9 @@ v4_execute_asr_second_pass.py
 v4_execute_forced_alignment.py
 v4_project_forced_alignment.py
 v4_fuse_evidence.py
+v4_doctor.py
+v4_runtime_snapshot.py
+v4_evaluate_evidence_families.py
 ```
 
 ## 2. Authority graph
@@ -253,3 +260,61 @@ automatic timing refinement safety
 ## 9. 本地生产阶段下一步
 
 代码层收口后，Codex 应先用真实数据跑完整 shadow chain，记录每条 line 的 source/editor/asr/forced 边界误差、coverage、CONFLICT、cut-unprojectable 与语言/风险桶，再通过 calibration/blind 选择阈值。数据证明收益前，不得将 P9 输出直接写回 authoritative timeline。
+
+## 10. Production readiness / evaluation architecture
+
+### 10.1 `lyric_aligner.doctor`
+
+Doctor 是 orchestration 之外的只读诊断层，不生成或改写任何 production artifact。它只做三类事：
+
+1. 对显式传入的 task/run/editor/plan/ASR/forced source/forced mix/fusion/runtime snapshot 做最小 stage-contract 检查；
+2. 复用 `evaluation.readiness.inspect_dataset_readiness()` 与 `alignment.backends.inspect_backends()` 给出 dataset/backend readiness；
+3. 根据现有 stage 推荐下一条生产动作，并允许 `--require` 把 readiness 条件变成机器可判定 exit code。
+
+Doctor 故意不把 backend `available/execution_ready` 解释为模型准确率，也不输出 backend `discovery/detail`，因为这些字段可能包含 resolved local path/full command。
+
+### 10.2 `evaluation.family_calibration`
+
+Family evaluator 不重新解析 editor/ASR/P7 forced 的各自原始 schema，而是消费 P9 fusion。原因是 P9 已经完成三件关键归一化：
+
+```text
+all comparable families are in mix time
+canonical occurrence/line/hash identity already bound
+forced cross-cut evidence is explicitly unavailable/unprojectable
+```
+
+Private truth schema 只保存：
+
+```text
+occurrence_id
+canonical_line_index
+canonical_text_sha256
+truth_start_ms
+truth_end_ms
+```
+
+因此不需要复制 raw lyric。每条 truth 必须在 fusion 中找到同 identity 行且 SHA 精确匹配，否则 fail closed。
+
+Family metrics 以 truth line 为 denominator，分别计算 Source-to-Mix/editor/ASR/forced coverage 与 onset/offset/boundary errors；`within_250ms_rate` / `within_500ms_rate` 使用该行 onset/offset 的 max error，避免“一头准一头偏”被平均掩盖。另行输出 fusion `CONFLICT` rate 与 forced `unprojectable` rate。
+
+Dataset manifest 单次只允许 `calibration` 或 `blind_test` 一个 split，并按 language / risk bucket 分组。Formal report 固定 `policy_calibrated=false`、`release_gate_eligible=false`、`automatic_timing_change_allowed=false`，所以 evaluator 只提供 promotion 决策证据，不执行 promotion。
+
+### 10.3 `runtime_snapshot`
+
+Runtime snapshot 的 stable hash 覆盖：Git commit/dirty/branch、Python implementation/version、OS/release/machine、ffmpeg/ffprobe first version line、关键 package versions、model identities、forced command identity、requested device。
+
+隐私规则：
+
+```text
+no hostname / username
+no absolute repo path
+absolute local model path -> basename + SHA only
+external forced command -> executable basename + command SHA + arg count
+no raw command / stdout / local source path
+```
+
+Snapshot 不加载 ML model，因此适合任务起始、候选切换和 blind-test 前快速固化环境 identity。它与现有 artifact backend/model lineage 是互补关系：artifact 证明某一步用的输入/模型身份，runtime snapshot 证明当时整个执行环境候选。
+
+### 10.4 Authority remains unchanged
+
+Readiness tooling 是 additive metadata/evaluation layer，不进入 renderer、不改变 canonical timeline，也不更新 P9 fusion policy。任何 future calibrated boundary refinement/release-gate integration 必须是独立变更，并以真实 calibration + 独立 blind-test 结果为前提。
