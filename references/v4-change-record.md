@@ -206,6 +206,6 @@ scripts/privacy_scan.py
 - backend readiness、P7 executor 与 runtime snapshot 共享同一 `split_external_command()`，Windows 双引号 executable/argument 可在 `shell=False` 下解析成一致 argv；malformed quote fail closed；
 - Windows 仅规范化双引号，不把单引号错误当成 native Windows shell grouping；
 - bootstrap tests 保留 OS 创建进程所需环境，同时移除 `PYTHONPATH/PYTHONHOME` 并设置 `PYTHONNOUSERSITE=1`，继续验证 CLI 不依赖外部 Python path；
-- privacy scanner 恢复严格 `/Users/` / `C:\Users\` / `/home/` 扫描，敏感示例由测试在 runtime 拼接，不引入 allowlist/排除规则。
+- privacy scanner 恢复严格的本地用户目录根路径扫描（覆盖常见 Unix/macOS/Windows 形式），敏感示例由测试在 runtime 拼接，不引入 allowlist/排除规则。
 
 Authority 与 release boundary 完全不变：canonical lyric、Source-to-Mix、P7/P8/P9 shadow semantics、threshold、release gate、automatic timing behavior 均未调整。该变更属于跨平台执行/验证可靠性修复，不是 accuracy promotion。
