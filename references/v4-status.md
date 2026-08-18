@@ -1,8 +1,8 @@
 # Lyric Aligner v4 当前实施状态
 
 更新日期：2026-08-18  
-当前开发分支：`agent/v4-external-forced-alignment`  
-当前 main：`6eacacc50e885684b0265e3abea729b19b1b7725`  
+当前开发分支：`agent/v4-forced-alignment-mix-projection`  
+当前 main：`9ad6df4f04b396871f757422bcb35f1fa7676678`  
 主线算法版本：`4.0.0a8`  
 Calibration profile：`production-bootstrap-2026-08-17-a7`
 
@@ -27,175 +27,105 @@ P5    bounded ASR second-pass routing
       1abef200c3dbfe711dacf5432bb51ee7ac1bbe5d
 P6    ASR second-pass execution + composite evidence
       6eacacc50e885684b0265e3abea729b19b1b7725
+P7    external source forced alignment
+      9ad6df4f04b396871f757422bcb35f1fa7676678
 ```
 
-P3 validate #493、P4 #517、P5 #530、P6 #545 均在 ASR environment + Python 3.10/3.12/3.14 compile/docs/full unit-E2E/Skill/privacy/environment/diff-check 全绿后合入。
+P3 validate #493、P4 #517、P5 #530、P6 #545、P7 #560 均在 ASR environment + Python 3.10/3.12/3.14 compile/docs/full unit-E2E/Skill/privacy/environment/diff-check 全绿后合入。
 
-## 2. P6 已完成的关键能力
+## 2. P7 baseline：External Source Forced Alignment
 
-P6 已经真正把 P5 selected local jobs 接回 P3 bounded faster-whisper executor，并输出 P4 可直接消费的 composite ASR evidence：
-
-```text
-stage = asr_evidence_local
-role = asr_evidence
-mode = composite_second_pass_evidence
-```
-
-硬安全规则：
-
-- P5 `selected_job_ids=[]` -> second-pass 0 execution，模型不加载；
-- second-pass 只能执行 original P3 exact local window；
-- selected job identity/window/canonical SHA 被改写即失败；
-- first/second model identity 必须不同且与 P5 记录一致；
-- 未升级 jobs 保留 first-pass，升级 jobs 被 second-pass result 替换；
-- composite 默认会剥离 retained first-pass 的 raw observed/segment/word text。
-
-P6 validate #545 已真实覆盖 fake-model selected execution、zero-selection/no-model-load、CLI E2E、lineage/privacy；公共 Actions **没有下载/运行真实 accuracy Whisper model**。
-
-## 3. 当前 P7：External Source Forced Alignment
-
-P7 不把 ASR 冒充 forced alignment，也不假设 WhisperX/SOFA/MFA 已安装。它建立一个 backend-neutral、真实 subprocess 可执行的 JSON 协议。
-
-新增：
-
-```text
-lyric_aligner/alignment/forced_executor.py
-scripts/v4_execute_forced_alignment.py
-references/forced-alignment-protocol.md
-```
-
-并更新：
-
-```text
-lyric_aligner/alignment/backends.py
-lyric_aligner/alignment/__init__.py
-```
-
-Artifact：
+P7 建立 backend-neutral external subprocess JSON 协议，不把 ASR 冒充 forced alignment，也不假设 WhisperX/SOFA/MFA 已安装。正式 evidence：
 
 ```text
 stage = source_forced_alignment_evidence
 role = forced_alignment_evidence
 ```
 
-Forced alignment 仍是：
+Source/canonical identity、live source SHA、backend/model revision、original source window、line/spans bounds 全部 fail closed；canonical raw text、local source path、full command、stdout/stderr 不进入正式 evidence/artifact。
+
+Forced alignment 的 authority 仍固定为 auxiliary source acoustic evidence；canonical lyric 和 Source-to-Mix authority 不变。
+
+## 3. 当前 P8：Forced Alignment Source-to-Mix Projection
+
+P8 解决 P7 source-ms 不能直接与 editor/ASR mix-ms 比较的问题。
+
+新增：
 
 ```text
-canonical_text_authority = canonical_lyrics_only
-timing_authority = auxiliary_source_forced_alignment_evidence
+lyric_aligner/alignment/forced_projection.py
+scripts/v4_project_forced_alignment.py
+scripts/test_v4_forced_mix_projection.py
+scripts/test_v4_forced_mix_projection_end_to_end.py
 ```
 
-不直接拥有 final timing。
+并更新 `lyric_aligner/alignment/__init__.py`。
 
-## 4. P7 source / canonical identity
-
-P7 同时验证：
+输出：
 
 ```text
-task fingerprint + live input hashes
+stage = forced_alignment_mix_projection
+role = forced_alignment_mix_evidence
+mode = forced_alignment_mix_projection
+```
+
+## 4. P8 projection semantics
+
+- `AFFINE` / `PIECEWISE_RATE`：复用 existing `mix_time_for_source()` analytical inverse；
+- `CUT_AWARE`：line 两端只有同在一个 retained source segment 才投影；
+- confirmed gap boundary 或 cross-cut line -> `unprojectable`，绝不 bridge；
+- character spans 独立投影，可保留 cut 两侧合法局部证据；
+- 只解析 forced evidence 实际引用的 occurrences，`mapping_scope=forced_evidence_occurrences_only`；
+- unrelated blocked occurrence 不阻塞局部 projection；
+- relevant mapping missing/blocked/unbound/provenance tamper 仍 fail closed。
+
+## 5. P8 lineage / privacy
+
+P8 artifact upstream 绑定：
+
+```text
 source run artifact
-alignment plan artifact
-asset_resolution artifact
-canonical timeline artifacts
-track/occurrence identity
-source audio live SHA
-canonical line text SHA
+P7 forced evidence artifact
+exact coarse/fine/cut mapping artifacts actually used
 ```
 
-`asset_resolution` artifact 必须是当前 source run upstream。源音频不重新猜文件，直接使用已 fail-closed 的 `track_assets.json` binding。
+正式 projected evidence 不复制 canonical raw lyric；保留 job/occurrence/track/line identity、source boundaries、projection status/reason、可用 mix boundaries、backend/model lineage。
 
-## 5. External protocol
+## 6. P8 tests
 
-配置必须显式提供：
+已覆盖：
 
-```text
-external command
-backend_id / backend_version
-model_id / model_revision
-```
+- AFFINE；
+- PIECEWISE_RATE；
+- CUT_AWARE same-segment；
+- confirmed gap/cross-cut unprojectable；
+- independent span projection；
+- relevant mapping failure；
+- unrelated blocked occurrence isolation；
+- mapping artifact provenance tamper；
+- CLI artifact E2E/privacy。
 
-Command 可带参数，但不用 shell；只解析 executable token 并用 `shutil.which()` 验证。
+前一版 latest-head `94aa6df29f8505f703c37c5ce59c292f149806e3` 的 validate #577 失败原因仅为 documentation contract：生产/CLI/architecture 变化尚未同步 owning docs；compile 在失败前已通过。当前分支正在补齐这些文档后重新跑 latest-head CI。
 
-每 job 临时调用：
+## 7. Actions 能 / 不能证明
 
-```text
-<command> --request <temp-request.json> --response <temp-response.json>
-```
+Actions 能验证 P8 deterministic projection、cut safety、artifact lineage、privacy 与 package/CLI E2E。
 
-Request 中可以暂时包含 local source path + canonical text，供本地 forced aligner 工作；TemporaryDirectory 结束后清理。
+Actions 仍不能证明：
 
-Response 必须回显 exact protocol/job/backend/model identity，并返回绝对 source-ms 的 line boundary 与可选 character spans。
+- 任一真实 WhisperX/SOFA/MFA production backend 已安装/已跑通；
+- 某 checkpoint/G2P 对真实歌声准确；
+- forced-alignment family 与 editor/ASR 的权重/阈值已通过真实 blind calibration；
+- forced evidence 可以直接改 final timing。
 
-## 6. P7 evidence privacy
+## 8. P8 之后的收口路线
 
-正式 evidence 不保存：
+1. P8 latest-head CI 全绿并合入；
+2. 将 `forced_alignment_mix_evidence` 作为独立 acoustic family 接入 fusion，保持 shadow/fail-closed；
+3. 增加 family disagreement / cut-unprojectable / missing-family diagnostics 与 release-gate 输入；
+4. 为本地真实生产补齐可执行的 runtime/preflight 与 production recipe；
+5. 真正使用 WhisperX/SOFA/MFA 或其他 adapter 时，锁定 backend/model/language/runtime identity；
+6. 使用 private real-song calibration/blind 数据完成误差评估和阈值选择；
+7. 在真实数据证明收益前，不把 auxiliary evidence 自动升级为 final timing authority。
 
-```text
-canonical raw text
-source local path
-external command full path/string
-backend stdout/stderr
-```
-
-只保存：
-
-```text
-canonical text SHA
-canonical fragment SHA
-char offsets
-source boundaries/confidence
-source audio SHA
-backend/model identity
-```
-
-Artifact 只保存 `command_sha256` + executable basename，不保存完整 command。
-
-## 7. P7 tests 已写入
-
-Package tests：
-
-- fake runner exact source window；
-- raw canonical text只存在临时 request，不进入 evidence；
-- explicit empty selection 不解析/执行不存在的 command；
-- source audio SHA drift fail；
-- canonical SHA mismatch fail；
-- response model_revision mismatch fail；
-- out-of-window span fail；
-- backend registry 正确处理 command + arguments。
-
-CLI E2E：
-
-- 使用临时 Python fake aligner **真实 subprocess**读 request/写 response；
-- 完整 task/run/plan/asset/timeline artifact lineage；
-- source boundary/span output；
-- command 未写入 artifact；
-- configured executable 不存在且有工作时必须非零失败。
-
-P7 尚未通过本分支 latest-head GitHub Actions，因此当前不能宣称已可合并。
-
-## 8. GitHub Actions 明确能 / 不能做
-
-Actions 能验证 P7 的 external protocol/subprocess/lineage/privacy/fail-closed 行为。
-
-Actions 当前**不能**证明：
-
-- WhisperX/SOFA/MFA production backend 已安装或已跑通；
-- 某 forced-aligner/checkpoint/G2P 对真实歌声的准确率；
-- forced alignment 可以自动改 final timing；
-- P4/P7 family 的发布阈值已校准。
-
-这些需要实际 backend/model/language resources + private real-song calibration/blind-test。
-
-## 9. 仍未完成
-
-优先剩余：
-
-1. P7 latest-head CI 全绿并合入；
-2. 将 forced-alignment source boundaries 通过当前 Source-to-Mix mapping 投影到 mix time，并作为 P4 独立 evidence family；
-3. 选择/配置一个真实 forced-aligner backend 后做 private runtime 验证；
-4. private calibration/blind 数据真实填充与误差分析；
-5. local vocal separation / singing refinement（仅高风险窗口）；
-6. calibrated evidence-family boundary application/release gate；
-7. same-region cut+overlap joint acoustic model。
-
-> **当前正确表述：P0/P1/P1.1/P2/P3/P4/P5/P6 已进入 main；P7 已实现 backend-neutral external forced-alignment 执行协议与生产 CLI，等待 latest-head CI 验收。真实 WhisperX/SOFA/MFA 仍未在 Actions 中运行。**
+> **当前正确表述：P0/P1/P1.1/P2/P3/P4/P5/P6/P7 已进入 main；P8 的 source-to-mix forced projection 已实现，正在补齐 documentation contract 并等待 latest-head CI。真实 production forced-aligner 准确率仍必须由本地真实数据验证。**
