@@ -325,3 +325,17 @@ Snapshot 不加载 ML model，因此适合任务起始、候选切换和 blind-t
 ### 10.4 Authority remains unchanged
 
 Readiness tooling 是 additive metadata/evaluation layer，不进入 renderer、不改变 canonical timeline，也不更新 P9 fusion policy。任何 future calibrated boundary refinement/release-gate integration 必须是独立变更，并以真实 calibration + 独立 blind-test 结果为前提。
+
+## 11. Production execution optimizer
+
+生产入口 `scripts/v4_run.py` 现在只承担兼容路由；权威 issue/timeline/readiness/materialization core 保存在 `scripts/v4_run_legacy.py`，执行优化层位于 `scripts/v4_run_optimized.py`。这样 performance work 不复制或重写 Source-to-Mix 判定逻辑。
+
+执行优化遵循三条边界：
+
+1. **Safe artifact resume**：仅 coarse / fine / transition 三个重计算成本高、已有 formal artifact 的 stage 可跨 run 复用；要求 task fingerprint、algorithm version、stage、producer git commit、exact upstream artifact ids、output SHA/size 和 stage-specific occurrence/window identity 全部一致。任何 mismatch 都执行原 stage。Asset resolver 跨 run 始终 fresh；timeline/final run lineage 每次确定性重建。
+2. **Same-invocation verified-input session**：父 `v4_run` 先清除继承 token 并完整验证 schema-2.0 task manifest；成功后才创建随机 token session。内部 child bootstrap 只对该 fresh session 已证明且 stat 未变化的 task 文件跳过第二次 SHA 内容读取；缺 token、token 错、manifest 变化、mtime/size/目录文件集变化都会退回原 SHA 校验。独立 CLI 默认行为不变。
+3. **Bounded workers**：只并行互不依赖的 subprocess。顺序仍为 resolver → primary coarse → required fine → transition boundary coarse → transition probe → authoritative core。默认 `--workers 2`，允许 1-4；`--workers 1` 是串行回退，超过 4 直接拒绝。
+
+`output/.../v4/cache/execution_summary.json` 只记录 resume/memo/executed/worker 计数，明确属于 disposable execution state，不进入 formal artifact lineage，因此 cache 命中与线程调度不会改变 semantic artifact identity。
+
+详细契约见 `references/v4-execution-optimization.md`。
