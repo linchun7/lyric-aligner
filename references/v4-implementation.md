@@ -1,18 +1,19 @@
 # Lyric Aligner v4 实施记录与关键代码说明
 
-> 当前主线算法仍为 `4.0.0a8`。P2-P7 都是 evidence/diagnostic 层；canonical lyric 仍是 final text/order truth，Source-to-Mix 仍是 primary timing truth。
+> 当前主线算法仍为 `4.0.0a8`。P2-P8 都属于 evidence/diagnostic 层；canonical lyric 仍是 final text/order truth，Source-to-Mix 仍是 primary timing truth。
 
 ## 1. 当前分层
 
 ```text
 lyric_aligner/
   alignment/
-    backends.py        # backend discovery/readiness
-    planner.py         # P3 bounded local jobs
-    asr_executor.py    # P3 bounded faster-whisper
-    asr_routing.py     # P5 weak -> second-pass plan
-    asr_second_pass.py # P6 second-pass composite
-    forced_executor.py # P7 external source forced alignment
+    backends.py          # backend discovery/readiness
+    planner.py           # P3 bounded local jobs
+    asr_executor.py      # P3 bounded faster-whisper
+    asr_routing.py       # P5 weak -> second-pass plan
+    asr_second_pass.py   # P6 second-pass composite
+    forced_executor.py   # P7 external source forced alignment
+    forced_projection.py # P8 source forced evidence -> mix time
   evidence/
     editor.py
     fusion.py
@@ -29,6 +30,7 @@ v4_execute_asr_evidence.py
 v4_plan_asr_second_pass.py
 v4_execute_asr_second_pass.py
 v4_execute_forced_alignment.py
+v4_project_forced_alignment.py
 v4_fuse_evidence.py
 ```
 
@@ -38,10 +40,11 @@ v4_fuse_evidence.py
 Canonical lyric -> final text/order truth
 Source-to-Mix  -> primary timing truth
 TrackAsset     -> source/canonical identity truth
-Editor SRT     -> auxiliary shadow
-ASR            -> auxiliary mix acoustic evidence
-Forced align   -> auxiliary source acoustic evidence
-Fusion         -> uncalibrated diagnostic
+Editor SRT     -> auxiliary shadow evidence in mix time
+ASR            -> auxiliary acoustic evidence in mix time
+Forced align P7-> auxiliary acoustic evidence in source time
+Forced P8      -> same forced evidence projected to mix time
+Fusion         -> diagnostic/shadow until calibrated
 ```
 
 禁止：
@@ -49,217 +52,167 @@ Fusion         -> uncalibrated diagnostic
 ```text
 ASR text -> final canonical lyric
 forced-aligner output -> final canonical text
-source forced ms -> directly compare with mix-ms evidence
-missing backend -> fake result
+P7 source forced ms -> directly compare with mix-ms evidence
+cross-cut forced line -> fake bridged mix interval
+missing mapping/backend -> fake result
 fake protocol E2E -> claim real ML model accuracy
 ```
 
-## 3. P6 baseline
+## 3. P7 baseline
 
-P6 已把 P5 selected local ASR jobs 安全执行并与 first-pass 合成完整 `asr_evidence_local`：
+P7 external protocol 已合入 main `9ad6df4f04b396871f757422bcb35f1fa7676678`；head `2ee9e1d2ced75c3d24b5a00353e9f275fc9dc9f9` validate #560 全绿。
 
-- empty selection = zero execution/no model load；
-- exact original P3 windows；
-- first/second model lineage；
-- retained private ASR text默认剥离；
-- P4 可直接消费 composite。
-
-P6 validate #545 全绿后合入 main `6eacacc50e885684b0265e3abea729b19b1b7725`。
-
-## 4. P7 `alignment/forced_executor.py`
-
-### 4.1 Backend-neutral external protocol
-
-Config：
-
-```python
-ExternalForcedAlignmentConfig(
-    command,
-    backend_id,
-    backend_version,
-    model_id,
-    model_revision,
-    timeout_seconds=120.0,
-)
-```
-
-`command_argv()` 使用 `shlex`，`resolve_command()` 只用首 token 做 `shutil.which()`；整个执行不通过 shell。
-
-### 4.2 Source jobs
-
-只消费 planner 中请求：
-
-```text
-source_forced_alignment
-```
-
-且必须存在：
-
-```text
-job_id
-canonical_line_index
-canonical_text_sha256
-valid source_window_ms
-```
-
-Package API 支持显式 `selected_job_ids=[]`：这代表 0 work，command 不解析、不启动。
-
-### 4.3 Resolved asset binding
-
-每 job 用 `ResolvedAssetBinding` 查：
-
-```text
-occurrence_id -> track_id
-source_audio_path
-source_audio_sha256
-```
-
-执行前 live hash 再计算；source file drift 直接失败。
-
-Canonical text 不从 filename/LRC 再猜，而由 CLI 从 exact current canonical timeline 建立 `(occurrence_id, line_index)` lookup，再核 planner SHA。
-
-## 5. Request/response protocol
-
-### Request
-
-临时 JSON：
-
-```text
-protocol_version=1.0
-job/backend/model identity
-language_profile
-source_audio_path + sha
-source_window_ms
-canonical_text + sha
-response timebase/offset contract
-```
-
-Canonical raw text/local path 只存在 TemporaryDirectory request。
-
-### Response
-
-必须回显：
-
-```text
-protocol_version
-job_id
-backend_id/backend_version
-model_id/model_revision
-status=aligned
-exact source_window_ms
-```
-
-并提供 line source boundary；可选 character spans。
-
-### Validation
-
-- line/spans 必须在 original source window 内；
-- char offsets 必须落在 canonical Python Unicode range；
-- char spans 单调、非重叠；
-- source time spans 单调、非重叠；
-- confidence 若存在必须 `[0,1]`。
-
-## 6. Formal evidence privacy
-
-Normalized result 不保存 canonical fragment正文，而保存：
-
-```text
-canonical_text_sha256
-canonical_fragment_sha256
-char_start/char_end
-source_start/end
-confidence
-source_audio_sha256
-backend/model identity
-```
-
-External stdout/stderr 不写 artifact。
-
-## 7. `v4_execute_forced_alignment.py`
-
-输入：
-
-```text
-task manifest
-alignment plan + artifact
-track_assets + asset_resolution artifact
-source run + artifact
-external backend/model identity
-```
-
-CLI 强制：
-
-- plan belongs exact source run；
-- plan artifact upstream source run；
-- asset_resolution artifact output valid；
-- asset artifact 是 source run upstream；
-- `bindings_from_payload(..., verify_files=True)`；
-- canonical timeline artifacts 是 source run upstream；
-- planner canonical SHA 与 current timeline 文本一致。
-
-## 8. P7 artifact
+P7 输出：
 
 ```text
 stage = source_forced_alignment_evidence
 role  = forced_alignment_evidence
 ```
 
-Upstream：
+它绑定 exact source asset/canonical line/backend/model/source window，并保持 raw lyric/path/command/stdout/stderr privacy。
+
+## 4. P8 `alignment/forced_projection.py`
+
+### 4.1 输入 contract
+
+P8 只接受 P7 formal evidence：
 
 ```text
-source run
-alignment plan
-asset_resolution
-canonical timelines
+backend = external_forced_aligner
+source_run_artifact_id = exact current source run artifact
+jobs[] with occurrence/track/line/source boundaries
 ```
 
-Config 保存 backend/model/protocol/timeout、`command_sha256`、executable basename；不保存完整 command。
+job identity 必须唯一且 occurrence mapping 必须可解析。projection 不重新识别歌词或音频，只做 exact timebase conversion。
 
-## 9. Backend registry fix
+### 4.2 Continuous mapping
 
-旧 external backend check 对整条 command 做 `shutil.which(command)`，带参数时会误报 unavailable。
+`AFFINE` / `PIECEWISE_RATE` 不复制 mapping math，而调用 timeline projector 的：
 
-P7 改为与 executor 同样的 shlex 解析，只检查 executable token；args 保留给 runtime。
+```python
+mix_time_for_source(...)
+```
 
-## 10. Tests
+因此 Source-to-Mix 的 analytical inverse 仍只有一个实现来源。
 
-Package fake-runner：
+### 4.3 CUT_AWARE
 
-- exact source request；
-- canonical text只出现在 temp request；
-- empty selection no command；
-- source SHA drift；
-- canonical SHA mismatch；
-- model revision mismatch；
-- span bounds；
-- command-with-args discovery。
+P8 从 confirmed cut materialization 读取 retained source segments。
 
-CLI E2E：
-
-- 临时 Python fake aligner 通过**真实 subprocess**执行；
-- 完整 task/run/plan/asset/timeline lineage；
-- formal output 无 canonical raw text；
-- command 不进入 artifact；
-- nonexistent executable with work -> nonzero。
-
-## 11. 真实 backend 边界
-
-P7 实现的是 production **adapter/protocol layer**，不是具体 ML backend 安装声明。
-
-WhisperX/SOFA/MFA 任一真正上线仍需单独锁：
+line interval：
 
 ```text
-package/command version
-model/checkpoint ID + revision/hash
-language/G2P resources
-runtime/device
-license assumptions
-source/cache identity
-private real-song calibration/blind
+start/end same retained source segment -> projected
+boundary in confirmed gap             -> unprojectable
+start/end on different segments       -> unprojectable
 ```
 
-公共 Actions 中的 fake aligner 只证明 protocol，不证明歌声准确率。
+禁止跨 confirmed cut 合成假连续 line interval。
 
-## 12. 下一步
+character spans 独立调用 interval projection；因此一个 line 即使整体 cross-cut，cut 两侧合法 spans 仍可以分别产生局部 mix evidence。
 
-Forced alignment 当前是 source-time evidence。P8 必须通过当前 occurrence 的 Source-to-Mix mapping 把 line/span source boundaries 投影到 mix time，才能作为 P4 独立 family 与 editor/ASR 比较；禁止直接比较 source ms 与 mix ms。
+### 4.4 Projection result
+
+每个 interval 输出明确状态：
+
+```text
+status = projected | unprojectable
+reason = <deterministic reason when unprojectable>
+source_start_ms/source_end_ms
+mix_start_ms/mix_end_ms when projected
+```
+
+所有输出 ms 规范化为整数边界。
+
+## 5. Mapping resolution scope
+
+CLI 只解析 forced evidence 实际引用的 occurrences：
+
+```text
+mapping_scope = forced_evidence_occurrences_only
+```
+
+这是重要的 fail-closed 范围收窄：
+
+- unrelated occurrence 即使 blocked，也不应阻断当前 job；
+- relevant occurrence mapping 缺失/blocked/unbound 必须失败；
+- relevant coarse/fine/cut payload 与 artifact/output hash/provenance 不一致必须失败。
+
+这避免把全局 run 中无关坏轨道误当作当前 forced projection 的依赖，同时不降低真正依赖的 lineage 要求。
+
+## 6. P8 CLI `v4_project_forced_alignment.py`
+
+输入：
+
+```text
+task manifest
+P7 forced evidence + artifact
+source run + artifact
+mapping payload/artifacts referenced by that source run
+```
+
+CLI 验证 exact task fingerprint、forced/source artifact identity、upstream relation，以及每个 referenced occurrence 的 exact mapping artifact。
+
+输出：
+
+```text
+stage = forced_alignment_mix_projection
+role  = forced_alignment_mix_evidence
+mode  = forced_alignment_mix_projection
+```
+
+Artifact upstream 至少包括：
+
+```text
+source run artifact
+P7 forced evidence artifact
+exact coarse/fine/cut mapping artifacts actually used
+```
+
+normalized config 记录 projection schema/mapping scope，不依赖本地绝对路径。
+
+## 7. P8 privacy
+
+P8 不需要 canonical raw text，因此 projected payload 继续只保留 identity/hash/timing/confidence/backend-model lineage。E2E 测试显式验证 private lyric 不进入 projected artifact/evidence。
+
+## 8. P8 tests
+
+Package tests覆盖：
+
+- AFFINE；
+- PIECEWISE_RATE；
+- CUT_AWARE same-segment；
+- gap boundary / cross-cut unprojectable；
+- independent spans；
+- missing/blocked relevant mapping；
+- invalid/foreign mapping lineage。
+
+CLI E2E 覆盖：
+
+- synthetic authoritative source run + artifact；
+- exact forced artifact upstream；
+- continuous projection 输出；
+- unrelated blocked occurrence isolation；
+- mapping artifact tamper fail；
+- artifact upstream completeness；
+- raw lyric privacy。
+
+## 9. CI 边界
+
+前一版 P8 head `94aa6df29f8505f703c37c5ce59c292f149806e3` validate #577 在 Documentation Contract 步骤失败；compile 已通过，unit/E2E 因 docs contract fail 被后续跳过。当前 PR 补齐 change-record/status/runtime/implementation 后必须重新以 latest head 跑完整 Python 3.10/3.12/3.14 validation。
+
+公共 Actions 只能证明 protocol/projection/lineage/privacy，不证明真实 forced-aligner 在歌声上的 accuracy。
+
+## 10. P8 之后
+
+下一阶段只能消费 `forced_alignment_mix_evidence`，将它作为与 editor/ASR 分离的 acoustic family 接入 fusion。family agreement/disagreement、missing/unprojectable 与 release-gate 仍必须保持 shadow/fail-closed，直到 private real-song calibration/blind 给出可审计阈值。
+
+真实生产还需要：
+
+```text
+real forced-aligner adapter/runtime preflight
+package/model/checkpoint/language resource identity
+private real-song calibration + blind metrics
+local high-risk vocal refinement（如数据证明需要）
+calibrated boundary application/release gate
+```
