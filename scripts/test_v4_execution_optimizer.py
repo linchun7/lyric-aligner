@@ -167,7 +167,37 @@ class SafeResumeTests(unittest.TestCase):
         ]
         return output, command
 
+    def _runner(self, directory: Path, git_commit: str = "same-commit") -> SafeStageRunner:
+        return SafeStageRunner(
+            repository_root=directory,
+            task_fingerprint_sha256=FINGERPRINT,
+            git_commit=git_commit,
+            workers=2,
+            resume=True,
+            git_identity_verified=True,
+        )
+
     def test_exact_artifact_is_reused_without_subprocess_execution(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            _, command = self._coarse_fixture(directory)
+            runner = self._runner(directory)
+            runner._write_resume_sidecar(command)
+            runner.run(command)
+            summary = runner.summary()
+            self.assertEqual(summary.resume_hits, 1)
+            self.assertEqual(summary.executed, 0)
+
+    def test_missing_runtime_sidecar_fails_reuse_closed(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            _, command = self._coarse_fixture(directory)
+            runner = self._runner(directory)
+            reusable, reason = runner._check_reusable(command)
+            self.assertFalse(reusable)
+            self.assertEqual(reason, "runtime_resume_identity_mismatch")
+
+    def test_unverified_git_identity_disables_resume(self):
         with tempfile.TemporaryDirectory() as temporary:
             directory = Path(temporary)
             _, command = self._coarse_fixture(directory)
@@ -179,38 +209,20 @@ class SafeResumeTests(unittest.TestCase):
                 resume=True,
             )
             runner._write_resume_sidecar(command)
-            runner.run(command)
-            summary = runner.summary()
-            self.assertEqual(summary.resume_hits, 1)
-            self.assertEqual(summary.executed, 0)
-
-    def test_missing_runtime_sidecar_fails_reuse_closed(self):
-        with tempfile.TemporaryDirectory() as temporary:
-            directory = Path(temporary)
-            _, command = self._coarse_fixture(directory)
-            runner = SafeStageRunner(
-                repository_root=directory,
-                task_fingerprint_sha256=FINGERPRINT,
-                git_commit="same-commit",
-                workers=2,
-                resume=True,
-            )
             reusable, reason = runner._check_reusable(command)
+            self.assertFalse(runner.resume_enabled)
             self.assertFalse(reusable)
-            self.assertEqual(reason, "runtime_resume_identity_mismatch")
+            self.assertEqual(reason, "resume_disabled")
+            self.assertFalse(
+                Path(str(command[-1]) + ".resume.json").exists()
+            )
 
     def test_tampered_output_fails_reuse_closed(self):
         with tempfile.TemporaryDirectory() as temporary:
             directory = Path(temporary)
             output, command = self._coarse_fixture(directory)
             output.write_text("{}\n", encoding="utf-8")
-            runner = SafeStageRunner(
-                repository_root=directory,
-                task_fingerprint_sha256=FINGERPRINT,
-                git_commit="same-commit",
-                workers=2,
-                resume=True,
-            )
+            runner = self._runner(directory)
             reusable, reason = runner._check_reusable(command)
             self.assertFalse(reusable)
             self.assertIn(reason, {"output_task_fingerprint_mismatch", "output_digest_mismatch"})
@@ -219,13 +231,7 @@ class SafeResumeTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             directory = Path(temporary)
             _, command = self._coarse_fixture(directory)
-            runner = SafeStageRunner(
-                repository_root=directory,
-                task_fingerprint_sha256=FINGERPRINT,
-                git_commit="new-commit",
-                workers=2,
-                resume=True,
-            )
+            runner = self._runner(directory, git_commit="new-commit")
             reusable, reason = runner._check_reusable(command)
             self.assertFalse(reusable)
             self.assertEqual(reason, "producer_git_commit_mismatch")
