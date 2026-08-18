@@ -77,11 +77,34 @@ class V4TextRepairTests(unittest.TestCase):
         self.assertEqual(report["status"], "review_required")
         self.assertEqual(report["review_count"], 1)
 
+    def test_near_tie_similar_lyric_lines_fail_closed(self):
+        source = (
+            "1\n00:00:01,000 --> 00:00:03,000\n"
+            "今夜我真的很想你\n"
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            lrc = Path(directory) / "song.lrc"
+            lrc.write_text(
+                "[00:01.00]今夜我真的很爱你\n"
+                "[00:02.00]今夜我真的很念你\n",
+                encoding="utf-8",
+            )
+            canonical = parse_canonical_files([lrc])
+            output, report = repair_srt_text(source, canonical)
+
+        self.assertEqual(output, source)
+        self.assertEqual(report["replacement_count"], 0)
+        self.assertEqual(report["review_count"], 1)
+        self.assertEqual(
+            report["decisions"][0]["reason"],
+            "ambiguous_nearby_canonical_match",
+        )
+
     def test_metadata_and_enhanced_tags_do_not_become_text(self):
         with tempfile.TemporaryDirectory() as directory:
             lrc = Path(directory) / "song.lrc"
             lrc.write_text(
-                "[ar:歌手]\n[ti:歌名]\n作词: 某某\n"
+                "[ar:歌手]\n[ti:歌名]\n作词: 某某\n词：某某\n"
                 "[00:01.00]<00:01.00>你<00:01.50>好\n",
                 encoding="utf-8",
             )
@@ -102,6 +125,21 @@ class V4TextRepairTests(unittest.TestCase):
         self.assertEqual(output, source)
         self.assertEqual(report["replacement_count"], 0)
         self.assertEqual(report["unchanged_count"], 1)
+
+    def test_replacement_preserves_terminal_newline(self):
+        source = "1\n00:00:01,000 --> 00:00:02,000\n忘不掉的妳\n"
+        with tempfile.TemporaryDirectory() as directory:
+            lyric = Path(directory) / "song.lrc"
+            lyric.write_text("[00:01.00]忘不掉的你\n", encoding="utf-8")
+            canonical = parse_canonical_files([lyric])
+            output, report = repair_srt_text(source, canonical)
+
+        self.assertTrue(output.endswith("\n"))
+        self.assertEqual(
+            output,
+            "1\n00:00:01,000 --> 00:00:02,000\n忘不掉的你\n",
+        )
+        self.assertEqual(report["replacement_count"], 1)
 
     def test_inserted_canonical_line_does_not_move_srt_timeline(self):
         source = (
