@@ -121,6 +121,78 @@ class V4FineAlignmentTests(unittest.TestCase):
             scope["full_mix_duration"],
         )
 
+    def test_bounded_mix_buffer_matches_full_mix_refinement(self):
+        source = song()
+        source_start = 3.35
+        source_end = 17.35
+        segment = source[int(source_start * SR) : int(source_end * SR)]
+        rate = 1.20
+        body = librosa.effects.time_stretch(segment, rate=rate)
+        body = body + click(len(body))
+        prefix_seconds = 4.0
+        suffix_seconds = 3.0
+        mix = np.concatenate(
+            [
+                np.zeros(int(prefix_seconds * SR), dtype=np.float32),
+                body,
+                np.zeros(int(suffix_seconds * SR), dtype=np.float32),
+            ]
+        )
+        mix_start = prefix_seconds
+        mix_end = prefix_seconds + len(body) / SR
+        coarse = build_coarse_timewarp(
+            mix,
+            source,
+            sr=SR,
+            mix_start=mix_start,
+            mix_end=mix_end,
+            bpm_prior=1.05,
+            feature_hop_length=512,
+            window_seconds=4,
+            step_seconds=2,
+            candidate_step_seconds=0.5,
+            slope_minimum=1.0,
+            slope_maximum=1.4,
+            slope_step=0.1,
+            min_score=0.50,
+            min_margin=0.0,
+        )
+        wrapped = {"result": coarse}
+        kwargs = {
+            "sr": SR,
+            "force": True,
+            "hop_length": 256,
+            "source_radius_seconds": 1.0,
+            "slope_radius": 0.08,
+            "slope_step": 0.02,
+            "candidate_step_seconds": 0.05,
+            "min_score": 0.50,
+            "min_margin": 0.0,
+            "bpm_prior": 1.05,
+        }
+        full = refine_coarse_mapping(mix, source, wrapped, **kwargs)
+
+        window_start = min(float(row["mix_start"]) for row in coarse["windows"])
+        window_end = max(float(row["mix_end"]) for row in coarse["windows"])
+        buffer_start = max(0.0, window_start - 1.0)
+        buffer_end = min(len(mix) / SR, window_end + 1.0)
+        bounded = mix[int(buffer_start * SR) : int(buffer_end * SR)]
+        cropped = refine_coarse_mapping(
+            bounded,
+            source,
+            wrapped,
+            mix_audio_start=buffer_start,
+            full_mix_duration=len(mix) / SR,
+            **kwargs,
+        )
+
+        self.assertEqual(cropped["path"], full["path"])
+        self.assertEqual(cropped["timewarp"], full["timewarp"])
+        self.assertEqual(
+            cropped["feature_scope"]["full_mix_duration"],
+            full["feature_scope"]["full_mix_duration"],
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
