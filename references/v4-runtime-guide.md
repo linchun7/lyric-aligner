@@ -4,7 +4,7 @@
 主线算法版本：`4.0.0a8`  
 Calibration profile：`production-bootstrap-2026-08-17-a7`
 
-> main 已完成 production reconstruction、P1/P1.1、P2 editor shadow、P3 local acoustic evidence、P4 shadow fusion、P5 second-pass routing、P6 second-pass execution/composite。P7 新增 external source forced-alignment protocol，仍不改变 canonical lyric 或 final timeline authority。
+> main 已完成 production reconstruction、P1/P1.1、P2 editor shadow、P3 local acoustic evidence、P4 shadow fusion、P5/P6 ASR second-pass、P7 external source forced alignment。P8 在此基础上把 P7 source-ms evidence 投影到 edited-mix time；canonical lyric 与 final timeline authority 均不改变。
 
 ## 1. 主链 / calibration
 
@@ -39,7 +39,7 @@ python scripts/v4_execute_asr_second_pass.py ...
 python scripts/v4_fuse_evidence.py ...
 ```
 
-P6 composite 继续输出 `asr_evidence_local / asr_evidence`，可直接传给 P4。
+P6 composite 输出 `asr_evidence_local / asr_evidence`，可直接传给 P4 fusion。
 
 ## 3. P7 backend readiness
 
@@ -50,9 +50,7 @@ python scripts/v4_alignment_backends.py `
   --external-forced-aligner-command '"<executable>" <adapter-args>'
 ```
 
-`available/execution_ready=true` 只表示配置的 executable 能找到；**不等于**模型/checkpoint/G2P 已经在歌声上验证。
-
-Command 可包含参数；P7 只用第一个 token 做 executable discovery，运行时保留其余参数，不通过 shell。
+`available/execution_ready=true` 只表示 executable 可解析；**不等于** checkpoint/G2P 对歌声已验证。
 
 ## 4. 执行 external source forced alignment
 
@@ -75,103 +73,93 @@ python scripts/v4_execute_forced_alignment.py `
   --git-commit "<commit>"
 ```
 
-默认执行 plan 中所有请求 `source_forced_alignment` 的 jobs。可重复：
-
-```powershell
---job-id "<job-id>"
-```
-
-只执行指定 jobs。
-
-## 5. External adapter 必须实现的接口
-
-P7 每个 job 调用：
-
-```text
-<configured command> --request <temp-request.json> --response <temp-response.json>
-```
-
-Request 包含 exact：
-
-```text
-protocol_version=1.0
-job/backend/model identity
-language_profile
-source_audio_path + SHA
-source_window_ms
-canonical_text + SHA
-```
-
-Response 必须：
-
-```text
-status=aligned
-回显 protocol/job/backend/model identity
-回显 exact source_window_ms
-line_source_start_ms/line_source_end_ms
-optional line_confidence
-optional spans with char offsets + source ms + confidence
-```
-
-时间必须是 absolute source milliseconds。
-
-完整协议见 `references/forced-alignment-protocol.md`。
-
-## 6. Fail-closed 条件
-
-CLI 会拒绝：
-
-- task input hash 变化；
-- plan/source run 不一致；
-- track-assets artifact 不是 source run upstream；
-- asset/timeline artifact output hash 不一致；
-- source audio 文件缺失或 live SHA 变化；
-- occurrence/track identity 不一致；
-- planner canonical SHA 与 current timeline 不一致；
-- configured executable 不存在且确实有 selected work；
-- backend/model identity response 不匹配；
-- line/span 超出 original source window；
-- span char/time 非单调或重叠；
-- external process timeout/nonzero/no response/invalid JSON。
-
-不要手改 artifact/SHA 绕过。
-
-## 7. P7 输出
+P7 输出 source-time evidence：
 
 ```text
 stage = source_forced_alignment_evidence
 role = forced_alignment_evidence
 ```
 
-正式 evidence 不包含 canonical raw text/local source path/full command/stdout/stderr。
+## 5. P8：投影 forced evidence 到 mix time
 
-每 job 保存：
+P7 运行完成后，使用 exact source run + mapping artifacts 执行：
 
-```text
-occurrence/track/line identity
-canonical_text_sha256
-source_audio_sha256
-source_window_ms
-line source boundary/confidence
-span char offsets + fragment SHA + source boundary/confidence
-backend/model identity
+```powershell
+python scripts/v4_project_forced_alignment.py `
+  --task-manifest "private/<任务>/qa/task_manifest.json" `
+  --forced-evidence "output/<任务>/v4/alignment/forced_evidence.json" `
+  --forced-evidence-artifact "output/<任务>/v4/alignment/forced_evidence.artifact.json" `
+  --run "output/<任务>/v4/<effective-run>.json" `
+  --run-artifact "output/<任务>/v4/<effective-run>.artifact.json" `
+  --out "output/<任务>/v4/alignment/forced_mix_evidence.json" `
+  --artifact-out "output/<任务>/v4/alignment/forced_mix_evidence.artifact.json"
 ```
 
-Artifact normalized config 只记录 `command_sha256` + executable basename，不记录完整 command/path。
+输出：
 
-## 8. Actions 能验证 / 不能验证
+```text
+stage = forced_alignment_mix_projection
+role = forced_alignment_mix_evidence
+mode = forced_alignment_mix_projection
+```
 
-CI 可通过临时 Python fake aligner 的**真实 subprocess**验证 P7 request/response 协议、artifact lineage、source SHA、model identity、privacy 和 executable-not-found failure。
+只有这个 mix-time 产物才可以与 editor/ASR 的 mix-time evidence 做多 family 比较。**禁止直接把 P7 source-ms 与 P4 mix-ms evidence 比较。**
 
-CI 当前不能证明：
+## 6. P8 mapping 规则
+
+- `AFFINE` / `PIECEWISE_RATE`：调用现有 `mix_time_for_source()`；
+- `CUT_AWARE`：line start/end 必须同在一个 retained source segment；
+- boundary 在 confirmed source gap -> line `unprojectable`；
+- line 跨 confirmed cut -> `unprojectable`；
+- spans 分别投影，合法局部 span 可以保留；
+- 只解析 forced evidence 实际引用 occurrences；
+- unrelated blocked occurrence 不阻塞本地 projection；
+- relevant mapping 缺失、blocked、artifact lineage 不一致 -> 非零失败。
+
+不要手工把 `unprojectable` 线跨 cut 补成连续区间。
+
+## 7. P7/P8 fail-closed 与 privacy
+
+P7 会拒绝 task/input/source SHA/canonical/backend/model/window 漂移；P8 会拒绝 forced evidence/source run/mapping provenance 漂移。
+
+正式 evidence/artifact 不应包含：
+
+```text
+canonical raw lyric
+local source path
+full external command
+backend stdout/stderr
+```
+
+P8 输出保留 hash、identity、source/mix boundaries、projection status/reason 与 backend/model lineage。
+
+## 8. 推荐的本地生产顺序
+
+```text
+1. 准备 task + canonical LRC + source audio + edited mix/editor SRT
+2. v4_run / review / cut-overlap materialization，得到 source-to-mix authoritative run
+3. editor evidence
+4. local ASR first-pass -> second-pass routing/execution（按需）
+5. external source forced alignment（按需）
+6. P8 forced source-to-mix projection
+7. fusion / diagnostics（forced family 接入后）
+8. 人工处理 blocked/conflict/high-risk cases
+9. render
+10. validate_release
+11. private calibration/blind 记录真实误差
+```
+
+生产前至少保留 task manifest、source run/artifact、所有 evidence/artifact、最终 render/release manifest，便于复现与 Codex 审核。
+
+## 9. Actions 能验证 / 不能验证
+
+CI 可验证 package/CLI、fake external subprocess、projection math、cut semantics、artifact lineage、privacy。
+
+CI 不能证明：
 
 - WhisperX/SOFA/MFA production backend 已安装/运行；
 - 某 checkpoint/G2P 对真实歌声准确；
-- forced alignment 可以自动改 final timing；
-- forced-alignment family 已通过 blind release gate。
+- forced/editor/ASR family 权重与阈值已校准；
+- auxiliary evidence 可以直接改 final timing。
 
-真实 backend 上线必须在 private/local runtime 锁定 package/command、model revision、language resources、license/runtime identity，再做 private calibration/blind-test。
-
-## 9. 下一步
-
-P7 合入后，下一阶段应把 source forced-alignment boundary 通过 current Source-to-Mix mapping 投影为 mix boundary，然后作为 P4 独立 family；**不能直接拿 source ms 与 editor/ASR 的 mix ms 比较**。
+真实 backend 上线必须在本地锁定 package/command version、model/checkpoint revision、language/G2P resources、runtime/device、license/source identity，并用 private real-song calibration/blind 验证。
