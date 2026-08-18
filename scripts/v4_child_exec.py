@@ -20,6 +20,8 @@ for value in (str(REPOSITORY_ROOT), str(SCRIPTS_ROOT)):
 
 import task_contract
 from lyric_aligner.assets import bindings as asset_bindings
+from lyric_aligner.assets import resolver as asset_resolver
+from lyric_aligner.contracts import verification_session
 from lyric_aligner.contracts.verification_session import (
     file_is_attested,
     role_is_attested,
@@ -28,6 +30,7 @@ from lyric_aligner.contracts.verification_session import (
 
 _ORIGINAL_VERIFY_MANIFEST_INPUTS = task_contract.verify_manifest_inputs
 _ORIGINAL_BINDINGS_FROM_PAYLOAD = asset_bindings.bindings_from_payload
+_ORIGINAL_RESOLVER_SHA256 = asset_resolver.sha256_file
 
 
 def _verified_manifest_inputs(
@@ -77,6 +80,24 @@ def _verified_bindings_from_payload(
     return _ORIGINAL_BINDINGS_FROM_PAYLOAD(payload, verify_files=verify_files)
 
 
+def _verified_resolver_sha256(path: Path) -> str:
+    """Return the parent-attested SHA or fall back to a real file read."""
+
+    payload = verification_session._active_session()
+    if payload is not None:
+        files = payload.get("files")
+        if isinstance(files, dict):
+            record = files.get(str(path.resolve()))
+            if (
+                isinstance(record, dict)
+                and verification_session._stat_matches(path.resolve(), record)
+            ):
+                digest = str(record.get("sha256") or "")
+                if len(digest) == 64:
+                    return digest
+    return _ORIGINAL_RESOLVER_SHA256(path)
+
+
 def main() -> int:
     if len(sys.argv) < 2:
         raise SystemExit("usage: v4_child_exec.py TARGET_SCRIPT [args ...]")
@@ -94,6 +115,7 @@ def main() -> int:
     # module at call time, so replacing the module global accelerates it too.
     task_contract.verify_manifest_inputs = _verified_manifest_inputs
     asset_bindings.bindings_from_payload = _verified_bindings_from_payload
+    asset_resolver.sha256_file = _verified_resolver_sha256
 
     sys.argv = [str(target), *sys.argv[2:]]
     runpy.run_path(str(target), run_name="__main__")
