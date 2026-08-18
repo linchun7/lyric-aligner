@@ -1,7 +1,7 @@
 """Privacy-safe runtime identity snapshots for reproducible v4 calibration.
 
 The snapshot intentionally omits hostnames, usernames, absolute repository
-paths, raw lyrics and full external commands.  Its stable identity hash covers
+paths, raw lyrics and full external commands. Its stable identity hash covers
 versions/configuration that can materially affect alignment output.
 """
 
@@ -51,9 +51,11 @@ def _canonical_sha(payload: Any) -> str:
     )
 
 
-def _command_output(argv: list[str], *, cwd: Path | None = None) -> str | None:
+def _run_process(
+    argv: list[str], *, cwd: Path | None = None
+) -> subprocess.CompletedProcess[str] | None:
     try:
-        completed = subprocess.run(
+        return subprocess.run(
             argv,
             cwd=str(cwd) if cwd is not None else None,
             stdout=subprocess.PIPE,
@@ -64,20 +66,34 @@ def _command_output(argv: list[str], *, cwd: Path | None = None) -> str | None:
         )
     except (OSError, subprocess.SubprocessError):
         return None
+
+
+def _command_output(argv: list[str], *, cwd: Path | None = None) -> str | None:
+    completed = _run_process(argv, cwd=cwd)
+    if completed is None or completed.returncode != 0:
+        return None
     output = str(completed.stdout or "").strip().splitlines()
     return output[0].strip() if output else None
 
 
+def _git_dirty(repo_root: Path) -> bool | None:
+    """Return False for a clean tree instead of conflating empty output/error."""
+
+    completed = _run_process(["git", "status", "--porcelain"], cwd=repo_root)
+    if completed is None or completed.returncode != 0:
+        return None
+    return bool(str(completed.stdout or "").strip())
+
+
 def _git_identity(repo_root: Path) -> dict[str, Any]:
     commit = _command_output(["git", "rev-parse", "HEAD"], cwd=repo_root)
-    status = _command_output(["git", "status", "--porcelain"], cwd=repo_root)
     branch = _command_output(["git", "branch", "--show-current"], cwd=repo_root)
     if commit is not None and not re.fullmatch(r"[0-9a-fA-F]{40}", commit):
         commit = None
     return {
         "commit_sha": commit.lower() if commit else None,
         "branch": branch or None,
-        "dirty": None if status is None else bool(status),
+        "dirty": _git_dirty(repo_root),
     }
 
 
@@ -129,7 +145,11 @@ def _external_command_identity(command: str | None) -> dict[str, Any] | None:
     except ValueError:
         argv = []
     executable = str(argv[0]) if argv else ""
-    basename = executable.replace("\\", "/").rsplit("/", 1)[-1] if executable else None
+    basename = (
+        executable.replace("\\", "/").rsplit("/", 1)[-1]
+        if executable
+        else None
+    )
     return {
         "executable_basename": basename,
         "command_sha256": _sha(command),
