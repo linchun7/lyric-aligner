@@ -132,4 +132,116 @@ release_gate_eligible = false
 automatic_timing_change_allowed = false
 ```
 
-这就是代码阶段的刻意收口点。下一阶段必须使用 private real-song calibration/blind 来决定 family 的实际独立性、不同语言/风险类型阈值，以及是否允许任何自动 timing refinement。公共 synthetic CI 不得用于宣称真实 accuracy。
+---
+
+## 2026-08-18 — P10 External Forced-Alignment Batch Protocol 1.1
+
+### 1. 目标
+
+P7 protocol `1.0` 对每个 bounded forced job 启动一个 external subprocess。真实 CTC/singing backend 往往在进程启动时加载 checkpoint，因此多歌词任务会重复加载模型。
+
+P10 增加协议 `1.1`：多个 selected jobs 共用一个 external process；batch adapter 可只加载一次模型。
+
+新增：
+
+```text
+lyric_aligner/alignment/forced_batch.py
+references/forced-alignment-batch-protocol.md
+scripts/test_v4_forced_alignment_batch.py
+scripts/test_v4_forced_alignment_batch_end_to_end.py
+```
+
+更新：
+
+```text
+lyric_aligner/alignment/__init__.py
+scripts/v4_execute_forced_alignment.py
+```
+
+### 2. Backward compatibility
+
+CLI 默认仍是：
+
+```text
+--execution-mode single
+```
+
+即 P7 protocol `1.0`、一 job 一 process。只有显式：
+
+```text
+--execution-mode batch
+```
+
+才使用 protocol `1.1`：
+
+```text
+<external command> --batch-request <request.json> --batch-response <response.json>
+```
+
+Formal artifact stage/role 不变：
+
+```text
+stage = source_forced_alignment_evidence
+role = forced_alignment_evidence
+```
+
+因此 P8/P9 不需要修改 downstream artifact contract。
+
+### 3. Exact batch response contract
+
+Batch response 顶层必须 echo：
+
+```text
+protocol_version = 1.1
+backend_id/backend_version
+model_id/model_revision
+status = aligned_batch
+```
+
+Response job ID 集合必须与 request **完全相等**：missing、extra、duplicate 均 fail closed。每个 job 再复用 P7 的 source-window/line/span/backend-model validation。
+
+### 4. Zero-work semantics
+
+显式 `selected_job_ids=[]` = zero work：
+
+```text
+command_invoked = false
+command_invocation_count = 0
+job_count = 0
+```
+
+不得因为选择为空而退化成“执行全部”或尝试解析/启动 configured executable。
+
+### 5. Artifact execution lineage
+
+新增记录：
+
+```text
+protocol_version = 1.0 | 1.1
+requested_execution_mode = single | batch
+execution_mode = single_job_subprocess | batch_subprocess
+command_invocation_count
+```
+
+这避免把用户请求模式与实际执行模式混成同一字段。
+
+### 6. Privacy / authority
+
+Batch request 的 temporary local JSON 可包含 source path 与 canonical text，formal evidence/artifact 仍只保留 hash/identity/timing/confidence/backend-model lineage；不复制歌词或完整 external command。
+
+Authority 不变：
+
+```text
+canonical_text_authority = canonical_lyrics_only
+timing_authority = auxiliary_source_forced_alignment_evidence
+```
+
+Batch output 继续走 P8 exact projection -> P9 shadow fusion。
+
+### 7. Multilingual model identity
+
+真实 WhisperX adapter 若不同语言需要不同 align checkpoint，不得把多语言 jobs 放进一个 batch、却只记录一个误导性的 model ID。第一版 adapter 应按 same-language/same-model 分批；需要跨语言时再定义可审计的 model-bundle manifest。
+
+### 8. Validation boundary
+
+Synthetic/fake subprocess CI 可以证明：两 jobs 一 process、exact response-set validation、artifact lineage/privacy。它不能证明真实 model throughput 或歌声准确率。P10 合入后下一阶段应直接做真实 external backend adapter + private calibration/blind，而不是继续扩大 authority。
