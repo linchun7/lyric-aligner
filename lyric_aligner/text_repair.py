@@ -14,6 +14,7 @@ from typing import Iterable, Sequence
 _UTF8_BOM = b"\xef\xbb\xbf"
 _LRC_TIME_TAG = re.compile(r"\[(\d{1,3}):(\d{2})(?:[.:](\d{1,3}))?\]")
 _QRC_LINE_TAG = re.compile(r"^\[\d+,\d+\]")
+_QRC_TOKEN_TIME = re.compile(r"\(\d+,\d+\)")
 _ENHANCED_TIME_TAG = re.compile(r"<\d{1,3}:\d{2}(?:[.:]\d{1,3})?>")
 _META_TAG = re.compile(r"^\[[A-Za-z][A-Za-z0-9_-]*:.*\]$")
 _META_TEXT = re.compile(
@@ -83,6 +84,7 @@ def _normalize_for_match(value: str) -> str:
 
 def _clean_lyric_text(value: str) -> str:
     value = _ENHANCED_TIME_TAG.sub("", value)
+    value = _QRC_TOKEN_TIME.sub("", value)
     return re.sub(r"\s+", " ", value).strip()
 
 
@@ -245,7 +247,12 @@ def align_monotonic(
     return pairs
 
 
-def _is_safe_auto_pair(cue: SubtitleCue, line: CanonicalLine, score: float, threshold: float) -> bool:
+def _is_safe_auto_pair(
+    cue: SubtitleCue,
+    line: CanonicalLine,
+    score: float,
+    threshold: float,
+) -> bool:
     if score < threshold:
         return False
     a = len(cue.normalized)
@@ -270,7 +277,10 @@ def build_repair_plan(
     if not 0.5 <= auto_threshold <= 1.0:
         raise ValueError("auto_threshold must be between 0.5 and 1.0")
     pairs = align_monotonic(cues, canonical)
-    by_cue = {cue_index: (line_index, score) for cue_index, line_index, score in pairs}
+    by_cue = {
+        cue_index: (line_index, score)
+        for cue_index, line_index, score in pairs
+    }
     replacements: dict[int, str] = {}
     decisions: list[MatchDecision] = []
 
@@ -278,26 +288,58 @@ def build_repair_plan(
         pair = by_cue.get(cue.ordinal)
         if pair is None:
             decisions.append(
-                MatchDecision(cue.ordinal, None, 0.0, "review", "unmatched_subtitle_cue")
+                MatchDecision(
+                    cue.ordinal,
+                    None,
+                    0.0,
+                    "review",
+                    "unmatched_subtitle_cue",
+                )
             )
             continue
         line_index, score = pair
         line = canonical[line_index]
         if not _is_safe_auto_pair(cue, line, score, auto_threshold):
             decisions.append(
-                MatchDecision(cue.ordinal, line_index, score, "review", "low_or_structurally_unsafe_similarity")
+                MatchDecision(
+                    cue.ordinal,
+                    line_index,
+                    score,
+                    "review",
+                    "low_or_structurally_unsafe_similarity",
+                )
             )
             continue
         if cue.text == line.text:
-            decisions.append(MatchDecision(cue.ordinal, line_index, score, "unchanged", "already_canonical"))
+            decisions.append(
+                MatchDecision(
+                    cue.ordinal,
+                    line_index,
+                    score,
+                    "unchanged",
+                    "already_canonical",
+                )
+            )
             continue
         replacements[cue.ordinal] = line.text
-        decisions.append(MatchDecision(cue.ordinal, line_index, score, "replace", "high_confidence_monotonic_match"))
+        decisions.append(
+            MatchDecision(
+                cue.ordinal,
+                line_index,
+                score,
+                "replace",
+                "high_confidence_monotonic_match",
+            )
+        )
 
     return replacements, decisions
 
 
-def render_repaired_srt(parts: Sequence[str], cues: Sequence[SubtitleCue], replacements: dict[int, str]) -> str:
+def render_repaired_srt(
+    parts: Sequence[str],
+    cues: Sequence[SubtitleCue],
+    replacements: dict[int, str],
+) -> str:
     output = list(parts)
     for cue in cues:
         replacement = replacements.get(cue.ordinal)
@@ -308,7 +350,9 @@ def render_repaired_srt(parts: Sequence[str], cues: Sequence[SubtitleCue], repla
         output[cue.raw_block_index] = "\n".join((rows[0], rows[1], replacement))
         # Restore CRLF inside this block if that was how its header was represented.
         if "\r\n" in parts[cue.raw_block_index]:
-            output[cue.raw_block_index] = output[cue.raw_block_index].replace("\n", "\r\n")
+            output[cue.raw_block_index] = output[cue.raw_block_index].replace(
+                "\n", "\r\n"
+            )
     return "".join(output)
 
 
@@ -323,20 +367,32 @@ def repair_srt_text(
     auto_threshold: float = 0.72,
 ) -> tuple[str, dict[str, object]]:
     parts, cues = parse_srt_text(source_text)
-    replacements, decisions = build_repair_plan(cues, canonical, auto_threshold=auto_threshold)
+    replacements, decisions = build_repair_plan(
+        cues,
+        canonical,
+        auto_threshold=auto_threshold,
+    )
     rendered = render_repaired_srt(parts, cues, replacements)
     _, output_cues = parse_srt_text(rendered)
     if timeline_signature(cues) != timeline_signature(output_cues):
         raise AssertionError("text-only repair changed SRT numbering or timing")
-    status = "ready" if all(item.action != "review" for item in decisions) else "review_required"
+    status = (
+        "ready"
+        if all(item.action != "review" for item in decisions)
+        else "review_required"
+    )
     report = {
         "schema_version": "1.0",
         "mode": "text_only_preserve_timeline",
         "status": status,
         "cue_count": len(cues),
         "canonical_line_count": len(canonical),
-        "replacement_count": sum(item.action == "replace" for item in decisions),
-        "unchanged_count": sum(item.action == "unchanged" for item in decisions),
+        "replacement_count": sum(
+            item.action == "replace" for item in decisions
+        ),
+        "unchanged_count": sum(
+            item.action == "unchanged" for item in decisions
+        ),
         "review_count": sum(item.action == "review" for item in decisions),
         "timeline_unchanged": True,
         "decisions": [
@@ -363,7 +419,11 @@ def write_repair_outputs(
 ) -> dict[str, object]:
     source_text, had_bom = _read_utf8(source_srt)
     canonical = parse_canonical_files(canonical_paths)
-    rendered, report = repair_srt_text(source_text, canonical, auto_threshold=auto_threshold)
+    rendered, report = repair_srt_text(
+        source_text,
+        canonical,
+        auto_threshold=auto_threshold,
+    )
     output_srt.parent.mkdir(parents=True, exist_ok=True)
     payload = rendered.encode("utf-8")
     if had_bom:
@@ -379,5 +439,8 @@ def write_repair_outputs(
     report["output_srt_sha256"] = _sha256_file(output_srt)
     if report_path is not None:
         report_path.parent.mkdir(parents=True, exist_ok=True)
-        report_path.write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        report_path.write_text(
+            json.dumps(report, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
     return report
