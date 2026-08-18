@@ -5,7 +5,7 @@ description: Reconstruct, review, materialize, diagnose and render multilingual 
 
 # Lyric Aligner
 
-当前算法版本为 **v4.0.0a8 production-first**。当前开发链已经实现到 P9：生产重建、cut/overlap materialization、editor evidence、local ASR first/second pass、external source forced alignment、forced source→mix projection、editor/ASR/forced 三 family shadow fusion。**main/PR 的最新合并状态以 `references/v4-status.md` 为准。**
+当前算法版本为 **v4.0.0a8 production-first**。当前开发链已经实现到 P9，并补齐真实数据生产前的只读 doctor、runtime snapshot 与逐 family calibration evaluator：生产重建、cut/overlap materialization、editor evidence、local ASR first/second pass、external source forced alignment、forced source→mix projection、editor/ASR/forced 三 family shadow fusion。**main/PR 的最新合并状态以 `references/v4-status.md` 为准。**
 
 这个项目的生产原则不是“让 ASR 重写歌词”，而是：canonical lyric 决定最终文字与顺序，Source-to-Mix 决定主要时间；其他信号只提供可审计 evidence。任何无法由现有证据安全证明的情况继续 review/BLOCK，**不得静默回退 v3.9，不得手工拼/改 artifact 绕过 lineage。**
 
@@ -25,6 +25,20 @@ references/dataset-protocol.md
 references/documentation-contract.md
 references/v4-change-record.md
 ```
+
+## Codex 真实任务开场纪律
+
+真实生产任务与代码开发必须分开。开始真实歌曲任务时：
+
+```text
+1. checkout/fetch 到最新 main；不要从旧 agent/* / codex/* 分支恢复实现；
+2. 先运行 scripts/v4_runtime_snapshot.py 固化当前 runtime identity；
+3. 已有任务产物时，把 payload 与对应 *.artifact.json 成对交给 scripts/v4_doctor.py，并要求 --require lineage；
+4. 先根据 doctor 的 BLOCK / recommended_next_action 续跑，不要无条件从 reconstruction 重跑；
+5. 真实生产任务本身不得顺手修改 tracked production code。
+```
+
+如果真实数据暴露代码 bug：停止该生产 run，保存最小复现和 doctor/lineage 证据；从**最新 main** 新建独立 bugfix 分支修复、补测试、走 CI/PR。修复合入后再以新的 runtime snapshot/algorithm lineage 重跑受影响阶段。不要在生产任务分支边跑数据边改算法，也不要为了过任务手改 formal artifact。
 
 ## 不可违反的原则
 
@@ -46,6 +60,7 @@ references/v4-change-record.md
 16. Final renderer 只接受 `ready_for_render + issues=[] + legacy_fallback_used=false`，并验证 exact task/profile/artifact lineage。
 17. 所有 stage 都绑定 task fingerprint、algorithm version、upstream IDs、materialized SHA-256；涉及模型的 evidence 还必须绑定 backend/model revision。
 18. 所有实质性更新必须同步 owning docs；CI 不通过不得合并。
+19. Runtime snapshot / doctor / family evaluator 都是可复现与诊断层，不改变 Source-to-Mix authority；没有独立 blind-test 结果不得把 auxiliary family 提升为自动 timing/release authority。
 
 ## 权威文档
 
@@ -57,6 +72,15 @@ references/v4-change-record.md
 - 数据/盲测：`references/dataset-protocol.md`
 
 ## 标准生产流程
+
+### 0. Runtime / Resume preflight
+
+```powershell
+python scripts/v4_runtime_snapshot.py ...
+python scripts/v4_doctor.py ... --require lineage
+```
+
+新任务没有任何 formal artifact 时，doctor 的 lineage requirement 可等第一个 run artifact 生成后再启用；中断恢复或已有产物时必须优先验证现有 payload/artifact lineage。具体配对参数见 `references/v4-runtime-guide.md`。
 
 ### 1. Reconstruction
 
@@ -217,6 +241,16 @@ python scripts/v4_validate_release.py `
 
 Render/release 仍以 authoritative canonical timeline 为准，不读取未校准 shadow fusion 来偷偷改 timing。
 
+### 9. Real-data family evaluation
+
+真实人工 truth 到位后：
+
+```powershell
+python scripts/v4_evaluate_evidence_families.py ...
+```
+
+它比较 Source-to-Mix/editor/ASR/forced 的真实边界误差与 coverage，但仍然只是 calibration evidence。Dataset/runtime/fusion-policy identity 与 blind-test 纪律见 `references/v4-runtime-guide.md` 和 `references/dataset-protocol.md`。
+
 ## 第一次真实数据生产纪律
 
 先把真实数据当成 calibration/verification，同时仍可用 authoritative Source-to-Mix 结果正常产出。每种主要语言建议先准备 3–5 个 30–90 秒片段，并覆盖：
@@ -242,7 +276,7 @@ CONFLICT / unprojectable
 language/risk bucket
 ```
 
-先跑 calibration，再冻结 threshold/model/profile，然后用独立 blind set 验证。没有 blind 结果，不得宣称某个真实 backend 或某套 fusion threshold 已经达到生产准确率目标。
+先跑 calibration，再冻结 threshold/model/profile/runtime identity，然后用独立 blind set 验证。没有 blind 结果，不得宣称某个真实 backend 或某套 fusion threshold 已经达到生产准确率目标。
 
 ## 当前仍 BLOCK 的边界
 
@@ -255,6 +289,7 @@ language/risk bucket
 - relevant forced mapping/provenance 不完整；
 - forced line 跨 confirmed cut/gap；
 - auxiliary families 明显冲突；
+- runtime/payload/artifact identity 不一致；
 - real private calibration / blind-test 尚未完成时尝试提升 auxiliary timing authority。
 
 ## 回归纪律
