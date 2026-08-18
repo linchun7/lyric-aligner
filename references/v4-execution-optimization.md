@@ -6,7 +6,7 @@ This document describes execution-cost optimizations around the authoritative V4
 
 `python scripts/v4_run.py ...` may reuse existing **coarse**, **fine**, and **transition** stage artifacts only when `--git-commit` is supplied and all reuse checks pass.
 
-Before resume can be enabled, `--git-commit` must exactly equal the currently checked-out `git rev-parse HEAD`, and the Git worktree must be clean. A mismatched or dirty producer identity is rejected rather than trusted. To run from a dirty/non-Git environment, omit `--git-commit`; the pipeline still runs, but cross-run resume stays disabled.
+`--git-commit` predates resume support and remains backward-compatible producer metadata. It never becomes a new execution precondition: arbitrary historical/test values still run normally and are recorded as before. Cross-run resume is enabled only when that value also exactly equals the currently checked-out `git rev-parse HEAD` and the Git worktree is clean. A mismatched, dirty, unavailable, or empty Git identity simply disables cross-run resume for that invocation; it does not reject the production run.
 
 A reusable stage must match all of the following:
 
@@ -25,7 +25,7 @@ Runtime resume identity currently hashes Python implementation/version, OS/relea
 
 Any mismatch is a cache miss, not a warning override: the stage executes again. Existing artifacts produced before the runtime sidecar existed are therefore recomputed once before becoming resume-eligible. Asset resolution is intentionally **not** reused across runs because optional profile/map inputs can live outside the task fingerprint.
 
-Resume is disabled when `--git-commit` is absent. `--no-resume` forces a fresh run even when reusable artifacts exist; a fresh runtime-bound sidecar may still be produced for a future invocation.
+`--no-resume` forces a fresh run even when a verified Git identity and reusable artifacts exist; a fresh runtime-bound sidecar may still be produced for a future invocation.
 
 ## 2. Same-invocation verified-input session
 
@@ -97,4 +97,4 @@ Each successful optimized invocation writes:
 
 `cache/execution_summary.json`
 
-It contains worker count plus resume/memo/execution counters. Runtime resume sidecars and the verified-input session live in the same disposable execution area. None of them is included in formal artifact lineage, so cache hits or worker scheduling do not alter semantic artifact identity.
+It contains worker count plus resume/memo/execution counters. Runtime resume sidecars and the verified-input session are disposable local execution state. None of them is included in formal artifact lineage, so cache hits or worker scheduling do not alter semantic artifact identity.
