@@ -17,6 +17,8 @@ import librosa
 
 from lyric_aligner import __version__
 from lyric_aligner.audio.coarse_mapper import build_coarse_timewarp
+from lyric_aligner.audio.feature_cache import FeatureCacheSpec, load_feature_bundle, save_feature_bundle
+from lyric_aligner.audio.features import extract_harmonic_features
 from lyric_aligner.config import calibration_overrides
 from lyric_aligner.contracts.artifacts import atomic_write_json, build_artifact_manifest, sha256_file, validate_artifact_output
 from lyric_aligner.pipeline.context import build_pipeline_context
@@ -57,6 +59,50 @@ def _load_bounded_mix(
     return audio, decode_start
 
 
+def _default_feature_cache_dir(out_path: Path) -> Path | None:
+    resolved = out_path.resolve()
+    for parent in resolved.parents:
+        if parent.name in {"primary", "transitions"}:
+            return parent.parent / "cache" / "features"
+    return None
+
+
+def _source_features(
+    source_path: Path,
+    *,
+    source_sha256: str,
+    sr: int,
+    hop_length: int,
+    cache_dir: Path | None,
+):
+    spec = FeatureCacheSpec(
+        audio_sha256=source_sha256,
+        sr=sr,
+        hop_length=hop_length,
+    )
+    if cache_dir is not None:
+        cached = load_feature_bundle(cache_dir, spec)
+        if cached is not None:
+            return cached, "hit"
+
+    source_audio, _ = librosa.load(source_path, sr=sr, mono=True)
+    features = extract_harmonic_features(
+        source_audio,
+        sr=sr,
+        hop_length=hop_length,
+    )
+    cache_status = "disabled"
+    if cache_dir is not None:
+        try:
+            save_feature_bundle(cache_dir, spec, features)
+            cache_status = "miss_written"
+        except OSError:
+            # A disposable performance cache must never become a production
+            # blocker. Continue with the freshly computed SHA-bound features.
+            cache_status = "miss_write_failed"
+    return features, cache_status
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--task-manifest", required=True, type=Path)
@@ -72,6 +118,7 @@ def main() -> int:
     parser.add_argument("--window-seconds", type=float)
     parser.add_argument("--step-seconds", type=float)
     parser.add_argument("--candidate-step-seconds", type=float)
+    parser.add_argument("--feature-cache-dir", type=Path)
     parser.add_argument("--out", required=True, type=Path)
     parser.add_argument("--artifact-out", required=True, type=Path)
     parser.add_argument("--git-commit", default="")
@@ -131,16 +178,24 @@ def main() -> int:
             mix_end=mix_end,
             full_mix_duration=mix_duration,
         )
-        source_audio, _ = librosa.load(source_path, sr=sr, mono=True)
+        feature_cache_dir = args.feature_cache_dir or _default_feature_cache_dir(args.out)
+        source_feature_bundle, cache_status = _source_features(
+            source_path,
+            source_sha256=binding.source_audio_sha256,
+            sr=sr,
+            hop_length=hop_length,
+            cache_dir=feature_cache_dir,
+        )
 
         mapping = build_coarse_timewarp(
             mix_audio,
-            source_audio,
+            None,
             sr=sr,
             mix_start=mix_start,
             mix_end=mix_end,
             mix_audio_start=mix_audio_start,
             full_mix_duration=mix_duration,
+            source_feature_bundle=source_feature_bundle,
             bpm_prior=args.bpm_prior,
             middle_cut=binding.middle_cut,
             feature_hop_length=hop_length,
@@ -218,6 +273,7 @@ def main() -> int:
         "occurrence_id": binding.occurrence_id,
         "selection": mapping["timewarp"]["selection"],
         "blocked": mapping["timewarp"]["blocked"],
+        "source_feature_cache": cache_status,
         "calibration_profile_id": context.calibration_profile_id,
         "calibration_override": bool(overrides),
         "artifact_id": artifact["artifact_id"],

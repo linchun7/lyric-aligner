@@ -8,6 +8,7 @@ from typing import Any
 import numpy as np
 
 from lyric_aligner.audio.features import (
+    FeatureBundle,
     RetrievalCandidate,
     RetrievalResult,
     extract_harmonic_features,
@@ -171,15 +172,32 @@ def _absolute_result(result: RetrievalResult, offset: float) -> RetrievalResult:
     )
 
 
+def _source_features(
+    source_audio: np.ndarray | None,
+    cached: FeatureBundle | None,
+    *,
+    sr: int,
+    hop_length: int,
+) -> FeatureBundle:
+    if cached is not None:
+        if cached.sr != sr or cached.hop_length != hop_length:
+            raise ValueError("cached source feature sampling parameters do not match coarse config")
+        return cached
+    if source_audio is None:
+        raise ValueError("source audio is required when cached source features are unavailable")
+    return extract_harmonic_features(source_audio, sr=sr, hop_length=hop_length)
+
+
 def build_coarse_timewarp(
     mix_audio: np.ndarray,
-    source_audio: np.ndarray,
+    source_audio: np.ndarray | None,
     *,
     sr: int,
     mix_start: float,
     mix_end: float,
     mix_audio_start: float = 0.0,
     full_mix_duration: float | None = None,
+    source_feature_bundle: FeatureBundle | None = None,
     bpm_prior: float | None = None,
     middle_cut: str = "false",
     feature_hop_length: int = 2048,
@@ -227,7 +245,12 @@ def build_coarse_timewarp(
     local_duration = len(local_mix_audio) / sr
 
     mix_features = extract_harmonic_features(local_mix_audio, sr=sr, hop_length=feature_hop_length)
-    source_features = extract_harmonic_features(source_audio, sr=sr, hop_length=feature_hop_length)
+    source_features = _source_features(
+        source_audio,
+        source_feature_bundle,
+        sr=sr,
+        hop_length=feature_hop_length,
+    )
     slopes = slope_grid(
         minimum=slope_minimum,
         maximum=slope_maximum,

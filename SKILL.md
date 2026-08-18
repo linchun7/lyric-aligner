@@ -95,6 +95,8 @@ python scripts/v4_run.py `
 
 生产 coarse/fine CLI 会在内部只解码当前 occurrence / coarse retrieval windows 所需的 mix 区间并保留少量保护 padding；仍使用完整 mix SHA、absolute mix coordinates 与原有 Source-to-Mix 决策规则。该 bounded decode 不需要额外 CLI 参数，也不是低精度模式：cut、ambiguity、review/fail-closed 与 threshold 语义不变。
 
+`v4_run.py` 下的 coarse 调用还会把同一原曲重复需要的 harmonic source features 缓存在当前 V4 输出树的 `cache/features`。cache key 绑定 source audio SHA-256、采样参数、feature implementation 与 librosa 版本；损坏、缺失或 identity 不匹配一律按 cache miss 从原曲重算。这个 cache 只是可删除的本地性能层，不进入 formal artifact lineage，也不能绕过 source SHA、task fingerprint、threshold、cut/review 或 release 验证。
+
 ### 2. Review
 
 ```powershell
