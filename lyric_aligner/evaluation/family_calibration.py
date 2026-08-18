@@ -19,11 +19,12 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Any
 
+from lyric_aligner.runtime_snapshot import validate_runtime_snapshot
+
 
 FAMILY_DATASET_SCHEMA_VERSION = "1.0"
 FAMILY_TRUTH_SCHEMA_VERSION = "1.0"
 FAMILY_REPORT_SCHEMA_VERSION = "1.0"
-RUNTIME_SNAPSHOT_SCHEMA_VERSION = "1.0"
 FAMILIES = ("source_timeline", "editor", "asr", "forced_alignment")
 
 
@@ -97,12 +98,10 @@ def _rate(numerator: int | float, denominator: int | float) -> float:
 
 
 def _runtime_identity(payload: dict[str, Any]) -> str:
-    if str(payload.get("schema_version") or "") != RUNTIME_SNAPSHOT_SCHEMA_VERSION:
-        raise FamilyCalibrationError("runtime snapshot schema_version must be 1.0")
-    identity = str(payload.get("runtime_identity_sha256") or "").lower()
-    if not _is_sha256(identity):
-        raise FamilyCalibrationError("runtime snapshot identity is invalid")
-    return identity
+    try:
+        return validate_runtime_snapshot(payload)
+    except ValueError as exc:
+        raise FamilyCalibrationError(str(exc)) from exc
 
 
 def _truth_index(payload: dict[str, Any]) -> dict[tuple[str, int], dict[str, Any]]:
