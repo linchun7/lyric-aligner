@@ -275,7 +275,7 @@ Calibration/blind 对比时，候选如果 runtime identity 不同，应把它�
 
 ## 13. Evidence Family Calibration：真实数据后直接比较四套时间
 
-Family evaluator 只接受已经投影到 mix-time 的 P9 fusion 与私有人工 truth。Dataset manifest 是单 split，必须是 `calibration` 或 `blind_test`：
+Family evaluator 只接受已经投影到 mix-time 的 P9 fusion 与私有人工 truth。Dataset manifest 是单 split，必须是 `calibration` 或 `blind_test`，并且绑定本候选的 runtime snapshot：
 
 ```json
 {
@@ -283,6 +283,7 @@ Family evaluator 只接受已经投影到 mix-time 的 P9 fusion 与私有人工
   "dataset": "private-v4",
   "dataset_revision": "r1",
   "split": "calibration",
+  "runtime_snapshot_json": "runtime.snapshot.json",
   "cases": [
     {
       "id": "cal-001",
@@ -330,9 +331,9 @@ asr
 forced_alignment
 ```
 
-并统计 coverage、onset/offset/boundary MAE、P50/P90/P95、line max-error P95、≤250ms/≤500ms rate、CONFLICT rate、forced unprojectable rate。报告不包含 raw lyric 或本地路径。
+并统计 coverage、onset/offset/boundary MAE、P50/P90/P95、line max-error P95、≤250ms/≤500ms rate、CONFLICT rate、forced unprojectable rate。报告不包含 raw lyric 或本地路径，同时保存 `runtime_identity_sha256` 与 `fusion_policy_identity_sha256`。同一个 family dataset 内如果混入不同 algorithm / P9 policy / config（例如不同 `conflict_boundary_ms`），会 fail closed，避免把不可比结果聚合到一起。
 
-**不要用 calibration report 直接开启自动 timing。** 正确顺序仍是：calibration 比较候选 → 锁定 backend/model/profile/threshold/runtime identity → 独立 blind_test → 只有 blind 证明收益后才另行设计 authority promotion。
+这个 family evaluator **不替代** `v4_calibration_workflow.py` 的 source-group split isolation 与 calibration→blind 锁定流程。正确顺序仍是：严格 dataset protocol 保证 split 隔离 → calibration 比较候选 → 锁定 backend/model/profile/threshold/runtime identity → 独立 blind_test → 只有 blind 证明收益后才另行设计 authority promotion。
 
 ## 14. 给本地 Codex 的推荐开场指令
 
