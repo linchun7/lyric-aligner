@@ -88,6 +88,13 @@ class V4RunEndToEndTests(unittest.TestCase):
             manifest_path = qa_dir / "task_manifest.json"
             write_json_atomic(manifest_path, manifest)
 
+            head = subprocess.run(
+                ["git", "rev-parse", "HEAD"],
+                cwd=ROOT,
+                capture_output=True,
+                text=True,
+                check=True,
+            ).stdout.strip()
             out_dir = repo / "output" / "synthetic_v4" / "v4"
             command = [
                 sys.executable,
@@ -97,7 +104,7 @@ class V4RunEndToEndTests(unittest.TestCase):
                 "--out-dir",
                 str(out_dir),
                 "--git-commit",
-                "synthetic-test",
+                head,
                 "--workers",
                 "2",
             ]
@@ -146,10 +153,10 @@ class V4RunEndToEndTests(unittest.TestCase):
             self.assertTrue(first_execution["resume_enabled"])
             self.assertGreaterEqual(first_execution["executed"], 2)
 
-            # A second invocation with the exact same task + producer commit must
-            # reuse at least the expensive coarse artifact. Asset resolution is
-            # intentionally fresh across runs and timeline/final lineage is
-            # deterministically rebuilt by the authoritative core.
+            # A second invocation with the exact same task, clean checked-out
+            # commit and runtime must reuse at least the expensive coarse
+            # artifact. Asset resolution is intentionally fresh across runs and
+            # timeline/final lineage is deterministically rebuilt by the core.
             second = subprocess.run(
                 command,
                 cwd=ROOT,
