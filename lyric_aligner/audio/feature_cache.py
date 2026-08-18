@@ -11,6 +11,7 @@ import hashlib
 import json
 import os
 import tempfile
+import zipfile
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -97,7 +98,15 @@ def load_feature_bundle(cache_dir: Path, spec: FeatureCacheSpec) -> FeatureBundl
             )
         _validate_bundle(bundle, spec)
         return bundle
-    except (OSError, ValueError, KeyError, json.JSONDecodeError, TypeError):
+    except (
+        OSError,
+        EOFError,
+        ValueError,
+        KeyError,
+        TypeError,
+        json.JSONDecodeError,
+        zipfile.BadZipFile,
+    ):
         # Cache corruption must never block or weaken a production run. Treat it
         # as a miss and rebuild from the SHA-bound source audio.
         return None
