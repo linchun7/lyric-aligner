@@ -164,10 +164,21 @@ def _fusion_contract(payload: dict[str, Any]) -> dict[str, Any]:
         raise FamilyCalibrationError(
             "fusion requires algorithm_version, policy_id and config identity"
         )
+
+    # v4_fuse_evidence.py adds per-case artifact IDs to the formal output config.
+    # Those IDs prove lineage, but they are not calibration-policy settings and
+    # necessarily differ between songs. Exclude only *_artifact_id keys from the
+    # cross-case policy identity; keep thresholds/conflict policy and all other
+    # semantic settings so mixed calibration policies still fail closed.
+    policy_config = {
+        str(key): value
+        for key, value in config.items()
+        if not str(key).endswith("_artifact_id")
+    }
     core = {
         "algorithm_version": algorithm_version,
         "policy_id": policy_id,
-        "config": config,
+        "config": policy_config,
     }
     return {
         **core,
