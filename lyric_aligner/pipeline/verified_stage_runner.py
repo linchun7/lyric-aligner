@@ -65,6 +65,7 @@ class VerifiedStageRunner(SafeStageRunner):
         output = completed.stdout.strip()
         if output:
             print(output, file=sys.stderr)
+        self._write_resume_sidecar(command)
         with self._lock:
             self._executed += 1
             self._memo[key] = output
