@@ -14,6 +14,7 @@ from typing import Any, Callable, Iterable
 
 from lyric_aligner.alignment.backends import BackendCapability, inspect_backends
 from lyric_aligner.evaluation.readiness import inspect_dataset_readiness
+from lyric_aligner.runtime_snapshot import validate_runtime_snapshot
 
 
 DOCTOR_SCHEMA_VERSION = "1.0"
@@ -170,12 +171,11 @@ def _fusion(payload: dict[str, Any]) -> tuple[bool, str]:
 
 
 def _runtime_snapshot(payload: dict[str, Any]) -> tuple[bool, str]:
-    if str(payload.get("schema_version") or "") != "1.0":
-        return False, "runtime_snapshot_schema_invalid"
-    identity = str(payload.get("runtime_identity_sha256") or "").lower()
-    if len(identity) != 64 or any(char not in "0123456789abcdef" for char in identity):
-        return False, "runtime_snapshot_identity_missing"
-    return True, "runtime_snapshot_bound"
+    try:
+        identity = validate_runtime_snapshot(payload)
+    except ValueError:
+        return False, "runtime_snapshot_identity_or_content_invalid"
+    return True, f"runtime_snapshot_bound={identity[:12]}"
 
 
 def _dataset_summary(
