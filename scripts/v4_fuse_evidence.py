@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Fuse source/editor/ASR evidence into uncalibrated shadow support states."""
+"""Fuse source/editor/ASR/forced evidence into uncalibrated shadow support states."""
 
 from __future__ import annotations
 
@@ -160,6 +160,8 @@ def main() -> int:
     parser.add_argument("--editor-evidence-artifact", type=Path)
     parser.add_argument("--asr-evidence", type=Path)
     parser.add_argument("--asr-evidence-artifact", type=Path)
+    parser.add_argument("--forced-mix-evidence", type=Path)
+    parser.add_argument("--forced-mix-evidence-artifact", type=Path)
     parser.add_argument("--conflict-boundary-ms", type=int, default=500)
     parser.add_argument("--out", required=True, type=Path)
     parser.add_argument("--artifact-out", required=True, type=Path)
@@ -211,6 +213,14 @@ def main() -> int:
             role="asr_evidence",
             source_run_artifact_id=run_artifact_id,
         )
+        forced_mix, forced_mix_artifact_id = _load_aux(
+            args.forced_mix_evidence,
+            args.forced_mix_evidence_artifact,
+            fingerprint=fingerprint,
+            stage="forced_alignment_mix_projection",
+            role="forced_alignment_mix_evidence",
+            source_run_artifact_id=run_artifact_id,
+        )
         config = EvidenceFusionConfig(
             conflict_boundary_ms=args.conflict_boundary_ms
         )
@@ -218,6 +228,7 @@ def main() -> int:
             timeline_payloads=timelines,
             editor_evidence=editor,
             asr_evidence=asr,
+            forced_mix_evidence=forced_mix,
             config=config,
         )
         fusion.update(
@@ -228,6 +239,7 @@ def main() -> int:
                 "source_run_artifact_id": run_artifact_id,
                 "source_editor_evidence_artifact_id": editor_artifact_id,
                 "source_asr_evidence_artifact_id": asr_artifact_id,
+                "source_forced_mix_evidence_artifact_id": forced_mix_artifact_id,
             }
         )
         atomic_write_json(args.out, fusion)
@@ -237,6 +249,8 @@ def main() -> int:
             upstreams.add(editor_artifact_id)
         if asr_artifact_id:
             upstreams.add(asr_artifact_id)
+        if forced_mix_artifact_id:
+            upstreams.add(forced_mix_artifact_id)
         artifact = build_artifact_manifest(
             task_fingerprint_sha256=fingerprint,
             stage="evidence_fusion_shadow",
@@ -249,6 +263,8 @@ def main() -> int:
                 "source_run_artifact_id": run_artifact_id,
                 "editor_evidence_artifact_id": editor_artifact_id,
                 "asr_evidence_artifact_id": asr_artifact_id,
+                "forced_mix_evidence_artifact_id": forced_mix_artifact_id,
+                "conflict_policy": "any_auxiliary_pair_over_threshold_blocks",
             },
             producer={"git_commit": args.git_commit} if args.git_commit else {},
             upstream_artifact_ids=tuple(sorted(upstreams)),
@@ -258,6 +274,9 @@ def main() -> int:
                 "release_gate_eligible": False,
                 "automatic_timing_change_allowed": False,
                 "shadow_level_counts": fusion["summary"]["shadow_level_counts"],
+                "forced_alignment_line_counts": fusion["summary"][
+                    "forced_alignment_line_counts"
+                ],
             },
         )
         atomic_write_json(args.artifact_out, artifact)
@@ -280,6 +299,7 @@ def main() -> int:
                 "automatic_timing_change_allowed": False,
                 "lines": fusion["summary"]["canonical_line_count"],
                 "levels": fusion["summary"]["shadow_level_counts"],
+                "forced_alignment": fusion["summary"]["forced_alignment_line_counts"],
                 "artifact_id": artifact["artifact_id"],
                 "out": str(args.out),
             }
