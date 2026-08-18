@@ -21,8 +21,8 @@ for value in (str(REPOSITORY_ROOT), str(SCRIPTS_ROOT)):
 import task_contract
 from lyric_aligner.assets import bindings as asset_bindings
 from lyric_aligner.assets import resolver as asset_resolver
-from lyric_aligner.contracts import verification_session
 from lyric_aligner.contracts.verification_session import (
+    attested_file_sha256,
     file_is_attested,
     role_is_attested,
 )
@@ -83,19 +83,8 @@ def _verified_bindings_from_payload(
 def _verified_resolver_sha256(path: Path) -> str:
     """Return the parent-attested SHA or fall back to a real file read."""
 
-    payload = verification_session._active_session()
-    if payload is not None:
-        files = payload.get("files")
-        if isinstance(files, dict):
-            record = files.get(str(path.resolve()))
-            if (
-                isinstance(record, dict)
-                and verification_session._stat_matches(path.resolve(), record)
-            ):
-                digest = str(record.get("sha256") or "")
-                if len(digest) == 64:
-                    return digest
-    return _ORIGINAL_RESOLVER_SHA256(path)
+    digest = attested_file_sha256(path)
+    return digest if digest is not None else _ORIGINAL_RESOLVER_SHA256(path)
 
 
 def main() -> int:
