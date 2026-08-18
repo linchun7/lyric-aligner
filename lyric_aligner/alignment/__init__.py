@@ -3,8 +3,9 @@
 The alignment package does not replace canonical lyrics or Source-to-Mix. It
 selects bounded evidence jobs, reports backend availability, optionally runs
 local ASR, routes/executes a second ASR pass, invokes an explicitly configured
-external source forced aligner, and can project that source-side evidence back
-through the exact edited-mix mapping without bridging confirmed cut gaps.
+external source forced aligner (single-job or batch), and can project that
+source-side evidence back through the exact edited-mix mapping without bridging
+confirmed cut gaps.
 """
 
 from lyric_aligner.alignment.asr_executor import (
@@ -29,6 +30,10 @@ from lyric_aligner.alignment.backends import (
     BackendCapability,
     BackendStatus,
     inspect_backends,
+)
+from lyric_aligner.alignment.forced_batch import (
+    FORCED_ALIGNMENT_BATCH_PROTOCOL_VERSION,
+    execute_external_forced_alignment_batch,
 )
 from lyric_aligner.alignment.forced_executor import (
     FORCED_ALIGNMENT_PROTOCOL_VERSION,
@@ -55,6 +60,7 @@ __all__ = [
     "ASR_EVIDENCE_SCHEMA_VERSION",
     "ASR_SECOND_PASS_POLICY_ID",
     "ASR_SECOND_PASS_SCHEMA_VERSION",
+    "FORCED_ALIGNMENT_BATCH_PROTOCOL_VERSION",
     "FORCED_ALIGNMENT_PROTOCOL_VERSION",
     "FORCED_ALIGNMENT_SCHEMA_VERSION",
     "FORCED_MIX_PROJECTION_SCHEMA_VERSION",
@@ -72,6 +78,7 @@ __all__ = [
     "ForcedMixProjectionError",
     "build_alignment_plan",
     "build_second_pass_plan",
+    "execute_external_forced_alignment_batch",
     "execute_external_forced_alignment_jobs",
     "execute_faster_whisper_jobs",
     "execute_second_pass_and_compose",
