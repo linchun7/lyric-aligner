@@ -21,9 +21,10 @@
 - P8 forced alignment source-to-mix projection：PR #17，merge `00585a07b658ffea93509c4ed1a4b129deafd0a3`；
 - P9 forced alignment multi-family shadow fusion：PR #19，merge `efbdbb926b03efdf1d91622d5c23cabef1f9850c`；
 - Production Readiness Tooling：PR #21，merge `04e0802156f62006c6b6af5b4ef59b1acc81ce86`；
-- Windows Local Validation Hardening：PR #22，merge `2b4a13132e95a551392811407f48573b36edab95`。
+- Windows Local Validation Hardening：PR #22，merge `2b4a13132e95a551392811407f48573b36edab95`；
+- Production Bounded Mix Decode：PR #23，merge `4d7e086aedd2b56210368302d9a17df29fef6a0c`。
 
-P7 head `2ee9e1d2ced75c3d24b5a00353e9f275fc9dc9f9` 的 validate #560 全绿后合入。P8 latest result tree 在 fast-core #1 完成 compile、documentation contract、完整 unit/E2E、Skill、privacy、diff-check 全绿后合入。P9 result tree 在 fast-core #2 完成同级验证并跑完 **324 tests** 全绿后，与 P8 main 同步 ancestry，再合入 main。PR22 exact-head fast-core 与 Python 3.10/3.12/3.14 + ASR validate 全绿后合入。
+P7 head `2ee9e1d2ced75c3d24b5a00353e9f275fc9dc9f9` 的 validate #560 全绿后合入。P8 latest result tree 在 fast-core #1 完成 compile、documentation contract、完整 unit/E2E、Skill、privacy、diff-check 全绿后合入。P9 result tree 在 fast-core #2 完成同级验证并跑完 **324 tests** 全绿后，与 P8 main 同步 ancestry，再合入 main。PR22 exact-head fast-core 与 Python 3.10/3.12/3.14 + ASR validate 全绿后合入。PR23 exact-head fast-core #43 与 validate #675 全绿后合入。
 
 ---
 
@@ -251,3 +252,38 @@ scripts/test_v4_fine_alignment.py
 3. 对普通 global-rate 歌曲研究 sparse fast probe，但必须在不确定时自动 fallback 当前 full mapping，并在 real calibration 前保持非默认/非 authority promotion。
 
 回滚本轮只需恢复 full-mix decode 调用方式；artifact contract 和 release contract 无需迁移。
+
+---
+
+## 2026-08-18 — Source Harmonic Feature Cache
+
+第一轮多歌 production 还暴露第二个重复计算：同一 source track 会在 primary coarse 及相邻 transition coarse 中多次使用，旧实现每次都重新 decode 原曲并运行 HPSS、Chroma CENS 与 MFCC。
+
+本轮增加 disposable source feature cache：
+
+```text
+lyric_aligner/audio/feature_cache.py
+lyric_aligner/audio/coarse_mapper.py
+scripts/v4_coarse_align.py
+scripts/test_v4_feature_cache.py
+scripts/test_v4_coarse_mapper.py
+```
+
+### Cache identity / reuse
+
+- `FeatureCacheSpec` key 绑定 source audio SHA-256、`sr`、`hop_length`、MFCC dimensionality、feature implementation ID 与 librosa version；
+- `v4_run.py` 生成在 `primary/` 与 `transitions/` 下的 coarse outputs 会自动解析到同一 V4-local `cache/features` 目录，因此同一 source 的后续 transition coarse 可以直接复用 numeric feature bundle；
+- cache hit 后不再 decode source audio，也不再运行该 source 的 HPSS/chroma/MFCC；
+- standalone coarse CLI 可用 `--feature-cache-dir` 显式指定缓存目录。
+
+### Safety / reproducibility
+
+- cache 不保存歌词、source absolute path、Source-to-Mix mapping、review decision 或完整 command；
+- cache miss/corrupt/incompatible entry 都回到 SHA-bound source audio 正常重算；cache write 失败不会 BLOCK production；
+- formal payload/artifact 不引用 cache path 或 cache file，仍绑定完整 source/mix SHA、task fingerprint、profile、algorithm version 和 upstream asset artifact；
+- `build_coarse_timewarp()` 只有在 cached `FeatureBundle` 的 `sr/hop_length` 与当前 coarse config 完全一致时才接受；
+- 新测试验证 cache roundtrip、key isolation、corruption-as-miss，以及 direct source extraction 与 precomputed source features 产生完全相同的 coarse result。
+
+该优化只减少重复 source feature extraction；不改变 slope grid、candidate search、score/margin threshold、cut detection、fine routing、review policy、canonical/Source-to-Mix authority 或 release semantics。
+
+下一步性能优化优先做 safe artifact resume，然后再做 bounded worker 并发；普通歌曲 sparse probe 必须先有真实 benchmark/calibration，并在不确定时自动 fallback 当前 authoritative path。
