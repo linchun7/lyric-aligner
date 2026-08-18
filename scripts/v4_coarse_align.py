@@ -59,6 +59,14 @@ def _load_bounded_mix(
     return audio, decode_start
 
 
+def _default_feature_cache_dir(out_path: Path) -> Path | None:
+    resolved = out_path.resolve()
+    for parent in resolved.parents:
+        if parent.name in {"primary", "transitions"}:
+            return parent.parent / "cache" / "features"
+    return None
+
+
 def _source_features(
     source_path: Path,
     *,
@@ -170,12 +178,13 @@ def main() -> int:
             mix_end=mix_end,
             full_mix_duration=mix_duration,
         )
+        feature_cache_dir = args.feature_cache_dir or _default_feature_cache_dir(args.out)
         source_feature_bundle, cache_status = _source_features(
             source_path,
             source_sha256=binding.source_audio_sha256,
             sr=sr,
             hop_length=hop_length,
-            cache_dir=args.feature_cache_dir,
+            cache_dir=feature_cache_dir,
         )
 
         mapping = build_coarse_timewarp(
