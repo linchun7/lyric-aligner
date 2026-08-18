@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import sys
 from pathlib import Path
 
@@ -15,11 +16,14 @@ if str(REPOSITORY_ROOT) not in sys.path:
 import librosa
 
 from lyric_aligner import __version__
-from lyric_aligner.audio.fine_alignment import refine_coarse_mapping
+from lyric_aligner.audio.fine_alignment import refine_coarse_mapping, should_run_fine_alignment
 from lyric_aligner.config import calibration_overrides
 from lyric_aligner.contracts.artifacts import atomic_write_json, build_artifact_manifest, sha256_file, validate_artifact_output, validate_upstream_artifact
 from lyric_aligner.pipeline.context import build_pipeline_context
 from task_contract import assert_manifest_paths, load_task_manifest, resolve_manifest_record
+
+
+MIX_DECODE_PADDING_SECONDS = 2.0
 
 
 def _load(path: Path) -> dict:
@@ -46,6 +50,43 @@ def _validate_stage(path: Path, artifact_path: Path, *, fingerprint: str, role: 
     if issues:
         raise ValueError(f"invalid {role} artifact: " + "; ".join(issues))
     return payload, artifact
+
+
+def _mix_window_bounds(coarse: dict) -> tuple[float, float]:
+    windows = coarse.get("result", {}).get("windows", [])
+    if not isinstance(windows, list) or not windows:
+        raise ValueError("fine alignment requires coarse retrieval windows")
+    try:
+        start = min(float(window["mix_start"]) for window in windows)
+        end = max(float(window["mix_end"]) for window in windows)
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ValueError("coarse retrieval windows have invalid mix bounds") from exc
+    if start < 0 or end <= start:
+        raise ValueError("coarse retrieval windows have invalid mix interval")
+    return start, end
+
+
+def _load_bounded_mix(
+    path: Path,
+    *,
+    sr: int,
+    mix_start: float,
+    mix_end: float,
+    full_mix_duration: float,
+) -> tuple[object, float]:
+    decode_start = max(0.0, mix_start - MIX_DECODE_PADDING_SECONDS)
+    decode_end = min(full_mix_duration, mix_end + MIX_DECODE_PADDING_SECONDS)
+    audio, _ = librosa.load(
+        path,
+        sr=sr,
+        mono=True,
+        offset=decode_start,
+        duration=max(0.0, decode_end - decode_start),
+    )
+    required_samples = int(math.ceil((mix_end - decode_start) * sr))
+    if len(audio) + 1 < required_samples:
+        raise ValueError("bounded mix decode ended before requested fine interval")
+    return audio, decode_start
 
 
 def main() -> int:
@@ -128,13 +169,32 @@ def main() -> int:
             except ValueError as exc:
                 raise ValueError("TrackAsset source audio is outside task source_audio_dir") from exc
 
-        mix_audio, _ = librosa.load(args.mix_audio, sr=sr, mono=True)
-        source_audio, _ = librosa.load(source_path, sr=sr, mono=True)
+        needs_fine = should_run_fine_alignment(coarse, force=args.force)
+        mix_duration = float(librosa.get_duration(path=str(args.mix_audio)))
+        if needs_fine:
+            mix_start, mix_end = _mix_window_bounds(coarse)
+            if mix_end > mix_duration + 1e-6:
+                raise ValueError("coarse retrieval windows exceed mix duration")
+            mix_audio, mix_audio_start = _load_bounded_mix(
+                args.mix_audio,
+                sr=sr,
+                mix_start=mix_start,
+                mix_end=mix_end,
+                full_mix_duration=mix_duration,
+            )
+            source_audio, _ = librosa.load(source_path, sr=sr, mono=True)
+        else:
+            mix_audio = []
+            source_audio = []
+            mix_audio_start = 0.0
+
         fine = refine_coarse_mapping(
             mix_audio,
             source_audio,
             coarse,
             sr=sr,
+            mix_audio_start=mix_audio_start,
+            full_mix_duration=mix_duration,
             force=args.force,
             hop_length=hop_length,
             source_radius_seconds=source_radius_seconds,
