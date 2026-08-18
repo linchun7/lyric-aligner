@@ -178,10 +178,26 @@ class SafeResumeTests(unittest.TestCase):
                 workers=2,
                 resume=True,
             )
+            runner._write_resume_sidecar(command)
             runner.run(command)
             summary = runner.summary()
             self.assertEqual(summary.resume_hits, 1)
             self.assertEqual(summary.executed, 0)
+
+    def test_missing_runtime_sidecar_fails_reuse_closed(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            _, command = self._coarse_fixture(directory)
+            runner = SafeStageRunner(
+                repository_root=directory,
+                task_fingerprint_sha256=FINGERPRINT,
+                git_commit="same-commit",
+                workers=2,
+                resume=True,
+            )
+            reusable, reason = runner._check_reusable(command)
+            self.assertFalse(reusable)
+            self.assertEqual(reason, "runtime_resume_identity_mismatch")
 
     def test_tampered_output_fails_reuse_closed(self):
         with tempfile.TemporaryDirectory() as temporary:
