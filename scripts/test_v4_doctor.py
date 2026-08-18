@@ -14,6 +14,27 @@ class V4DoctorTests(unittest.TestCase):
         path.write_text(json.dumps(payload), encoding="utf-8")
         return path
 
+    def _task_payload(self) -> dict:
+        record = {
+            "kind": "file",
+            "path": "private/task/input/example.bin",
+            "sha256": "b" * 64,
+            "size": 1,
+        }
+        return {
+            "schema_version": "2.0",
+            "project": "task",
+            "task_fingerprint_sha256": "c" * 64,
+            "inputs": {
+                "source_srt": dict(record),
+                "audio": dict(record),
+                "song_list": dict(record),
+                "lyrics_dir": {**record, "kind": "directory"},
+                "bpm_changes": None,
+                "source_audio_dir": None,
+            },
+        }
+
     def _run_payload(self, status: str = "ready_for_render") -> dict:
         return {
             "schema_version": "1.2",
@@ -35,6 +56,30 @@ class V4DoctorTests(unittest.TestCase):
         self.assertNotIn("/Users/", rendered)
         self.assertNotIn("C:\\Users\\", rendered)
 
+    def test_real_task_manifest_shape_is_accepted(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            task = self._write(root, "task.json", self._task_payload())
+            report = build_doctor_report(
+                task_manifest=task,
+                requirements=["task"],
+                inspect_backend_status=False,
+            )
+        self.assertTrue(report["requirements"]["passed"])
+        self.assertEqual(report["stages"]["task"]["detail"], "task_manifest_shape_ok")
+
+    def test_legacy_fake_tracks_shape_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            task = self._write(root, "task.json", {"tracks": [{"id": "t1"}]})
+            report = build_doctor_report(
+                task_manifest=task,
+                requirements=["task"],
+                inspect_backend_status=False,
+            )
+        self.assertFalse(report["requirements"]["passed"])
+        self.assertEqual(report["stages"]["task"]["detail"], "task_manifest_schema_invalid")
+
     def test_real_v4_run_shape_does_not_require_payload_stage(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -50,7 +95,7 @@ class V4DoctorTests(unittest.TestCase):
     def test_resume_recommends_projection_then_fusion(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            task = self._write(root, "task.json", {"tracks": [{"id": "t1"}]})
+            task = self._write(root, "task.json", self._task_payload())
             run = self._write(root, "run.json", self._run_payload())
             forced = self._write(
                 root,
@@ -73,7 +118,7 @@ class V4DoctorTests(unittest.TestCase):
     def test_valid_forced_mix_and_fusion_remain_shadow_only(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            task = self._write(root, "task.json", {"tracks": [{"id": "t1"}]})
+            task = self._write(root, "task.json", self._task_payload())
             run = self._write(root, "run.json", self._run_payload())
             forced_mix = self._write(
                 root,
