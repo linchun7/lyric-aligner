@@ -18,7 +18,7 @@ _QRC_TOKEN_TIME = re.compile(r"\(\d+,\d+\)")
 _ENHANCED_TIME_TAG = re.compile(r"<\d{1,3}:\d{2}(?:[.:]\d{1,3})?>")
 _META_TAG = re.compile(r"^\[[A-Za-z][A-Za-z0-9_-]*:.*\]$")
 _META_TEXT = re.compile(
-    r"^(?:作词|作曲|编曲|词\s*:|曲\s*:|制作人|混音|母带|发行|出品|op\s*:|sp\s*:)",
+    r"^(?:作词|作曲|编曲|词\s*[:：]|曲\s*[:：]|制作人|混音|母带|发行|出品|op\s*[:：]|sp\s*[:：])",
     re.IGNORECASE,
 )
 _SRT_TIMING = re.compile(
@@ -128,7 +128,7 @@ def parse_canonical_files(paths: Iterable[Path]) -> list[CanonicalLine]:
 
 
 def _split_srt_blocks(text: str) -> list[str]:
-    # Preserve every separator exactly so only cue text is replaced.
+    # Preserve separators exactly so only cue text can change.
     return re.split(r"((?:\r?\n){2,})", text)
 
 
@@ -196,10 +196,7 @@ def align_monotonic(
     back: list[dict[int, tuple[int, int, str, float]]] = [{}]
 
     for i in range(0, n + 1):
-        if i == 0:
-            center = 0
-        else:
-            center = int(round(i * m / n))
+        center = 0 if i == 0 else int(round(i * m / n))
         j_min = 0 if i == 0 else max(0, center - width)
         j_max = m if i == n else min(m, center + width)
         if i > 0:
@@ -222,7 +219,10 @@ def align_monotonic(
                     best = candidate_score
                     choice = (i, j - 1, "canonical_gap", 0.0)
             if i > 0 and j > 0 and (j - 1) in rows[i - 1]:
-                score = _pair_score(cues[i - 1].normalized, canonical[j - 1].normalized)
+                score = _pair_score(
+                    cues[i - 1].normalized,
+                    canonical[j - 1].normalized,
+                )
                 candidate_score = rows[i - 1][j - 1] + score
                 if candidate_score > best:
                     best = candidate_score
@@ -266,6 +266,34 @@ def _is_safe_auto_pair(
     if min(a, b) <= 3 and score < max(threshold, 0.82):
         return False
     return True
+
+
+def _has_ambiguous_local_alternative(
+    cue: SubtitleCue,
+    canonical: Sequence[CanonicalLine],
+    *,
+    chosen_index: int,
+    chosen_score: float,
+    threshold: float,
+    radius: int = 3,
+    margin: float = 0.06,
+) -> bool:
+    """Reject close competing lyric lines unless they normalize identically."""
+
+    chosen = canonical[chosen_index].normalized
+    minimum_competing_score = max(threshold, chosen_score - margin)
+    start = max(0, chosen_index - radius)
+    end = min(len(canonical), chosen_index + radius + 1)
+    for index in range(start, end):
+        if index == chosen_index:
+            continue
+        candidate = canonical[index]
+        # Repeated identical chorus lines are harmless: replacement text is the same.
+        if candidate.normalized == chosen:
+            continue
+        if _pair_score(cue.normalized, candidate.normalized) >= minimum_competing_score:
+            return True
+    return False
 
 
 def build_repair_plan(
@@ -321,6 +349,23 @@ def build_repair_plan(
                 )
             )
             continue
+        if _has_ambiguous_local_alternative(
+            cue,
+            canonical,
+            chosen_index=line_index,
+            chosen_score=score,
+            threshold=auto_threshold,
+        ):
+            decisions.append(
+                MatchDecision(
+                    cue.ordinal,
+                    line_index,
+                    score,
+                    "review",
+                    "ambiguous_nearby_canonical_match",
+                )
+            )
+            continue
         replacements[cue.ordinal] = line.text
         decisions.append(
             MatchDecision(
@@ -345,14 +390,14 @@ def render_repaired_srt(
         replacement = replacements.get(cue.ordinal)
         if replacement is None:
             continue
-        rows = output[cue.raw_block_index].splitlines()
-        # Index and timing lines are copied byte-for-byte at the Unicode-text level.
-        output[cue.raw_block_index] = "\n".join((rows[0], rows[1], replacement))
-        # Restore CRLF inside this block if that was how its header was represented.
-        if "\r\n" in parts[cue.raw_block_index]:
-            output[cue.raw_block_index] = output[cue.raw_block_index].replace(
-                "\n", "\r\n"
-            )
+        original_block = parts[cue.raw_block_index]
+        line_ending = "\r\n" if "\r\n" in original_block else "\n"
+        trailing = line_ending if original_block.endswith(line_ending) else ""
+        rows = original_block.splitlines()
+        # Index and timing lines are copied exactly; only cue text is replaced.
+        output[cue.raw_block_index] = (
+            line_ending.join((rows[0], rows[1], replacement)) + trailing
+        )
     return "".join(output)
 
 
