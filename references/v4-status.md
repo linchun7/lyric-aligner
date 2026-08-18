@@ -1,7 +1,7 @@
 # Lyric Aligner v4 当前实施状态
 
 更新日期：2026-08-18  
-当前 main：P9 已合入；代码阶段收口完成  
+当前 main：P9 已合入；production readiness tooling 正在本轮收口  
 P8 merge：`00585a07b658ffea93509c4ed1a4b129deafd0a3`  
 P9 merge：`efbdbb926b03efdf1d91622d5c23cabef1f9850c`  
 主线算法版本：`4.0.0a8`  
@@ -167,4 +167,22 @@ references/dataset-protocol.md
 
 公共 Actions、fake external subprocess 和 synthetic fixtures 能证明 contract/math/lineage/privacy，但不能证明 WhisperX/SOFA/MFA 或任何真实 checkpoint 对歌声的准确率。
 
-> **当前结论：仓库代码路线已经按中断前方向推进到 P9 并进入 main；下一步不是继续“猜参数写自动化”，而是把本项目拉到本地 Codex，用真实私有歌曲做 production + calibration/blind。**
+## 7. 本轮 Production Readiness Tooling
+
+本轮新增三个只读/评估型能力，目的是让本地 Codex 能可靠续跑真实任务并积累 calibration 数据，而不是继续凭 synthetic 数据改算法：
+
+```text
+scripts/v4_doctor.py
+scripts/v4_evaluate_evidence_families.py
+scripts/v4_runtime_snapshot.py
+```
+
+`v4_doctor.py`：检查 task/run/evidence/dataset/backend readiness，支持 `--require` 返回非零，并给出 recommended next action。报告不泄露歌词、绝对路径或完整 external command。
+
+`v4_evaluate_evidence_families.py`：对 P9 fusion 中统一到 mix-time 的 Source-to-Mix/editor/ASR/forced boundaries 与 private hash-bound truth 做逐 family 误差统计；输出 overall、language、risk bucket 的 coverage、MAE/P95、250/500ms 命中率、CONFLICT 与 unprojectable rate。它仍是 calibration evidence，不改变 authority。
+
+`v4_runtime_snapshot.py`：生成稳定 `runtime_identity_sha256`，记录 Git/Python/OS/ffmpeg/package/model/device/forced-command hash 等可复现信息，并对本地路径/完整命令做 redaction。
+
+推荐本地真实任务在开始时先运行 runtime snapshot；已有 artifact 时运行 doctor；完成 P9 fusion 并有人工作 truth 后运行 family evaluator。这样下一轮决定 backend/checkpoint/threshold 时有机器可比的数据，而不是凭肉眼印象。
+
+> **当前结论：核心 timing authority 已在 P9 前收口；本轮再补齐 doctor + family evaluator + runtime snapshot 后，仓库就应转入本地真实私有数据 production/calibration/blind，而不是继续增加未校准自动 timing 行为。**
