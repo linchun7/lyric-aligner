@@ -22,9 +22,10 @@
 - P9 forced alignment multi-family shadow fusion：PR #19，merge `efbdbb926b03efdf1d91622d5c23cabef1f9850c`；
 - Production Readiness Tooling：PR #21，merge `04e0802156f62006c6b6af5b4ef59b1acc81ce86`；
 - Windows Local Validation Hardening：PR #22，merge `2b4a13132e95a551392811407f48573b36edab95`；
-- Production Bounded Mix Decode：PR #23，merge `4d7e086aedd2b56210368302d9a17df29fef6a0c`。
+- Production Bounded Mix Decode：PR #23，merge `4d7e086aedd2b56210368302d9a17df29fef6a0c`；
+- Source Harmonic Feature Cache：PR #24，merge `0b1f38c98542eed9ec80034677cef4bf8e7f9791`。
 
-P7 head `2ee9e1d2ced75c3d24b5a00353e9f275fc9dc9f9` 的 validate #560 全绿后合入。P8 latest result tree 在 fast-core #1 完成 compile、documentation contract、完整 unit/E2E、Skill、privacy、diff-check 全绿后合入。P9 result tree 在 fast-core #2 完成同级验证并跑完 **324 tests** 全绿后，与 P8 main 同步 ancestry，再合入 main。PR22 exact-head fast-core 与 Python 3.10/3.12/3.14 + ASR validate 全绿后合入。PR23 exact-head fast-core #43 与 validate #675 全绿后合入。
+P7 head `2ee9e1d2ced75c3d24b5a00353e9f275fc9dc9f9` 的 validate #560 全绿后合入。P8 latest result tree 在 fast-core #1 完成 compile、documentation contract、完整 unit/E2E、Skill、privacy、diff-check 全绿后合入。P9 result tree 在 fast-core #2 完成同级验证并跑完 **324 tests** 全绿后，与 P8 main 同步 ancestry，再合入 main。PR22 exact-head fast-core 与 Python 3.10/3.12/3.14 + ASR validate 全绿后合入。PR23 exact-head fast-core #43 与 validate #675 全绿后合入。PR24 在 source-feature cache roundtrip、corruption/key isolation 与 direct/precomputed coarse equivalence 覆盖后合入。
 
 ---
 
@@ -287,3 +288,51 @@ scripts/test_v4_coarse_mapper.py
 该优化只减少重复 source feature extraction；不改变 slope grid、candidate search、score/margin threshold、cut detection、fine routing、review policy、canonical/Source-to-Mix authority 或 release semantics。
 
 下一步性能优化优先做 safe artifact resume，然后再做 bounded worker 并发；普通歌曲 sparse probe 必须先有真实 benchmark/calibration，并在不确定时自动 fallback 当前 authoritative path。
+
+---
+
+## 2026-08-18 — Text-Only Subtitle Repair Fast Path
+
+真实生产反馈表明：当规范歌词已经可靠、剪映 SRT 时间轴明确要求冻结，只需要修正字词时，让任务进入完整 Source-to-Mix/coarse/fine/transition 链会产生与目标无关的音频计算。本轮因此增加独立的 text-only fast path，而不是降低完整 V4 的检查强度。
+
+新增：
+
+```text
+lyric_aligner/text_repair.py
+scripts/v4_text_repair.py
+scripts/test_v4_text_repair.py
+```
+
+### Text-only contract
+
+- CLI 只读取 source SRT 与按歌曲顺序重复传入的 canonical LRC/TXT/QRC；不读取 audio，不导入/调用 librosa，不运行 coarse、fine、transition、ASR 或 forced alignment；
+- LRC 多时间戳会展开为重复 canonical occurrence；Enhanced LRC `<mm:ss.xx>` 与 QRC `(start,duration)` 词级时间标记只被剥离，不用于修改 SRT 时间；
+- 匹配前使用 Unicode NFKC + casefold，并忽略 punctuation/whitespace/control 字符；随后执行单调 fuzzy sequence alignment；
+- 只有达到自动阈值且长度结构安全的 1:1 pair 才替换文字；短行采用更严格门槛；低置信、分段不一致、未匹配 cue 保持原字幕并报告 `review_required`；
+- 输出重新解析后逐 cue 比较原始 index line 与 timing line，任何变化都会 fail closed；CLI 还拒绝 `--out` 与 `--source-srt` 指向同一文件，因此不会原地覆盖原件；
+- report 记录 cue/canonical/replacement/review 数、逐 cue decision，以及 source/canonical/output SHA-256；不记录音频 lineage，因为该路径明确不消费音频。
+
+CLI 在 `status=ready` 时退出 0；只要存在未解决文本候选就输出 `review_required` 并退出 2。这个结果只代表“冻结时间轴前提下的文字修复是否还有待复核项”，不能被解释成完整 V4 的 timing/release confidence。
+
+### Safety / fallback
+
+Text-only path 的启用条件是任务语义明确为 **preserve timeline**，不是“中文就少检查”。如果存在缺失 cue、需要新增/拆分/合并字幕、cut/overlap、时间边界可疑或任何需要声学判断的情况，必须使用完整 V4。Canonical lyric 的文字真源地位不变；完整 V4 的 Source-to-Mix timing authority、threshold、review/fail-closed 与 release gate 均未改动。
+
+回滚该 fast path 只需删除新增 module/CLI/test，不需要迁移现有 V4 artifact。
+
+---
+
+## 2026-08-18 — Verified Mix Hash Reuse
+
+在 PR23 将 waveform decode 改为 bounded 后，coarse/fine CLI 仍存在一项重复整文件 I/O：`assert_manifest_paths()` 已经对 mix 重新计算 SHA-256 并与 task manifest 比对成功，随后构建 payload 时又调用 `sha256_file(args.mix_audio)` 再顺序读取整份 mix 一次。
+
+本轮只删除 **同一子进程内的第二次重复 hash**：
+
+```text
+scripts/v4_coarse_align.py
+scripts/v4_fine_align.py
+```
+
+两者仍先执行 `assert_manifest_paths()`；只有该校验确认当前 `--mix-audio` 路径与内容都和 task manifest 完全一致后，payload 才复用刚刚被验证过的 `task.inputs.audio.sha256`。因此正式 `mix_audio_sha256` 值与旧实现相同，没有跳过 manifest 内容校验，也没有改变 task fingerprint、artifact lineage 或任何对齐算法。
+
+这一步仍未消除不同 coarse/fine 子进程之间各自的 manifest 验证读取。下一轮完整 V4 性能工作应继续评估 parent-verified execution context / safe artifact resume，在不削弱 standalone CLI fail-closed 语义的前提下减少跨子进程重复 I/O。

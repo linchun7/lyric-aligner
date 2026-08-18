@@ -2,7 +2,8 @@
 
 ## 默认版本与结果语义
 
-- 当前生产算法为 `v3.9`。
+- 当前完整生产算法为 `v3.9`；V4 production-first 的权威运行说明见 `SKILL.md` / `references/v4-runtime-guide.md`。
+- 对“只修文字、明确冻结剪映时间轴”的任务，新增 `scripts/v4_text_repair.py` 独立快速入口；它不运行完整音频对齐链。
 - `passed=true` / `structurally_valid=true`：结构检查没有发现确定性错误。
 - `fully_reviewed=true`：高、中、低风险候选均为零。
 - `publish_ready=true`：同时满足结构通过和候选清零。
@@ -109,6 +110,30 @@ python scripts/migrate_task.py `
 ```
 
 可重复传入 `--regression-cases`。迁移会先完整读取所有文件，再为每个被改写的旧文件创建 `.schema1.bak`，最后写入 manifest；生产命令不接受 legacy `_source_srt_sha256`。
+
+## 快速路径：只修文字、冻结时间轴
+
+当任务已经明确：规范歌词是最终文字真源，现有剪映 SRT 的 cue 数量、编号、开始时间、结束时间全部保持不变，只修正错字/词句时，不应为了文字纠错运行完整音频链。直接按歌曲顺序重复传入 canonical lyric：
+
+```powershell
+python scripts/v4_text_repair.py `
+  --source-srt "private/任务名/input/source.srt" `
+  --canonical-lrc "private/任务名/input/lyrics/01.lrc" `
+  --canonical-lrc "private/任务名/input/lyrics/02.lrc" `
+  --out "output/任务名/任务名_TEXT_REPAIRED.srt" `
+  --report "output/任务名/任务名_TEXT_REPAIR.json"
+```
+
+这个入口：
+
+- 不读取 `mix.wav` 或 source audio，不运行 coarse/fine/transition/ASR/forced alignment；
+- 支持普通 LRC、Enhanced LRC、QRC 常见时间标记和纯文本歌词；时间标记只用于解析/重复 occurrence，不允许写回 SRT 时间；
+- 使用 Unicode NFKC + 忽略标点/空白的文本归一化与单调序列匹配；只有高置信、长度结构安全的 1:1 pair 才自动替换；
+- 输出前强制比较每个 cue 的原编号与完整 timing line，任何变化直接失败；
+- 拒绝 `--out` 覆盖 `--source-srt`，因此原件始终保留；
+- `status=ready` 时退出 0；存在低置信、分段不一致或未匹配 cue 时保持该 cue 原文，报告 `review_required` 并退出 2。
+
+如果任务实际需要新增/删除 cue、拆分/合并字幕、修正时间边界、处理 cut/overlap，或时间轴本身不可信，**不要使用 text-only fast path**，进入下面完整工作流/V4 production path。
 
 ## 阶段 2：保守文本基线
 

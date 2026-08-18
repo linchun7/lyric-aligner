@@ -44,7 +44,7 @@ def write_wav(path: Path, audio: np.ndarray) -> None:
 
 
 class V4RunEndToEndTests(unittest.TestCase):
-    def test_one_track_production_run_builds_timeline_without_legacy_fallback(self):
+    def test_one_track_production_run_builds_timeline_and_safely_resumes(self):
         with tempfile.TemporaryDirectory() as temporary:
             repo = Path(temporary)
             task = repo / "private" / "synthetic_v4"
@@ -88,18 +88,28 @@ class V4RunEndToEndTests(unittest.TestCase):
             manifest_path = qa_dir / "task_manifest.json"
             write_json_atomic(manifest_path, manifest)
 
+            head = subprocess.run(
+                ["git", "rev-parse", "HEAD"],
+                cwd=ROOT,
+                capture_output=True,
+                text=True,
+                check=True,
+            ).stdout.strip()
             out_dir = repo / "output" / "synthetic_v4" / "v4"
+            command = [
+                sys.executable,
+                str(ROOT / "scripts" / "v4_run.py"),
+                "--task-manifest",
+                str(manifest_path),
+                "--out-dir",
+                str(out_dir),
+                "--git-commit",
+                head,
+                "--workers",
+                "2",
+            ]
             completed = subprocess.run(
-                [
-                    sys.executable,
-                    str(ROOT / "scripts" / "v4_run.py"),
-                    "--task-manifest",
-                    str(manifest_path),
-                    "--out-dir",
-                    str(out_dir),
-                    "--git-commit",
-                    "synthetic-test",
-                ],
+                command,
                 cwd=ROOT,
                 capture_output=True,
                 text=True,
@@ -134,6 +144,40 @@ class V4RunEndToEndTests(unittest.TestCase):
                 manifest["task_fingerprint_sha256"],
             )
             self.assertGreaterEqual(len(artifact["upstream_artifact_ids"]), 3)
+
+            first_execution = json.loads(
+                (out_dir / "cache" / "execution_summary.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+            self.assertTrue(first_execution["resume_enabled"])
+            self.assertGreaterEqual(first_execution["executed"], 2)
+
+            # A second invocation with the exact same task, clean checked-out
+            # commit and runtime must reuse at least the expensive coarse
+            # artifact. Asset resolution is intentionally fresh across runs and
+            # timeline/final lineage is deterministically rebuilt by the core.
+            second = subprocess.run(
+                command,
+                cwd=ROOT,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(second.returncode, 0, msg=second.stderr)
+            second_execution = json.loads(
+                (out_dir / "cache" / "execution_summary.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+            self.assertTrue(second_execution["resume_enabled"])
+            self.assertGreaterEqual(second_execution["resume_hits"], 1)
+            self.assertGreaterEqual(second_execution["memo_hits"], 2)
+
+            second_artifact = json.loads(
+                (out_dir / "v4_run.artifact.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(second_artifact["artifact_id"], artifact["artifact_id"])
 
 
 if __name__ == "__main__":

@@ -1,12 +1,13 @@
 # Lyric Aligner v4 当前实施状态
 
 更新日期：2026-08-18  
-当前 main：P9 + Production Readiness Tooling + Windows validation hardening + bounded mix decode 已合入；真实私有任务可从 V4 production path 开始  
+当前 main：P9 + Production Readiness Tooling + Windows validation hardening + bounded mix decode + source feature cache 已合入；真实私有任务可从 V4 production path 开始  
 P8 merge：`00585a07b658ffea93509c4ed1a4b129deafd0a3`  
 P9 merge：`efbdbb926b03efdf1d91622d5c23cabef1f9850c`  
 PR21 merge：`04e0802156f62006c6b6af5b4ef59b1acc81ce86`  
 PR22 merge：`2b4a13132e95a551392811407f48573b36edab95`  
 PR23 merge：`4d7e086aedd2b56210368302d9a17df29fef6a0c`  
+PR24 merge：`0b1f38c98542eed9ec80034677cef4bf8e7f9791`  
 主线算法版本：`4.0.0a8`  
 Calibration profile：`production-bootstrap-2026-08-17-a7`
 
@@ -29,9 +30,10 @@ P9    editor/ASR/forced multi-family shadow fusion
 PR21  production doctor + family evaluator + runtime snapshot
 PR22  Windows command/bootstrap/privacy validation hardening
 PR23  bounded mix decode for coarse/fine production alignment
+PR24  source harmonic feature cache for repeated coarse jobs
 ```
 
-P3 validate #493、P4 #517、P5 #530、P6 #545、P7 #560 均在各自 merge 前全绿。P8 latest result tree 的 fast-core #1 完成 compile、documentation contract、完整 unit/E2E、Skill、privacy、diff-check 全绿后合入。P9 result tree 的 fast-core #2 同样全绿，日志显示 **Ran 324 tests / OK**；随后 P9 branch 与已经合入的 P8 main 同步 ancestry，再以 PR #19 合入。PR21 以 merge `04e0802156f62006c6b6af5b4ef59b1acc81ce86` 进入 main，补齐 Doctor、runtime snapshot 与 family calibration tooling。PR22 exact-head fast-core 与 Python 3.10/3.12/3.14 + ASR validate 全绿后，以 merge `2b4a13132e95a551392811407f48573b36edab95` 进入 main。PR23 exact-head fast-core #43 与 validate #675 全绿后，以 merge `4d7e086aedd2b56210368302d9a17df29fef6a0c` 进入 main。
+P3 validate #493、P4 #517、P5 #530、P6 #545、P7 #560 均在各自 merge 前全绿。P8 latest result tree 的 fast-core #1 完成 compile、documentation contract、完整 unit/E2E、Skill、privacy、diff-check 全绿后合入。P9 result tree 的 fast-core #2 同样全绿，日志显示 **Ran 324 tests / OK**；随后 P9 branch 与已经合入的 P8 main 同步 ancestry，再以 PR #19 合入。PR21 以 merge `04e0802156f62006c6b6af5b4ef59b1acc81ce86` 进入 main，补齐 Doctor、runtime snapshot 与 family calibration tooling。PR22 exact-head fast-core 与 Python 3.10/3.12/3.14 + ASR validate 全绿后，以 merge `2b4a13132e95a551392811407f48573b36edab95` 进入 main。PR23 exact-head fast-core #43 与 validate #675 全绿后，以 merge `4d7e086aedd2b56210368302d9a17df29fef6a0c` 进入 main。PR24 将同一 source track 的 harmonic features 做 SHA/config/runtime-bound disposable cache，合入 merge `0b1f38c98542eed9ec80034677cef4bf8e7f9791`。
 
 CI 同时增加：
 
@@ -140,7 +142,13 @@ references/v4-implementation.md
 references/dataset-protocol.md
 ```
 
-标准顺序：
+如果任务明确要求“仅按规范歌词修正字词，剪映 SRT 的 cue 数量、编号和全部起止时间保持不变”，优先使用 text-only repair fast path；它不读取音频，也不运行 Source-to-Mix / coarse / fine / transition / ASR / forced alignment：
+
+```text
+scripts/v4_text_repair.py
+```
+
+只有需要重新判断时间轴、cut、overlap、缺失 cue 或声学边界时才进入下面完整 V4：
 
 ```text
 1. task + canonical LRC + source audio + edited mix/editor SRT
@@ -216,11 +224,11 @@ PR23 已把这部分变成同算法语义的 bounded decode：
 
 这不是低精度模式，不改变 threshold、cut/review、Source-to-Mix authority 或 release semantics。
 
-## 10. Source harmonic feature cache（当前性能优化分支）
+## 10. Source harmonic feature cache（已合入 PR24）
 
 `v4_run.py` 对 12 首 primary occurrence 以及 11 个 transition boundary 会多次调用同一原曲的 coarse alignment。即使 mix 已 bounded decode，旧实现仍会对同一 source audio 重复执行 HPSS、Chroma CENS、MFCC feature extraction；一首歌通常会在 primary 及相邻 transition 中重复使用。
 
-当前 `agent/v4-source-feature-cache` 增加可删除的本地 source feature cache：
+PR24 增加可删除的本地 source feature cache：
 
 - cache 仅保存数值 harmonic `FeatureBundle`，不保存歌词、source path 或 timing decision；
 - key 绑定 source audio SHA-256、sample rate、hop length、feature implementation ID 与 librosa version；
@@ -230,8 +238,28 @@ PR23 已把这部分变成同算法语义的 bounded decode：
 - corrupt / incompatible / missing cache 一律当 miss，不 BLOCK 生产；
 - formal coarse payload/artifact 仍绑定完整 source/mix SHA、task fingerprint、profile、algorithm version 和原有 lineage，cache 本身不是 upstream artifact。
 
-新增 cache roundtrip/corruption/key isolation 以及 precomputed-source-feature 与直接提取的 coarse mapping 等价测试。该性能层不修改 slope grid、score/margin threshold、cut/review 或 Source-to-Mix 选择逻辑。
+该性能层不修改 slope grid、score/margin threshold、cut/review 或 Source-to-Mix 选择逻辑。
 
-后续性能优先级保持：安全 artifact resume → bounded workers → 真实数据验证后的 sparse ordinary-song probe + automatic fallback。语言本身不作为降低 Source-to-Mix 检查强度的理由。
+## 11. Text-only subtitle repair fast path（当前分支）
 
-> **当前结论：下一次新生产任务应从合入后的最新 main 开始，利用 bounded mix decode + source feature reuse；正在运行的旧 runtime 不应中途切 commit。**
+针对“规范歌词已经可靠、剪映时间轴已经可用、只需要修正字词”的真实生产场景，当前分支新增独立 text-only path：
+
+```text
+lyric_aligner/text_repair.py
+scripts/v4_text_repair.py
+scripts/test_v4_text_repair.py
+```
+
+核心边界：
+
+- 不读取 audio，不调用 librosa，不运行 coarse/fine/transition/ASR/forced alignment；
+- 支持按参数顺序串联多个 canonical LRC/TXT，LRC 时间标签只用于展开重复 occurrence，不用于改 SRT timing；
+- 文本匹配使用 Unicode NFKC + punctuation/whitespace-insensitive normalization，再进行有序 fuzzy sequence alignment；
+- 只有高置信且长度结构安全的 1:1 cue/lyric pair 自动替换；低置信、分段不一致、无法匹配的 cue 保持原文并标记 `review_required`；
+- 输出前后强制比较每个 cue 的原始编号和 timing line，任何变化都立即失败；
+- CLI 拒绝 `--out` 覆盖 `--source-srt`，因此原字幕不会被原地修改；
+- report 记录 source/canonical/output SHA-256、替换/未变/review 数和逐 cue decision，但不读取或生成音频 artifact。
+
+这个入口只适用于 **preserve timeline** 的文字纠错，不是 V4 Source-to-Mix 的低精度替代。当 cue 缺失、分段改变、cut/overlap 或时间边界本身可疑时，必须回到完整 V4。
+
+后续完整 V4 性能优先级调整为：去除重复整文件验证/hash I/O → 安全 artifact resume → bounded workers → 真实数据验证后的 sparse ordinary-song probe + automatic fallback。语言本身仍不作为降低 Source-to-Mix 检查强度的理由；text-only path 的依据是任务明确冻结 timeline，而不是“中文所以可以少检查”。

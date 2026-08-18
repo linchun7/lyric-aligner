@@ -18,7 +18,7 @@ import librosa
 from lyric_aligner import __version__
 from lyric_aligner.audio.fine_alignment import refine_coarse_mapping, should_run_fine_alignment
 from lyric_aligner.config import calibration_overrides
-from lyric_aligner.contracts.artifacts import atomic_write_json, build_artifact_manifest, sha256_file, validate_artifact_output, validate_upstream_artifact
+from lyric_aligner.contracts.artifacts import atomic_write_json, build_artifact_manifest, validate_artifact_output, validate_upstream_artifact
 from lyric_aligner.pipeline.context import build_pipeline_context
 from task_contract import assert_manifest_paths, load_task_manifest, resolve_manifest_record
 
@@ -224,7 +224,7 @@ def main() -> int:
             "occurrence_id": occurrence_id,
             "track_id": binding.track_id,
             "canonical_selection_sha256": binding.canonical_selection_sha256,
-            "mix_audio_sha256": sha256_file(args.mix_audio),
+            "mix_audio_sha256": str(task["inputs"]["audio"]["sha256"]),
             "source_audio_sha256": binding.source_audio_sha256,
             "upstream_asset_artifact_id": context.asset_artifact.artifact_id,
             "upstream_coarse_artifact_id": coarse_artifact["artifact_id"],
