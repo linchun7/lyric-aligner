@@ -67,11 +67,17 @@ def load(path: Path) -> dict:
     return value
 
 
-def assert_resume_git_identity(git_commit: str) -> None:
-    """Make producer git identity trustworthy before it can authorize reuse."""
+def resume_git_identity_verified(git_commit: str) -> bool:
+    """Return whether producer metadata can safely authorize cross-run reuse.
+
+    ``--git-commit`` predates resume support and remains arbitrary producer
+    metadata for backward compatibility. It authorizes resume only when it is
+    the exact current clean HEAD; otherwise the run proceeds normally with
+    cross-run resume disabled.
+    """
 
     if not git_commit:
-        return
+        return False
     head = subprocess.run(
         ["git", "rev-parse", "HEAD"],
         cwd=ROOT,
@@ -79,13 +85,8 @@ def assert_resume_git_identity(git_commit: str) -> None:
         text=True,
         check=False,
     )
-    if head.returncode != 0:
-        raise ValueError("--git-commit requires an accessible git worktree for safe resume")
-    actual = head.stdout.strip()
-    if git_commit.strip() != actual:
-        raise ValueError(
-            "--git-commit must exactly match the currently checked-out HEAD for safe resume"
-        )
+    if head.returncode != 0 or git_commit.strip() != head.stdout.strip():
+        return False
     status = subprocess.run(
         ["git", "status", "--porcelain=v1"],
         cwd=ROOT,
@@ -93,12 +94,7 @@ def assert_resume_git_identity(git_commit: str) -> None:
         text=True,
         check=False,
     )
-    if status.returncode != 0:
-        raise ValueError("cannot verify git worktree cleanliness for safe resume")
-    if status.stdout.strip():
-        raise ValueError(
-            "--git-commit requires a clean git worktree; omit --git-commit to run without cross-run resume"
-        )
+    return status.returncode == 0 and not status.stdout.strip()
 
 
 def _stat_identity(path: Path) -> tuple[int, int]:
@@ -185,7 +181,7 @@ def prestage(a: argparse.Namespace) -> VerifiedStageRunner:
     if a.workers < 1 or a.workers > 4:
         raise ValueError("workers must be between 1 and 4")
     clear_verified_input_session()
-    assert_resume_git_identity(a.git_commit)
+    git_identity_verified = resume_git_identity_verified(a.git_commit)
     manifest = task_contract.load_task_manifest(a.task_manifest)
     before_verify = manifest_stat_snapshot(a.task_manifest, manifest)
     problems = task_contract.verify_manifest_inputs(a.task_manifest, manifest)
@@ -208,7 +204,7 @@ def prestage(a: argparse.Namespace) -> VerifiedStageRunner:
         git_commit=a.git_commit,
         workers=a.workers,
         resume=not a.no_resume,
-        git_identity_verified=bool(a.git_commit),
+        git_identity_verified=git_identity_verified,
     )
 
     mix = CORE._manifest_path(a.task_manifest, manifest, "audio")
