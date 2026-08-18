@@ -2,7 +2,7 @@
 
 The doctor is deliberately observational: it reads local artifacts, validates
 basic stage contracts, inspects optional backend availability without loading
-models, and recommends the next production action.  It never mutates task or
+models, and recommends the next production action. It never mutates task or
 evidence artifacts and never treats backend discovery as an accuracy claim.
 """
 
@@ -68,10 +68,6 @@ def _stage(
     }, payload
 
 
-def _object(payload: dict[str, Any]) -> tuple[bool, str]:
-    return True, "json_object"
-
-
 def _task(payload: dict[str, Any]) -> tuple[bool, str]:
     tracks = payload.get("tracks")
     if not isinstance(tracks, list) or not tracks:
@@ -80,13 +76,23 @@ def _task(payload: dict[str, Any]) -> tuple[bool, str]:
 
 
 def _run(payload: dict[str, Any]) -> tuple[bool, str]:
-    stage = str(payload.get("stage") or "").strip()
+    """Validate the common effective-run shape, not an artifact stage field.
+
+    `v4_run.json` itself has no `stage`; stage belongs to its artifact manifest.
+    Review/materialized effective runs also preserve a status plus exact runtime
+    identity, so requiring a payload stage would reject a valid production run.
+    """
+
     status = str(payload.get("status") or "").strip()
-    if not stage:
-        return False, "run_missing_stage"
+    algorithm_version = str(payload.get("algorithm_version") or "").strip()
+    task_fingerprint = str(payload.get("task_fingerprint_sha256") or "").strip()
     if not status:
         return False, "run_missing_status"
-    return True, f"stage={stage};status={status}"
+    if not algorithm_version:
+        return False, "run_missing_algorithm_version"
+    if len(task_fingerprint) != 64:
+        return False, "run_missing_task_fingerprint"
+    return True, f"status={status};algorithm={algorithm_version}"
 
 
 def _editor(payload: dict[str, Any]) -> tuple[bool, str]:
@@ -133,8 +139,16 @@ def _forced_mix(payload: dict[str, Any]) -> tuple[bool, str]:
     jobs = payload.get("jobs")
     if not isinstance(jobs, list):
         return False, "forced_mix_jobs_not_list"
-    projected = sum(str(row.get("projection_status") or "") == "projected" for row in jobs if isinstance(row, dict))
-    unprojectable = sum(str(row.get("projection_status") or "") == "unprojectable" for row in jobs if isinstance(row, dict))
+    projected = sum(
+        str(row.get("projection_status") or "") == "projected"
+        for row in jobs
+        if isinstance(row, dict)
+    )
+    unprojectable = sum(
+        str(row.get("projection_status") or "") == "unprojectable"
+        for row in jobs
+        if isinstance(row, dict)
+    )
     return True, f"projected={projected};unprojectable={unprojectable}"
 
 
@@ -158,13 +172,15 @@ def _fusion(payload: dict[str, Any]) -> tuple[bool, str]:
 def _runtime_snapshot(payload: dict[str, Any]) -> tuple[bool, str]:
     if str(payload.get("schema_version") or "") != "1.0":
         return False, "runtime_snapshot_schema_invalid"
-    identity = str(payload.get("runtime_identity_sha256") or "")
-    if len(identity) != 64:
+    identity = str(payload.get("runtime_identity_sha256") or "").lower()
+    if len(identity) != 64 or any(char not in "0123456789abcdef" for char in identity):
         return False, "runtime_snapshot_identity_missing"
     return True, "runtime_snapshot_bound"
 
 
-def _dataset_summary(path: Path | None, split: str | None) -> tuple[dict[str, Any], dict[str, bool]]:
+def _dataset_summary(
+    path: Path | None, split: str | None
+) -> tuple[dict[str, Any], dict[str, bool]]:
     readiness = {
         "metadata": False,
         "references": False,
@@ -190,15 +206,15 @@ def _dataset_summary(path: Path | None, split: str | None) -> tuple[dict[str, An
     rows = report.get("splits") or {}
     selected = [rows[split]] if split is not None else list(rows.values())
     readiness["metadata"] = bool(report.get("metadata_ready"))
-    readiness["references"] = bool(selected) and all(bool(row.get("reference_ready")) for row in selected)
-    readiness["predictions"] = bool(selected) and all(bool(row.get("prediction_files_ready")) for row in selected)
-    readiness["evaluation"] = bool(selected) and all(bool(row.get("evaluation_ready")) for row in selected)
-    counts = {
-        key: int(sum(int(row.get("case_count") or 0) for row in selected))
-        if key == "case_count"
-        else None
-        for key in ("case_count",)
-    }
+    readiness["references"] = bool(selected) and all(
+        bool(row.get("reference_ready")) for row in selected
+    )
+    readiness["predictions"] = bool(selected) and all(
+        bool(row.get("prediction_files_ready")) for row in selected
+    )
+    readiness["evaluation"] = bool(selected) and all(
+        bool(row.get("evaluation_ready")) for row in selected
+    )
     return {
         "provided": True,
         "file": _file_label(path),
@@ -207,9 +223,21 @@ def _dataset_summary(path: Path | None, split: str | None) -> tuple[dict[str, An
         "dataset": str(report.get("dataset") or ""),
         "dataset_revision": str(report.get("dataset_revision") or ""),
         "split": split or "all",
-        "case_count": counts["case_count"],
+        "case_count": sum(int(row.get("case_count") or 0) for row in selected),
         "readiness": readiness,
     }, readiness
+
+
+def _safe_missing_requirement(value: str) -> str:
+    """Redact executable paths from backend readiness diagnostics."""
+
+    text = str(value)
+    prefix = "command_not_found:"
+    if not text.startswith(prefix):
+        return text
+    executable = text[len(prefix) :].replace("\\", "/")
+    basename = executable.rsplit("/", 1)[-1]
+    return prefix + (basename or "<redacted>")
 
 
 def _backend_report(
@@ -237,7 +265,10 @@ def _backend_report(
                 "available": bool(status.available),
                 "execution_ready": bool(status.execution_ready),
                 "capabilities": list(status.capabilities),
-                "missing_execution_requirements": list(status.missing_execution_requirements),
+                "missing_execution_requirements": [
+                    _safe_missing_requirement(value)
+                    for value in status.missing_execution_requirements
+                ],
             }
         )
         if status.execution_ready:
@@ -246,33 +277,76 @@ def _backend_report(
     return rows, capabilities
 
 
-def _next_actions(stages: dict[str, dict[str, Any]], run_payload: dict[str, Any] | None) -> list[dict[str, str]]:
+def _next_actions(
+    stages: dict[str, dict[str, Any]],
+    run_payload: dict[str, Any] | None,
+) -> list[dict[str, str]]:
     actions: list[dict[str, str]] = []
     if not stages["task"]["valid"]:
-        actions.append({"action": "supply_task_manifest", "command": "python scripts/init_task.py ..."})
+        actions.append(
+            {
+                "action": "supply_task_manifest",
+                "command": "python scripts/init_task.py ...",
+            }
+        )
         return actions
     if not stages["run"]["valid"]:
-        actions.append({"action": "reconstruct_source_to_mix", "command": "python scripts/v4_run.py ..."})
+        actions.append(
+            {
+                "action": "reconstruct_source_to_mix",
+                "command": "python scripts/v4_run.py ...",
+            }
+        )
         return actions
 
     status = str((run_payload or {}).get("status") or "")
     if status == "review_required":
-        actions.append({"action": "resolve_review", "command": "python scripts/v4_review.py template ..."})
+        actions.append(
+            {
+                "action": "resolve_review",
+                "command": "python scripts/v4_review.py template ...",
+            }
+        )
         return actions
 
     if not stages["alignment_plan"]["valid"]:
-        actions.append({"action": "plan_auxiliary_evidence", "command": "python scripts/v4_plan_alignment.py ..."})
+        actions.append(
+            {
+                "action": "plan_auxiliary_evidence",
+                "command": "python scripts/v4_plan_alignment.py ...",
+            }
+        )
     if stages["forced_source"]["valid"] and not stages["forced_mix"]["valid"]:
-        actions.append({"action": "project_forced_evidence_to_mix", "command": "python scripts/v4_project_forced_alignment.py ..."})
+        actions.append(
+            {
+                "action": "project_forced_evidence_to_mix",
+                "command": "python scripts/v4_project_forced_alignment.py ...",
+            }
+        )
     auxiliary_present = any(
         stages[name]["valid"] for name in ("editor", "asr", "forced_mix")
     )
     if auxiliary_present and not stages["fusion"]["valid"]:
-        actions.append({"action": "build_shadow_fusion", "command": "python scripts/v4_fuse_evidence.py ..."})
+        actions.append(
+            {
+                "action": "build_shadow_fusion",
+                "command": "python scripts/v4_fuse_evidence.py ...",
+            }
+        )
     if status in {"ready_for_render", "resolved", "materialized"}:
-        actions.append({"action": "render_authoritative_timeline", "command": "python scripts/v4_render.py ..."})
+        actions.append(
+            {
+                "action": "render_authoritative_timeline",
+                "command": "python scripts/v4_render.py ...",
+            }
+        )
     if not actions:
-        actions.append({"action": "inspect_current_artifacts", "command": "python scripts/v4_doctor.py ..."})
+        actions.append(
+            {
+                "action": "inspect_current_artifacts",
+                "command": "python scripts/v4_doctor.py ...",
+            }
+        )
     return actions
 
 
@@ -296,7 +370,7 @@ def build_doctor_report(
     external_forced_aligner_command: str | None = None,
     requirements: Iterable[str] = (),
 ) -> dict[str, Any]:
-    """Build a machine-readable readiness report without exposing local paths/text."""
+    """Build a machine-readable readiness report without exposing paths/text."""
 
     stages: dict[str, dict[str, Any]] = {}
     payloads: dict[str, dict[str, Any] | None] = {}
@@ -362,6 +436,6 @@ def build_doctor_report(
             "primary_timing": "source_to_mix_only",
             "auxiliary_evidence": "diagnostic_shadow_only_until_calibrated",
         },
-        "privacy": "no lyric text, local absolute paths, backend resolved paths, or full commands are emitted",
+        "privacy": "no raw lyric text, local absolute paths, backend resolved paths, or full commands are emitted",
         "accuracy_boundary": "backend discovery/readiness is not a singing-accuracy claim",
     }
