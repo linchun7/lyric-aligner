@@ -1,8 +1,9 @@
 # Lyric Aligner v4 当前实施状态
 
 更新日期：2026-08-18  
-当前开发分支：`agent/v4-forced-alignment-mix-projection`  
-当前 main：`9ad6df4f04b396871f757422bcb35f1fa7676678`  
+当前开发分支：`agent/v4-forced-evidence-fusion-shadow-v2`  
+当前 main：`9ad6df4f04b396871f757422bcb35f1fa7676678`（P7）  
+P8 PR：`#17`，head `14e36d4a815a97d070efa670747d0035f06b32c8`，已 ready for review，latest validate #593 排队中  
 主线算法版本：`4.0.0a8`  
 Calibration profile：`production-bootstrap-2026-08-17-a7`
 
@@ -10,58 +11,22 @@ Calibration profile：`production-bootstrap-2026-08-17-a7`
 
 生产重建主链已完成：TrackAsset/canonical single truth、HPSS+Chroma/MFCC Source-to-Mix、AFFINE/PIECEWISE_RATE、Selective Fine、candidate review、confirmed overlap、confirmed cut/CUT_AWARE、partial-line fail-closed、cut+overlap safe composition、strict render/release。
 
-已合入增量：
-
 ```text
 P1    strict calibration/blind framework
-      1c6babe37067c217d14a7404aa0ed6a1c4779a00
 P1.1  private dataset scaffold/readiness
-      ad6c403a56209e945a9a61a1eeab1a4bc3c204b4
 P2    editor/Jianying multilingual shadow evidence
-      2e96569189ac6eb16d987fb2f304403696bc809b
 P3    local acoustic planner/backend/faster-whisper executor
-      cd3420750c06a55fa1af7d6314ec56971e728928
 P4    shadow multi-family evidence fusion
-      bc4e10760ffee2e5990ca580d5edbadd7d561eaf
 P5    bounded ASR second-pass routing
-      1abef200c3dbfe711dacf5432bb51ee7ac1bbe5d
 P6    ASR second-pass execution + composite evidence
-      6eacacc50e885684b0265e3abea729b19b1b7725
 P7    external source forced alignment
-      9ad6df4f04b396871f757422bcb35f1fa7676678
 ```
 
-P3 validate #493、P4 #517、P5 #530、P6 #545、P7 #560 均在 ASR environment + Python 3.10/3.12/3.14 compile/docs/full unit-E2E/Skill/privacy/environment/diff-check 全绿后合入。
+P3 validate #493、P4 #517、P5 #530、P6 #545、P7 #560 均全绿后合入。
 
-## 2. P7 baseline：External Source Forced Alignment
+## 2. P8：Forced Alignment Source-to-Mix Projection
 
-P7 建立 backend-neutral external subprocess JSON 协议，不把 ASR 冒充 forced alignment，也不假设 WhisperX/SOFA/MFA 已安装。正式 evidence：
-
-```text
-stage = source_forced_alignment_evidence
-role = forced_alignment_evidence
-```
-
-Source/canonical identity、live source SHA、backend/model revision、original source window、line/spans bounds 全部 fail closed；canonical raw text、local source path、full command、stdout/stderr 不进入正式 evidence/artifact。
-
-Forced alignment 的 authority 仍固定为 auxiliary source acoustic evidence；canonical lyric 和 Source-to-Mix authority 不变。
-
-## 3. 当前 P8：Forced Alignment Source-to-Mix Projection
-
-P8 解决 P7 source-ms 不能直接与 editor/ASR mix-ms 比较的问题。
-
-新增：
-
-```text
-lyric_aligner/alignment/forced_projection.py
-scripts/v4_project_forced_alignment.py
-scripts/test_v4_forced_mix_projection.py
-scripts/test_v4_forced_mix_projection_end_to_end.py
-```
-
-并更新 `lyric_aligner/alignment/__init__.py`。
-
-输出：
+P8 已实现，PR #17。输出：
 
 ```text
 stage = forced_alignment_mix_projection
@@ -69,63 +34,124 @@ role = forced_alignment_mix_evidence
 mode = forced_alignment_mix_projection
 ```
 
-## 4. P8 projection semantics
+核心规则：
 
-- `AFFINE` / `PIECEWISE_RATE`：复用 existing `mix_time_for_source()` analytical inverse；
-- `CUT_AWARE`：line 两端只有同在一个 retained source segment 才投影；
-- confirmed gap boundary 或 cross-cut line -> `unprojectable`，绝不 bridge；
-- character spans 独立投影，可保留 cut 两侧合法局部证据；
-- 只解析 forced evidence 实际引用的 occurrences，`mapping_scope=forced_evidence_occurrences_only`；
-- unrelated blocked occurrence 不阻塞局部 projection；
-- relevant mapping missing/blocked/unbound/provenance tamper 仍 fail closed。
+- `AFFINE` / `PIECEWISE_RATE` 复用 `mix_time_for_source()`；
+- `CUT_AWARE` cross-gap/cross-cut line -> `unprojectable`，绝不 bridge；
+- spans 独立投影；
+- 只解析 forced evidence 实际引用 occurrences；
+- relevant mapping/provenance 缺失 fail closed；
+- projected evidence 不复制 canonical raw lyric。
 
-## 5. P8 lineage / privacy
+旧 head validate #577 只因 documentation contract 失败，compile 已通过；docs 已补齐后形成 latest head `14e36d4...`，validate #593 当前排队。
 
-P8 artifact upstream 绑定：
+## 3. 当前 P9：Forced Alignment Multi-Family Shadow Fusion
+
+P9 在 P8 之上把 `forced_alignment_mix_evidence` 接入 P4 fusion，仍保持 shadow-only。
+
+代码：
 
 ```text
-source run artifact
-P7 forced evidence artifact
-exact coarse/fine/cut mapping artifacts actually used
+lyric_aligner/evidence/fusion.py
+scripts/v4_fuse_evidence.py
+scripts/test_v4_forced_evidence_fusion.py
+scripts/test_v4_evidence_fusion_end_to_end.py
 ```
 
-正式 projected evidence 不复制 canonical raw lyric；保留 job/occurrence/track/line identity、source boundaries、projection status/reason、可用 mix boundaries、backend/model lineage。
+CLI 新增：
 
-## 6. P8 tests
+```text
+--forced-mix-evidence
+--forced-mix-evidence-artifact
+```
 
-已覆盖：
+## 4. P9 family / conflict semantics
 
-- AFFINE；
-- PIECEWISE_RATE；
-- CUT_AWARE same-segment；
-- confirmed gap/cross-cut unprojectable；
-- independent span projection；
-- relevant mapping failure；
-- unrelated blocked occurrence isolation；
-- mapping artifact provenance tamper；
-- CLI artifact E2E/privacy。
+可用 auxiliary boundary families：
 
-前一版 latest-head `94aa6df29f8505f703c37c5ce59c292f149806e3` 的 validate #577 失败原因仅为 documentation contract：生产/CLI/architecture 变化尚未同步 owning docs；compile 在失败前已通过。当前分支正在补齐这些文档后重新跑 latest-head CI。
+```text
+editor
+asr
+forced_alignment
+```
 
-## 7. Actions 能 / 不能证明
+Forced family 必须来自 P8 mix-time projection，且 canonical line/track/text hash identity 与当前 timeline 一致。`unprojectable` forced line 保留 diagnostic reason，但不计为可用 family。
 
-Actions 能验证 P8 deterministic projection、cut safety、artifact lineage、privacy 与 package/CLI E2E。
+所有可用 auxiliary pair 都做 onset/offset 最大分歧检测：
 
-Actions 仍不能证明：
+```text
+editor ↔ asr
+editor ↔ forced_alignment
+asr ↔ forced_alignment
+```
 
-- 任一真实 WhisperX/SOFA/MFA production backend 已安装/已跑通；
-- 某 checkpoint/G2P 对真实歌声准确；
-- forced-alignment family 与 editor/ASR 的权重/阈值已通过真实 blind calibration；
-- forced evidence 可以直接改 final timing。
+任意 pair 超过 `conflict_boundary_ms` -> `CONFLICT`。三 family 中即使两家一致，也不会以多数票掩盖第三家 outlier。
 
-## 8. P8 之后的收口路线
+无冲突时：
 
-1. P8 latest-head CI 全绿并合入；
-2. 将 `forced_alignment_mix_evidence` 作为独立 acoustic family 接入 fusion，保持 shadow/fail-closed；
-3. 增加 family disagreement / cut-unprojectable / missing-family diagnostics 与 release-gate 输入；
-4. 为本地真实生产补齐可执行的 runtime/preflight 与 production recipe；
-5. 真正使用 WhisperX/SOFA/MFA 或其他 adapter 时，锁定 backend/model/language/runtime identity；
-6. 使用 private real-song calibration/blind 数据完成误差评估和阈值选择；
-7. 在真实数据证明收益前，不把 auxiliary evidence 自动升级为 final timing authority。
+```text
+0 auxiliary family -> LOW
+1 auxiliary family -> MEDIUM
+>=2 auxiliary families -> HIGH
+```
 
-> **当前正确表述：P0/P1/P1.1/P2/P3/P4/P5/P6/P7 已进入 main；P8 的 source-to-mix forced projection 已实现，正在补齐 documentation contract 并等待 latest-head CI。真实 production forced-aligner 准确率仍必须由本地真实数据验证。**
+这些仍是 **uncalibrated shadow state**，不是生产 release confidence。
+
+## 5. Authority / release boundary
+
+P9 固定：
+
+```text
+canonical_text = canonical_lyrics_only
+primary_timing = source_to_mix_only
+forced_alignment = auxiliary_shadow_family_mix_time
+policy_calibrated = false
+release_gate_eligible = false
+automatic_timing_change_allowed = false
+```
+
+因此当前代码不会因为 editor/ASR/forced 三者看起来一致，就偷偷改 final timing。
+
+## 6. P9 diagnostics / lineage
+
+每行新增：
+
+```text
+editor_forced_boundary_disagreement_ms
+asr_forced_boundary_disagreement_ms
+max_auxiliary_boundary_disagreement_ms
+```
+
+summary 新增：
+
+```text
+forced_alignment_line_counts = projected / unprojectable / absent
+```
+
+Fusion artifact 把 source run、canonical timelines、editor、ASR、forced mix evidence 的实际 artifact IDs 全部写入 upstream lineage；forced evidence 若属于另一 source run、artifact hash 被篡改、canonical identity 漂移均 fail closed。
+
+## 7. 测试范围
+
+新增/扩展测试覆盖：
+
+- forced-only -> MEDIUM shadow；
+- editor+forced agreement -> HIGH shadow；
+- ASR+forced disagreement -> CONFLICT；
+- 三 family 任一 outlier -> CONFLICT；
+- unprojectable forced 不计 family 且 reason 可审计；
+- canonical hash/unknown line fail closed；
+- unprojectable payload 不能夹带 mix boundary；
+- CLI E2E 三 family artifact lineage；
+- fusion 输出不泄露 private canonical/editor raw text。
+
+## 8. 代码完成后仍必须在本地做的真实生产验证
+
+公共 Actions 只能证明 deterministic protocol/math/lineage/privacy；不能证明真实歌声准确率。真正拿数据生产时必须：
+
+1. 选择并安装真实 forced-aligner adapter/runtime；
+2. 锁定 backend/package、model/checkpoint revision、language/G2P resources、device/runtime identity；
+3. 用 private real-song calibration set 测 editor/ASR/forced/source-to-mix 每 family boundary error；
+4. 用独立 blind set 冻结/验证阈值；
+5. 数据证明收益前，不开启 auxiliary evidence 自动 timing mutation 或 release authority。
+
+> **当前收口目标：P8 CI 全绿并合入 → P9 基于最新 main 跑全量 CI 并合入 → 更新本地 Codex production handoff。之后剩余的“准确率证明/阈值选择”必须由真实私有数据完成，不能在公共 synthetic CI 中伪造。**
