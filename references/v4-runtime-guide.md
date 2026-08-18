@@ -4,7 +4,7 @@
 主线算法版本：`4.0.0a8`  
 Calibration profile：`production-bootstrap-2026-08-17-a7`
 
-> 当前代码链已覆盖 production reconstruction、editor shadow、local ASR first/second pass、external source forced alignment、forced source→mix projection，以及 editor/ASR/forced 三 family 的 shadow fusion。canonical lyric 与 Source-to-Mix 仍分别拥有 final text/order 与 primary timing authority。
+> 当前代码链已覆盖 production reconstruction、editor shadow、local ASR first/second pass、external source forced alignment、forced source→mix projection，以及 editor/ASR/forced 三 family 的 shadow fusion。P10 增加 forced-alignment batch protocol 1.1，仅优化真实 backend 的进程/模型加载效率，不改变 canonical lyric 或 Source-to-Mix authority。
 
 ## 1. 主链 / calibration
 
@@ -40,7 +40,7 @@ python scripts/v4_execute_asr_second_pass.py ...
 
 P6 composite 输出 `asr_evidence_local / asr_evidence`，可直接传给 fusion。
 
-## 3. P7 backend readiness
+## 3. P7/P10 backend readiness
 
 在真正执行 forced alignment 前先检查：
 
@@ -52,6 +52,8 @@ python scripts/v4_alignment_backends.py `
 `available/execution_ready=true` 只表示 executable 可解析；**不等于** checkpoint/G2P 对歌声已验证。
 
 ## 4. 执行 external source forced alignment
+
+默认保持 P7 single-job protocol 1.0：
 
 ```powershell
 python scripts/v4_execute_forced_alignment.py `
@@ -67,19 +69,79 @@ python scripts/v4_execute_forced_alignment.py `
   --backend-version "<backend-version>" `
   --model-id "<model/checkpoint-id>" `
   --model-revision "<revision/hash>" `
+  --execution-mode single `
   --out "output/<任务>/v4/alignment/forced_evidence.json" `
-  --artifact-out "output/<任务>/v4/alignment/forced_evidence.artifact.json" `
-  --git-commit "<commit>"
+  --artifact-out "output/<任务>/v4/alignment/forced_evidence.artifact.json"
 ```
 
-P7 输出 source-time evidence：
+P10 batch mode 只需改：
+
+```powershell
+--execution-mode batch
+```
+
+Batch adapter invocation contract：
+
+```text
+<external command>
+  --batch-request <temporary-request.json>
+  --batch-response <temporary-response.json>
+```
+
+Protocol 1.1 会把当前 selected source-forced jobs 放进一个 request，外部 adapter 只启动一次。成功 response 必须包含与 request **完全相同**的 job ID 集合。
+
+### P10 artifact fields
+
+```text
+protocol_version = 1.0 | 1.1
+requested_execution_mode = single | batch
+execution_mode = single_job_subprocess | batch_subprocess
+command_invocation_count
+```
+
+Batch 成功时通常：
+
+```text
+execution_mode = batch_subprocess
+command_invocation_count = 1
+```
+
+显式空选择：
+
+```text
+selected_job_ids = []
+command_invoked = false
+command_invocation_count = 0
+job_count = 0
+```
+
+不得把空选择解释为“跑全部”。
+
+P7/P10 formal 输出仍是：
 
 ```text
 stage = source_forced_alignment_evidence
 role = forced_alignment_evidence
 ```
 
-## 5. P8：forced evidence 投影到 mix time
+## 5. P10 batch adapter 的 model lineage
+
+同一次 batch invocation 必须有可审计的一致 backend/model identity：
+
+```text
+backend_id/backend_version
+model_id/model_revision
+```
+
+如果真实 WhisperX adapter 按语言使用不同 align checkpoint，第一版生产实现应按：
+
+```text
+same language + same align model -> one batch
+```
+
+不要在同一 batch 内静默切模型却只写一个 model ID。以后如需跨语言 batch，应引入 versioned model-bundle manifest。
+
+## 6. P8：forced evidence 投影到 mix time
 
 ```powershell
 python scripts/v4_project_forced_alignment.py `
@@ -92,6 +154,8 @@ python scripts/v4_project_forced_alignment.py `
   --artifact-out "output/<任务>/v4/alignment/forced_mix_evidence.artifact.json"
 ```
 
+P8 不关心上游 forced evidence 是 single 还是 batch，只要 P7/P10 formal artifact contract 成立。
+
 输出：
 
 ```text
@@ -100,21 +164,11 @@ role = forced_alignment_mix_evidence
 mode = forced_alignment_mix_projection
 ```
 
-只有这个 mix-time 产物才允许进入 fusion。**禁止直接比较 P7 source-ms 与 editor/ASR mix-ms。**
+只有这个 mix-time 产物才允许进入 fusion。禁止直接比较 source-ms 与 editor/ASR mix-ms。
 
-### P8 CUT_AWARE 规则
+CUT_AWARE：line start/end 必须同在一个 retained source segment；gap/cross-cut -> `unprojectable`；不得跨 confirmed cut 补假连续 interval。
 
-- line start/end 必须同在一个 retained source segment；
-- boundary 在 confirmed source gap -> `unprojectable`；
-- line 跨 confirmed cut -> `unprojectable`；
-- spans 独立投影；
-- unrelated blocked occurrence 不阻塞当前 forced job；
-- relevant mapping/artifact lineage 不完整 -> 非零失败；
-- 不得手工把 `unprojectable` line 跨 cut 补成连续 interval。
-
-## 6. P9：三 family shadow fusion
-
-完整命令：
+## 7. P9：三 family shadow fusion
 
 ```powershell
 python scripts/v4_fuse_evidence.py `
@@ -129,37 +183,23 @@ python scripts/v4_fuse_evidence.py `
   --forced-mix-evidence-artifact "output/<任务>/v4/alignment/forced_mix_evidence.artifact.json" `
   --conflict-boundary-ms 500 `
   --out "output/<任务>/v4/evidence/fusion.json" `
-  --artifact-out "output/<任务>/v4/evidence/fusion.artifact.json" `
-  --git-commit "<commit>"
+  --artifact-out "output/<任务>/v4/evidence/fusion.artifact.json"
 ```
 
-Editor、ASR、forced 参数都是可选 family；但 payload 与 artifact 必须成对提供。
-
-### P9 shadow state
+Shadow state：
 
 ```text
 0 auxiliary boundary family -> LOW
-1 auxiliary boundary family -> MEDIUM
->=2, all available pairs within threshold -> HIGH
-any available pair over threshold -> CONFLICT
+1 -> MEDIUM
+>=2, all pairs within threshold -> HIGH
+any pair over threshold -> CONFLICT
 ```
 
-Pairwise diagnostics：
+即使 HIGH，也不会自动改 timing 或通过 release gate。
 
-```text
-editor_asr_boundary_disagreement_ms
-editor_forced_boundary_disagreement_ms
-asr_forced_boundary_disagreement_ms
-max_auxiliary_boundary_disagreement_ms
-```
+## 8. P7/P10/P8/P9 fail-closed / privacy
 
-`forced_alignment_line_counts` 会统计 `projected / unprojectable / absent`。
-
-**注意：LOW/MEDIUM/HIGH/CONFLICT 都是未校准 shadow support state。即使 HIGH，也不会自动改 timing 或通过 release gate。**
-
-## 7. P7/P8/P9 fail-closed / privacy
-
-P7 拒绝 task/input/source SHA/canonical/backend/model/window 漂移；P8 拒绝 source run/mapping/forced artifact provenance 漂移；P9 拒绝 cross-run evidence、artifact hash 漂移、unknown canonical line、track/text hash mismatch，以及 `unprojectable` forced line 夹带 mix boundary。
+P7/P10 拒绝 task/input/source SHA/canonical/backend/model/window 漂移；batch 额外拒绝 missing/extra/duplicate response job ID。P8 拒绝 source run/mapping/forced artifact provenance 漂移；P9 拒绝 cross-run evidence、artifact hash 漂移、unknown canonical line、track/text hash mismatch，以及 `unprojectable` forced line 夹带 mix boundary。
 
 正式 evidence/artifact 不应包含：
 
@@ -170,60 +210,35 @@ full external command
 backend stdout/stderr
 ```
 
-Fusion 输出只保留 hash/identity/timing/confidence/backend-model lineage 与 diagnostics。
+Batch temporary request 可以把 canonical text/source path 交给本地 external adapter，但这些只存在临时目录，不进入 formal evidence。
 
-## 8. 推荐的本地 Codex 生产顺序
-
-```text
-1. 准备 task + canonical LRC + source audio + edited mix/editor SRT
-2. 运行 v4_run；处理 review/cut/overlap，得到 authoritative effective run
-3. 生成 editor evidence
-4. 生成 local ASR first-pass；只对弱区跑 second-pass
-5. 需要时运行 external forced aligner
-6. 把 P7 forced evidence 经 P8 投影到 mix time
-7. 运行 P9 fusion，先看 CONFLICT / unprojectable / missing family
-8. 人工核查高风险行，不从 HIGH 直接推断“可自动发布”
-9. render
-10. validate_release
-11. 将真实人工 ground truth 写入 private calibration/blind 数据集
-12. 评估各语言/风险桶 family error，冻结 threshold 后再跑 blind
-```
-
-Codex 在每个任务开始时应先读取：
+## 9. 推荐的本地 Codex 生产顺序
 
 ```text
-SKILL.md
-references/v4-runtime-guide.md
-references/v4-status.md
-references/v4-implementation.md
+1. task + canonical LRC + source audio + edited mix/editor SRT
+2. v4_run；处理 review/cut/overlap
+3. editor evidence
+4. ASR first-pass + bounded second-pass
+5. external forced aligner：同模型多个 jobs 推荐 batch
+6. P8 forced source->mix projection
+7. P9 fusion，先看 CONFLICT / unprojectable / missing family
+8. 人工核查高风险行
+9. render + validate_release
+10. ground truth -> private calibration/blind
 ```
 
 遇到 artifact/identity/blocking error 时先修输入或重新生成上游，**不要手改 JSON 绕过 provenance**。
 
-## 9. 第一次真实生产建议
-
-第一批真实数据不要直接追求“全自动”。建议每种主要语言先取 3–5 个 30–90 秒片段，至少覆盖：正常 global-rate、动态 local stretch、cut 附近、overlap、弱人声/强伴奏、editor 识别差的语言。先比较：
-
-```text
-Source-to-Mix boundary error
-Editor boundary error
-ASR boundary error
-Forced boundary error
-Fusion conflict / coverage
-```
-
-再决定真实 forced backend、模型、G2P 与 `conflict_boundary_ms` 是否需要按语言/风险桶拆分。
-
 ## 10. Actions 能验证 / 不能验证
 
-CI 可验证 package/CLI、fake external subprocess、projection math、cut semantics、pairwise conflict、artifact lineage、privacy。
+CI 可验证 package/CLI、fake external subprocess、batch one-process semantics、exact response-set contract、projection math、cut semantics、pairwise conflict、artifact lineage、privacy。
 
 CI 不能证明：
 
-- WhisperX/SOFA/MFA 或其他 production backend 已安装/运行；
-- 某 checkpoint/G2P 对真实歌声准确；
+- WhisperX/SOFA/MFA 或其他 production backend 已真实安装/运行；
+- 某 checkpoint/G2P 对歌声准确；
+- batch 对真实模型的吞吐收益大小；
 - editor/ASR/forced family 统计上真正独立；
-- family 权重/阈值已校准；
 - auxiliary evidence 可以自动改 final timing。
 
-真实 backend 上线必须锁定 package/command version、model/checkpoint revision、language/G2P resources、runtime/device、license/source identity，并用 private real-song calibration/blind 验证。
+P10 合入后，下一阶段应停止继续扩抽象层，直接做 isolated real backend adapter + private real-song calibration/blind。
