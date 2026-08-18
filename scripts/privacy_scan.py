@@ -37,9 +37,17 @@ def tracked_files(root: Path) -> list[Path]:
 
 def scan(root: Path) -> list[str]:
     issues: list[str] = []
+    windows_users_root = re.escape("C:" + "\\" + "Users" + "\\")
+    posix_users_root = re.escape("/" + "Users" + "/")
     local_path_patterns = (
-        re.compile(re.escape("C:" + "\\" + "Users" + "\\"), re.IGNORECASE),
-        re.compile("/" + "Users" + "/", re.IGNORECASE),
+        re.compile(
+            windows_users_root + r"(?!example\\)[^\\\s]+\\",
+            re.IGNORECASE,
+        ),
+        re.compile(
+            posix_users_root + r"(?!example/)[^/\s]+/",
+            re.IGNORECASE,
+        ),
         re.compile("/" + "home" + "/", re.IGNORECASE),
     )
     credential_patterns = (
