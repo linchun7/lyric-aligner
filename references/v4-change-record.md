@@ -19,7 +19,8 @@
 - P6 ASR second-pass execution/composite：`6eacacc50e885684b0265e3abea729b19b1b7725`；
 - P7 external source forced alignment：`9ad6df4f04b396871f757422bcb35f1fa7676678`；
 - P8 forced alignment source-to-mix projection：PR #17，merge `00585a07b658ffea93509c4ed1a4b129deafd0a3`；
-- P9 forced alignment multi-family shadow fusion：PR #19，merge `efbdbb926b03efdf1d91622d5c23cabef1f9850c`。
+- P9 forced alignment multi-family shadow fusion：PR #19，merge `efbdbb926b03efdf1d91622d5c23cabef1f9850c`；
+- Production Readiness Tooling：PR #21，merge `04e0802156f62006c6b6af5b4ef59b1acc81ce86`。
 
 P7 head `2ee9e1d2ced75c3d24b5a00353e9f275fc9dc9f9` 的 validate #560 全绿后合入。P8 latest result tree 在 fast-core #1 完成 compile、documentation contract、完整 unit/E2E、Skill、privacy、diff-check 全绿后合入。P9 result tree 在 fast-core #2 完成同级验证并跑完 **324 tests** 全绿后，与 P8 main 同步 ancestry，再合入 main。
 
@@ -180,3 +181,31 @@ automatic_timing_change_allowed = false
 ### Compatibility / rollback
 
 这些工具都是 additive diagnostics/evaluation metadata，不改变现有 artifacts、renderer 或 release contracts；如需回滚可删除上述新增模块/CLI，而不会改变 P9 之前的 authoritative production output。真实数据出现前仍禁止凭 synthetic CI 调整 family threshold 或自动写回 timeline。
+
+---
+
+## 2026-08-18 — Windows Local Validation Hardening
+
+本轮由真实 Windows 本地等价 CI 暴露三个问题：quoted executable path 在 external forced command 中解析不一致、`env={}` bootstrap tests 在 Windows/Python 3.10 下可能触发 CreateProcess 错误、以及测试 fixture 为了验证隐私而把本地用户路径 literal 写进 tracked source。
+
+修复：
+
+```text
+lyric_aligner/command_line.py
+lyric_aligner/alignment/backends.py
+lyric_aligner/alignment/forced_executor.py
+lyric_aligner/runtime_snapshot.py
+scripts/test_v4_command_line.py
+scripts/test_v4_cli_bootstrap.py
+scripts/test_v4_calibration_cli_bootstrap.py
+scripts/test_v4_doctor.py
+scripts/test_v4_runtime_snapshot.py
+scripts/privacy_scan.py
+```
+
+- backend readiness、P7 executor 与 runtime snapshot 共享同一 `split_external_command()`，Windows 双引号 executable/argument 可在 `shell=False` 下解析成一致 argv；malformed quote fail closed；
+- Windows 仅规范化双引号，不把单引号错误当成 native Windows shell grouping；
+- bootstrap tests 保留 OS 创建进程所需环境，同时移除 `PYTHONPATH/PYTHONHOME` 并设置 `PYTHONNOUSERSITE=1`，继续验证 CLI 不依赖外部 Python path；
+- privacy scanner 恢复严格 `/Users/` / `C:\Users\` / `/home/` 扫描，敏感示例由测试在 runtime 拼接，不引入 allowlist/排除规则。
+
+Authority 与 release boundary 完全不变：canonical lyric、Source-to-Mix、P7/P8/P9 shadow semantics、threshold、release gate、automatic timing behavior 均未调整。该变更属于跨平台执行/验证可靠性修复，不是 accuracy promotion。
