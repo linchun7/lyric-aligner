@@ -19,8 +19,8 @@ lyric_aligner/
     fusion.py            # P4 + P9 multi-family shadow fusion
   evaluation/
     family_calibration.py # real-data per-family boundary metrics
-  doctor.py              # read-only resume/readiness diagnostics
-  runtime_snapshot.py    # reproducible runtime identity
+  doctor.py              # read-only resume/readiness + artifact-lineage diagnostics
+  runtime_snapshot.py    # reproducible, self-validating runtime identity
   assets/ audio/ contracts/ pipeline/ review/ text/ timeline/ qa/
 ```
 
@@ -265,13 +265,16 @@ automatic timing refinement safety
 
 ### 10.1 `lyric_aligner.doctor`
 
-Doctor 是 orchestration 之外的只读诊断层，不生成或改写任何 production artifact。它只做三类事：
+Doctor 是 orchestration 之外的只读诊断层，不生成或改写任何 production artifact。它做四类检查：
 
-1. 对显式传入的 task/run/editor/plan/ASR/forced source/forced mix/fusion/runtime snapshot 做最小 stage-contract 检查；
-2. 复用 `evaluation.readiness.inspect_dataset_readiness()` 与 `alignment.backends.inspect_backends()` 给出 dataset/backend readiness；
-3. 根据现有 stage 推荐下一条生产动作，并允许 `--require` 把 readiness 条件变成机器可判定 exit code。
+1. 对显式传入的 schema-2.0 task、effective run、editor/plan/ASR/forced source/forced mix/fusion/runtime snapshot 做最小 stage-contract 检查；
+2. payload 与对应 `*.artifact.json` 成对提供时，复用 artifact contract 验证 manifest 自签名、task fingerprint、algorithm identity 与 exact payload output SHA/size；
+3. auxiliary artifact 在存在有效 current run artifact 时必须直接 upstream 到该 run；payload 若有 `source_run_artifact_id` 也必须一致；
+4. 复用 `evaluation.readiness.inspect_dataset_readiness()` 与 `alignment.backends.inspect_backends()` 给出 dataset/backend readiness，并根据现有 stage 推荐下一动作。
 
-Doctor 故意不把 backend `available/execution_ready` 解释为模型准确率，也不输出 backend `discovery/detail`，因为这些字段可能包含 resolved local path/full command。
+`--require lineage`、`artifact:*`、dataset/backend requirement 都可以把这些条件变成机器可判定 exit code。未完成的 stage 可以整体不传；但如果要宣称某个 stage 的 lineage 已验证，就必须把 payload 和 artifact 成对传入。
+
+Doctor 报告只保留文件 basename、artifact ID prefix、stage/valid/detail 与无敏感诊断；不输出 artifact output path、absolute local path、backend resolved path 或完整 external command。Backend `available/execution_ready` 仍只是依赖/命令可发现性，不是 singing accuracy。
 
 ### 10.2 `evaluation.family_calibration`
 
@@ -297,11 +300,15 @@ truth_end_ms
 
 Family metrics 以 truth line 为 denominator，分别计算 Source-to-Mix/editor/ASR/forced coverage 与 onset/offset/boundary errors；`within_250ms_rate` / `within_500ms_rate` 使用该行 onset/offset 的 max error，避免“一头准一头偏”被平均掩盖。另行输出 fusion `CONFLICT` rate 与 forced `unprojectable` rate。
 
-Dataset manifest 单次只允许 `calibration` 或 `blind_test` 一个 split，并按 language / risk bucket 分组。Formal report 固定 `policy_calibrated=false`、`release_gate_eligible=false`、`automatic_timing_change_allowed=false`，所以 evaluator 只提供 promotion 决策证据，不执行 promotion。
+每份 family dataset 还必须绑定一个 self-validating runtime snapshot。跨 case 的 fusion policy identity 包含 `algorithm_version`、`policy_id` 和 semantic config；P9 formal config 中每首歌都会变化的 `*_artifact_id` 只属于 lineage，不进入跨 case policy identity。这样同一阈值/同一 conflict policy 的不同歌曲可以聚合，而 `conflict_boundary_ms` 等语义配置不同仍 fail closed。
+
+Dataset manifest 单次只允许 `calibration` 或 `blind_test` 一个 split，并按 language / risk bucket 分组。Formal report 固定 `policy_calibrated=false`、`release_gate_eligible=false`、`automatic_timing_change_allowed=false`。该 evaluator 不替代 P1 strict workflow 的 source-group split isolation 与 calibration→blind lock；它只补充逐 family timing evidence。
 
 ### 10.3 `runtime_snapshot`
 
 Runtime snapshot 的 stable hash 覆盖：Git commit/dirty/branch、Python implementation/version、OS/release/machine、ffmpeg/ffprobe first version line、关键 package versions、model identities、forced command identity、requested device。
+
+读取 snapshot 时会从这些 identity fields 重新计算 canonical SHA；内容被修改而 `runtime_identity_sha256` 未同步时 fail closed。Clean worktree 明确记录 `dirty=false`，不与命令失败混为一谈。
 
 隐私规则：
 
