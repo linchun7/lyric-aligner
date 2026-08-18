@@ -64,6 +64,8 @@ def refine_coarse_mapping(
     coarse_payload: dict[str, Any],
     *,
     sr: int,
+    mix_audio_start: float = 0.0,
+    full_mix_duration: float | None = None,
     force: bool = False,
     hop_length: int = 256,
     source_radius_seconds: float = 1.25,
@@ -98,18 +100,35 @@ def refine_coarse_mapping(
     if len(windows) != len(path) or len(path) < 2:
         raise ValueError("fine alignment requires matching coarse windows and path points")
 
-    # Fine alignment is deliberately local.  Do not compute 16 kHz / hop-256
+    # Fine alignment is deliberately local. Do not compute 16 kHz / hop-256
     # features for the entire 40-60 minute mix when only a few coarse windows
-    # need refinement.
+    # need refinement. The caller may now provide only the bounded audio buffer
+    # that contains those absolute mix-time windows.
     global_start = min(float(window["mix_start"]) for window in windows)
     global_end = max(float(window["mix_end"]) for window in windows)
-    mix_duration = len(mix_audio) / sr
-    if global_start < 0 or global_end > mix_duration or global_end <= global_start:
-        raise ValueError("fine windows are outside mix audio")
-    sample_start = max(0, int(np.floor(global_start * sr)))
-    sample_end = min(len(mix_audio), int(np.ceil(global_end * sr)))
+    if sr <= 0:
+        raise ValueError("sample rate must be positive")
+    buffer_start = float(mix_audio_start)
+    if buffer_start < 0:
+        raise ValueError("mix_audio_start must be non-negative")
+    buffer_duration = len(mix_audio) / sr
+    buffer_end = buffer_start + buffer_duration
+    mix_duration = buffer_end if full_mix_duration is None else float(full_mix_duration)
+    if mix_duration <= 0 or mix_duration + 1e-9 < buffer_end:
+        raise ValueError("full_mix_duration is shorter than supplied mix audio buffer")
+    tolerance = 1.0 / sr + 1e-9
+    if (
+        global_start < buffer_start - tolerance
+        or global_end > buffer_end + tolerance
+        or global_start < 0
+        or global_end > mix_duration + tolerance
+        or global_end <= global_start
+    ):
+        raise ValueError("fine windows are outside supplied mix audio buffer")
+    sample_start = max(0, int(np.floor((global_start - buffer_start) * sr)))
+    sample_end = min(len(mix_audio), int(np.ceil((global_end - buffer_start) * sr)))
     local_mix_audio = np.asarray(mix_audio[sample_start:sample_end], dtype=np.float32)
-    local_offset = sample_start / sr
+    local_offset = buffer_start + sample_start / sr
 
     mix_features = extract_harmonic_features(local_mix_audio, sr=sr, hop_length=hop_length)
     source_features = extract_harmonic_features(source_audio, sr=sr, hop_length=hop_length)
