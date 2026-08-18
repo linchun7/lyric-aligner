@@ -2,14 +2,16 @@
 
 Only expensive deterministic stages with formal artifact manifests are eligible
 for cross-run reuse. Reuse is fail-closed: task/algorithm/stage identity,
-producer git commit, exact upstream artifact ids, output SHA-256 and key
-stage-specific evidence/config must all match. Any mismatch simply executes the
-stage again.
+producer git commit, exact upstream artifact ids, output SHA-256, current runtime
+identity and key stage-specific evidence/config must all match. Any mismatch
+simply executes the stage again.
 """
 
 from __future__ import annotations
 
+import importlib.metadata
 import json
+import platform
 import subprocess
 import sys
 import threading
@@ -20,9 +22,19 @@ from typing import Iterable
 
 from lyric_aligner import __version__
 from lyric_aligner.contracts.artifacts import (
+    atomic_write_json,
+    canonical_json_sha256,
     validate_artifact_output,
     validate_upstream_artifact,
 )
+
+
+_RESUMABLE_SCRIPTS = {
+    "v4_coarse_align.py": "coarse_audio_alignment",
+    "v4_fine_align.py": "fine_audio_alignment",
+    "v4_probe_transition.py": "transition_probe",
+}
+_RUNTIME_PACKAGES = ("numpy", "scipy", "librosa", "soundfile", "soxr", "numba")
 
 
 @dataclass(frozen=True)
@@ -71,6 +83,37 @@ def _same_number(left: object, right: object, tolerance: float = 1e-6) -> bool:
         return False
 
 
+def _runtime_identity_sha256() -> str:
+    packages: dict[str, str] = {}
+    for name in _RUNTIME_PACKAGES:
+        try:
+            packages[name] = importlib.metadata.version(name)
+        except importlib.metadata.PackageNotFoundError:
+            packages[name] = "missing"
+    libsndfile = "unknown"
+    try:
+        import soundfile  # type: ignore
+
+        libsndfile = str(getattr(soundfile, "__libsndfile_version__", "unknown"))
+    except Exception:
+        pass
+    return canonical_json_sha256(
+        {
+            "python_implementation": platform.python_implementation(),
+            "python_version": platform.python_version(),
+            "system": platform.system(),
+            "release": platform.release(),
+            "machine": platform.machine(),
+            "packages": packages,
+            "libsndfile": libsndfile,
+        }
+    )
+
+
+def _resume_sidecar_path(artifact_path: Path) -> Path:
+    return artifact_path.with_name(artifact_path.name + ".resume.json")
+
+
 class SafeStageRunner:
     """Run independent CLI stages with bounded concurrency and safe reuse."""
 
@@ -90,6 +133,7 @@ class SafeStageRunner:
         self.git_commit = git_commit.strip()
         self.workers = workers
         self.resume_enabled = bool(resume and self.git_commit)
+        self.runtime_identity_sha256 = _runtime_identity_sha256()
         self._memo: dict[tuple[str, ...], str] = {}
         self._lock = threading.Lock()
         self._resume_hits = 0
@@ -140,13 +184,56 @@ class SafeStageRunner:
             return artifact, "output_digest_mismatch"
         return artifact, None
 
+    def _resume_sidecar_matches(self, artifact_path: Path, artifact: dict) -> bool:
+        try:
+            payload = _load(_resume_sidecar_path(artifact_path))
+        except (OSError, ValueError, json.JSONDecodeError):
+            return False
+        record_id = str(payload.get("record_id") or "")
+        unsigned = {key: value for key, value in payload.items() if key != "record_id"}
+        if not record_id or record_id != canonical_json_sha256(unsigned):
+            return False
+        return (
+            payload.get("schema_version") == "1.0"
+            and str(payload.get("artifact_id") or "") == str(artifact.get("artifact_id") or "")
+            and str(payload.get("runtime_identity_sha256") or "") == self.runtime_identity_sha256
+            and str(payload.get("git_commit") or "") == self.git_commit
+        )
+
+    def _write_resume_sidecar(self, command: list[str]) -> None:
+        if not self.git_commit or len(command) < 2:
+            return
+        script = Path(command[1]).name
+        if script not in _RESUMABLE_SCRIPTS:
+            return
+        artifact_value = _argument(command, "--artifact-out")
+        if not artifact_value:
+            return
+        artifact_path = Path(artifact_value)
+        try:
+            artifact = _load(artifact_path)
+        except (OSError, ValueError, json.JSONDecodeError):
+            return
+        if str(artifact.get("stage") or "") != _RESUMABLE_SCRIPTS[script]:
+            return
+        core = {
+            "schema_version": "1.0",
+            "artifact_id": str(artifact.get("artifact_id") or ""),
+            "runtime_identity_sha256": self.runtime_identity_sha256,
+            "git_commit": self.git_commit,
+        }
+        atomic_write_json(
+            _resume_sidecar_path(artifact_path),
+            {**core, "record_id": canonical_json_sha256(core)},
+        )
+
     def _check_reusable(self, command: list[str]) -> tuple[bool, str]:
         if not self.resume_enabled:
             return False, "resume_disabled"
         if len(command) < 2:
             return False, "unsupported_command"
         script = Path(command[1]).name
-        if script not in {"v4_coarse_align.py", "v4_fine_align.py", "v4_probe_transition.py"}:
+        if script not in _RESUMABLE_SCRIPTS:
             return False, "unsupported_stage"
         out_value = _argument(command, "--out")
         artifact_value = _argument(command, "--artifact-out")
@@ -184,6 +271,8 @@ class SafeStageRunner:
             )
             if reason:
                 return False, reason
+            if not self._resume_sidecar_matches(artifact_path, artifact):
+                return False, "runtime_resume_identity_mismatch"
             if str(payload.get("occurrence_id") or "") != occurrence_id:
                 return False, "coarse_occurrence_mismatch"
             evidence = artifact.get("evidence", {})
@@ -223,6 +312,8 @@ class SafeStageRunner:
             )
             if reason:
                 return False, reason
+            if not self._resume_sidecar_matches(artifact_path, artifact):
+                return False, "runtime_resume_identity_mismatch"
             if str(payload.get("occurrence_id") or "") != occurrence_id:
                 return False, "fine_occurrence_mismatch"
             evidence = artifact.get("evidence", {})
@@ -256,6 +347,8 @@ class SafeStageRunner:
         )
         if reason:
             return False, reason
+        if not self._resume_sidecar_matches(artifact_path, artifact):
+            return False, "runtime_resume_identity_mismatch"
         if str(payload.get("left_occurrence_id") or "") != left_occurrence:
             return False, "transition_left_occurrence_mismatch"
         if str(payload.get("right_occurrence_id") or "") != right_occurrence:
@@ -298,6 +391,7 @@ class SafeStageRunner:
         output = completed.stdout.strip()
         if output:
             print(output, file=sys.stderr)
+        self._write_resume_sidecar(command)
         with self._lock:
             self._executed += 1
             self._memo[key] = output
