@@ -8,6 +8,7 @@ versions/configuration that can materially affect alignment output.
 from __future__ import annotations
 
 import hashlib
+import hmac
 import importlib.metadata
 import json
 import os
@@ -21,6 +22,17 @@ from typing import Any, Iterable
 
 
 RUNTIME_SNAPSHOT_SCHEMA_VERSION = "1.0"
+RUNTIME_IDENTITY_FIELDS = (
+    "schema_version",
+    "git",
+    "python",
+    "platform",
+    "binaries",
+    "packages",
+    "models",
+    "external_forced_aligner",
+    "device_requested",
+)
 DEFAULT_PACKAGES = (
     "numpy",
     "scipy",
@@ -49,6 +61,40 @@ def _canonical_sha(payload: Any) -> str:
             separators=(",", ":"),
         )
     )
+
+
+def _is_sha256(value: str) -> bool:
+    return len(value) == 64 and all(char in "0123456789abcdef" for char in value)
+
+
+def runtime_identity_core(payload: dict[str, Any]) -> dict[str, Any]:
+    """Return only fields covered by the stable runtime identity."""
+
+    if not isinstance(payload, dict):
+        raise ValueError("runtime snapshot must be a JSON object")
+    if str(payload.get("schema_version") or "") != RUNTIME_SNAPSHOT_SCHEMA_VERSION:
+        raise ValueError(
+            f"runtime snapshot schema_version must be {RUNTIME_SNAPSHOT_SCHEMA_VERSION}"
+        )
+    missing = [field for field in RUNTIME_IDENTITY_FIELDS if field not in payload]
+    if missing:
+        raise ValueError(
+            "runtime snapshot is missing identity field(s): " + ",".join(missing)
+        )
+    return {field: payload[field] for field in RUNTIME_IDENTITY_FIELDS}
+
+
+def validate_runtime_snapshot(payload: dict[str, Any]) -> str:
+    """Validate and return the stable identity; reject metadata tampering."""
+
+    core = runtime_identity_core(payload)
+    claimed = str(payload.get("runtime_identity_sha256") or "").lower()
+    if not _is_sha256(claimed):
+        raise ValueError("runtime snapshot identity is invalid")
+    expected = _canonical_sha(core)
+    if not hmac.compare_digest(claimed, expected):
+        raise ValueError("runtime snapshot identity hash does not match content")
+    return claimed
 
 
 def _run_process(
@@ -196,9 +242,11 @@ def build_runtime_snapshot(
         ),
         "device_requested": str(device or "auto"),
     }
-    return {
+    payload = {
         **core,
         "runtime_identity_sha256": _canonical_sha(core),
         "privacy": "hostname, username, absolute repo/model paths and full external commands are omitted or hashed",
         "accuracy_boundary": "runtime reproducibility metadata does not establish model quality on singing",
     }
+    validate_runtime_snapshot(payload)
+    return payload
