@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import importlib.util
 import json
+import subprocess
 import sys
 from pathlib import Path
 
@@ -64,6 +65,40 @@ def load(path: Path) -> dict:
     if not isinstance(value, dict):
         raise ValueError(f"expected JSON object: {path}")
     return value
+
+
+def assert_resume_git_identity(git_commit: str) -> None:
+    """Make producer git identity trustworthy before it can authorize reuse."""
+
+    if not git_commit:
+        return
+    head = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if head.returncode != 0:
+        raise ValueError("--git-commit requires an accessible git worktree for safe resume")
+    actual = head.stdout.strip()
+    if git_commit.strip() != actual:
+        raise ValueError(
+            "--git-commit must exactly match the currently checked-out HEAD for safe resume"
+        )
+    status = subprocess.run(
+        ["git", "status", "--porcelain=v1"],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if status.returncode != 0:
+        raise ValueError("cannot verify git worktree cleanliness for safe resume")
+    if status.stdout.strip():
+        raise ValueError(
+            "--git-commit requires a clean git worktree; omit --git-commit to run without cross-run resume"
+        )
 
 
 def _stat_identity(path: Path) -> tuple[int, int]:
@@ -150,6 +185,7 @@ def prestage(a: argparse.Namespace) -> VerifiedStageRunner:
     if a.workers < 1 or a.workers > 4:
         raise ValueError("workers must be between 1 and 4")
     clear_verified_input_session()
+    assert_resume_git_identity(a.git_commit)
     manifest = task_contract.load_task_manifest(a.task_manifest)
     before_verify = manifest_stat_snapshot(a.task_manifest, manifest)
     problems = task_contract.verify_manifest_inputs(a.task_manifest, manifest)
