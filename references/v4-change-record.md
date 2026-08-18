@@ -20,9 +20,10 @@
 - P7 external source forced alignment：`9ad6df4f04b396871f757422bcb35f1fa7676678`；
 - P8 forced alignment source-to-mix projection：PR #17，merge `00585a07b658ffea93509c4ed1a4b129deafd0a3`；
 - P9 forced alignment multi-family shadow fusion：PR #19，merge `efbdbb926b03efdf1d91622d5c23cabef1f9850c`；
-- Production Readiness Tooling：PR #21，merge `04e0802156f62006c6b6af5b4ef59b1acc81ce86`。
+- Production Readiness Tooling：PR #21，merge `04e0802156f62006c6b6af5b4ef59b1acc81ce86`；
+- Windows Local Validation Hardening：PR #22，merge `2b4a13132e95a551392811407f48573b36edab95`。
 
-P7 head `2ee9e1d2ced75c3d24b5a00353e9f275fc9dc9f9` 的 validate #560 全绿后合入。P8 latest result tree 在 fast-core #1 完成 compile、documentation contract、完整 unit/E2E、Skill、privacy、diff-check 全绿后合入。P9 result tree 在 fast-core #2 完成同级验证并跑完 **324 tests** 全绿后，与 P8 main 同步 ancestry，再合入 main。
+P7 head `2ee9e1d2ced75c3d24b5a00353e9f275fc9dc9f9` 的 validate #560 全绿后合入。P8 latest result tree 在 fast-core #1 完成 compile、documentation contract、完整 unit/E2E、Skill、privacy、diff-check 全绿后合入。P9 result tree 在 fast-core #2 完成同级验证并跑完 **324 tests** 全绿后，与 P8 main 同步 ancestry，再合入 main。PR22 exact-head fast-core 与 Python 3.10/3.12/3.14 + ASR validate 全绿后合入。
 
 ---
 
@@ -41,7 +42,7 @@ scripts/test_v4_forced_mix_projection_end_to_end.py
 
 Authority 不变：canonical lyrics 是 final text/order truth，Source-to-Mix 是 primary timing truth，forced alignment 只是 auxiliary evidence。
 
-`AFFINE` / `PIECEWISE_RATE` 复用 `mix_time_for_source()`；`CUT_AWARE` 对 confirmed source gap 或 cross-cut line 标记 `unprojectable`，绝不 bridge；spans 独立投影。只解析 forced-evidence 实际引用 occurrences，relevant mapping/provenance 缺失仍 fail closed。
+`AFFINE` / `PIECEWISE_RATE` 复用现有 `mix_time_for_source()`；`CUT_AWARE` 对 confirmed source gap 或 cross-cut line 标记 `unprojectable`，绝不 bridge；spans 独立投影。只解析 forced-evidence 实际引用 occurrences，relevant mapping/provenance 缺失仍 fail closed。
 
 Artifact：
 
@@ -209,3 +210,44 @@ scripts/privacy_scan.py
 - privacy scanner 恢复严格的本地用户目录根路径扫描（覆盖常见 Unix/macOS/Windows 形式），敏感示例由测试在 runtime 拼接，不引入 allowlist/排除规则。
 
 Authority 与 release boundary 完全不变：canonical lyric、Source-to-Mix、P7/P8/P9 shadow semantics、threshold、release gate、automatic timing behavior 均未调整。该变更属于跨平台执行/验证可靠性修复，不是 accuracy promotion。
+
+---
+
+## 2026-08-18 — Production Bounded Mix Decode Fast Path
+
+第一轮真实私有生产暴露了吞吐问题：一个长 mix 含多首歌时，`v4_run.py` 会逐 occurrence 调用 coarse/fine CLI，而旧 CLI 每次都重新完整解码长 mix。核心 coarse/fine feature 实际只使用当前 occurrence 的局部窗口，因此完整解码属于重复计算。
+
+本轮先做不改变 authoritative 算法决策的执行优化：
+
+```text
+lyric_aligner/audio/coarse_mapper.py
+lyric_aligner/audio/fine_alignment.py
+scripts/v4_coarse_align.py
+scripts/v4_fine_align.py
+scripts/test_v4_coarse_mapper.py
+scripts/test_v4_fine_alignment.py
+```
+
+### Bounded decode
+
+- coarse 先通过音频 metadata 取得完整 mix duration，再只解码 `mix_start..mix_end` 外加两侧最多 2 秒 padding；
+- fine 从 coarse retrieval windows 推导实际需要的 global mix interval，只解码该区间外加最多 2 秒 padding；
+- core mapper/refiner 新增 `mix_audio_start` 与 `full_mix_duration`，允许输入一个局部 waveform buffer，同时继续使用 absolute mix coordinates；
+- `feature_scope.full_mix_duration` 仍表示原始完整 mix 时长，不因 cropped buffer 改义；
+- 正式 payload 继续计算并保存完整 mix file SHA，因此 asset/task identity 没有被局部 decode 弱化。
+
+### Equivalence / safety
+
+新增内存等价测试：同一 waveform 使用完整 buffer 与 cropped buffer + absolute origin 运行时，coarse windows/path/timewarp 与 fine path/timewarp 必须相同。默认 core API 仍以 `mix_audio_start=0` 工作，旧调用方保持兼容。
+
+该变更不调整 coarse/fine threshold、slope grid、cut detection、review policy、canonical/Source-to-Mix authority、P9 shadow、release gate。它也不是尚未校准的“低精度 fast mode”；任何复杂 cut/overlap 仍按原规则 fail closed/review。
+
+### 后续性能路线
+
+真实 benchmark 后再依次考虑：
+
+1. 对有效 artifact 做 resume/cache，避免中断或下游变化时重算 unchanged occurrence；
+2. 对独立 occurrence 加 bounded worker 并发，保持输出顺序与 artifact lineage；
+3. 对普通 global-rate 歌曲研究 sparse fast probe，但必须在不确定时自动 fallback 当前 full mapping，并在 real calibration 前保持非默认/非 authority promotion。
+
+回滚本轮只需恢复 full-mix decode 调用方式；artifact contract 和 release contract 无需迁移。
