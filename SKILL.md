@@ -93,6 +93,8 @@ python scripts/v4_run.py `
 
 输出 `ready_for_render` 或 candidate-level `review_required`。
 
+生产 coarse/fine CLI 会在内部只解码当前 occurrence / coarse retrieval windows 所需的 mix 区间并保留少量保护 padding；仍使用完整 mix SHA、absolute mix coordinates 与原有 Source-to-Mix 决策规则。该 bounded decode 不需要额外 CLI 参数，也不是低精度模式：cut、ambiguity、review/fail-closed 与 threshold 语义不变。
+
 ### 2. Review
 
 ```powershell
