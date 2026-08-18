@@ -20,10 +20,20 @@ def _load(name: str, path: Path):
 _CORE = _load("_v4_run_legacy_public", SCRIPTS / "v4_run_legacy.py")
 _OPTIMIZED = _load("_v4_run_optimized", SCRIPTS / "v4_run_optimized.py")
 
-# Preserve helpers imported by existing tests/tools.
+# Preserve helpers imported by existing tests/tools, while keeping optimized
+# execution as the public CLI main(). Module-level fallback avoids turning this
+# performance refactor into an accidental helper-import compatibility break.
 _forward_discontinuity_issue = _CORE._forward_discontinuity_issue
 _effective_timewarp_payload = _CORE._effective_timewarp_payload
 main = _OPTIMIZED.main
+
+
+def __getattr__(name: str):
+    return getattr(_CORE, name)
+
+
+def __dir__() -> list[str]:
+    return sorted(set(globals()) | set(dir(_CORE)))
 
 
 if __name__ == "__main__":
