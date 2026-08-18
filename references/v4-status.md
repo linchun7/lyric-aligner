@@ -1,7 +1,7 @@
 # Lyric Aligner v4 当前实施状态
 
 更新日期：2026-08-18  
-当前 main：P9 已合入；代码阶段收口完成  
+当前 main：P9 已合入；P10 batch forced-alignment 正在验收  
 P8 merge：`00585a07b658ffea93509c4ed1a4b129deafd0a3`  
 P9 merge：`efbdbb926b03efdf1d91622d5c23cabef1f9850c`  
 主线算法版本：`4.0.0a8`  
@@ -27,7 +27,7 @@ P9    editor/ASR/forced multi-family shadow fusion
 
 P3 validate #493、P4 #517、P5 #530、P6 #545、P7 #560 均在各自 merge 前全绿。P8 latest result tree 的 fast-core #1 完成 compile、documentation contract、完整 unit/E2E、Skill、privacy、diff-check 全绿后合入。P9 result tree 的 fast-core #2 同样全绿，日志显示 **Ran 324 tests / OK**；随后 P9 branch 与已经合入的 P8 main 同步 ancestry，再以 PR #19 合入。
 
-CI 同时增加：
+CI 已包含：
 
 ```text
 pull_request validation
@@ -37,8 +37,6 @@ timeout-minutes
 bounded ffprobe/apt setup
 fast-core ubuntu-slim lane
 ```
-
-这样可避免 feature-branch push + PR 双重排队，以及失控的 ffmpeg apt job 长时间占用 runner。
 
 ## 2. Authority graph（生产时不要改写）
 
@@ -52,7 +50,7 @@ P8 forced      -> same forced evidence projected to mix time
 P9 fusion      -> diagnostic/shadow support state only
 ```
 
-当前固定：
+固定：
 
 ```text
 policy_calibrated = false
@@ -60,11 +58,11 @@ release_gate_eligible = false
 automatic_timing_change_allowed = false
 ```
 
-因此 `HIGH` 不是“可以自动改字幕”的生产置信度；它只表示当前未校准规则下多个 auxiliary families 相互支持。
+`HIGH` 不是“可以自动改字幕”的生产置信度。
 
-## 3. P8：Forced Alignment Source-to-Mix Projection
+## 3. P8 / P9 已完成的 forced evidence 路径
 
-正式输出：
+P8 正式输出：
 
 ```text
 stage = forced_alignment_mix_projection
@@ -74,26 +72,13 @@ mode = forced_alignment_mix_projection
 
 规则：
 
-- `AFFINE` / `PIECEWISE_RATE` 复用现有 `mix_time_for_source()`；
+- `AFFINE` / `PIECEWISE_RATE` 复用 `mix_time_for_source()`；
 - `CUT_AWARE` cross-gap/cross-cut line -> `unprojectable`；
 - 不跨 confirmed cut bridge 假连续 interval；
 - spans 独立投影；
-- relevant mapping/artifact provenance 缺失或不一致 fail closed；
-- P7 source-ms evidence 禁止直接与 editor/ASR mix-ms 比较。
+- relevant mapping/artifact provenance 缺失或不一致 fail closed。
 
-## 4. P9：Multi-Family Shadow Fusion
-
-可用 auxiliary boundary families：
-
-```text
-editor
-asr
-forced_alignment
-```
-
-Forced family 只接受 P8 mix-time evidence，并再次检查 occurrence/canonical line/track/canonical_text_sha256 identity。
-
-所有可用 auxiliary pair 都做 boundary disagreement：
+P9 只接受 P8 mix-time forced evidence，并与 editor/ASR 做全 pairwise disagreement：
 
 ```text
 editor ↔ asr
@@ -101,70 +86,136 @@ editor ↔ forced_alignment
 asr ↔ forced_alignment
 ```
 
-任意 pair 超过 `conflict_boundary_ms` -> `CONFLICT`，不会以 2-of-3 多数票隐藏 outlier。
+任意 pair 超过 `conflict_boundary_ms` -> `CONFLICT`；不会用多数票隐藏 outlier。`unprojectable` forced line 只保留 diagnostic，不算 available family。
 
-无冲突时：
+## 4. 当前 P10：Forced Alignment Batch Protocol 1.1
 
-```text
-0 auxiliary family -> LOW
-1 auxiliary family -> MEDIUM
->=2 auxiliary families -> HIGH
-```
+P7 protocol `1.0` 每个 bounded forced job 启动一个 subprocess。真实 CTC/singing backend 可能每次进程启动都重新加载大模型，因此在几十/数百歌词 jobs 时会产生重复模型加载。
 
-新增 diagnostics：
+P10 新增：
 
 ```text
-editor_forced_boundary_disagreement_ms
-asr_forced_boundary_disagreement_ms
-max_auxiliary_boundary_disagreement_ms
-forced_alignment_line_counts = projected / unprojectable / absent
+lyric_aligner/alignment/forced_batch.py
+references/forced-alignment-batch-protocol.md
+scripts/test_v4_forced_alignment_batch.py
+scripts/test_v4_forced_alignment_batch_end_to_end.py
 ```
 
-Cross-run evidence、artifact hash 篡改、unknown canonical line、track/text identity 漂移、`unprojectable` forced payload 夹带 mix boundary 均 fail closed。
-
-## 5. 本地 Codex 生产入口
-
-本地 Codex 开始任务先读：
+并扩展：
 
 ```text
-SKILL.md
-references/v4-runtime-guide.md
-references/v4-status.md
-references/v4-implementation.md
-references/dataset-protocol.md
+scripts/v4_execute_forced_alignment.py
+lyric_aligner/alignment/__init__.py
 ```
+
+CLI 默认行为不变：
+
+```text
+--execution-mode single   # protocol 1.0，一 job 一进程
+--execution-mode batch    # protocol 1.1，所有 selected jobs 一次 subprocess
+```
+
+Batch request/response：
+
+```text
+<command> --batch-request <temp.json> --batch-response <temp.json>
+```
+
+一个成功 batch 必须返回与 request **完全相同的 job ID 集合**；missing/extra/duplicate job 均 fail closed。
+
+## 5. P10 safety / compatibility
+
+Batch 只改变执行效率，不改变 authority 或 P7 formal evidence 类型：
+
+```text
+stage = source_forced_alignment_evidence
+role = forced_alignment_evidence
+canonical_text_authority = canonical_lyrics_only
+timing_authority = auxiliary_source_forced_alignment_evidence
+```
+
+因此 batch output 可以不改协议地继续进入：
+
+```text
+P10 batch forced evidence
+-> P8 exact Source-to-Mix projection
+-> P9 multi-family shadow fusion
+```
+
+Batch 仍逐 job 校验 source audio SHA、canonical SHA、source window、backend/model identity、line/span monotonicity。正式 evidence 不复制 raw canonical text/local source path。
+
+显式 `selected_job_ids=[]` = 0 work，不能解析/启动 configured command。
+
+Artifact 同时区分：
+
+```text
+requested_execution_mode = single | batch
+execution_mode = single_job_subprocess | batch_subprocess
+protocol_version = 1.0 | 1.1
+command_invocation_count
+```
+
+## 6. P10 tests 已写入
+
+Unit：
+
+- 两个 jobs -> runner 只调用 1 次；
+- selected subset -> 仍只调用 1 次；
+- explicit empty selection -> 0 调用；
+- response 缺 job -> fail；
+- duplicate response job ID -> fail；
+- ephemeral request 可含 canonical text，但 formal result 不泄漏。
+
+真实 subprocess E2E：
+
+- 临时 Python batch adapter；
+- 两个 source forced jobs；
+- 磁盘计数器证明只启动一次外部进程；
+- formal artifact 记录 protocol `1.1`、`batch_subprocess`、`command_invocation_count=1`；
+- plan/assets/run/timeline lineage 保持完整；
+- formal payload/artifact 不保存歌词或完整 external command。
+
+P10 尚未经过当前 clean branch latest-head Actions，当前不能宣称可合入。
+
+## 7. Multilingual model lineage 边界
+
+Batch protocol 假设同一次 invocation 的 backend/model identity 可审计。未来 WhisperX reference adapter 不得在同一 batch 内静默加载多种语言 checkpoint、却只记录一个误导性的 `model_id`。
+
+第一版真实 adapter 应优先：
+
+```text
+same language + same align model -> one batch
+```
+
+后续若需要跨语言 batch，应定义 versioned model-bundle manifest，完整记录 per-language checkpoint/revision/hash。
+
+## 8. 本地 Codex 生产入口
 
 标准顺序：
 
 ```text
 1. task + canonical LRC + source audio + edited mix/editor SRT
-2. v4_run / review / cut-overlap materialization -> authoritative effective run
+2. v4_run / review / cut-overlap materialization
 3. editor evidence
 4. ASR first-pass + bounded second-pass
-5. external source forced alignment（需要时）
+5. external source forced alignment（可 single；P10 合入后推荐同模型 jobs 使用 batch）
 6. P8 forced source->mix projection
-7. P9 shadow fusion：先看 CONFLICT / unprojectable / missing family
+7. P9 shadow fusion
 8. 人工核查高风险行
-9. render
-10. validate_release
-11. 把真实人工 ground truth 写入 private calibration/blind 数据集
-12. calibration 选型/阈值冻结后，再用独立 blind set 验证
+9. render + validate_release
+10. private calibration/blind
 ```
 
-遇到 provenance/blocking error 时重新生成或修正上游输入，**不要手改 artifact JSON 绕过 lineage**。
+遇到 provenance/blocking error 时重新生成或修正上游输入，不手改 artifact JSON 绕过 lineage。
 
-## 6. 从现在开始必须由真实私有数据完成的工作
+## 9. 代码收口后仍必须由真实私有数据完成
 
-代码阶段不再继续凭 synthetic 测试放宽 timing authority。下一阶段应直接在本地真实歌曲上：
+P10 解决真实 forced backend 的进程/模型加载可行性，但**不证明准确率**。下一阶段仍必须：
 
 1. 选择/安装实际 forced-aligner adapter/runtime；
 2. 锁定 backend/package version、model/checkpoint revision、language/G2P resources、runtime/device identity；
-3. 每种主要语言先取 3–5 个 30–90 秒片段，并覆盖 normal global-rate、dynamic local stretch、cut、overlap、弱人声/强伴奏、editor 弱语言；
-4. 人工 ground truth 记录 Source-to-Mix/editor/ASR/forced boundary error、family coverage、CONFLICT、unprojectable 与 language/risk bucket；
-5. calibration set 选择真实 backend/threshold/profile；
-6. 冻结后只在 blind set 验证；
-7. **只有 blind 数据证明收益后**，才设计/启用 calibrated automatic boundary refinement 或 release-gate integration。
+3. 用 private real-song calibration set 测 Source-to-Mix/editor/ASR/forced boundary error、coverage/conflict；
+4. 冻结后在独立 blind set 验证；
+5. blind 数据证明收益前，不启用 auxiliary timing mutation/release authority。
 
-公共 Actions、fake external subprocess 和 synthetic fixtures 能证明 contract/math/lineage/privacy，但不能证明 WhisperX/SOFA/MFA 或任何真实 checkpoint 对歌声的准确率。
-
-> **当前结论：仓库代码路线已经按中断前方向推进到 P9 并进入 main；下一步不是继续“猜参数写自动化”，而是把本项目拉到本地 Codex，用真实私有歌曲做 production + calibration/blind。**
+> **当前目标：先把 P10 batch protocol 用 synthetic/real-subprocess CI 收口并合入；随后停止继续扩抽象层，直接做真实 WhisperX/SOFA reference adapter 与 private calibration/blind。**
