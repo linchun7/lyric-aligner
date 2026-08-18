@@ -3,11 +3,13 @@
 A production orchestrator may fully hash/verify the task manifest once, then
 create a fresh random-token session for child CLIs in the *same invocation*.
 Children can use that session to avoid re-reading large immutable inputs while
-still checking paths, manifest identity, file sizes and mtimes. Standalone CLIs
-without the fresh environment token keep their existing full SHA-256 checks.
+still checking exact path identity, manifest identity, file sizes and mtimes.
+Standalone CLIs without the fresh environment token keep their existing full
+SHA-256 checks.
 
 The session is an execution optimization only. It is never an artifact lineage
-input and never weakens formal task/artifact fingerprints.
+input and never weakens formal task/artifact fingerprints. Raw absolute input
+paths are not persisted in the session file; keyed path identities are SHA-256.
 """
 
 from __future__ import annotations
@@ -21,7 +23,7 @@ from pathlib import Path
 from typing import Any
 
 
-SESSION_SCHEMA_VERSION = "1.0"
+SESSION_SCHEMA_VERSION = "1.1"
 SESSION_PATH_ENV = "LYRIC_ALIGNER_VERIFIED_INPUTS_SESSION"
 SESSION_TOKEN_ENV = "LYRIC_ALIGNER_VERIFIED_INPUTS_TOKEN"
 
@@ -36,6 +38,10 @@ def _sha256_file(path: Path) -> str:
 
 def _token_sha256(token: str) -> str:
     return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+def _path_identity(path: Path) -> str:
+    return hashlib.sha256(str(path.resolve()).encode("utf-8")).hexdigest()
 
 
 def _atomic_write(path: Path, payload: dict[str, Any]) -> None:
@@ -61,7 +67,7 @@ def _atomic_write(path: Path, payload: dict[str, Any]) -> None:
 def _stat_record(path: Path, expected_sha256: str, expected_size: int) -> dict[str, Any]:
     stat = path.stat()
     if not path.is_file() or stat.st_size != expected_size:
-        raise ValueError(f"verified input changed while session was created: {path}")
+        raise ValueError("verified input changed while session was created")
     return {
         "sha256": expected_sha256,
         "size": int(stat.st_size),
@@ -94,35 +100,36 @@ def create_verified_input_session(
         role_files: list[str] = []
         if kind == "file":
             absolute = base.resolve()
-            expected_size = int(record["size"])
-            files[str(absolute)] = _stat_record(
+            path_id = _path_identity(absolute)
+            files[path_id] = _stat_record(
                 absolute,
                 str(record["sha256"]),
-                expected_size,
+                int(record["size"]),
             )
-            role_files.append(str(absolute))
+            role_files.append(path_id)
         elif kind == "directory":
             for item in record.get("files", []):
                 absolute = (base / str(item["path"])).resolve()
-                files[str(absolute)] = _stat_record(
+                path_id = _path_identity(absolute)
+                files[path_id] = _stat_record(
                     absolute,
                     str(item["sha256"]),
                     int(item["size"]),
                 )
-                role_files.append(str(absolute))
+                role_files.append(path_id)
         else:
             raise ValueError(f"unsupported manifest input kind for {role}: {kind}")
         roles[str(role)] = {
             "kind": kind,
             "sha256": str(record["sha256"]),
-            "files": role_files,
+            "files": sorted(role_files),
         }
 
     token = secrets.token_hex(32)
     payload = {
         "schema_version": SESSION_SCHEMA_VERSION,
         "task_fingerprint_sha256": str(manifest["task_fingerprint_sha256"]),
-        "manifest_path": str(manifest_path.resolve()),
+        "manifest_path_identity_sha256": _path_identity(manifest_path),
         "manifest_sha256": _sha256_file(manifest_path),
         "token_sha256": _token_sha256(token),
         "roles": roles,
@@ -174,22 +181,46 @@ def _stat_matches(path: Path, record: dict[str, Any]) -> bool:
     )
 
 
-def file_is_attested(path: Path, expected_sha256: str) -> bool:
-    """Return True only when the active parent session attests this exact file."""
+def attested_file_sha256(path: Path) -> str | None:
+    """Return the fresh parent-attested digest for this exact unchanged path."""
 
     payload = _active_session()
     if payload is None:
-        return False
+        return None
     files = payload.get("files")
     if not isinstance(files, dict):
-        return False
-    resolved = str(path.resolve())
-    record = files.get(resolved)
-    if not isinstance(record, dict):
-        return False
-    if str(record.get("sha256")) != str(expected_sha256):
-        return False
-    return _stat_matches(Path(resolved), record)
+        return None
+    record = files.get(_path_identity(path))
+    if not isinstance(record, dict) or not _stat_matches(path.resolve(), record):
+        return None
+    digest = str(record.get("sha256") or "")
+    if len(digest) != 64 or any(char not in "0123456789abcdef" for char in digest):
+        return None
+    return digest
+
+
+def file_is_attested(path: Path, expected_sha256: str) -> bool:
+    """Return True only when the active parent session attests this exact file."""
+
+    digest = attested_file_sha256(path)
+    return digest is not None and secrets.compare_digest(digest, str(expected_sha256))
+
+
+def _role_paths(manifest_path: Path, record: dict[str, Any]) -> list[Path] | None:
+    root = manifest_path.resolve().parents[3]
+    base = (root / str(record["path"])).resolve()
+    kind = record.get("kind")
+    if kind == "file":
+        return [base]
+    if kind != "directory" or not base.is_dir():
+        return None
+    try:
+        return sorted(
+            (item.resolve() for item in base.rglob("*") if item.is_file()),
+            key=lambda item: item.as_posix().casefold(),
+        )
+    except OSError:
+        return None
 
 
 def role_is_attested(
@@ -202,7 +233,7 @@ def role_is_attested(
     payload = _active_session()
     if payload is None:
         return False
-    if str(payload.get("manifest_path")) != str(manifest_path.resolve()):
+    if str(payload.get("manifest_path_identity_sha256")) != _path_identity(manifest_path):
         return False
     if str(payload.get("task_fingerprint_sha256")) != str(
         manifest.get("task_fingerprint_sha256")
@@ -216,7 +247,8 @@ def role_is_attested(
 
     record = manifest.get("inputs", {}).get(role)
     roles = payload.get("roles")
-    if record is None or not isinstance(roles, dict):
+    files = payload.get("files")
+    if record is None or not isinstance(roles, dict) or not isinstance(files, dict):
         return False
     attested = roles.get(role)
     if not isinstance(attested, dict):
@@ -226,27 +258,15 @@ def role_is_attested(
     if str(attested.get("sha256")) != str(record.get("sha256")):
         return False
 
-    expected_files = attested.get("files")
-    files = payload.get("files")
-    if not isinstance(expected_files, list) or not isinstance(files, dict):
+    current_paths = _role_paths(manifest_path, record)
+    expected_ids = attested.get("files")
+    if current_paths is None or not isinstance(expected_ids, list):
         return False
-    for value in expected_files:
-        file_record = files.get(str(value))
-        if not isinstance(file_record, dict):
-            return False
-        if not _stat_matches(Path(str(value)), file_record):
-            return False
-
-    if record.get("kind") == "directory":
-        base = (manifest_path.resolve().parents[3] / str(record["path"])).resolve()
-        try:
-            current = {
-                str(item.resolve())
-                for item in base.rglob("*")
-                if item.is_file()
-            }
-        except OSError:
-            return False
-        if current != {str(value) for value in expected_files}:
+    current_ids = sorted(_path_identity(path) for path in current_paths)
+    if current_ids != sorted(str(value) for value in expected_ids):
+        return False
+    for path in current_paths:
+        file_record = files.get(_path_identity(path))
+        if not isinstance(file_record, dict) or not _stat_matches(path, file_record):
             return False
     return True
