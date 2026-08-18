@@ -15,166 +15,137 @@
 - P2 editor shadow evidence：`2e96569189ac6eb16d987fb2f304403696bc809b`；
 - P3 local acoustic evidence：`cd3420750c06a55fa1af7d6314ec56971e728928`；
 - P4 evidence fusion shadow：`bc4e10760ffee2e5990ca580d5edbadd7d561eaf`；
-- P5 ASR second-pass routing：`1abef200c3dbfe711dacf5432bb51ee7ac1bbe5d`。
+- P5 ASR second-pass routing：`1abef200c3dbfe711dacf5432bb51ee7ac1bbe5d`；
+- P6 ASR second-pass execution/composite：`6eacacc50e885684b0265e3abea729b19b1b7725`。
 
-P3 validate #493、P4 validate #517、P5 validate #530 均在 ASR + Python 3.10/3.12/3.14 compile/docs/full unit-E2E/Skill/privacy/environment/diff-check 全绿后合入。
+P3 validate #493、P4 #517、P5 #530、P6 #545 均在 ASR + Python 3.10/3.12/3.14 compile/docs/full unit-E2E/Skill/privacy/environment/diff-check 全绿后合入。
 
 ---
 
-## 2026-08-18 — P6 ASR Second-Pass Execution + Composite Evidence
+## 2026-08-18 — P7 External Source Forced Alignment
 
 ### 1. 目标
 
-P5 只规划 second-pass；P6 真正执行 P5 selected local jobs，并将结果与第一遍 evidence 合成一份完整 ASR evidence，供 P4 直接消费。
+建立一个 backend-neutral、真实 external subprocess 可运行的 source-side forced-alignment 协议；不把 ASR 冒充 forced alignment，不假装 WhisperX/SOFA/MFA 已安装。
 
 新增：
 
 ```text
-lyric_aligner/alignment/asr_second_pass.py
-scripts/v4_execute_asr_second_pass.py
-references/asr-second-pass-execution.md
+lyric_aligner/alignment/forced_executor.py
+scripts/v4_execute_forced_alignment.py
+references/forced-alignment-protocol.md
 ```
 
-`lyric_aligner/alignment/__init__.py` 同步 export：
+更新：
 
 ```text
-ASR_COMPOSITE_SCHEMA_VERSION
-AsrSecondPassExecutionError
-execute_second_pass_and_compose
+lyric_aligner/alignment/backends.py
+lyric_aligner/alignment/__init__.py
 ```
 
-### 2. Zero-selection bug prevention
+### 2. Authority
 
-P3 手工 CLI 的 legacy 语义是未提供 `--job-id` 时不筛选；如果直接复用，P5 `selected_job_ids=[]` 有被误解释为“全执行”的风险。
-
-P6 禁止该语义：
+固定：
 
 ```text
-selected jobs = []
--> execution_plan.jobs = []
--> model not loaded
--> second_pass_executed_job_count = 0
+canonical_text_authority = canonical_lyrics_only
+timing_authority = auxiliary_source_forced_alignment_evidence
 ```
 
-这是 P6 的硬 contract，不依赖调用方手工判断。
+Forced-alignment evidence 不直接改 canonical/final timing。
 
-### 3. Exact original-window enforcement
+### 3. Source binding / lineage
 
-每个 P5 selected job 必须在 original P3 `mix_asr` plan 中存在，并逐项匹配：
+CLI 必须验证：
+
+- exact task fingerprint/input hashes；
+- source run artifact；
+- P3 alignment plan artifact；
+- `asset_resolution / track_assets` artifact；
+- asset artifact 是 source run upstream；
+- canonical timeline artifacts 是 source run upstream；
+- source audio live SHA；
+- occurrence/track identity；
+- planner canonical text SHA 与 current timeline 一致。
+
+源音频只从已解析 `track_assets` 取得，不再 filename guess。
+
+### 4. External JSON protocol
+
+Config：
 
 ```text
-occurrence_id
-track_id
-canonical_line_index
-language_profile
-mix_window_ms
-source_window_ms
-canonical_text_sha256
+command
+backend_id/backend_version
+model_id/model_revision
+timeout_seconds
 ```
 
-实际执行 plan 从 original P3 row 生成，不直接执行 P5 row，因此 P5 不能扩大 window。
+Command 使用 `shlex` 拆分且不通过 shell；backend registry/runner 只用第一个 token 判断 executable 是否存在，后续 args 保留。
 
-### 4. Model lineage
-
-P6 强制：
+调用：
 
 ```text
-first_pass config.model_id exists
-P5 second_pass_model_id exists
-P6 execution model == P5 second_pass_model_id
-second model != first-pass model
+<command> --request <temp-request> --response <temp-response>
 ```
 
-模型 identity 不一致直接 fail-closed。
+Request 可临时含 canonical raw text + local source path；response 必须回显 exact protocol/job/backend/model identity。
 
-### 5. Composite evidence
+### 5. Response contract
 
-Output 保持 P4 兼容：
+时间统一为 absolute source milliseconds。
+
+Required line boundary：
 
 ```text
-stage = asr_evidence_local
-role  = asr_evidence
-backend = faster_whisper
-mode = composite_second_pass_evidence
-policy_calibrated = false
-scope_policy = reuse_exact_first_pass_local_windows
+line_source_start_ms
+line_source_end_ms
 ```
 
-按 original P3 mix-ASR 顺序：
-
-- P5 selected：second-pass result 替换 first-pass result；
-- 未 selected：保留 first-pass result（若存在）；
-- 没有 evidence 的 original job 不伪造空结果。
-
-每条 job 标记：
+Optional spans：
 
 ```text
-evidence_pass = first | second
-evidence_model_id = actual model ID
+char_start/char_end
+source_start_ms/source_end_ms
+confidence
 ```
 
-### 6. Privacy hardening
+Char/time spans 必须单调、非重叠、在 canonical/source window 内；confidence 若存在必须 `[0,1]`。
 
-Composite privacy 由**本次 P6** `include_private_text` 控制。
+### 6. Privacy
 
-默认 false 时，即使 first-pass evidence 以前保存过私有原文，也必须从 retained rows 移除：
+正式 evidence 不复制 canonical raw text、source path、完整 command、backend stdout/stderr。
+
+输出 canonical line/fragment SHA、char offsets、source timing/confidence、source audio SHA、backend/model identity。
+
+Artifact 只记录 `command_sha256` 和 executable basename。
+
+### 7. Artifact
 
 ```text
-observed_text
-segments[].text
-segments[].words[].text
+stage = source_forced_alignment_evidence
+role = forced_alignment_evidence
 ```
 
-只有 P6 本次显式 private-text opt-in 才允许 composite 保存 raw ASR text。
-
-### 7. Artifact lineage
-
-P6 artifact upstream：
-
-```text
-original alignment plan artifact
-first-pass ASR artifact
-P5 second-pass plan artifact
-source run artifact
-canonical timeline artifacts
-```
-
-Payload 绑定：
-
-```text
-source_plan_artifact_id
-source_first_pass_artifact_id
-source_second_pass_plan_artifact_id
-source_run_artifact_id
-mix_audio_sha256
-selected_job_ids
-```
-
-P5 artifact 还必须 upstream exact plan + first-pass artifact；跨 task/plan/run 或 output hash 变化均 fail。
+Upstream：alignment plan + asset_resolution + source run + exact canonical timelines。
 
 ### 8. Tests
 
-新增：
+Package：
 
-- fake-model selected job exact clip；
-- unselected first result retained；
-- selected first result replaced by second；
-- empty selection = zero execution / no model load；
-- changed P5 window fail；
-- executor/P5 model mismatch fail；
-- selected IDs/jobs mismatch fail；
-- retained private first-pass text默认剥离；
-- CLI empty-selection E2E 在无真实 Whisper model 环境成功；
-- composite artifact 绑定 P5 plan。
+- exact source-window request；
+- output 无 raw canonical text；
+- explicit empty selection 不解析/执行 command；
+- source SHA tamper fail；
+- canonical SHA mismatch fail；
+- response model revision mismatch fail；
+- out-of-window span fail；
+- command-with-arguments registry check。
 
-### 9. GitHub Actions 真实边界
+CLI E2E：使用临时 Python fake aligner **真实 subprocess** 完成 request/response；并测试 executable-not-found 有工作时非零失败。
 
-P6 CI 可以验证 zero-selection、fake-model API、artifact lineage/privacy 和所有既有 regression；但当前 workflow 不下载/运行真实 second-pass large model，也没有 private real-song truth。
+### 9. GitHub Actions 边界
 
-因此不能声称：
+P7 Actions 可验证 external protocol 本身，但不能宣称 WhisperX/SOFA/MFA 或任何真实 checkpoint/G2P 已安装、已运行或已证明歌声准确率。
 
-- accuracy model 已在公共 Actions 上真实执行；
-- large-v3 相对 turbo 的真实收益；
-- second-pass composite 可自动修改 final timing/release。
-
-P6 必须以 latest-head ASR + Python 3.10/3.12/3.14 全门禁为合并依据。
+真实 forced-aligner production promotion 仍要求 model/checkpoint/language resources/license/runtime identity + private calibration/blind-test。

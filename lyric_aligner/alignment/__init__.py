@@ -2,8 +2,8 @@
 
 The alignment package does not replace canonical lyrics or Source-to-Mix. It
 selects bounded evidence jobs, reports backend availability, optionally runs
-local ASR, routes weak first-pass evidence, and can compose a second accuracy
-pass without widening scope to the full mix.
+local ASR, routes/executes a second ASR pass, and can invoke an explicitly
+configured external source forced aligner without fabricating backend support.
 """
 
 from lyric_aligner.alignment.asr_executor import (
@@ -29,6 +29,13 @@ from lyric_aligner.alignment.backends import (
     BackendStatus,
     inspect_backends,
 )
+from lyric_aligner.alignment.forced_executor import (
+    FORCED_ALIGNMENT_PROTOCOL_VERSION,
+    FORCED_ALIGNMENT_SCHEMA_VERSION,
+    ExternalForcedAlignmentConfig,
+    ForcedAlignmentExecutionError,
+    execute_external_forced_alignment_jobs,
+)
 from lyric_aligner.alignment.planner import (
     ALIGNMENT_PLAN_SCHEMA_VERSION,
     AlignmentPlanningError,
@@ -42,6 +49,8 @@ __all__ = [
     "ASR_EVIDENCE_SCHEMA_VERSION",
     "ASR_SECOND_PASS_POLICY_ID",
     "ASR_SECOND_PASS_SCHEMA_VERSION",
+    "FORCED_ALIGNMENT_PROTOCOL_VERSION",
+    "FORCED_ALIGNMENT_SCHEMA_VERSION",
     "AlignmentPlanningError",
     "AlignmentPlannerConfig",
     "AsrExecutionError",
@@ -50,9 +59,12 @@ __all__ = [
     "AsrSecondPassRoutingConfig",
     "BackendCapability",
     "BackendStatus",
+    "ExternalForcedAlignmentConfig",
     "FasterWhisperExecutionConfig",
+    "ForcedAlignmentExecutionError",
     "build_alignment_plan",
     "build_second_pass_plan",
+    "execute_external_forced_alignment_jobs",
     "execute_faster_whisper_jobs",
     "execute_second_pass_and_compose",
     "inspect_backends",

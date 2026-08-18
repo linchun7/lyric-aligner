@@ -4,9 +4,9 @@
 主线算法版本：`4.0.0a8`  
 Calibration profile：`production-bootstrap-2026-08-17-a7`
 
-> main 已完成 production reconstruction、P1/P1.1、P2 editor shadow、P3 local acoustic evidence、P4 shadow fusion、P5 second-pass routing。P6 新增 **second-pass execution + composite ASR evidence**，仍不修改 canonical lyric 或 final timeline。
+> main 已完成 production reconstruction、P1/P1.1、P2 editor shadow、P3 local acoustic evidence、P4 shadow fusion、P5 second-pass routing、P6 second-pass execution/composite。P7 新增 external source forced-alignment protocol，仍不改变 canonical lyric 或 final timeline authority。
 
-## 1. 主链与 evidence 入口
+## 1. 主链 / calibration
 
 ```powershell
 python scripts/v4_run.py ...
@@ -18,8 +18,6 @@ python scripts/v4_render.py ...
 python scripts/v4_validate_release.py ...
 ```
 
-Dataset/calibration：
-
 ```powershell
 python scripts/v4_dataset_readiness.py scaffold ...
 python scripts/v4_dataset_readiness.py clone-candidate ...
@@ -29,200 +27,151 @@ python scripts/v4_calibration_workflow.py select ...
 python scripts/v4_calibration_workflow.py blind ...
 ```
 
-Editor/fusion：
+## 2. Editor / ASR / fusion
 
 ```powershell
 python scripts/v4_editor_evidence.py ...
+python scripts/v4_alignment_backends.py
+python scripts/v4_plan_alignment.py ...
+python scripts/v4_execute_asr_evidence.py ...
+python scripts/v4_plan_asr_second_pass.py ...
+python scripts/v4_execute_asr_second_pass.py ...
 python scripts/v4_fuse_evidence.py ...
 ```
 
-## 2. 第一遍 local ASR
+P6 composite 继续输出 `asr_evidence_local / asr_evidence`，可直接传给 P4。
+
+## 3. P7 backend readiness
+
+在真正执行 forced alignment 前先检查：
 
 ```powershell
-python scripts/v4_alignment_backends.py
-python scripts/v4_plan_alignment.py ...
-python scripts/v4_execute_asr_evidence.py `
+python scripts/v4_alignment_backends.py `
+  --external-forced-aligner-command '"<executable>" <adapter-args>'
+```
+
+`available/execution_ready=true` 只表示配置的 executable 能找到；**不等于**模型/checkpoint/G2P 已经在歌声上验证。
+
+Command 可包含参数；P7 只用第一个 token 做 executable discovery，运行时保留其余参数，不通过 shell。
+
+## 4. 执行 external source forced alignment
+
+```powershell
+python scripts/v4_execute_forced_alignment.py `
   --task-manifest "private/<任务>/qa/task_manifest.json" `
   --plan "output/<任务>/v4/alignment/plan.json" `
   --plan-artifact "output/<任务>/v4/alignment/plan.artifact.json" `
+  --track-assets "output/<任务>/v4/assets/track_assets.json" `
+  --track-assets-artifact "output/<任务>/v4/assets/track_assets.artifact.json" `
   --run "output/<任务>/v4/<effective-run>.json" `
   --run-artifact "output/<任务>/v4/<effective-run>.artifact.json" `
-  --model-id "<fast-first-pass-model>" `
-  --device cpu `
-  --compute-type int8 `
-  --out "output/<任务>/v4/alignment/asr_first.json" `
-  --artifact-out "output/<任务>/v4/alignment/asr_first.artifact.json"
-```
-
-默认不带 `--include-private-text`。
-
-## 3. P5 第二遍规划
-
-```powershell
-python scripts/v4_plan_asr_second_pass.py `
-  --task-manifest "private/<任务>/qa/task_manifest.json" `
-  --plan "output/<任务>/v4/alignment/plan.json" `
-  --plan-artifact "output/<任务>/v4/alignment/plan.artifact.json" `
-  --first-pass-evidence "output/<任务>/v4/alignment/asr_first.json" `
-  --first-pass-artifact "output/<任务>/v4/alignment/asr_first.artifact.json" `
-  --second-pass-model-id "<accuracy-model>" `
-  --out "output/<任务>/v4/alignment/asr_second_plan.json" `
-  --artifact-out "output/<任务>/v4/alignment/asr_second_plan.artifact.json"
-```
-
-检查：
-
-```text
-mode = second_pass_plan_only
-backend_execution_performed = false
-scope_policy = reuse_exact_first_pass_local_windows
-```
-
-## 4. P6 执行第二遍并合成完整 ASR evidence
-
-```powershell
-python scripts/v4_execute_asr_second_pass.py `
-  --task-manifest "private/<任务>/qa/task_manifest.json" `
-  --plan "output/<任务>/v4/alignment/plan.json" `
-  --plan-artifact "output/<任务>/v4/alignment/plan.artifact.json" `
-  --first-pass-evidence "output/<任务>/v4/alignment/asr_first.json" `
-  --first-pass-artifact "output/<任务>/v4/alignment/asr_first.artifact.json" `
-  --second-pass-plan "output/<任务>/v4/alignment/asr_second_plan.json" `
-  --second-pass-plan-artifact "output/<任务>/v4/alignment/asr_second_plan.artifact.json" `
-  --run "output/<任务>/v4/<effective-run>.json" `
-  --run-artifact "output/<任务>/v4/<effective-run>.artifact.json" `
-  --model-id "<accuracy-model>" `
-  --device cpu `
-  --compute-type int8 `
-  --out "output/<任务>/v4/alignment/asr_composite.json" `
-  --artifact-out "output/<任务>/v4/alignment/asr_composite.artifact.json" `
+  --external-command '"<aligner-executable>" <adapter-args>' `
+  --backend-id "<backend-id>" `
+  --backend-version "<backend-version>" `
+  --model-id "<model/checkpoint-id>" `
+  --model-revision "<revision/hash>" `
+  --out "output/<任务>/v4/alignment/forced_evidence.json" `
+  --artifact-out "output/<任务>/v4/alignment/forced_evidence.artifact.json" `
   --git-commit "<commit>"
 ```
 
-`--model-id` 必须等于 P5 plan 的 `second_pass_model_id`，且不能等于 first-pass model ID。
-
-## 5. Empty-selection 行为
-
-如果 P5 输出：
-
-```text
-selected_job_ids = []
-jobs = []
-```
-
-仍然可以安全运行 P6。
-
-预期：
-
-```text
-model_loaded_second_pass = false
-second_pass_selected_job_count = 0
-second_pass_executed_job_count = 0
-first_pass_retained_job_count = <已有第一遍 jobs>
-```
-
-P6 不会把空列表解释成“跑全部”。
-
-## 6. Composite 输出
-
-```text
-stage = asr_evidence_local
-role = asr_evidence
-backend = faster_whisper
-mode = composite_second_pass_evidence
-policy_calibrated = false
-scope_policy = reuse_exact_first_pass_local_windows
-```
-
-每个 job：
-
-```text
-evidence_pass = first | second
-evidence_model_id = <实际模型>
-```
-
-未升级 job 保留 first-pass；P5 selected jobs 使用 second-pass result 替换。
-
-随后 P4 直接改用 composite：
+默认执行 plan 中所有请求 `source_forced_alignment` 的 jobs。可重复：
 
 ```powershell
-python scripts/v4_fuse_evidence.py `
-  ... `
-  --asr-evidence "output/<任务>/v4/alignment/asr_composite.json" `
-  --asr-evidence-artifact "output/<任务>/v4/alignment/asr_composite.artifact.json"
+--job-id "<job-id>"
 ```
 
-## 7. Exact-window 安全
+只执行指定 jobs。
 
-P6 对 P5 selected job 与 original P3 plan 比较：
+## 5. External adapter 必须实现的接口
+
+P7 每个 job 调用：
 
 ```text
-occurrence_id
-track_id
-canonical_line_index
+<configured command> --request <temp-request.json> --response <temp-response.json>
+```
+
+Request 包含 exact：
+
+```text
+protocol_version=1.0
+job/backend/model identity
 language_profile
-mix_window_ms
+source_audio_path + SHA
 source_window_ms
+canonical_text + SHA
+```
+
+Response 必须：
+
+```text
+status=aligned
+回显 protocol/job/backend/model identity
+回显 exact source_window_ms
+line_source_start_ms/line_source_end_ms
+optional line_confidence
+optional spans with char offsets + source ms + confidence
+```
+
+时间必须是 absolute source milliseconds。
+
+完整协议见 `references/forced-alignment-protocol.md`。
+
+## 6. Fail-closed 条件
+
+CLI 会拒绝：
+
+- task input hash 变化；
+- plan/source run 不一致；
+- track-assets artifact 不是 source run upstream；
+- asset/timeline artifact output hash 不一致；
+- source audio 文件缺失或 live SHA 变化；
+- occurrence/track identity 不一致；
+- planner canonical SHA 与 current timeline 不一致；
+- configured executable 不存在且确实有 selected work；
+- backend/model identity response 不匹配；
+- line/span 超出 original source window；
+- span char/time 非单调或重叠；
+- external process timeout/nonzero/no response/invalid JSON。
+
+不要手改 artifact/SHA 绕过。
+
+## 7. P7 输出
+
+```text
+stage = source_forced_alignment_evidence
+role = forced_alignment_evidence
+```
+
+正式 evidence 不包含 canonical raw text/local source path/full command/stdout/stderr。
+
+每 job 保存：
+
+```text
+occurrence/track/line identity
 canonical_text_sha256
+source_audio_sha256
+source_window_ms
+line source boundary/confidence
+span char offsets + fragment SHA + source boundary/confidence
+backend/model identity
 ```
 
-任何变化直接失败。实际执行使用 original P3 row 构造 clip。
+Artifact normalized config 只记录 `command_sha256` + executable basename，不记录完整 command/path。
 
-## 8. Privacy
+## 8. Actions 能验证 / 不能验证
 
-默认 P6 不保存 raw ASR text。
+CI 可通过临时 Python fake aligner 的**真实 subprocess**验证 P7 request/response 协议、artifact lineage、source SHA、model identity、privacy 和 executable-not-found failure。
 
-即使 first-pass 文件曾用 `--include-private-text`，P6 默认 composite 也会删除 retained first-pass 中：
+CI 当前不能证明：
 
-```text
-observed_text
-segments[].text
-segments[].words[].text
-```
+- WhisperX/SOFA/MFA production backend 已安装/运行；
+- 某 checkpoint/G2P 对真实歌声准确；
+- forced alignment 可以自动改 final timing；
+- forced-alignment family 已通过 blind release gate。
 
-只有 P6 本次明确 `--include-private-text` 才允许 composite 保存 raw ASR text。
+真实 backend 上线必须在 private/local runtime 锁定 package/command、model revision、language resources、license/runtime identity，再做 private calibration/blind-test。
 
-## 9. Artifact lineage
+## 9. 下一步
 
-P6 output artifact upstream：
-
-```text
-original alignment plan
-first-pass ASR
-P5 second-pass plan
-source run
-canonical timelines
-```
-
-任一 artifact output hash 不匹配、跨 task/plan/run、P5 未绑定 exact first-pass，都失败。
-
-## 10. GitHub Actions 能 / 不能做
-
-CI 可以真实验证：
-
-- fake-model selected execution；
-- exact local clip；
-- empty selection 不加载模型；
-- composite replace/retain；
-- model/plan/window lineage；
-- retained private text stripping；
-- zero-selection CLI E2E；
-- P0-P5 regression。
-
-CI 当前**不能**证明：
-
-- real accuracy-model 已在公共 runner 成功加载/执行；
-- large-v3 对真实歌曲比 turbo 提升多少；
-- second-pass composite 可自动修正 final timing。
-
-真实 selected-job execution 需要 private/local runtime 具备相应模型下载/缓存/硬件环境；真实收益需 private calibration/blind-test。
-
-## 11. 尚未完成
-
-优先剩余：
-
-1. production forced-aligner adapter + model/language/cache/license lineage；
-2. private real-song calibration/blind 数据填充和误差分析；
-3. vocal separation / local singing alignment（仅高风险窗口）；
-4. calibrated evidence-family boundary application/release gate；
-5. same-region cut+overlap joint acoustic model。
+P7 合入后，下一阶段应把 source forced-alignment boundary 通过 current Source-to-Mix mapping 投影为 mix boundary，然后作为 P4 独立 family；**不能直接拿 source ms 与 editor/ASR 的 mix ms 比较**。
