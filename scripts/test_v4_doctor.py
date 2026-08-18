@@ -5,6 +5,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from lyric_aligner.contracts.artifacts import build_artifact_manifest
 from lyric_aligner.doctor import build_doctor_report
 
 
@@ -39,10 +40,26 @@ class V4DoctorTests(unittest.TestCase):
         return {
             "schema_version": "1.2",
             "algorithm_version": "4.0.0a8",
-            "task_fingerprint_sha256": "a" * 64,
+            "task_fingerprint_sha256": "c" * 64,
             "status": status,
             "legacy_fallback_used": False,
         }
+
+    def _artifact(
+        self,
+        *,
+        payload_path: Path,
+        role: str,
+        stage: str,
+        upstreams: tuple[str, ...] = (),
+    ) -> dict:
+        return build_artifact_manifest(
+            task_fingerprint_sha256="c" * 64,
+            stage=stage,
+            algorithm_version="4.0.0a8",
+            outputs=((role, payload_path),),
+            upstream_artifact_ids=upstreams,
+        )
 
     def test_missing_required_task_fails_without_throwing(self) -> None:
         report = build_doctor_report(
@@ -66,7 +83,9 @@ class V4DoctorTests(unittest.TestCase):
                 inspect_backend_status=False,
             )
         self.assertTrue(report["requirements"]["passed"])
-        self.assertEqual(report["stages"]["task"]["detail"], "task_manifest_shape_ok")
+        self.assertEqual(
+            report["stages"]["task"]["detail"], "task_manifest_shape_ok"
+        )
 
     def test_legacy_fake_tracks_shape_is_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -78,7 +97,9 @@ class V4DoctorTests(unittest.TestCase):
                 inspect_backend_status=False,
             )
         self.assertFalse(report["requirements"]["passed"])
-        self.assertEqual(report["stages"]["task"]["detail"], "task_manifest_schema_invalid")
+        self.assertEqual(
+            report["stages"]["task"]["detail"], "task_manifest_schema_invalid"
+        )
 
     def test_real_v4_run_shape_does_not_require_payload_stage(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -90,7 +111,9 @@ class V4DoctorTests(unittest.TestCase):
                 inspect_backend_status=False,
             )
         self.assertTrue(report["requirements"]["passed"])
-        self.assertIn("status=ready_for_render", report["stages"]["run"]["detail"])
+        self.assertIn(
+            "status=ready_for_render", report["stages"]["run"]["detail"]
+        )
 
     def test_resume_recommends_projection_then_fusion(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -158,6 +181,79 @@ class V4DoctorTests(unittest.TestCase):
         self.assertEqual(
             report["authority"]["primary_timing"], "source_to_mix_only"
         )
+
+    def test_artifact_lineage_binds_auxiliary_payload_to_current_run(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            task = self._write(root, "task.json", self._task_payload())
+            run = self._write(root, "run.json", self._run_payload())
+            run_artifact_payload = self._artifact(
+                payload_path=run,
+                role="v4_production_run",
+                stage="production_orchestration",
+            )
+            run_artifact = self._write(
+                root, "run.artifact.json", run_artifact_payload
+            )
+            forced_payload = {
+                "backend": "external_forced_aligner",
+                "algorithm_version": "4.0.0a8",
+                "task_fingerprint_sha256": "c" * 64,
+                "source_run_artifact_id": run_artifact_payload["artifact_id"],
+                "jobs": [],
+            }
+            forced = self._write(root, "forced.json", forced_payload)
+            forced_artifact_payload = self._artifact(
+                payload_path=forced,
+                role="forced_alignment_evidence",
+                stage="source_forced_alignment_evidence",
+                upstreams=(run_artifact_payload["artifact_id"],),
+            )
+            forced_artifact = self._write(
+                root, "forced.artifact.json", forced_artifact_payload
+            )
+            report = build_doctor_report(
+                task_manifest=task,
+                run=run,
+                run_artifact=run_artifact,
+                forced_evidence=forced,
+                forced_evidence_artifact=forced_artifact,
+                requirements=[
+                    "lineage",
+                    "artifact:run",
+                    "artifact:forced_source",
+                ],
+                inspect_backend_status=False,
+            )
+        self.assertTrue(report["requirements"]["passed"])
+        self.assertTrue(report["lineage"]["passed"])
+        self.assertTrue(
+            report["artifacts"]["forced_source"]["upstream_contains_run"]
+        )
+
+    def test_tampered_payload_fails_artifact_lineage(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            task = self._write(root, "task.json", self._task_payload())
+            run = self._write(root, "run.json", self._run_payload())
+            run_artifact_payload = self._artifact(
+                payload_path=run,
+                role="v4_production_run",
+                stage="production_orchestration",
+            )
+            run_artifact = self._write(
+                root, "run.artifact.json", run_artifact_payload
+            )
+            run.write_text(json.dumps({**self._run_payload(), "status": "tampered"}))
+            report = build_doctor_report(
+                task_manifest=task,
+                run=run,
+                run_artifact=run_artifact,
+                requirements=["lineage", "artifact:run"],
+                inspect_backend_status=False,
+            )
+        self.assertFalse(report["requirements"]["passed"])
+        self.assertFalse(report["artifacts"]["run"]["valid"])
 
     def test_calibrated_fusion_is_rejected_by_doctor(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
