@@ -239,19 +239,23 @@ def bridge_fusion_to_partial_repair(
                     candidate_reason = "missing_or_unsupported_occurrence_mapping_kind"
                 else:
                     boundary = row["source_timeline_boundary_ms"]
-                    candidates.append(
-                        TimingCandidate(
-                            position=position,
-                            start_ms=int(boundary[0]),
-                            end_ms=int(boundary[1]),
-                            projection_status="projected",
-                            mapping_kind=mapping_kind,
-                            source="source_to_mix",
-                            confidence=None,
+                    if int(boundary[1]) - int(boundary[0]) <= 1:
+                        candidate_status = "unavailable"
+                        candidate_reason = "open_end_source_timeline_boundary_is_not_repairable"
+                    else:
+                        candidates.append(
+                            TimingCandidate(
+                                position=position,
+                                start_ms=int(boundary[0]),
+                                end_ms=int(boundary[1]),
+                                projection_status="projected",
+                                mapping_kind=mapping_kind,
+                                source="source_to_mix",
+                                confidence=None,
+                            )
                         )
-                    )
-                    candidate_status = "projected"
-                    candidate_reason = "unique_p9_binding_uses_source_timeline_only"
+                        candidate_status = "projected"
+                        candidate_reason = "unique_p9_binding_uses_source_timeline_only"
 
         bindings.append(
             CueEvidenceBinding(
