@@ -62,7 +62,7 @@ references/v4-change-record.md
 18. 所有 stage 都绑定 task fingerprint、algorithm version、upstream IDs、materialized SHA-256；涉及模型的 evidence 还必须绑定 backend/model revision。
 19. 所有实质性更新必须同步 owning docs；CI 不通过不得合并。
 20. Runtime snapshot / doctor / family evaluator 都是可复现与诊断层，不改变 Source-to-Mix authority；没有独立 blind-test 结果不得把 auxiliary family 提升为自动 timing/release authority。
-21. **Text Repair V2 只在时间轴明确冻结时使用。** 它可处理错字、漏字、多字和 1↔2/2↔1/2↔2 断句差异，但任何情况下都不得改变 cue 数、编号或 timing；部分时间轴修复必须走后续声学/Source-to-Mix 路径。
+21. **Text Repair V2 只在时间轴明确冻结时使用。** 它可处理错字、漏字、多字以及 bounded 1↔N / N↔1 / N↔N 断句差异；普通 span 保守处理，3–4 段只在近乎完全一致的高置信文本证据下使用。任何情况下都不得改变 cue 数、编号或 timing；部分时间轴修复必须走后续声学/Source-to-Mix 路径。
 
 ## 权威文档
 
@@ -106,7 +106,7 @@ python scripts/v4_text_repair_batch.py `
   --summary "output/<任务>/text-repair.batch.summary.json"
 ```
 
-V2 的文本匹配支持受限 `1↔1 / 1↔2 / 2↔1 / 2↔2` span，因此剪映比 LRC 多断一句、少断一句或断句点不同，不再天然需要 review。高置信 span 内允许字符 replace/insert/delete，以修复普通错字、漏字和多字；源 SRT 的标点、空白、换行和常见音乐装饰符继续保留。真实 canonical gap、额外 subtitle cue、近似重复歌词歧义、gap 邻域弱匹配或结构差异过大继续 `review_required`。
+V2 先用唯一 exact 文本锚点把长字幕切成局部区间，再在区间内运行 bounded monotonic span DP。常见 1↔1 / 1↔2 / 2↔1 / 2↔2 可在高置信下自动处理；3–4 个 cue/lyric 的更极端断句差异只在拼接后几乎完全一致时放行。因此剪映多断一句、少断一句或断句点不同不再天然需要 review，同时不会因为扩大 span 把真正漏掉的歌词轻易吞掉。高置信 span 内允许字符 replace/insert/delete，以修复普通错字、漏字和多字；源 SRT 的标点、空白、换行和常见音乐装饰符继续保留。真实 canonical gap、额外 subtitle cue、近似重复歌词歧义、gap 邻域弱匹配、会把现有 cue 清空的重分配或结构差异过大继续 `review_required`。
 
 这个入口完全不读取音频，也不依据 LRC timestamp 修改 SRT timing，因此 **BPM 加速/减速不会改变 Text Repair V2 的文字修复规则**。下一轮“部分时间轴可信”的局部修复必须把 BPM/rate change 当常态，复用 Source-to-Mix 的 `AFFINE/PIECEWISE_RATE/CUT_AWARE` 映射；不能把原曲 LRC/source absolute time 直接覆盖到 edited mix。
 
