@@ -126,6 +126,34 @@ class TextRepairV2Tests(unittest.TestCase):
         self.assertEqual(report["status"], "ready")
         self.assert_timeline_unchanged(source, output)
 
+    def test_missing_character_at_existing_cue_boundary_requires_review(self):
+        source = (
+            "1\n00:00:01,000 --> 00:00:02,000\n我爱\n\n"
+            "2\n00:00:02,000 --> 00:00:03,000\n你\n"
+        )
+        output, report = repair_srt_text(source, canonical("我爱着你"))
+        self.assertEqual(output, source)
+        self.assertEqual(report["status"], "review_required")
+        self.assertEqual(report["cue_review_count"], 2)
+        self.assertTrue(
+            all(
+                item["reason"] == "segmentation_boundary_insertion_requires_review"
+                for item in report["decisions"]
+            )
+        )
+        self.assert_timeline_unchanged(source, output)
+
+    def test_missing_character_inside_existing_cue_can_still_auto_repair(self):
+        source = (
+            "1\n00:00:01,000 --> 00:00:02,000\n我真爱\n\n"
+            "2\n00:00:02,000 --> 00:00:03,000\n你\n"
+        )
+        output, report = repair_srt_text(source, canonical("我真的爱你"))
+        self.assertIn("我真的爱", output)
+        self.assertEqual(report["status"], "ready")
+        self.assertGreater(report["edit_counts"]["insert"], 0)
+        self.assert_timeline_unchanged(source, output)
+
     def test_punctuation_line_breaks_and_music_marks_survive_insert(self):
         source = "1\n00:00:01,000 --> 00:00:03,000\n♪ 你，真\n的爱 ♪\n"
         output, report = repair_srt_text(source, canonical("你真的很爱"))
