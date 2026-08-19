@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any
 
 from lyric_aligner.io.text import read_task_text
-from lyric_aligner.text.normalization import META_RE, clean_text
+from lyric_aligner.text.normalization import clean_text, is_metadata_text
 
 LRC_RE = re.compile(r"\[(\d{1,3}):(\d{2})(?:[.:](\d{1,3}))?\](.*)")
 ENHANCED_TOKEN_RE = re.compile(r"<(\d{1,3}):(\d{2})(?:[.:](\d{1,3}))?>")
@@ -85,12 +85,20 @@ def _enhanced(body: str) -> tuple[str, tuple[CanonicalToken, ...]]:
         if not text:
             continue
         start = timestamp_ms(*marker.groups())
-        next_start = timestamp_ms(*markers[position + 1].groups()) if position + 1 < len(markers) else None
+        next_start = (
+            timestamp_ms(*markers[position + 1].groups())
+            if position + 1 < len(markers)
+            else None
+        )
         tokens.append(CanonicalToken(text, start, next_start))
     return clean_text("".join(pieces)), tuple(tokens)
 
 
-def _qrc(line_start_ms: int, line_duration_ms: int, body: str) -> tuple[str, tuple[CanonicalToken, ...]]:
+def _qrc(
+    line_start_ms: int,
+    line_duration_ms: int,
+    body: str,
+) -> tuple[str, tuple[CanonicalToken, ...]]:
     matches = list(QRC_TOKEN_RE.finditer(body))
     if not matches:
         return clean_text(re.sub(r"\(\d+,\d+\)", "", body)), ()
@@ -115,8 +123,16 @@ def _qrc(line_start_ms: int, line_duration_ms: int, body: str) -> tuple[str, tup
             raise CanonicalLyricError("QRC token timestamps move backward")
         previous_start = start
         pieces.append(raw_text)
-        tokens.append(CanonicalToken(text, start, start + duration if duration > 0 else None))
+        tokens.append(
+            CanonicalToken(text, start, start + duration if duration > 0 else None)
+        )
     return clean_text("".join(pieces)), tuple(tokens)
+
+
+def _title_like_intro(start_ms: int, text: str) -> bool:
+    """Recognize the common ``artist - title`` first timed row in consumer LRC."""
+
+    return start_ms <= 1000 and " - " in text
 
 
 def parse_canonical_lyrics(
@@ -139,7 +155,9 @@ def parse_canonical_lyrics(
             duration = int(qrc_match.group(2))
             text, tokens = _qrc(start, duration, qrc_match.group(3))
             if text:
-                groups.setdefault(start, []).append(_Alternative(text, tokens, "qrc_word_timing"))
+                groups.setdefault(start, []).append(
+                    _Alternative(text, tokens, "qrc_word_timing")
+                )
             continue
 
         match = LRC_RE.match(stripped)
@@ -149,11 +167,11 @@ def parse_canonical_lyrics(
         try:
             start = timestamp_ms(minute, second, fraction)
         except ValueError as exc:
-            raise CanonicalLyricError(f"invalid LRC timestamp at line {line_number}") from exc
+            raise CanonicalLyricError(
+                f"invalid LRC timestamp at line {line_number}"
+            ) from exc
         text, tokens = _enhanced(body.strip())
         if not text:
-            # Role preflight also drops empty timestamp alternatives, preserving
-            # the same index space.
             continue
         groups.setdefault(start, []).append(
             _Alternative(text, tokens, "enhanced_lrc" if tokens else "line_lrc")
@@ -166,11 +184,20 @@ def parse_canonical_lyrics(
             lexical = [
                 index
                 for index, item in enumerate(alternatives)
-                if item.text and not META_RE.match(item.text)
+                if item.text
+                and not is_metadata_text(item.text)
+                and not _title_like_intro(start, item.text)
             ]
+            # Timestamped credits/role labels/title rows are common in consumer
+            # LRC files and are not canonical lyric alternatives. Metadata-only
+            # groups are ignored when no explicit TrackAsset selection exists;
+            # true multiple lexical alternatives still fail closed.
+            if not lexical:
+                continue
             if len(lexical) != 1:
                 raise CanonicalLyricError(
-                    f"canonical original is ambiguous at {start}ms; consume TrackAsset selection"
+                    f"canonical original is ambiguous at {start}ms; "
+                    "consume TrackAsset selection"
                 )
             selected_index = lexical[0]
         if selected_index < 0 or selected_index >= len(alternatives):
@@ -178,7 +205,11 @@ def parse_canonical_lyrics(
                 f"canonical alternative index {selected_index} is out of range at {start}ms"
             )
         selected = alternatives[selected_index]
-        if not selected.text or META_RE.match(selected.text):
+        if (
+            not selected.text
+            or is_metadata_text(selected.text)
+            or _title_like_intro(start, selected.text)
+        ):
             raise CanonicalLyricError(
                 f"canonical selection points to metadata/blank text at {start}ms"
             )
