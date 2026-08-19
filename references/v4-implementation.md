@@ -367,3 +367,18 @@ Batch responsibility：
 显式 `selected_job_ids=[]` 是 zero-work：不解析/启动 external executable，`command_invocation_count=0`。Batch timeout 仍是 fail-closed，并且 `--timeout-seconds` 覆盖整个 batch subprocess；大型真实模型必须显式给足 timeout，系统不会自动无限放宽。
 
 Batching 只减少重复模型进程启动，不改变 canonical text authority、P8 Source-to-Mix projection、P9 shadow fusion、cut/overlap、release gate 或任何 timing threshold。Backend adapter 的真实性能与准确率仍必须通过当前 upstream runtime review + private calibration/blind 验证。旧 WhisperX reference branch 未进入 main，因为其外部 runtime 假设在收口时已经漂移；后续 adapter 必须重新对当时的上游 API 做独立实现/验收。
+
+## 13. Partial Timeline Repair P1 responsibility（开发中）
+
+`lyric_aligner/timeline/partial_repair.py` 是下一阶段局部时间轴修复的 shadow planner。它位于 renderer/authoritative run 之前，只做候选结构校验，不直接生成新 SRT。
+
+责任边界：
+
+1. **Trust lock**：调用方必须显式给每个已判断 cue 的 `trusted / untrusted / unknown` 状态。`trusted` cue 的 editor timing 被作为局部锁定锚点原样保留；unknown 不得静默视为 trusted。
+2. **Routing**：全 trusted -> `preserve`；同时存在 trusted+untrusted 且无 unknown -> `hybrid`；其余 -> `rebuild`。这是工作流路由，不是 accuracy confidence。
+3. **Candidate authority**：局部 timing candidate 必须来自 Source-to-Mix 投影，只接受 `AFFINE / PIECEWISE_RATE / CUT_AWARE`。Editor/ASR 可以帮助判断 cue 是否不可信，但不能直接作为写回 timing authority。
+4. **Rate/cut separation**：`PIECEWISE_RATE` 是连续变速，BPM 只允许作为上游 timewarp 的弱先验，不存在 `BPM_LOCKED` mapping。`CUT_AWARE` 只有 confirmed cut 上游语义后才能出现；cross-cut/gap interval `unprojectable` 必须 block。
+5. **Local structural guards**：候选区间不得穿越任一最近 trusted cue 的锁定边界；连续待修 cue 的候选之间也必须非重叠、单调，否则涉及的候选一起 block。
+6. **No promotion yet**：`propose_repair` 只代表结构上可进入后续 calibrated policy；P1 formal result 固定 `proposal_only=true`、`publish_ready=false`，不改变 `automatic_timing_change_allowed=false`。
+
+P1 的 synthetic tests 只能证明上述 contract，不证明真实歌曲边界精度。后续要把 P9/private truth 结果接入 planner 并建立 calibration/blind promotion gate 后，才能讨论自动局部写回。
