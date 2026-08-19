@@ -23,6 +23,13 @@ class V4CanonicalLyricTests(unittest.TestCase):
         with self.assertRaisesRegex(CanonicalLyricError, "ambiguous"):
             self.parse("[00:01.00]候选一\n[00:01.00]候选二\n")
 
+    def test_metadata_only_timestamp_group_is_ignored_without_selection(self):
+        lines = self.parse(
+            "[00:01.00]编曲：某某\n[00:02.00]真正歌词\n"
+        )
+        self.assertEqual([line.text for line in lines], ["真正歌词"])
+        self.assertEqual([line.time_ms for line in lines], [2000])
+
     def test_enhanced_lrc_preserves_word_timing(self):
         lines = self.parse("[00:01.00]<00:01.00>Hello <00:01.50>world\n", selection={1000: 0})
         self.assertEqual(lines[0].text, "Hello world")
