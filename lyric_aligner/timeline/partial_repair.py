@@ -9,7 +9,7 @@ to canonical authority and never treats BPM/rate change as a cut.
 from __future__ import annotations
 
 import math
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from typing import Any, Iterable, Sequence
 
 from lyric_aligner.srt import Cue, cue_id
@@ -87,7 +87,8 @@ class TimingCandidate:
                     "unprojectable timing candidate requires projection_reason"
                 )
         if self.confidence is not None:
-            if not math.isfinite(float(self.confidence)) or not 0.0 <= float(self.confidence) <= 1.0:
+            confidence = float(self.confidence)
+            if not math.isfinite(confidence) or not 0.0 <= confidence <= 1.0:
                 raise PartialTimelineRepairError("candidate confidence must be in [0, 1]")
 
 
@@ -179,6 +180,30 @@ def _candidate_inside_locked_neighbors(
     return True, "candidate_respects_locked_neighbors"
 
 
+def _block_overlapping_repair_candidates(
+    decisions: Sequence[CueRepairDecision],
+) -> list[CueRepairDecision]:
+    output = list(decisions)
+    proposed = [
+        (index, item)
+        for index, item in enumerate(output)
+        if item.action == "propose_repair"
+    ]
+    blocked_indices: set[int] = set()
+    for (left_index, left), (right_index, right) in zip(proposed, proposed[1:]):
+        if left.candidate_end_ms is None or right.candidate_start_ms is None:
+            continue
+        if left.candidate_end_ms > right.candidate_start_ms:
+            blocked_indices.update((left_index, right_index))
+    for index in blocked_indices:
+        output[index] = replace(
+            output[index],
+            action="block",
+            reason="candidate_overlaps_another_repair_candidate",
+        )
+    return output
+
+
 def choose_task_mode(
     cues: Sequence[Cue], trust: Iterable[CueTrust]
 ) -> str:
@@ -191,7 +216,10 @@ def choose_task_mode(
     if not cues:
         raise PartialTimelineRepairError("partial repair requires at least one cue")
     rows = _trust_by_position(cues, trust)
-    statuses = [rows.get(index).status if index in rows else "unknown" for index in range(len(cues))]
+    statuses = [
+        rows.get(index).status if index in rows else "unknown"
+        for index in range(len(cues))
+    ]
     trusted = statuses.count("trusted")
     untrusted = statuses.count("untrusted")
     unknown = statuses.count("unknown")
@@ -295,6 +323,7 @@ def plan_partial_timeline_repair(
             )
         )
 
+    decisions = _block_overlapping_repair_candidates(decisions)
     action_counts = {
         key: sum(item.action == key for item in decisions)
         for key in ("preserve", "propose_repair", "review", "block")
