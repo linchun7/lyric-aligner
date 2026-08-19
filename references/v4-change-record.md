@@ -1,6 +1,6 @@
 # Lyric Aligner v4 关键变更记录
 
-> P3 前的完整历史保存在 `references/archive/2026-08-19-pre-p3-v4-change-record.md`；本文件记录当前生产责任与 Partial Timeline Repair P1–P5。
+> P3 前的完整历史保存在 `references/archive/2026-08-19-pre-p3-v4-change-record.md`；本文件记录当前生产责任、Text Repair V2.1 与 Partial Timeline Repair P1–P5。
 
 ## 当前 authority
 
@@ -25,6 +25,20 @@ release_gate_eligible = false
 公共 CI、P9 HIGH、synthetic calibration 或 Doctor `proposal_inputs_ready` 都不能提升 timing/release authority。
 
 ---
+
+## 2026-08-19 — Text Repair V2.1 hardening
+
+Text Repair 继续保持 frozen-timeline text-only 责任：不读 audio，不改变 SRT cue count / number / start / end。V2.1 只收紧文字路径与生产可操作性，不接入 Partial Timeline Repair。
+
+- canonical parser 在移除 LRC/QRC 时间标签后再次过滤作词/作曲/制作等 metadata，避免 timestamped metadata 被当作歌词；
+- 同一 canonical 文件若同时存在 timed lyric occurrence 与未标时正文，直接 fail closed，避免一条 untimed 文本让 timed occurrence 顺序退化为文件书写顺序；纯 timed 与纯 untimed 文件仍分别受支持；
+- 插入字符若恰落在现有 cue 边界、空格边界或换行边界，不猜字符所有权，保持原字幕并进入 `review_required`；
+- unmatched canonical line 从 cue repair failure 中拆分为 coverage warning：`status` / `review_count` 只反映字幕 cue 本身是否存在人工复核项，`coverage_status` / `coverage_warning_count` 单独报告 canonical coverage；gap 邻近的低置信度匹配仍继续 fail closed；
+- unique exact anchor 的最长单调链由 O(n²) DP 改为保持原稳定 tie-break 语义的 O(n log n) Fenwick 实现，并加入 2000-cue 规模回归；
+- core API 仍允许实验阈值，正式单任务与 batch CLI 禁止把 `auto-threshold` 降到默认安全线 0.72 以下；batch 在任何写出前预检 job-level threshold；
+- Text Repair report schema 升为 `2.1`，batch summary schema 升为 `1.1`。
+
+时间轴 immutable assertion 保持不变：输出写回后重新解析 SRT，并再次比较 cue count、number 与 timing signature；任何变化都立即失败。
 
 ## 2026-08-19 — Partial Timeline Repair P1
 
