@@ -3,8 +3,10 @@
 The v1 timing model remains the deterministic no-audio engine. This module
 hardens production semantics around it: inability to validate is escalated,
 B-grade identities may be confirmed only by an already-ready A-anchor model,
-combined repairs may not worsen subtitle overlaps, and BPM-derived rates stay
-soft while exact DAW stretch ratios may remain hard priors.
+combined repairs may not worsen subtitle overlaps, BPM-derived rates stay soft
+while exact DAW stretch ratios may remain hard priors, and low-similarity text
+reviews may be recovered only from bilateral canonical anchors plus an already-
+ready affine timing model.
 """
 
 from __future__ import annotations
@@ -28,9 +30,10 @@ from lyric_aligner.timeline.anchor_repair import (
     apply_timing_decisions,
     build_anchor_timing_plan,
 )
+from lyric_aligner.timeline.text_recovery import recover_text_reviews_from_timing
 
 SMART_SCHEMA_VERSION = "smart-1.1"
-SMART_POLICY_ID = "smart-validation-policy-2026-08-19-v1.1.1"
+SMART_POLICY_ID = "smart-validation-policy-2026-08-19-v1.1.2"
 _BPM_COMPATIBILITY_TOLERANCE = 0.03
 
 
@@ -247,6 +250,21 @@ def _model_payload(
     return rows
 
 
+def _text_payload(text_decisions) -> list[dict[str, object]]:
+    return [
+        {
+            "cue_ordinal": item.cue_ordinal,
+            "canonical_ordinal": item.canonical_ordinal,
+            "cue_span": list(item.cue_span) if item.cue_span else None,
+            "canonical_span": list(item.canonical_span) if item.canonical_span else None,
+            "score": item.score,
+            "action": item.action,
+            "reason": item.reason,
+        }
+        for item in text_decisions
+    ]
+
+
 def smart_repair_srt_text_v11(
     source_text: str,
     timed_canonical: Sequence[TimedCanonicalOccurrence],
@@ -264,21 +282,29 @@ def smart_repair_srt_text_v11(
         repair_canonical,
         auto_threshold=auto_threshold,
     )
-    text_repaired = render_repaired_srt(parts, cues, replacements)
-    text_payload = [
-        {
-            "cue_ordinal": item.cue_ordinal,
-            "canonical_ordinal": item.canonical_ordinal,
-            "cue_span": list(item.cue_span) if item.cue_span else None,
-            "canonical_span": list(item.canonical_span) if item.canonical_span else None,
-            "score": item.score,
-            "action": item.action,
-            "reason": item.reason,
-        }
-        for item in text_decisions
-    ]
+    text_review_count_before_recovery = sum(
+        item.action == "review" for item in text_decisions
+    )
 
     hard_priors = _hard_rate_priors(rate_prior_by_source, rate_prior_metadata_by_source)
+    initial_timing, initial_models = build_anchor_timing_plan(
+        cues,
+        timed_canonical,
+        _text_payload(text_decisions),
+        rate_prior_by_source=hard_priors,
+    )
+    del initial_timing
+
+    recovery_replacements, text_decisions, recovery = recover_text_reviews_from_timing(
+        cues,
+        timed_canonical,
+        text_decisions,
+        initial_models,
+    )
+    replacements.update(recovery_replacements)
+    text_repaired = render_repaired_srt(parts, cues, replacements)
+    text_payload = _text_payload(text_decisions)
+
     raw_timing, models = build_anchor_timing_plan(
         cues,
         timed_canonical,
@@ -302,6 +328,9 @@ def smart_repair_srt_text_v11(
         "canonical_line_count": len(timed_canonical),
         "word_timed_canonical_count": sum(item.has_word_timing for item in timed_canonical),
         "text_replacement_count": sum(item.action == "replace" for item in text_decisions),
+        "text_review_count_before_timing_recovery": text_review_count_before_recovery,
+        "text_timing_recovery_count": recovery.resolved_cue_count,
+        "text_timing_recovery_block_count": recovery.resolved_block_count,
         "text_review_count": text_review_count,
         "timing_repair_count": sum(item.action == "repair" for item in timing),
         "timing_review_count": unresolved_count,
