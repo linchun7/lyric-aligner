@@ -27,6 +27,8 @@ _SRT_TIMING = re.compile(
     r"\d{2}:\d{2}:\d{2}[,.]\d{3}(?:\s+.*)?$"
 )
 _DECORATIVE = frozenset("♪♫♬♩★☆")
+DEFAULT_AUTO_THRESHOLD = 0.72
+PRODUCTION_MIN_AUTO_THRESHOLD = DEFAULT_AUTO_THRESHOLD
 
 
 @dataclass(frozen=True)
@@ -139,13 +141,22 @@ def parse_canonical_files(paths: Iterable[Path]) -> list[CanonicalLine]:
                 body = stripped
                 occurrence_times = [None]
             cleaned = _clean_lyric_text(body)
+            if not cleaned or _META_TAG.match(cleaned) or _META_TEXT.match(cleaned):
+                continue
             normalized = _normalize_for_match(cleaned)
             if not normalized:
                 continue
             for timestamp_ms in occurrence_times:
                 entries.append((timestamp_ms, sequence, cleaned, normalized))
                 sequence += 1
-        if entries and all(timestamp is not None for timestamp, _, _, _ in entries):
+        has_timed = any(timestamp is not None for timestamp, _, _, _ in entries)
+        has_untimed = any(timestamp is None for timestamp, _, _, _ in entries)
+        if has_timed and has_untimed:
+            raise ValueError(
+                f"{path.name} mixes timed and untimed lyric text; "
+                "remove or annotate untimed lyric lines before Text Repair"
+            )
+        if has_timed:
             entries.sort(key=lambda item: (int(item[0]), item[1]))
         for _, _, cleaned, normalized in entries:
             lines.append(
@@ -240,11 +251,24 @@ def _span_score_allowed(
     return score >= 0.94 and length_ratio >= 0.90
 
 
+def _better_anchor_state(
+    left: tuple[int, int | None],
+    right: tuple[int, int | None],
+) -> tuple[int, int | None]:
+    if left[0] != right[0]:
+        return left if left[0] > right[0] else right
+    if left[1] is None:
+        return right
+    if right[1] is None:
+        return left
+    return left if left[1] < right[1] else right
+
+
 def _unique_exact_anchors(
     cues: Sequence[SubtitleCue],
     canonical: Sequence[CanonicalLine],
 ) -> list[tuple[int, int]]:
-    """Return a longest monotonic chain of unique exact normalized anchors."""
+    """Return the stable longest monotonic chain of unique exact anchors in O(n log n)."""
     cue_counts = Counter(cue.normalized for cue in cues)
     canonical_counts = Counter(line.normalized for line in canonical)
     canonical_index = {
@@ -261,14 +285,33 @@ def _unique_exact_anchors(
     ]
     if not candidates:
         return []
-    lengths = [1] * len(candidates)
+
+    tree: list[tuple[int, int | None]] = [(0, None)] * (len(canonical) + 1)
     previous: list[int | None] = [None] * len(candidates)
-    for i in range(len(candidates)):
-        for j in range(i):
-            if candidates[j][1] < candidates[i][1] and lengths[j] + 1 > lengths[i]:
-                lengths[i] = lengths[j] + 1
-                previous[i] = j
-    current = max(range(len(candidates)), key=lambda index: lengths[index])
+    lengths = [1] * len(candidates)
+
+    def query(position: int) -> tuple[int, int | None]:
+        best = (0, None)
+        while position > 0:
+            best = _better_anchor_state(best, tree[position])
+            position -= position & -position
+        return best
+
+    def update(position: int, value: tuple[int, int | None]) -> None:
+        while position < len(tree):
+            tree[position] = _better_anchor_state(tree[position], value)
+            position += position & -position
+
+    best_end: tuple[int, int | None] = (0, None)
+    for index, (_, canonical_position) in enumerate(candidates):
+        previous_length, previous_index = query(canonical_position)
+        lengths[index] = previous_length + 1
+        previous[index] = previous_index
+        state = (lengths[index], index)
+        update(canonical_position + 1, state)
+        best_end = _better_anchor_state(best_end, state)
+
+    current = best_end[1]
     result: list[tuple[int, int]] = []
     while current is not None:
         result.append(candidates[current])
@@ -549,24 +592,45 @@ def _edit_script(
     return result
 
 
+def _whitespace_boundaries(cue_texts: Sequence[str]) -> set[int]:
+    """Return content indices separated by whitespace/newlines inside a cue."""
+    boundaries: set[int] = set()
+    content_index = 0
+    for text in cue_texts:
+        seen_content = False
+        pending_whitespace = False
+        for char in text:
+            if _is_layout_char(char):
+                if char.isspace() and seen_content:
+                    pending_whitespace = True
+                continue
+            if pending_whitespace:
+                boundaries.add(content_index)
+                pending_whitespace = False
+            content_index += 1
+            seen_content = True
+    return boundaries
+
+
 def _assign_targets(
     cue_texts: Sequence[str],
     canonical_text: str,
-) -> tuple[list[str], bool]:
+) -> tuple[list[str], str | None]:
     source: list[str] = []
     owners: list[int] = []
     for owner, text in enumerate(cue_texts):
         for char in _content_characters(text):
             source.append(char)
             owners.append(owner)
-    boundaries = {
+    cue_boundaries = {
         index
         for index in range(1, len(owners))
         if owners[index - 1] != owners[index]
     }
+    whitespace_boundaries = _whitespace_boundaries(cue_texts)
     assigned: list[list[str]] = [[] for _ in cue_texts]
     source_index = 0
-    ambiguous_boundary_insertion = False
+    insertion_reason: str | None = None
     for kind, _, target_char in _edit_script(
         source,
         _content_characters(canonical_text),
@@ -578,8 +642,10 @@ def _assign_targets(
         elif kind == "delete":
             source_index += 1
         elif kind == "insert":
-            if source_index in boundaries:
-                ambiguous_boundary_insertion = True
+            if source_index in cue_boundaries:
+                insertion_reason = "segmentation_boundary_insertion_requires_review"
+            elif source_index in whitespace_boundaries and insertion_reason is None:
+                insertion_reason = "layout_boundary_insertion_requires_review"
             owner = (
                 owners[source_index]
                 if source_index < len(owners)
@@ -587,7 +653,7 @@ def _assign_targets(
             )
             if target_char is not None:
                 assigned[owner].append(target_char)
-    return ["".join(chars) for chars in assigned], ambiguous_boundary_insertion
+    return ["".join(chars) for chars in assigned], insertion_reason
 
 
 def _render_preserving_layout(
@@ -699,7 +765,7 @@ def build_repair_plan_v2(
     cues: Sequence[SubtitleCue],
     canonical: Sequence[CanonicalLine],
     *,
-    auto_threshold: float = 0.72,
+    auto_threshold: float = DEFAULT_AUTO_THRESHOLD,
     operations: Sequence[AlignmentOp] | None = None,
 ) -> tuple[dict[int, str], list[MatchDecision], list[AlignmentOp]]:
     if not 0.5 <= auto_threshold <= 1.0:
@@ -749,12 +815,12 @@ def build_repair_plan_v2(
 
         targets: list[str] = []
         if not reason:
-            targets, boundary_insertion_ambiguous = _assign_targets(
+            targets, insertion_reason = _assign_targets(
                 [cue.text for cue in cue_group],
                 target_text,
             )
-            if boundary_insertion_ambiguous:
-                reason = "segmentation_boundary_insertion_requires_review"
+            if insertion_reason:
+                reason = insertion_reason
             elif len(cue_group) > 1 and any(not target for target in targets):
                 reason = "segmentation_would_empty_existing_cue"
 
@@ -812,7 +878,7 @@ def build_repair_plan(
     cues: Sequence[SubtitleCue],
     canonical: Sequence[CanonicalLine],
     *,
-    auto_threshold: float = 0.72,
+    auto_threshold: float = DEFAULT_AUTO_THRESHOLD,
     alignment_pairs: Sequence[tuple[int, int, float]] | None = None,
 ) -> tuple[dict[int, str], list[MatchDecision]]:
     operations = None
@@ -859,7 +925,7 @@ def repair_srt_text(
     source_text: str,
     canonical: Sequence[CanonicalLine],
     *,
-    auto_threshold: float = 0.72,
+    auto_threshold: float = DEFAULT_AUTO_THRESHOLD,
 ) -> tuple[str, dict[str, object]]:
     parts, cues = parse_srt_text(source_text)
     replacements, decisions, operations = build_repair_plan_v2(
@@ -884,7 +950,8 @@ def repair_srt_text(
         raise AssertionError("text-only repair changed SRT cue count, numbering or timing")
 
     cue_review_count = sum(item.action == "review" for item in decisions)
-    review_count = cue_review_count + len(unmatched_canonical)
+    coverage_warning_count = len(unmatched_canonical)
+    review_count = cue_review_count
     edit_counts = {key: 0 for key in ("equal", "replace", "insert", "delete")}
     for item in decisions:
         for operation in item.edit_operations:
@@ -892,21 +959,24 @@ def repair_srt_text(
                 edit_counts[operation] += 1
 
     report = {
-        "schema_version": "2.0",
+        "schema_version": "2.1",
         "mode": "text_only_preserve_timeline",
         "status": "ready" if review_count == 0 else "review_required",
+        "coverage_status": "warning" if coverage_warning_count else "complete",
         "cue_count": len(cues),
         "canonical_line_count": len(canonical),
         "replacement_count": sum(item.action == "replace" for item in decisions),
         "unchanged_count": sum(item.action == "unchanged" for item in decisions),
         "cue_review_count": cue_review_count,
         "unmatched_canonical_count": len(unmatched_canonical),
+        "coverage_warning_count": coverage_warning_count,
         "review_count": review_count,
         "timeline_unchanged": True,
         "cue_count_unchanged": True,
         "formatting_policy": (
             "preserve_source_timing_numbering_punctuation_spacing_and_line_breaks;"
-            "allow_safe_content_insert_delete_replace_and_bounded_segmentation_spans"
+            "allow_safe_content_insert_delete_replace_and_bounded_segmentation_spans;"
+            "fail_closed_on_ambiguous_cue_or_whitespace_boundary_insertions"
         ),
         "span_match_count": sum(op.kind == "match" for op in operations),
         "segmentation_span_count": sum(
@@ -955,7 +1025,7 @@ def write_repair_outputs(
     output_srt: Path,
     *,
     report_path: Path | None = None,
-    auto_threshold: float = 0.72,
+    auto_threshold: float = DEFAULT_AUTO_THRESHOLD,
 ) -> dict[str, object]:
     source_text, had_bom = _read_utf8(source_srt)
     canonical = parse_canonical_files(canonical_paths)
