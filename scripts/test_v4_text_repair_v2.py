@@ -6,6 +6,9 @@ from pathlib import Path
 
 from lyric_aligner.text_repair import (
     CanonicalLine,
+    SubtitleCue,
+    _normalize_for_match,
+    _unique_exact_anchors,
     parse_canonical_files,
     parse_srt_text,
     repair_srt_text,
@@ -14,7 +17,6 @@ from lyric_aligner.text_repair import (
 
 
 def canonical(*lines: str) -> list[CanonicalLine]:
-    from lyric_aligner.text_repair import _normalize_for_match
     return [
         CanonicalLine(i, "song.lrc", text, _normalize_for_match(text))
         for i, text in enumerate(lines)
@@ -143,6 +145,29 @@ class TextRepairV2Tests(unittest.TestCase):
         )
         self.assert_timeline_unchanged(source, output)
 
+    def test_missing_character_at_space_boundary_requires_review(self):
+        source = "1\n00:00:01,000 --> 00:00:02,000\nI lov you\n"
+        output, report = repair_srt_text(source, canonical("I love you"))
+        self.assertEqual(output, source)
+        self.assertEqual(report["status"], "review_required")
+        self.assertEqual(report["cue_review_count"], 1)
+        self.assertEqual(
+            report["decisions"][0]["reason"],
+            "layout_boundary_insertion_requires_review",
+        )
+        self.assert_timeline_unchanged(source, output)
+
+    def test_missing_character_at_line_break_boundary_requires_review(self):
+        source = "1\n00:00:01,000 --> 00:00:02,000\nI lov\nyou\n"
+        output, report = repair_srt_text(source, canonical("I love you"))
+        self.assertEqual(output, source)
+        self.assertEqual(report["status"], "review_required")
+        self.assertEqual(
+            report["decisions"][0]["reason"],
+            "layout_boundary_insertion_requires_review",
+        )
+        self.assert_timeline_unchanged(source, output)
+
     def test_missing_character_inside_existing_cue_can_still_auto_repair(self):
         source = (
             "1\n00:00:01,000 --> 00:00:02,000\n我真爱\n\n"
@@ -164,7 +189,7 @@ class TextRepairV2Tests(unittest.TestCase):
         self.assertEqual(report["status"], "ready")
         self.assert_timeline_unchanged(source, output)
 
-    def test_real_missing_canonical_line_is_not_swallowed_by_span(self):
+    def test_real_missing_canonical_line_is_coverage_warning_not_cue_failure(self):
         source = (
             "1\n00:00:01,000 --> 00:00:02,000\n第一句\n\n"
             "2\n00:00:03,000 --> 00:00:04,000\n第三句\n"
@@ -174,10 +199,37 @@ class TextRepairV2Tests(unittest.TestCase):
             canonical("第一句", "第二句", "第三句"),
         )
         self.assertEqual(output, source)
-        self.assertEqual(report["status"], "review_required")
+        self.assertEqual(report["status"], "ready")
+        self.assertEqual(report["coverage_status"], "warning")
+        self.assertEqual(report["review_count"], 0)
+        self.assertEqual(report["coverage_warning_count"], 1)
         self.assertEqual(report["unmatched_canonical_count"], 1)
         self.assertEqual(report["unmatched_canonical"][0]["text"], "第二句")
         self.assert_timeline_unchanged(source, output)
+
+    def test_timestamped_metadata_is_filtered_after_timestamp_removal(self):
+        with tempfile.TemporaryDirectory() as directory:
+            lyric = Path(directory) / "song.lrc"
+            lyric.write_text(
+                "[00:00.00]作词：某某\n"
+                "[00:01.00]作曲：某某\n"
+                "[00:10.00]真正的歌词\n",
+                encoding="utf-8",
+            )
+            parsed = parse_canonical_files([lyric])
+        self.assertEqual([line.text for line in parsed], ["真正的歌词"])
+
+    def test_mixed_timed_and_untimed_lyric_text_fails_closed(self):
+        with tempfile.TemporaryDirectory() as directory:
+            lyric = Path(directory) / "song.lrc"
+            lyric.write_text(
+                "[00:10.00]第一句歌词\n"
+                "这是一条没有时间戳的正文\n"
+                "[00:20.00]第二句歌词\n",
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(ValueError, "mixes timed and untimed lyric text"):
+                parse_canonical_files([lyric])
 
     def test_duplicate_basenames_do_not_merge_canonical_song_boundaries(self):
         source = (
@@ -235,6 +287,30 @@ class TextRepairV2Tests(unittest.TestCase):
         self.assertEqual(normal_report["status"], "ready")
         self.assertEqual(faster_report["status"], "ready")
         self.assert_timeline_unchanged(source, normal_output)
+
+    def test_unique_exact_anchor_chain_scales_to_two_thousand_cues(self):
+        cue_rows: list[SubtitleCue] = []
+        canonical_rows: list[CanonicalLine] = []
+        for index in range(2000):
+            text = f"第{index:04d}句歌词内容"
+            normalized = _normalize_for_match(text)
+            cue_rows.append(
+                SubtitleCue(
+                    ordinal=index,
+                    number=str(index + 1),
+                    timing="00:00:00,000 --> 00:00:00,001",
+                    text=text,
+                    normalized=normalized,
+                    raw_block_index=index * 2,
+                )
+            )
+            canonical_rows.append(
+                CanonicalLine(index, "long.lrc", text, normalized)
+            )
+        anchors = _unique_exact_anchors(cue_rows, canonical_rows)
+        self.assertEqual(len(anchors), 2000)
+        self.assertEqual(anchors[0], (0, 0))
+        self.assertEqual(anchors[-1], (1999, 1999))
 
 
 if __name__ == "__main__":

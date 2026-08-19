@@ -94,9 +94,12 @@ class V4TextRepairTests(unittest.TestCase):
 
         self.assertEqual(output, source)
         self.assertEqual(report["replacement_count"], 0)
+        self.assertEqual(report["status"], "review_required")
         self.assertEqual(report["cue_review_count"], 1)
+        self.assertEqual(report["review_count"], 1)
+        self.assertEqual(report["coverage_status"], "warning")
+        self.assertEqual(report["coverage_warning_count"], 1)
         self.assertEqual(report["unmatched_canonical_count"], 1)
-        self.assertEqual(report["review_count"], 2)
         self.assertIn(
             report["decisions"][0]["reason"],
             {"ambiguous_nearby_canonical_match", "adjacent_alignment_gap_requires_review"},
@@ -164,7 +167,10 @@ class V4TextRepairTests(unittest.TestCase):
         self.assertEqual(before, after)
         self.assertEqual(output, source)
         self.assertEqual(report["replacement_count"], 0)
-        self.assertEqual(report["status"], "review_required")
+        self.assertEqual(report["status"], "ready")
+        self.assertEqual(report["review_count"], 0)
+        self.assertEqual(report["coverage_status"], "warning")
+        self.assertEqual(report["coverage_warning_count"], 1)
         self.assertEqual(report["unmatched_canonical_count"], 1)
 
 

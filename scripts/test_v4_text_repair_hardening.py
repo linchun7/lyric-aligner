@@ -8,7 +8,7 @@ from lyric_aligner.text_repair import parse_canonical_files, repair_srt_text
 
 
 class V4TextRepairHardeningTests(unittest.TestCase):
-    def test_missing_canonical_line_requires_review(self):
+    def test_missing_canonical_line_is_coverage_warning_only(self):
         source = (
             "1\n00:00:01,000 --> 00:00:02,000\n第一句\n\n"
             "2\n00:00:03,000 --> 00:00:04,000\n第三句\n"
@@ -25,9 +25,11 @@ class V4TextRepairHardeningTests(unittest.TestCase):
             output, report = repair_srt_text(source, canonical)
 
         self.assertEqual(output, source)
-        self.assertEqual(report["status"], "review_required")
+        self.assertEqual(report["status"], "ready")
+        self.assertEqual(report["coverage_status"], "warning")
         self.assertEqual(report["unmatched_canonical_count"], 1)
-        self.assertEqual(report["review_count"], 1)
+        self.assertEqual(report["coverage_warning_count"], 1)
+        self.assertEqual(report["review_count"], 0)
         self.assertEqual(report["unmatched_canonical"][0]["text"], "第二句")
 
     def test_multiple_lrc_timestamps_are_sorted_by_occurrence_time(self):

@@ -65,9 +65,109 @@ class TextRepairBatchTests(unittest.TestCase):
             payload = json.loads(summary.read_text(encoding="utf-8"))
             self.assertEqual(payload["ready_count"], 1)
             self.assertEqual(payload["review_required_count"], 0)
+            self.assertEqual(payload["coverage_warning_job_count"], 0)
             self.assertEqual(payload["error_count"], 0)
             self.assertTrue(payload["jobs"][0]["timeline_unchanged"])
             self.assertTrue(payload["jobs"][0]["cue_count_unchanged"])
+
+    def test_batch_coverage_warning_remains_ready(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "source.srt"
+            lyric = root / "song.lrc"
+            output = root / "out.srt"
+            summary = root / "summary.json"
+            manifest = root / "batch.json"
+            source.write_text(
+                "1\n00:00:01,000 --> 00:00:02,000\n第一句\n\n"
+                "2\n00:00:03,000 --> 00:00:04,000\n第三句\n",
+                encoding="utf-8",
+            )
+            lyric.write_text(
+                "[00:01.00]第一句\n[00:02.00]第二句\n[00:03.00]第三句\n",
+                encoding="utf-8",
+            )
+            manifest.write_text(
+                json.dumps(
+                    {
+                        "jobs": [
+                            {
+                                "id": "trimmed",
+                                "source_srt": source.name,
+                                "canonical_lyrics": [lyric.name],
+                                "out": output.name,
+                            }
+                        ]
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+
+            completed = subprocess.run(
+                [
+                    sys.executable,
+                    str(SCRIPT),
+                    "--manifest",
+                    str(manifest),
+                    "--summary",
+                    str(summary),
+                ],
+                cwd=REPOSITORY_ROOT,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            payload = json.loads(summary.read_text(encoding="utf-8"))
+            self.assertEqual(payload["ready_count"], 1)
+            self.assertEqual(payload["review_required_count"], 0)
+            self.assertEqual(payload["coverage_warning_job_count"], 1)
+            self.assertEqual(payload["jobs"][0]["coverage_status"], "warning")
+            self.assertEqual(payload["jobs"][0]["coverage_warning_count"], 1)
+
+    def test_batch_rejects_unsafe_job_threshold_before_writing(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "source.srt"
+            lyric = root / "song.lrc"
+            output = root / "out.srt"
+            manifest = root / "batch.json"
+            source.write_text(
+                "1\n00:00:01,000 --> 00:00:02,000\n第一句歌词\n",
+                encoding="utf-8",
+            )
+            lyric.write_text("[00:01.00]第一句歌词\n", encoding="utf-8")
+            manifest.write_text(
+                json.dumps(
+                    {
+                        "jobs": [
+                            {
+                                "id": "unsafe-threshold",
+                                "source_srt": source.name,
+                                "canonical_lyrics": [lyric.name],
+                                "out": output.name,
+                                "auto_threshold": 0.5,
+                            }
+                        ]
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+
+            completed = subprocess.run(
+                [sys.executable, str(SCRIPT), "--manifest", str(manifest)],
+                cwd=REPOSITORY_ROOT,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+
+            self.assertNotEqual(completed.returncode, 0)
+            self.assertIn("production auto-threshold must be at least 0.72", completed.stderr)
+            self.assertFalse(output.exists())
 
     def test_batch_continues_after_one_job_error(self):
         with tempfile.TemporaryDirectory() as directory:
