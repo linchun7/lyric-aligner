@@ -5,8 +5,8 @@ hardens production semantics around it: inability to validate is escalated,
 B-grade identities may be confirmed only by an already-ready A-anchor model,
 combined repairs may not worsen subtitle overlaps, BPM-derived rates stay soft
 while exact DAW stretch ratios may remain hard priors, and low-similarity text
-reviews may be recovered only from bilateral canonical anchors plus an already-
-ready affine timing model.
+reviews may be recovered from independently-ready timing evidence through
+bilateral interior anchors or stricter one-sided song-edge anchors.
 """
 
 from __future__ import annotations
@@ -33,7 +33,7 @@ from lyric_aligner.timeline.anchor_repair import (
 from lyric_aligner.timeline.text_recovery import recover_text_reviews_from_timing
 
 SMART_SCHEMA_VERSION = "smart-1.1"
-SMART_POLICY_ID = "smart-validation-policy-2026-08-19-v1.1.2"
+SMART_POLICY_ID = "smart-validation-policy-2026-08-19-v1.1.3"
 _BPM_COMPATIBILITY_TOLERANCE = 0.03
 
 
@@ -331,6 +331,8 @@ def smart_repair_srt_text_v11(
         "text_review_count_before_timing_recovery": text_review_count_before_recovery,
         "text_timing_recovery_count": recovery.resolved_cue_count,
         "text_timing_recovery_block_count": recovery.resolved_block_count,
+        "text_edge_timing_recovery_count": recovery.resolved_edge_cue_count,
+        "text_edge_timing_recovery_block_count": recovery.resolved_edge_block_count,
         "text_review_count": text_review_count,
         "timing_repair_count": sum(item.action == "repair" for item in timing),
         "timing_review_count": unresolved_count,
