@@ -131,6 +131,29 @@ class V4TextRepairTests(unittest.TestCase):
         self.assertEqual(report["replacement_count"], 0)
         self.assertEqual(report["unchanged_count"], 1)
 
+    def test_lrc_line_breaks_do_not_resegment_trusted_editor_cues(self):
+        source = (
+            "1\n00:00:01,000 --> 00:00:02,433\n第一段歌词到这里\n\n"
+            "2\n00:00:02,433 --> 00:00:04,300\n下一小句仍在同一画面\n\n"
+            "3\n00:00:04,300 --> 00:00:06,000\n最后几个字继续播放\n"
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            lyric = Path(directory) / "song.lrc"
+            lyric.write_text(
+                "[00:01.000]第一段歌词到这里下一小句\n"
+                "[00:03.054]仍在同一画面最后几个字继续播放\n",
+                encoding="utf-8",
+            )
+            canonical = parse_canonical_files([lyric])
+            output, report = repair_srt_text(source, canonical)
+
+        # Canonical text/order is identical after concatenation. LRC line breaks
+        # are not subtitle-display authority, so no word may move across the
+        # already-correct editor cue boundaries.
+        self.assertEqual(output, source)
+        self.assertEqual(report["replacement_count"], 0)
+        self.assertEqual(report["review_count"], 0)
+
     def test_replacement_preserves_terminal_newline(self):
         source = "1\n00:00:01,000 --> 00:00:02,000\n忘不掉的妳\n"
         with tempfile.TemporaryDirectory() as directory:

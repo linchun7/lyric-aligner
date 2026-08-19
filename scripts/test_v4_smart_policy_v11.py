@@ -139,6 +139,7 @@ class SmartPolicyV11Tests(unittest.TestCase):
         self.assertNotIn("完全错误毫不相似二", rendered)
         self.assertEqual(report["text_timing_recovery_count"], 2)
         self.assertEqual(report["text_timing_recovery_block_count"], 1)
+        self.assertEqual(report["text_edge_timing_recovery_count"], 0)
         self.assertGreaterEqual(report["text_review_count_before_timing_recovery"], 2)
         self.assertEqual(report["text_review_count"], 0)
         recovered = [
@@ -147,9 +148,97 @@ class SmartPolicyV11Tests(unittest.TestCase):
             if row["reason"] == "timing_model_confirms_canonical_sequence"
         ]
         self.assertEqual(len(recovered), 2)
-        # Text can be resolved while timing identity remains conservative for a
-        # multi-line cue; Smart must not turn this recovery into a timing anchor.
         self.assertGreaterEqual(report["timing_review_count"], 2)
+
+    def test_song_start_edge_recovers_severe_asr_but_preserves_adlib(self) -> None:
+        canonical_texts = [
+            "规范开头歌词",
+            "右侧锚点甲",
+            "右侧锚点乙",
+            "右侧锚点丙",
+            "右侧锚点丁",
+            "右侧锚点戊",
+        ]
+        canonical_starts = [10_000, 20_000, 30_000, 40_000, 50_000, 60_000]
+        srt_texts = [
+            "哎",
+            "完全错误毫不相似",
+            "右侧锚点甲",
+            "右侧锚点乙",
+            "右侧锚点丙",
+            "右侧锚点丁",
+            "右侧锚点戊",
+        ]
+        srt_starts = [5_000, 10_000, 20_000, 30_000, 40_000, 50_000, 60_000]
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = _canonical(Path(tmp), canonical_texts, canonical_starts)
+            timed, repair = parse_timed_canonical_files([path])
+            rendered, report = smart_repair_srt_text_v11(
+                _srt(srt_texts, srt_starts),
+                timed,
+                repair,
+            )
+
+        self.assertIn("\n哎\n", rendered)
+        self.assertIn("\n规范开头歌词\n", rendered)
+        self.assertNotIn("完全错误毫不相似", rendered)
+        self.assertEqual(report["text_edge_timing_recovery_count"], 1)
+        self.assertEqual(report["text_edge_timing_recovery_block_count"], 1)
+        edge_rows = [
+            row
+            for row in report["text_decisions"]
+            if row["reason"] == "timing_model_confirms_song_edge_canonical"
+        ]
+        self.assertEqual(len(edge_rows), 1)
+        self.assertGreaterEqual(report["text_review_count"], 1)
+        self.assertGreaterEqual(report["timing_review_count"], 1)
+
+    def test_lrc_line_breaks_do_not_move_words_across_smart_cues(self) -> None:
+        canonical_texts = [
+            "第一段歌词到这里下一小句",
+            "仍在同一画面最后几个字继续播放",
+            "后续锚点甲",
+            "后续锚点乙",
+            "后续锚点丙",
+            "后续锚点丁",
+            "后续锚点戊",
+        ]
+        canonical_starts = [1_000, 3_054, 10_000, 20_000, 30_000, 40_000, 50_000]
+        srt_texts = [
+            "第一段歌词到这里",
+            "下一小句仍在同一画面",
+            "最后几个字继续播放",
+            "后续锚点甲",
+            "后续锚点乙",
+            "后续锚点丙",
+            "后续锚点丁",
+            "后续锚点戊",
+        ]
+        srt_starts = [1_000, 2_433, 4_300, 10_000, 20_000, 30_000, 40_000, 50_000]
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = _canonical(Path(tmp), canonical_texts, canonical_starts)
+            timed, repair = parse_timed_canonical_files([path])
+            rendered, _ = smart_repair_srt_text_v11(
+                _srt(srt_texts, srt_starts),
+                timed,
+                repair,
+            )
+
+        self.assertIn(
+            "00:00:01,000 --> 00:00:02,000\n第一段歌词到这里",
+            rendered,
+        )
+        self.assertIn(
+            "00:00:02,433 --> 00:00:03,433\n下一小句仍在同一画面",
+            rendered,
+        )
+        self.assertIn(
+            "00:00:04,300 --> 00:00:05,300\n最后几个字继续播放",
+            rendered,
+        )
+        self.assertNotIn("第一段歌词到这里下一小句", rendered)
 
     def test_text_timing_recovery_requires_ready_model(self) -> None:
         canonical_texts = [
@@ -204,9 +293,6 @@ class SmartPolicyV11Tests(unittest.TestCase):
             "右侧锚点丙",
             "右侧锚点丁",
         ]
-        # The bad cue is three seconds away from the canonical onset. The
-        # surrounding anchors still fit a ready model, so this specifically
-        # verifies the recovery-start tolerance rather than model readiness.
         srt_starts = [10_000, 20_000, 30_000, 43_000, 50_000, 60_000, 70_000, 80_000]
 
         with tempfile.TemporaryDirectory() as tmp:
