@@ -6,9 +6,12 @@ import importlib.util
 import sys
 from pathlib import Path
 
-from lyric_aligner.pipeline.run_lock import OutputRunLock
-
 SCRIPTS = Path(__file__).resolve().parent
+ROOT = SCRIPTS.parent
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from lyric_aligner.pipeline.run_lock import OutputRunLock
 
 
 def _load(name: str, path: Path):
