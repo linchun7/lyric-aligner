@@ -24,9 +24,10 @@
 - Windows Local Validation Hardening：PR #22，merge `2b4a13132e95a551392811407f48573b36edab95`；
 - Production Bounded Mix Decode：PR #23，merge `4d7e086aedd2b56210368302d9a17df29fef6a0c`；
 - Source Harmonic Feature Cache：PR #24，merge `0b1f38c98542eed9ec80034677cef4bf8e7f9791`；
-- Text-only repair + Safe Execution Optimizer：PR #25，merge `3bd5e388d8d68bf88233eee60e0d85dcd7816a3e`。
+- Text-only repair + Safe Execution Optimizer：PR #25，merge `3bd5e388d8d68bf88233eee60e0d85dcd7816a3e`；
+- PR25 hardening：PR #26，merge `004d2558f646993a44f51d855305f6ba285d04cd`。
 
-P7 head `2ee9e1d2ced75c3d24b5a00353e9f275fc9dc9f9` 的 validate #560 全绿后合入。P8 latest result tree 在 fast-core #1 完成 compile、documentation contract、完整 unit/E2E、Skill、privacy、diff-check 全绿后合入。P9 result tree 在 fast-core #2 完成同级验证并跑完 **324 tests** 全绿后，与 P8 main 同步 ancestry，再合入 main。PR22 exact-head fast-core 与 Python 3.10/3.12/3.14 + ASR validate 全绿后合入。PR23 exact-head fast-core #43 与 validate #675 全绿后合入。PR24 在 source-feature cache roundtrip、corruption/key isolation 与 direct/precomputed coarse equivalence 覆盖后合入。PR25 exact-head `6c5ac00e5755593136840c35794e480a45b9f237` 的 fast-core #77 与 validate #711 在 Python 3.10/3.12/3.14 + ASR 环境全绿后合入。
+P7 head `2ee9e1d2ced75c3d24b5a00353e9f275fc9dc9f9` 的 validate #560 全绿后合入。P8 latest result tree 在 fast-core #1 完成 compile、documentation contract、完整 unit/E2E、Skill、privacy、diff-check 全绿后合入。P9 result tree 在 fast-core #2 完成同级验证并跑完 **324 tests** 全绿后，与 P8 main 同步 ancestry，再合入 main。PR22 exact-head fast-core 与 Python 3.10/3.12/3.14 + ASR validate 全绿后合入。PR23 exact-head fast-core #43 与 validate #675 全绿后合入。PR24 在 source-feature cache roundtrip、corruption/key isolation 与 direct/precomputed coarse equivalence 覆盖后合入。PR25 exact-head `6c5ac00e5755593136840c35794e480a45b9f237` 的 fast-core #77 与 validate #711 在 Python 3.10/3.12/3.14 + ASR 环境全绿后合入。PR26 exact-head `8539c1cd913918ea42468296a0a6d2005e822190` 的 fast-core #87 与 validate #722 全绿后合入，测试 head tree 与 merge tree 一致。
 
 ---
 
@@ -360,3 +361,57 @@ PR26 post-merge review hardening 修复三个真实语义缺口并补一个并�
 4. **Same out-dir exclusion**：public `v4_run.py` 在 `--out-dir` 创建 exclusive `.v4-run.lock`；第二个 orchestrator fail closed。Lock 使用 owner token，退出只删除自己的 lock；异常终止后的 stale lock 不自动猜测删除。
 
 新增 focused regression tests 覆盖 canonical gap、interleaved timestamps、多文件顺序、格式保留、长度变化 fail-closed、锁冲突/异常释放/ownership。所有这些 hardening 都不修改 Source-to-Mix algorithm、calibration threshold、timewarp selection、cut/overlap decision、review/release authority。
+
+---
+
+## 2026-08-19 — External Forced-Alignment Batch Protocol 1.1 Final Integration
+
+长期 draft PR #20 的核心需求是：P7 protocol 1.0 对每个 bounded forced-alignment job 启动一个 external subprocess，真实 CTC/singing backend 可能因此反复加载同一个大模型。最终收口不直接合并旧分支，而是从当前 post-PR26/27 main 重新集成 backend-neutral protocol 1.1。
+
+新增/更新：
+
+```text
+lyric_aligner/alignment/forced_batch.py
+lyric_aligner/alignment/__init__.py
+scripts/v4_execute_forced_alignment.py
+scripts/test_v4_forced_alignment_batch.py
+scripts/test_v4_forced_alignment_batch_end_to_end.py
+references/forced-alignment-batch-protocol.md
+```
+
+### Execution contract
+
+- `--execution-mode single` 仍是默认，保留 protocol 1.0 one-process-per-job 行为；
+- `--execution-mode batch` 使用 protocol 1.1，把所有 selected jobs 写入一个 ephemeral request，并只启动一次 external process；
+- backend/version/model/revision 必须由 response 精确回显；top-level status 必须为 `aligned_batch`；
+- response job IDs 必须与 request 精确一致，missing/extra/duplicate 全部 fail closed；
+- 每个 batch response row 再转换成 protocol 1.0 shape，并复用原 P7 `_normalize_response()` 验证 source window、line boundary、span monotonicity、canonical offsets 与 identity；
+- explicit selected jobs `[]` 是 zero-work，不解析/启动 external executable；
+- `--timeout-seconds` 覆盖整个 batch subprocess，不自动扩展为无限时长。
+
+Formal output 继续是：
+
+```text
+stage = source_forced_alignment_evidence
+role = forced_alignment_evidence
+timing_authority = auxiliary_source_forced_alignment_evidence
+```
+
+新增/明确的 execution metadata：
+
+```text
+protocol_version
+requested_execution_mode
+execution_mode
+command_invocation_count
+```
+
+Batch 不新增 evidence family，不绕过 P8 Source-to-Mix projection / CUT_AWARE，不改变 P9 shadow-only policy，也不提升任何 release/timing authority。临时 request 可包含 local source path 与 canonical text，但 formal evidence/artifact 仍不保存这些 raw 数据或完整 external command。
+
+### WhisperX stale branch disposition
+
+旧 `agent/v4-whisperx-reference-adapter` 没有合入。最终 review 对照当前 WhisperX upstream 后确认，旧 adapter 的 NLTK/Punkt 预检假设已经与当前 upstream runtime contract 漂移，因此不能因为“代码已经写过”就继续保留或生产化。未来若需要 WhisperX/SOFA/MFA adapter，必须基于当时最新 upstream API 重做/校验，并使用 private real-song calibration + blind-test 验证 accuracy。
+
+### CI boundary
+
+Unit tests 覆盖 one-process/two-jobs、selected subset、empty selection、missing/duplicate response IDs、formal privacy；real-subprocess E2E 证明 CLI 到 adapter protocol 的实际单进程调用、artifact lineage 与 protocol metadata。仍不能用 fake backend CI 宣称真实 singing accuracy。
