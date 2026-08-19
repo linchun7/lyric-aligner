@@ -23,9 +23,10 @@
 - Production Readiness Tooling：PR #21，merge `04e0802156f62006c6b6af5b4ef59b1acc81ce86`；
 - Windows Local Validation Hardening：PR #22，merge `2b4a13132e95a551392811407f48573b36edab95`；
 - Production Bounded Mix Decode：PR #23，merge `4d7e086aedd2b56210368302d9a17df29fef6a0c`；
-- Source Harmonic Feature Cache：PR #24，merge `0b1f38c98542eed9ec80034677cef4bf8e7f9791`。
+- Source Harmonic Feature Cache：PR #24，merge `0b1f38c98542eed9ec80034677cef4bf8e7f9791`；
+- Text-only repair + Safe Execution Optimizer：PR #25，merge `3bd5e388d8d68bf88233eee60e0d85dcd7816a3e`。
 
-P7 head `2ee9e1d2ced75c3d24b5a00353e9f275fc9dc9f9` 的 validate #560 全绿后合入。P8 latest result tree 在 fast-core #1 完成 compile、documentation contract、完整 unit/E2E、Skill、privacy、diff-check 全绿后合入。P9 result tree 在 fast-core #2 完成同级验证并跑完 **324 tests** 全绿后，与 P8 main 同步 ancestry，再合入 main。PR22 exact-head fast-core 与 Python 3.10/3.12/3.14 + ASR validate 全绿后合入。PR23 exact-head fast-core #43 与 validate #675 全绿后合入。PR24 在 source-feature cache roundtrip、corruption/key isolation 与 direct/precomputed coarse equivalence 覆盖后合入。
+P7 head `2ee9e1d2ced75c3d24b5a00353e9f275fc9dc9f9` 的 validate #560 全绿后合入。P8 latest result tree 在 fast-core #1 完成 compile、documentation contract、完整 unit/E2E、Skill、privacy、diff-check 全绿后合入。P9 result tree 在 fast-core #2 完成同级验证并跑完 **324 tests** 全绿后，与 P8 main 同步 ancestry，再合入 main。PR22 exact-head fast-core 与 Python 3.10/3.12/3.14 + ASR validate 全绿后合入。PR23 exact-head fast-core #43 与 validate #675 全绿后合入。PR24 在 source-feature cache roundtrip、corruption/key isolation 与 direct/precomputed coarse equivalence 覆盖后合入。PR25 exact-head `6c5ac00e5755593136840c35794e480a45b9f237` 的 fast-core #77 与 validate #711 在 Python 3.10/3.12/3.14 + ASR 环境全绿后合入。
 
 ---
 
@@ -336,3 +337,26 @@ scripts/v4_fine_align.py
 两者仍先执行 `assert_manifest_paths()`；只有该校验确认当前 `--mix-audio` 路径与内容都和 task manifest 完全一致后，payload 才复用刚刚被验证过的 `task.inputs.audio.sha256`。因此正式 `mix_audio_sha256` 值与旧实现相同，没有跳过 manifest 内容校验，也没有改变 task fingerprint、artifact lineage 或任何对齐算法。
 
 这一步仍未消除不同 coarse/fine 子进程之间各自的 manifest 验证读取。下一轮完整 V4 性能工作应继续评估 parent-verified execution context / safe artifact resume，在不削弱 standalone CLI fail-closed 语义的前提下减少跨子进程重复 I/O。
+
+---
+
+## 2026-08-19 — PR25 Execution Optimizer + PR26 Post-Merge Hardening
+
+PR25 将前述 text-only fast path 与完整 V4 execution optimizer 一并合入。完整 V4 的原 authoritative orchestration 保留为 byte-identical `scripts/v4_run_legacy.py`；公开 `scripts/v4_run.py` 通过 optimizer 预执行 expensive deterministic stages，再由原 core 重建 timeline、issues、readiness 与 final artifact。
+
+PR25 execution-only 行为：
+
+- parent 正常完整 SHA 验证 task manifest 后创建 fresh-token verified-input session；child 只有在 manifest/task/path/stat/directory membership 全部匹配时才复用 parent-attested SHA，否则回退原完整验证；
+- coarse/fine/transition cross-run resume 仅在 clean current HEAD、task/algorithm/stage、producer commit、upstream artifact IDs、formal output SHA、stage-specific identity 与 runtime sidecar 全匹配时命中；
+- independent stage workers 固定 `1..4`，默认 2；
+- asset resolution 与 canonical timeline 仍 fresh rebuild；
+- execution cache/session/summary 均不进入 formal timing authority 或 artifact lineage。
+
+PR26 post-merge review hardening 修复三个真实语义缺口并补一个并发边界：
+
+1. **Canonical gap fail-closed**：单调 alignment 跳过 canonical lyric occurrence 时，text-only 不再可能报告 `ready`；该 occurrence 进入 `unmatched_canonical` 并计入 `review_count`，输出不新增 cue、不猜 timing。
+2. **Timed repeat ordering**：完全 timed 的单个 LRC/QRC 文件按真实 timestamp stable-sort occurrence，修复 `[00:10][00:30]副歌` 与 `[00:20]主歌` 被错误展开为“副歌/副歌/主歌”的问题；多个 canonical 文件仍按 CLI 参数歌曲顺序串联。
+3. **Preserve source formatting**：自动修复只替换 lexical/content 字符，保留剪映原 punctuation、spacing、line breaks；无法一一映射的长度/布局变化保持原文并 `review_required`。
+4. **Same out-dir exclusion**：public `v4_run.py` 在 `--out-dir` 创建 exclusive `.v4-run.lock`；第二个 orchestrator fail closed。Lock 使用 owner token，退出只删除自己的 lock；异常终止后的 stale lock 不自动猜测删除。
+
+新增 focused regression tests 覆盖 canonical gap、interleaved timestamps、多文件顺序、格式保留、长度变化 fail-closed、锁冲突/异常释放/ownership。所有这些 hardening 都不修改 Source-to-Mix algorithm、calibration threshold、timewarp selection、cut/overlap decision、review/release authority。
