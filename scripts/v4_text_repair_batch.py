@@ -22,11 +22,12 @@ def _resolve(base: Path, value: str) -> Path:
 def _manifest_paths(
     jobs: list[object],
     base: Path,
+    manifest_path: Path,
     summary_path: Path | None,
 ) -> None:
     """Fail before writing if batch outputs can collide with any batch input/output."""
     ids: set[str] = set()
-    read_paths: set[Path] = set()
+    read_paths: set[Path] = {manifest_path.resolve()}
     write_paths: list[Path] = []
     for index, raw_job in enumerate(jobs):
         if not isinstance(raw_job, dict):
@@ -51,7 +52,9 @@ def _manifest_paths(
         raise ValueError("batch output/report/summary paths must be unique")
     collision = next((path for path in write_paths if path in read_paths), None)
     if collision is not None:
-        raise ValueError("batch output/report/summary must not overwrite any batch input")
+        raise ValueError(
+            "batch output/report/summary must not overwrite manifest or any batch input"
+        )
 
 
 def main() -> int:
@@ -72,7 +75,7 @@ def main() -> int:
 
     base = manifest_path.parent
     try:
-        _manifest_paths(jobs, base, args.summary)
+        _manifest_paths(jobs, base, manifest_path, args.summary)
     except ValueError as exc:
         parser.error(str(exc))
 
