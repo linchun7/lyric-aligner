@@ -3,8 +3,9 @@
 This layer is intentionally narrow. Text Repair V2 remains the primary text
 matcher and its similarity thresholds are unchanged. When V2 cannot trust the
 editor text because ASR is badly wrong, Smart may resolve an *interior* review
-block only when two validated canonical anchors bound the block and an already-
-ready affine song model independently confirms the canonical timing inside it.
+block only when the immediately adjacent cues are validated canonical anchors
+and an already-ready affine song model independently confirms the canonical
+timing inside it.
 
 The recovery never creates timing anchors and never changes SRT timing. It only
 replaces text with canonical lyric text when canonical order + bilateral text
@@ -61,29 +62,33 @@ def _review_blocks(
     return blocks
 
 
-def _nearest_anchor_before(
+def _adjacent_anchor_before(
     start: int,
     decisions_by_cue: dict[int, MatchDecision],
 ) -> tuple[int, MatchDecision, tuple[int, int]] | None:
-    for ordinal in range(start - 1, -1, -1):
-        decision = decisions_by_cue.get(ordinal)
-        span = _anchor_span(decision)
-        if decision is not None and span is not None:
-            return ordinal, decision, span
-    return None
+    ordinal = start - 1
+    if ordinal < 0:
+        return None
+    decision = decisions_by_cue.get(ordinal)
+    span = _anchor_span(decision)
+    if decision is None or span is None:
+        return None
+    return ordinal, decision, span
 
 
-def _nearest_anchor_after(
+def _adjacent_anchor_after(
     end: int,
     cues: Sequence[SubtitleCue],
     decisions_by_cue: dict[int, MatchDecision],
 ) -> tuple[int, MatchDecision, tuple[int, int]] | None:
-    for ordinal in range(end, len(cues)):
-        decision = decisions_by_cue.get(ordinal)
-        span = _anchor_span(decision)
-        if decision is not None and span is not None:
-            return ordinal, decision, span
-    return None
+    ordinal = end
+    if ordinal >= len(cues):
+        return None
+    decision = decisions_by_cue.get(ordinal)
+    span = _anchor_span(decision)
+    if decision is None or span is None:
+        return None
+    return ordinal, decision, span
 
 
 def _model_index(models: Sequence[SongTimingModel]) -> dict[int, SongTimingModel]:
@@ -183,7 +188,9 @@ def recover_text_reviews_from_timing(
 
     A block is recoverable only when:
     - every cue in the block is already a Text Repair review;
-    - validated single-line text anchors exist on both sides;
+    - the immediately adjacent cues on both sides are validated single-line text
+      anchors (the recovery may not skip weaker/non-anchor cues to borrow a more
+      distant anchor);
     - both anchors belong to the same canonical source/song;
     - that song has an already-ready affine timing model built without the
       review block;
@@ -209,8 +216,8 @@ def recover_text_reviews_from_timing(
     for block_start, block_end in _review_blocks(cues, decisions_by_cue):
         if block_end - block_start > max_block_cues:
             continue
-        left = _nearest_anchor_before(block_start, decisions_by_cue)
-        right = _nearest_anchor_after(block_end, cues, decisions_by_cue)
+        left = _adjacent_anchor_before(block_start, decisions_by_cue)
+        right = _adjacent_anchor_after(block_end, cues, decisions_by_cue)
         if left is None or right is None:
             continue
         left_ordinal, _, left_span = left
