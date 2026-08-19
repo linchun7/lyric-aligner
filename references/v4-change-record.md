@@ -415,3 +415,50 @@ Batch 不新增 evidence family，不绕过 P8 Source-to-Mix projection / CUT_AW
 ### CI boundary
 
 Unit tests 覆盖 one-process/two-jobs、selected subset、empty selection、missing/duplicate response IDs、formal privacy；real-subprocess E2E 证明 CLI 到 adapter protocol 的实际单进程调用、artifact lineage 与 protocol metadata。仍不能用 fake backend CI 宣称真实 singing accuracy。
+
+---
+
+## 2026-08-19 — Text Repair V2
+
+高频真实生产中，规范歌词通常可信、剪映 SRT 时间轴要求冻结，但文本错误不只包含等长错字，还包含漏字、多字，以及剪映断句比 LRC 多、少或位置不同。旧 fast path 的“仅 1:1 + 等长 lexical replacement”会把这些明显可确定的文本问题大量推给人工复核。
+
+本轮把该路径升级为确定性的 Text Repair V2：
+
+```text
+lyric_aligner/text_repair.py
+scripts/v4_text_repair.py
+scripts/v4_text_repair_batch.py
+scripts/test_v4_text_repair.py
+scripts/test_v4_text_repair_hardening.py
+scripts/test_v4_text_repair_v2.py
+```
+
+### V2 matching / edit contract
+
+- canonical lyric 仍是 final text/order truth；SRT cue count、index line、start/end timing 全部 immutable；
+- monotonic DP 增加受限 span：`1↔1`、`1↔2`、`2↔1`、`2↔2`，最大只跨 2 个 cue/2 行 lyric，并禁止 canonical span 跨不同歌词文件；
+- span 采用 concatenated normalized text 评分，因此“剪映多断一句/少断一句/断句点与 LRC 不同”不再天然等于错误；只要合并后的 lexical sequence 高置信一致，就保留现有 cue boundary 和 timing；
+- span 内使用确定性最小字符 edit script，允许 `replace / insert / delete`，从而修复普通错字、漏字、多字；新增字符被投影到已有 cue lexical 边界，删除字符只删除 lexical content，不删除源标点/空格/换行；
+- NFKC/casefold matching 继续忽略 punctuation/whitespace，并进一步忽略 Unicode control/format 与常见 `♪♫♬♩★☆` 装饰符；这些布局/装饰字符在输出中原样保留；
+- span 低相似度不会被用于吞掉 canonical gap；真实漏掉整句歌词继续进入 `unmatched_canonical`；subtitle gap、gap 邻域弱匹配、近似重复歌词竞争和大结构差异继续 fail closed 为 `review_required`。
+
+### Report / batch
+
+Report 升级 schema 2.0，新增：
+
+```text
+cue_span / canonical_span
+source_text / canonical_text / output_text
+edit_operations / edit_counts
+span_match_count
+segmentation_span_count
+cue_count_unchanged
+```
+
+`scripts/v4_text_repair_batch.py` 支持 JSON manifest 批量运行独立任务；每个 job 独立报告 ready/review/error，任何单 job 失败不会把其他 job 误标为成功。单任务 `v4_text_repair.py` 继续保持：ready=0，review_required=2；batch 为 all-ready=0、存在 review=2、存在 error=3。
+
+### Safety / next phase
+
+本轮 **不读取音频、不修改 timing、不声称解决部分时间轴错误**。下一轮 Partial Timeline Repair 会锁死已确认可信的 cue，只对不可信局部使用声学 evidence / Source-to-Mix 重对齐。由于真实素材中 BPM 加速/减速是常态，该能力必须默认基于 `AFFINE / PIECEWISE_RATE / CUT_AWARE` 的 Source-to-Mix timewarp 工作，继续遵守 `rate change != cut`，不能用原曲绝对时间直接覆盖剪映 mix-time。
+
+真实推广前还应建立私有 Text Repair benchmark：`剪映原始 SRT + canonical + 人工终稿`，首要指标是 timeline change=0、false auto correction=0，其次才是 auto coverage 与 review rate。
