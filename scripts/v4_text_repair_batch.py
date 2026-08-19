@@ -11,12 +11,24 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from lyric_aligner.text_repair import write_repair_outputs
+from lyric_aligner.text_repair import (
+    DEFAULT_AUTO_THRESHOLD,
+    PRODUCTION_MIN_AUTO_THRESHOLD,
+    write_repair_outputs,
+)
 
 
 def _resolve(base: Path, value: str) -> Path:
     path = Path(value)
     return path.resolve() if path.is_absolute() else (base / path).resolve()
+
+
+def _validate_production_threshold(value: float) -> None:
+    if value < PRODUCTION_MIN_AUTO_THRESHOLD:
+        raise ValueError(
+            "production auto-threshold must be at least "
+            f"{PRODUCTION_MIN_AUTO_THRESHOLD:.2f}"
+        )
 
 
 def _manifest_paths(
@@ -61,7 +73,15 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--manifest", required=True, type=Path)
     parser.add_argument("--summary", type=Path)
-    parser.add_argument("--auto-threshold", type=float, default=0.72)
+    parser.add_argument(
+        "--auto-threshold",
+        type=float,
+        default=DEFAULT_AUTO_THRESHOLD,
+        help=(
+            "Default automatic text-repair threshold; production values below "
+            f"{PRODUCTION_MIN_AUTO_THRESHOLD:.2f} are rejected."
+        ),
+    )
     args = parser.parse_args()
 
     manifest_path = args.manifest.resolve()
@@ -75,12 +95,16 @@ def main() -> int:
 
     base = manifest_path.parent
     try:
+        _validate_production_threshold(args.auto_threshold)
         _manifest_paths(jobs, base, manifest_path, args.summary)
-    except ValueError as exc:
+        for raw_job in jobs:
+            if isinstance(raw_job, dict) and "auto_threshold" in raw_job:
+                _validate_production_threshold(float(raw_job["auto_threshold"]))
+    except (TypeError, ValueError) as exc:
         parser.error(str(exc))
 
     results: list[dict[str, object]] = []
-    ready_count = review_count = error_count = 0
+    ready_count = review_count = error_count = coverage_warning_job_count = 0
     for index, job in enumerate(jobs):
         job_id = str(job.get("id") or f"job-{index + 1}") if isinstance(job, dict) else f"job-{index + 1}"
         try:
@@ -98,38 +122,44 @@ def main() -> int:
                 raise ValueError("source_srt does not exist")
             if any(not path.is_file() for path in canonical):
                 raise ValueError("one or more canonical lyric files do not exist")
+            threshold = float(job.get("auto_threshold", args.auto_threshold))
             report = write_repair_outputs(
                 source,
                 canonical,
                 output,
                 report_path=report_path,
-                auto_threshold=float(job.get("auto_threshold", args.auto_threshold)),
+                auto_threshold=threshold,
             )
             status = str(report["status"])
             if status == "ready":
                 ready_count += 1
             else:
                 review_count += 1
+            if report["coverage_warning_count"]:
+                coverage_warning_job_count += 1
             results.append({
                 "id": job_id,
                 "status": status,
+                "coverage_status": report["coverage_status"],
                 "replacement_count": report["replacement_count"],
                 "review_count": report["review_count"],
+                "coverage_warning_count": report["coverage_warning_count"],
                 "segmentation_span_count": report["segmentation_span_count"],
                 "timeline_unchanged": report["timeline_unchanged"],
                 "cue_count_unchanged": report["cue_count_unchanged"],
                 "output_srt_sha256": report["output_srt_sha256"],
             })
-        except (KeyError, OSError, ValueError, AssertionError) as exc:
+        except (KeyError, OSError, TypeError, ValueError, AssertionError) as exc:
             error_count += 1
             results.append({"id": job_id, "status": "error", "error": str(exc)})
 
     summary = {
-        "schema_version": "1.0",
+        "schema_version": "1.1",
         "mode": "text_repair_v2_batch",
         "job_count": len(jobs),
         "ready_count": ready_count,
         "review_required_count": review_count,
+        "coverage_warning_job_count": coverage_warning_job_count,
         "error_count": error_count,
         "jobs": results,
     }
