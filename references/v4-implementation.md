@@ -239,7 +239,7 @@ reason
 
 ## 8. Validation boundary
 
-P3 tests 证明 lineage contract 与 fail-closed 行为，包括 AFFINE、Fine PIEWISE_RATE、Fine/coarse track/canonical identity、review-only cut、materialized CUT_AWARE、combined cut+overlap、overlap-only、missing/upstream-tampered mapping artifact、tampered fusion output、fusion effective-run upstream/config binding。
+P3 tests 证明 lineage contract 与 fail-closed 行为，包括 AFFINE、Fine PIECEWISE_RATE、Fine/coarse track/canonical identity、review-only cut、materialized CUT_AWARE、combined cut+overlap、overlap-only、missing/upstream-tampered mapping artifact、tampered fusion output、fusion effective-run upstream/config binding。
 
 这些测试不证明真实歌曲 timing accuracy。Partial Timeline Repair 当前继续固定：
 
