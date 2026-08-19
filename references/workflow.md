@@ -3,7 +3,7 @@
 ## 默认版本与结果语义
 
 - 当前完整生产算法为 `v3.9`；V4 production-first 的权威运行说明见 `SKILL.md` / `references/v4-runtime-guide.md`。
-- 对“只修文字、明确冻结剪映时间轴”的任务，新增 `scripts/v4_text_repair.py` 独立快速入口；它不运行完整音频对齐链。
+- 对“只修文字、明确冻结剪映时间轴”的任务，使用 `scripts/v4_text_repair.py` 独立快速入口；它不运行完整音频对齐链。
 - `passed=true` / `structurally_valid=true`：结构检查没有发现确定性错误。
 - `fully_reviewed=true`：高、中、低风险候选均为零。
 - `publish_ready=true`：同时满足结构通过和候选清零。
@@ -127,13 +127,23 @@ python scripts/v4_text_repair.py `
 这个入口：
 
 - 不读取 `mix.wav` 或 source audio，不运行 coarse/fine/transition/ASR/forced alignment；
-- 支持普通 LRC、Enhanced LRC、QRC 常见时间标记和纯文本歌词；时间标记只用于解析/重复 occurrence，不允许写回 SRT 时间；
-- 使用 Unicode NFKC + 忽略标点/空白的文本归一化与单调序列匹配；只有高置信、长度结构安全的 1:1 pair 才自动替换；
+- 支持普通 LRC、Enhanced LRC、QRC 常见时间标记和纯文本歌词；完全 timed 的单个歌词文件会按实际 timestamp stable-sort occurrence，多文件仍保持 `--canonical-lrc` 调用顺序；
+- 使用 Unicode NFKC + 忽略标点/空白的文本归一化与单调序列匹配；只有高置信、长度结构安全的 1:1 pair 才进入自动修复；
+- 自动写回只替换 lexical/content 字符，保留原 SRT 的标点、空格和换行布局；如果 canonical 内容无法一一映射到现有布局，该 cue 保持原文并进入 `review_required`；
+- 单调 alignment 跳过任何 canonical lyric occurrence 时，不新增 cue、不猜 timing，而是记录 `unmatched_canonical` 并进入 `review_required`；
 - 输出前强制比较每个 cue 的原编号与完整 timing line，任何变化直接失败；
 - 拒绝 `--out` 覆盖 `--source-srt`，因此原件始终保留；
-- `status=ready` 时退出 0；存在低置信、分段不一致或未匹配 cue 时保持该 cue 原文，报告 `review_required` 并退出 2。
+- `status=ready` 时退出 0；存在低置信、分段不一致、未匹配 cue、canonical gap 或不安全的长度/布局变化时报告 `review_required` 并退出 2。
 
 如果任务实际需要新增/删除 cue、拆分/合并字幕、修正时间边界、处理 cut/overlap，或时间轴本身不可信，**不要使用 text-only fast path**，进入下面完整工作流/V4 production path。
+
+## V4 production 入口的同输出目录保护
+
+完整 V4 public entrypoint `scripts/v4_run.py` 会在指定 `--out-dir` 内创建 exclusive `.v4-run.lock`。同一个 output tree 同时只允许一个完整 orchestrator：第二个进程直接 fail closed，避免 assets、primary、transitions、resume state 和 final materializations 相互覆盖。
+
+正常退出或正常异常传播时 owner 会释放自己的 lock；lock 使用随机 owner token，因此一个进程不会删除后来被替换的其他 lock。若进程被强制终止导致 stale lock 保留，**先确认没有真实 V4 run 仍在执行，再人工删除 lock**；不要自动把“PID 看起来不存在”当成可安全夺锁的依据。
+
+该 lock 只保护 orchestrator output ownership，不参与 Source-to-Mix、artifact identity、resume identity、stage scheduling 或任何 timing decision。
 
 ## 阶段 2：保守文本基线
 
