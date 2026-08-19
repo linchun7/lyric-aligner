@@ -37,7 +37,6 @@ _PROTECTED_STRONGER_RECOVERY_REASONS = frozenset(
         "timing_model_confirms_song_edge_canonical",
     }
 )
-_FRONTIER_SINGLE_LINE_MIN_SIMILARITY = 0.30
 _FRONTIER_MULTI_LINE_MIN_SIMILARITY = 0.42
 _FRONTIER_SHORT_CUE_MIN_SIMILARITY = 0.80
 
@@ -456,13 +455,13 @@ def _frontier_choice(
     max_lines_per_cue: int = 4,
     reverse: bool = False,
 ) -> tuple[list[TimedCanonicalOccurrence], int | None] | None:
-    """Choose a one-sided frontier assignment with lexical anti-ad-lib guards.
+    """Choose a one-sided frontier assignment with an anti-ad-lib guard.
 
-    Frontier evidence is weaker than a two-anchor bounded gap. Timing proximity
-    alone is therefore never sufficient to turn a short/generic editor cue into
-    a full canonical lyric. Single-line assignments need at least modest lexical
-    support; multi-line assignments keep the stronger existing floor, and very
-    short cues require near-identity before they may be consumed.
+    Frontier evidence is weaker than a two-anchor bounded gap. Normal-length
+    severe-ASR single-line cues may still rely on sequence+timing even when their
+    lexical text is destroyed; otherwise the original bootstrap deadlock would
+    return. Multi-line assignments need lexical support, while one- or two-char
+    low-information cues require near-identity before they may be consumed.
     """
 
     if not rows:
@@ -481,12 +480,7 @@ def _frontier_choice(
             continue
         target_normalized = "".join(item.normalized for item in assigned)
         similarity = _pair_score(cue.normalized, target_normalized)
-        minimum_similarity = (
-            _FRONTIER_MULTI_LINE_MIN_SIMILARITY
-            if count > 1
-            else _FRONTIER_SINGLE_LINE_MIN_SIMILARITY
-        )
-        if similarity < minimum_similarity:
+        if count > 1 and similarity < _FRONTIER_MULTI_LINE_MIN_SIMILARITY:
             continue
         if (
             len(cue.normalized) <= 2
@@ -580,9 +574,6 @@ def reconcile_text_from_sequence_projection(
     consistent.sort(key=lambda item: item.cue_ordinal)
     strong_cues = {item.cue_ordinal for item in consistent}
 
-    # Complete gaps between adjacent model-consistent strong anchors. If a
-    # stronger ready-model recovery already exists anywhere inside the block,
-    # this lower-authority layer leaves the entire block untouched.
     for left, right in zip(consistent, consistent[1:]):
         if left.source_ordinal != right.source_ordinal:
             continue
@@ -643,8 +634,6 @@ def reconcile_text_from_sequence_projection(
                 resolved_reviews.add(cue.ordinal)
         region_count += 1
 
-    # Walk only outside each source's outermost strong anchors. Any stronger
-    # recovered decision is a hard stop, not something to be relabelled.
     by_source: dict[int, list[_TextAnchor]] = defaultdict(list)
     for anchor in consistent:
         by_source[anchor.source_ordinal].append(anchor)
@@ -716,7 +705,13 @@ def reconcile_text_from_sequence_projection(
                 next_start, _ = _cue_times(cues[cue_index + 1])
                 if cue_start >= next_start:
                     break
-            choice = _frontier_choice(cue, rows[: pos + 1], model, None, reverse=True)
+            choice = _frontier_choice(
+                cue,
+                rows[: pos + 1],
+                model,
+                None,
+                reverse=True,
+            )
             if choice is None:
                 break
             assigned, _ = choice
