@@ -13,7 +13,7 @@ from typing import Iterable, Sequence
 
 _UTF8_BOM = b"\xef\xbb\xbf"
 _LRC_TIME_TAG = re.compile(r"\[(\d{1,3}):(\d{2})(?:[.:](\d{1,3}))?\]")
-_QRC_LINE_TAG = re.compile(r"^\[\d+,\d+\]")
+_QRC_LINE_TAG = re.compile(r"^\[(\d+),(\d+)\]")
 _QRC_TOKEN_TIME = re.compile(r"\(\d+,\d+\)")
 _ENHANCED_TIME_TAG = re.compile(r"<\d{1,3}:\d{2}(?:[.:]\d{1,3})?>")
 _META_TAG = re.compile(r"^\[[A-Za-z][A-Za-z0-9_-]*:.*\]$")
@@ -88,40 +88,66 @@ def _clean_lyric_text(value: str) -> str:
     return re.sub(r"\s+", " ", value).strip()
 
 
+def _lrc_timestamp_ms(match: re.Match[str]) -> int:
+    minutes = int(match.group(1))
+    seconds = int(match.group(2))
+    fraction = match.group(3) or "0"
+    milliseconds = int((fraction + "000")[:3])
+    return ((minutes * 60) + seconds) * 1000 + milliseconds
+
+
 def parse_canonical_files(paths: Iterable[Path]) -> list[CanonicalLine]:
+    """Parse canonical lyrics in file order and chronological order within timed files.
+
+    Multi-timestamp LRC rows represent repeated occurrences. When every parsed lyric
+    row in a file carries an LRC/QRC timestamp, occurrences are stable-sorted by
+    their real timestamp so interleaved repeats do not distort monotonic matching.
+    Mixed timed/untimed files retain source order rather than guessing positions.
+    """
+
     lines: list[CanonicalLine] = []
     for path in paths:
         text, _ = _read_utf8(path)
+        entries: list[tuple[int | None, int, str, str]] = []
+        sequence = 0
         for raw_line in text.splitlines():
             stripped = raw_line.strip()
             if not stripped or _META_TAG.match(stripped) or _META_TEXT.match(stripped):
                 continue
             timestamps = list(_LRC_TIME_TAG.finditer(stripped))
-            repeat = len(timestamps)
-            if repeat:
+            qrc_match = _QRC_LINE_TAG.match(stripped)
+            if timestamps:
                 body = _LRC_TIME_TAG.sub("", stripped)
-            elif _QRC_LINE_TAG.match(stripped):
-                repeat = 1
+                occurrence_times = [_lrc_timestamp_ms(match) for match in timestamps]
+            elif qrc_match:
                 body = _QRC_LINE_TAG.sub("", stripped, count=1)
+                occurrence_times = [int(qrc_match.group(1))]
             elif stripped.startswith("[") and "]" in stripped:
                 # Unknown bracketed metadata must not become canonical lyric text.
                 continue
             else:
-                repeat = 1
                 body = stripped
+                occurrence_times = [None]
             cleaned = _clean_lyric_text(body)
             normalized = _normalize_for_match(cleaned)
             if not normalized:
                 continue
-            for _ in range(repeat):
-                lines.append(
-                    CanonicalLine(
-                        ordinal=len(lines),
-                        source=path.name,
-                        text=cleaned,
-                        normalized=normalized,
-                    )
+            for timestamp_ms in occurrence_times:
+                entries.append((timestamp_ms, sequence, cleaned, normalized))
+                sequence += 1
+
+        if entries and all(timestamp is not None for timestamp, _, _, _ in entries):
+            entries.sort(key=lambda item: (int(item[0]), item[1]))
+
+        for _, _, cleaned, normalized in entries:
+            lines.append(
+                CanonicalLine(
+                    ordinal=len(lines),
+                    source=path.name,
+                    text=cleaned,
+                    normalized=normalized,
                 )
+            )
     if not lines:
         raise ValueError("no canonical lyric lines were parsed")
     return lines
@@ -296,15 +322,47 @@ def _has_ambiguous_local_alternative(
     return False
 
 
+def _is_layout_separator(char: str) -> bool:
+    category = unicodedata.category(char)
+    return category[0] in {"P", "Z"} or category == "Cc"
+
+
+def _content_characters(value: str) -> list[str]:
+    return [char for char in value if not _is_layout_separator(char)]
+
+
+def _format_preserving_replacement(original: str, canonical: str) -> str | None:
+    """Replace lexical characters while preserving source punctuation/spacing/lines.
+
+    The fast path is intentionally conservative. If canonical lexical content
+    cannot be mapped one-for-one onto the existing cue layout, return ``None``
+    and require review rather than collapsing or inventing formatting.
+    """
+
+    canonical_content = _content_characters(canonical)
+    original_content = _content_characters(original)
+    if len(original_content) != len(canonical_content):
+        return None
+    iterator = iter(canonical_content)
+    output: list[str] = []
+    for char in original:
+        if _is_layout_separator(char):
+            output.append(char)
+        else:
+            output.append(next(iterator))
+    return "".join(output)
+
+
 def build_repair_plan(
     cues: Sequence[SubtitleCue],
     canonical: Sequence[CanonicalLine],
     *,
     auto_threshold: float = 0.72,
+    alignment_pairs: Sequence[tuple[int, int, float]] | None = None,
 ) -> tuple[dict[int, str], list[MatchDecision]]:
     if not 0.5 <= auto_threshold <= 1.0:
         raise ValueError("auto_threshold must be between 0.5 and 1.0")
-    pairs = align_monotonic(cues, canonical)
+    pairs = list(alignment_pairs) if alignment_pairs is not None else align_monotonic(cues, canonical)
     by_cue = {
         cue_index: (line_index, score)
         for cue_index, line_index, score in pairs
@@ -366,14 +424,37 @@ def build_repair_plan(
                 )
             )
             continue
-        replacements[cue.ordinal] = line.text
+        replacement = _format_preserving_replacement(cue.text, line.text)
+        if replacement is None:
+            decisions.append(
+                MatchDecision(
+                    cue.ordinal,
+                    line_index,
+                    score,
+                    "review",
+                    "format_preserving_replacement_unsafe",
+                )
+            )
+            continue
+        if replacement == cue.text:
+            decisions.append(
+                MatchDecision(
+                    cue.ordinal,
+                    line_index,
+                    score,
+                    "unchanged",
+                    "canonical_content_matches_source_format",
+                )
+            )
+            continue
+        replacements[cue.ordinal] = replacement
         decisions.append(
             MatchDecision(
                 cue.ordinal,
                 line_index,
                 score,
                 "replace",
-                "high_confidence_monotonic_match",
+                "high_confidence_format_preserving_match",
             )
         )
 
@@ -394,9 +475,11 @@ def render_repaired_srt(
         line_ending = "\r\n" if "\r\n" in original_block else "\n"
         trailing = line_ending if original_block.endswith(line_ending) else ""
         rows = original_block.splitlines()
-        # Index and timing lines are copied exactly; only cue text is replaced.
+        replacement_rows = replacement.split("\n")
+        # Index and timing lines are copied exactly; punctuation, spaces and line
+        # breaks are preserved by _format_preserving_replacement().
         output[cue.raw_block_index] = (
-            line_ending.join((rows[0], rows[1], replacement)) + trailing
+            line_ending.join((rows[0], rows[1], *replacement_rows)) + trailing
         )
     return "".join(output)
 
@@ -412,22 +495,26 @@ def repair_srt_text(
     auto_threshold: float = 0.72,
 ) -> tuple[str, dict[str, object]]:
     parts, cues = parse_srt_text(source_text)
+    pairs = align_monotonic(cues, canonical)
     replacements, decisions = build_repair_plan(
         cues,
         canonical,
         auto_threshold=auto_threshold,
+        alignment_pairs=pairs,
     )
+    matched_canonical = {line_index for _, line_index, _ in pairs}
+    unmatched_canonical = [
+        line for line in canonical if line.ordinal not in matched_canonical
+    ]
     rendered = render_repaired_srt(parts, cues, replacements)
     _, output_cues = parse_srt_text(rendered)
     if timeline_signature(cues) != timeline_signature(output_cues):
         raise AssertionError("text-only repair changed SRT numbering or timing")
-    status = (
-        "ready"
-        if all(item.action != "review" for item in decisions)
-        else "review_required"
-    )
+    cue_review_count = sum(item.action == "review" for item in decisions)
+    review_count = cue_review_count + len(unmatched_canonical)
+    status = "ready" if review_count == 0 else "review_required"
     report = {
-        "schema_version": "1.0",
+        "schema_version": "1.1",
         "mode": "text_only_preserve_timeline",
         "status": status,
         "cue_count": len(cues),
@@ -438,8 +525,11 @@ def repair_srt_text(
         "unchanged_count": sum(
             item.action == "unchanged" for item in decisions
         ),
-        "review_count": sum(item.action == "review" for item in decisions),
+        "cue_review_count": cue_review_count,
+        "unmatched_canonical_count": len(unmatched_canonical),
+        "review_count": review_count,
         "timeline_unchanged": True,
+        "formatting_policy": "preserve_source_punctuation_spacing_and_line_breaks",
         "decisions": [
             {
                 "cue_ordinal": item.cue_ordinal,
@@ -449,6 +539,15 @@ def repair_srt_text(
                 "reason": item.reason,
             }
             for item in decisions
+        ],
+        "unmatched_canonical": [
+            {
+                "canonical_ordinal": line.ordinal,
+                "source": line.source,
+                "text": line.text,
+                "reason": "canonical_line_missing_from_subtitle_alignment",
+            }
+            for line in unmatched_canonical
         ],
     }
     return rendered, report
