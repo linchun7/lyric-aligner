@@ -168,6 +168,12 @@ def parse_canonical_lyrics(
                 for index, item in enumerate(alternatives)
                 if item.text and not META_RE.match(item.text)
             ]
+            # Timestamped credits/metadata are common in consumer LRC files and
+            # are not canonical lyric alternatives. With no explicit TrackAsset
+            # selection, a metadata-only timestamp group is therefore ignored.
+            # Multiple lexical alternatives remain ambiguous and fail closed.
+            if not lexical:
+                continue
             if len(lexical) != 1:
                 raise CanonicalLyricError(
                     f"canonical original is ambiguous at {start}ms; consume TrackAsset selection"
