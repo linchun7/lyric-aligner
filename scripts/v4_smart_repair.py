@@ -10,10 +10,8 @@ import math
 from pathlib import Path
 from typing import Any
 
-from lyric_aligner.timeline.anchor_repair import (
-    parse_timed_canonical_files,
-    smart_repair_srt_text,
-)
+from lyric_aligner.timeline.anchor_repair import parse_timed_canonical_files
+from lyric_aligner.timeline.smart_policy import smart_repair_srt_text_v11
 from lyric_aligner.text_repair import DEFAULT_AUTO_THRESHOLD, PRODUCTION_MIN_AUTO_THRESHOLD
 
 _UTF8_BOM = b"\xef\xbb\xbf"
@@ -86,14 +84,14 @@ def main() -> int:
         action="append",
         default=[],
         metavar="SOURCE=RATIO",
-        help="Exact Source-to-Mix slope; SOURCE is canonical filename or zero-based ordinal",
+        help="Exact DAW Source-to-Mix slope; SOURCE is canonical filename or zero-based ordinal",
     )
     parser.add_argument(
         "--source-bpm",
         action="append",
         default=[],
         metavar="SOURCE=BPM",
-        help="Source BPM; combine with --target-bpm to derive target/source rate prior",
+        help="Source BPM; combine with --target-bpm to derive a softer target/source rate prior",
     )
     parser.add_argument("--target-bpm", type=float)
     parser.add_argument(
@@ -124,7 +122,7 @@ def main() -> int:
             source_names.append(item.source)
 
     try:
-        rate_priors = _parse_key_value(args.rate_prior, source_names)
+        exact_rate_priors = _parse_key_value(args.rate_prior, source_names)
         source_bpms = _parse_key_value(args.source_bpm, source_names)
     except ValueError as exc:
         parser.error(str(exc))
@@ -135,11 +133,24 @@ def main() -> int:
         not math.isfinite(args.target_bpm) or args.target_bpm <= 0
     ):
         parser.error("--target-bpm must be a finite positive number")
+
+    rate_priors = dict(exact_rate_priors)
+    rate_metadata: dict[int, dict[str, object]] = {
+        source_ordinal: {"value": value, "provenance": "exact_daw"}
+        for source_ordinal, value in exact_rate_priors.items()
+    }
     for source_ordinal, source_bpm in source_bpms.items():
         if source_bpm <= 0:
             parser.error("source BPM values must be positive")
         derived = args.target_bpm / source_bpm
-        rate_priors.setdefault(source_ordinal, derived)
+        if source_ordinal not in rate_priors:
+            rate_priors[source_ordinal] = derived
+            rate_metadata[source_ordinal] = {
+                "value": derived,
+                "provenance": "bpm_derived",
+                "source_bpm": source_bpm,
+                "target_bpm": args.target_bpm,
+            }
 
     payload = args.source_srt.read_bytes()
     had_bom = payload.startswith(_UTF8_BOM)
@@ -148,12 +159,13 @@ def main() -> int:
     except UnicodeDecodeError as exc:
         parser.error(f"source SRT is not valid UTF-8: {exc}")
 
-    rendered, report = smart_repair_srt_text(
+    rendered, report = smart_repair_srt_text_v11(
         source_text,
         timed,
         repair,
         auto_threshold=args.auto_threshold,
         rate_prior_by_source=rate_priors,
+        rate_prior_metadata_by_source=rate_metadata,
     )
 
     args.output_srt.parent.mkdir(parents=True, exist_ok=True)
@@ -173,6 +185,10 @@ def main() -> int:
     report["rate_prior_by_source"] = {
         source_names[index]: value for index, value in sorted(rate_priors.items())
     }
+    report["rate_prior_metadata_by_source"] = {
+        source_names[index]: metadata
+        for index, metadata in sorted(rate_metadata.items())
+    }
     report["output_srt_sha256"] = _sha256(args.output_srt)
     report = _json_safe(report)
     args.report.parent.mkdir(parents=True, exist_ok=True)
@@ -187,6 +203,7 @@ def main() -> int:
         "text_replacement_count": report["text_replacement_count"],
         "timing_repair_count": report["timing_repair_count"],
         "timing_review_count": report["timing_review_count"],
+        "pro_escalation_required": report["pro_escalation_required"],
         "output_srt": str(args.output_srt),
         "report": str(args.report),
     }, ensure_ascii=False, allow_nan=False))
