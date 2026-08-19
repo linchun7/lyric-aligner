@@ -32,7 +32,10 @@ RUNTIME = {
 
 
 def write_json(path: Path, payload: dict) -> None:
-    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    path.write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
 
 
 def eval_payload(
@@ -103,7 +106,13 @@ def gate_policy(*, split: str, include_language: bool = True) -> dict:
 
 
 class StrictFixture:
-    def __init__(self, root: Path, *, blind_language_scope: bool = True) -> None:
+    def __init__(
+        self,
+        root: Path,
+        *,
+        blind_language_scope: bool = True,
+        same_split_identity: bool = False,
+    ) -> None:
         self.root = root
         self.cal_base = root / "cal-base.json"
         self.cal_candidate = root / "cal-candidate.json"
@@ -115,8 +124,8 @@ class StrictFixture:
         self.blind_gate = root / "blind-gate.json"
         cal_gt = "a" * 64
         cal_cases = "b" * 64
-        blind_gt = "c" * 64
-        blind_cases = "d" * 64
+        blind_gt = cal_gt if same_split_identity else "c" * 64
+        blind_cases = cal_cases if same_split_identity else "d" * 64
         cal_base = eval_payload(
             split="calibration",
             candidate_id="baseline",
@@ -153,7 +162,9 @@ class StrictFixture:
             "selected_candidate_id": "trust-candidate",
             "selected_candidate_revision": "trust-r1",
             "selected_runtime_identity": dict(RUNTIME),
-            "selected_calibration_evaluation_sha256": file_sha256(self.cal_candidate),
+            "selected_calibration_evaluation_sha256": file_sha256(
+                self.cal_candidate
+            ),
             "selected_calibration_ground_truth_sha256": cal_gt,
             "policy_id": "cal-policy",
             "policy_sha256": file_sha256(self.cal_policy),
@@ -193,7 +204,9 @@ class StrictFixture:
         write_json(self.blind_base, blind_base)
         write_json(self.blind_candidate, blind_candidate)
         write_json(self.blind_policy, blind_policy)
-        blind_gate_result = evaluate_gates(blind_base, blind_candidate, blind_policy)
+        blind_gate_result = evaluate_gates(
+            blind_base, blind_candidate, blind_policy
+        )
         blind_gate = {
             "schema_version": "1.0",
             "passed": True,
@@ -207,10 +220,14 @@ class StrictFixture:
             "selected_candidate_id": "trust-candidate",
             "selected_candidate_revision": "trust-r1",
             "selected_runtime_identity": dict(RUNTIME),
-            "selection_payload_sha256": selection["selection_payload_sha256"],
+            "selection_payload_sha256": selection[
+                "selection_payload_sha256"
+            ],
             "selection_file_sha256": file_sha256(self.selection),
             "baseline_blind_evaluation_sha256": file_sha256(self.blind_base),
-            "candidate_blind_evaluation_sha256": file_sha256(self.blind_candidate),
+            "candidate_blind_evaluation_sha256": file_sha256(
+                self.blind_candidate
+            ),
             "blind_policy_id": "blind-policy",
             "blind_policy_sha256": file_sha256(self.blind_policy),
             "gate": blind_gate_result,
@@ -251,7 +268,12 @@ def fusion_payload(*, level: str = "HIGH", language: str = "zh") -> dict:
     }
 
 
-def decision_payload(lock: dict, *, status: str = "untrusted", scope: str = "language:zh") -> dict:
+def decision_payload(
+    lock: dict,
+    *,
+    status: str = "untrusted",
+    scope: str = "language:zh",
+) -> dict:
     payload = {
         "schema_version": "1.0",
         "mode": "partial_timeline_repair_calibrated_trust_decisions",
@@ -281,7 +303,9 @@ class PartialTimelineRepairTrustTests(unittest.TestCase):
             lock = fixture.build_lock()
             self.assertTrue(lock["policy_calibrated"])
             self.assertTrue(lock["independent_blind_gate_passed"])
-            self.assertEqual(lock["eligible_language_scopes"], ["language:zh"])
+            self.assertEqual(
+                lock["eligible_language_scopes"], ["language:zh"]
+            )
             self.assertTrue(lock["cue_trust_generation_allowed"])
             self.assertFalse(lock["automatic_timing_change_allowed"])
 
@@ -294,14 +318,9 @@ class PartialTimelineRepairTrustTests(unittest.TestCase):
 
     def test_calibration_and_blind_identity_reuse_fails_closed(self):
         with tempfile.TemporaryDirectory() as tmp:
-            fixture = StrictFixture(Path(tmp))
-            gate = json.loads(fixture.blind_gate.read_text(encoding="utf-8"))
-            selection = json.loads(fixture.selection.read_text(encoding="utf-8"))
-            gate["blind_dataset_ground_truth_sha256"] = selection[
-                "calibration_dataset_ground_truth_sha256"
-            ]
-            gate["blind_gate_payload_sha256"] = selection_hash(gate)
-            write_json(fixture.blind_gate, gate)
+            fixture = StrictFixture(
+                Path(tmp), same_split_identity=True
+            )
             with self.assertRaisesRegex(
                 PartialTimelineRepairError,
                 "calibration and blind ground-truth identities must differ",
@@ -311,7 +330,9 @@ class PartialTimelineRepairTrustTests(unittest.TestCase):
     def test_failed_blind_gate_cannot_create_trust_lock(self):
         with tempfile.TemporaryDirectory() as tmp:
             fixture = StrictFixture(Path(tmp))
-            gate = json.loads(fixture.blind_gate.read_text(encoding="utf-8"))
+            gate = json.loads(
+                fixture.blind_gate.read_text(encoding="utf-8")
+            )
             gate["passed"] = False
             gate["blind_gate_payload_sha256"] = selection_hash(gate)
             write_json(fixture.blind_gate, gate)
@@ -360,7 +381,9 @@ class PartialTimelineRepairTrustTests(unittest.TestCase):
     def test_uncovered_language_is_downgraded_to_unknown(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            fixture = StrictFixture(root, blind_language_scope=False)
+            fixture = StrictFixture(
+                root, blind_language_scope=False
+            )
             lock = fixture.build_lock()
             decisions = decision_payload(lock)
             path = root / "decisions.json"
@@ -389,7 +412,9 @@ class PartialTimelineRepairTrustTests(unittest.TestCase):
                 fusion_artifact_id="fusion-artifact",
             )
             self.assertEqual(trust[0].status, "unknown")
-            self.assertEqual(report["counts"]["conflict_downgraded"], 1)
+            self.assertEqual(
+                report["counts"]["conflict_downgraded"], 1
+            )
 
     def test_p9_high_alone_does_not_generate_any_trust(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -398,7 +423,13 @@ class PartialTimelineRepairTrustTests(unittest.TestCase):
             lock = fixture.build_lock()
             payload = decision_payload(lock)
             payload["decisions"] = []
-            payload["decision_payload_sha256"] = canonical_sha256(payload)
+            payload["decision_payload_sha256"] = canonical_sha256(
+                {
+                    key: value
+                    for key, value in payload.items()
+                    if key != "decision_payload_sha256"
+                }
+            )
             path = root / "decisions.json"
             write_json(path, payload)
             trust, _ = calibrated_decisions_to_explicit_trust(
@@ -437,9 +468,13 @@ class PartialTimelineRepairTrustTests(unittest.TestCase):
             fusion_path = root / "fusion.json"
             fusion_artifact_path = root / "fusion.artifact.json"
             write_json(lock_path, lock)
-            write_json(decision_path, decision_payload(lock, status="untrusted"))
+            write_json(
+                decision_path, decision_payload(lock, status="untrusted")
+            )
             write_json(fusion_path, fusion_payload())
-            write_json(fusion_artifact_path, {"artifact_id": "fusion-artifact"})
+            write_json(
+                fusion_artifact_path, {"artifact_id": "fusion-artifact"}
+            )
 
             captured: dict = {}
 
@@ -473,10 +508,13 @@ class PartialTimelineRepairTrustTests(unittest.TestCase):
                         )
                     ],
                 )
-            self.assertEqual(captured["explicit_trust"][0].source, "human_review")
+            self.assertEqual(
+                captured["explicit_trust"][0].source, "human_review"
+            )
             self.assertEqual(trust[0].status, "trusted")
             self.assertEqual(
-                report["calibrated_trust_policy"]["human_override_count"], 1
+                report["calibrated_trust_policy"]["human_override_count"],
+                1,
             )
 
 
