@@ -1,7 +1,7 @@
 """Privacy-safe real-data evaluation for Partial Timeline Repair previews.
 
 The evaluator compares selected-cue preview decisions against private human
-mix-time truth.  It never emits lyric text and never promotes timing authority;
+mix-time truth. It never emits lyric text and never promotes timing authority;
 its output is calibration/blind evidence only.
 """
 
@@ -53,6 +53,13 @@ def _number(value: Any, *, label: str) -> float:
     return result
 
 
+def _sha256(value: Any, *, label: str) -> str:
+    result = str(value or "").strip().lower()
+    if len(result) != 64 or any(char not in "0123456789abcdef" for char in result):
+        raise PartialTimelineEvaluationError(f"{label} must be a SHA-256 hex digest")
+    return result
+
+
 def _positive_boundary(start: Any, end: Any, *, label: str) -> tuple[float, float]:
     left = _number(start, label=f"{label}.start_ms")
     right = _number(end, label=f"{label}.end_ms")
@@ -77,10 +84,51 @@ def _rate(numerator: int | float, denominator: int | float) -> float:
     return float(numerator) / float(denominator) if denominator else 0.0
 
 
-def _boundary_error(boundary: tuple[float, float], truth: tuple[float, float]) -> dict[str, float]:
+def _boundary_error(
+    boundary: tuple[float, float],
+    truth: tuple[float, float],
+) -> dict[str, float]:
     onset = abs(boundary[0] - truth[0])
     offset = abs(boundary[1] - truth[1])
     return {"onset": onset, "offset": offset, "max": max(onset, offset)}
+
+
+def _truth_identity(payload: dict[str, Any]) -> dict[str, str]:
+    occurrence_id = str(payload.get("occurrence_id") or "").strip()
+    if not occurrence_id:
+        raise PartialTimelineEvaluationError("truth requires occurrence_id")
+    return {
+        "source_srt_sha256": _sha256(
+            payload.get("source_srt_sha256"), label="truth source_srt_sha256"
+        ),
+        "canonical_lrc_sha256": _sha256(
+            payload.get("canonical_lrc_sha256"), label="truth canonical_lrc_sha256"
+        ),
+        "occurrence_id": occurrence_id,
+    }
+
+
+def _preview_identity(payload: dict[str, Any]) -> dict[str, str]:
+    inputs = payload.get("inputs")
+    if not isinstance(inputs, dict):
+        raise PartialTimelineEvaluationError("preview requires inputs identity")
+    mapping_identity = inputs.get("mapping_identity")
+    if not isinstance(mapping_identity, dict):
+        raise PartialTimelineEvaluationError("preview requires mapping_identity")
+    occurrence_id = str(mapping_identity.get("occurrence_id") or "").strip()
+    if not occurrence_id:
+        raise PartialTimelineEvaluationError(
+            "preview mapping_identity requires occurrence_id"
+        )
+    return {
+        "source_srt_sha256": _sha256(
+            inputs.get("source_srt_sha256"), label="preview source_srt_sha256"
+        ),
+        "canonical_lrc_sha256": _sha256(
+            inputs.get("canonical_lrc_sha256"), label="preview canonical_lrc_sha256"
+        ),
+        "occurrence_id": occurrence_id,
+    }
 
 
 def _truth_index(payload: dict[str, Any]) -> dict[int, tuple[float, float]]:
@@ -160,9 +208,8 @@ def _preview_index(payload: dict[str, Any]) -> dict[int, dict[str, Any]]:
             "suggested": suggested,
             "reason": str(row.get("reason") or ""),
         }
-    selected_count = payload.get("selected_cue_count")
     try:
-        selected_count = int(selected_count)
+        selected_count = int(payload.get("selected_cue_count"))
     except (TypeError, ValueError) as exc:
         raise PartialTimelineEvaluationError(
             "preview selected_cue_count is invalid"
@@ -197,8 +244,15 @@ def _case_rows(
         raise PartialTimelineEvaluationError(
             f"case {case_id} preview/truth file does not exist"
         )
-    preview = _preview_index(_load_json(preview_path, label=f"preview for {case_id}"))
-    truth = _truth_index(_load_json(truth_path, label=f"truth for {case_id}"))
+
+    preview_payload = _load_json(preview_path, label=f"preview for {case_id}")
+    truth_payload = _load_json(truth_path, label=f"truth for {case_id}")
+    if _preview_identity(preview_payload) != _truth_identity(truth_payload):
+        raise PartialTimelineEvaluationError(
+            f"case {case_id} preview/truth input identity mismatch"
+        )
+    preview = _preview_index(preview_payload)
+    truth = _truth_index(truth_payload)
     if set(preview) != set(truth):
         raise PartialTimelineEvaluationError(
             f"case {case_id} preview selected cues and truth cues must match exactly"
@@ -214,14 +268,13 @@ def _case_rows(
             if decision["suggested"] is not None
             else None
         )
-        action = decision["action"]
         rows.append(
             {
                 "case_id": case_id,
                 "cue_number": cue_number,
                 "language": language,
                 "risk_buckets": sorted(set(str(value).strip() for value in risks)),
-                "action": action,
+                "action": decision["action"],
                 "reason": decision["reason"],
                 "original_error": original_error,
                 "suggested_error": suggested_error,
@@ -236,7 +289,11 @@ def _case_rows(
     return rows
 
 
-def _aggregate(rows: list[dict[str, Any]], *, error_threshold_ms: float) -> dict[str, Any]:
+def _aggregate(
+    rows: list[dict[str, Any]],
+    *,
+    error_threshold_ms: float,
+) -> dict[str, Any]:
     proposed = [row for row in rows if row["action"] == "propose"]
     reviewed = [row for row in rows if row["action"] == "review"]
     unchanged = [row for row in rows if row["action"] == "unchanged"]
@@ -257,9 +314,7 @@ def _aggregate(rows: list[dict[str, Any]], *, error_threshold_ms: float) -> dict
         row for row in proposed if row["suggested_error"]["max"] > error_threshold_ms
     ]
     missed = [
-        row
-        for row in unchanged
-        if row["original_error"]["max"] > error_threshold_ms
+        row for row in unchanged if row["original_error"]["max"] > error_threshold_ms
     ]
     review_needed = [
         row for row in reviewed if row["original_error"]["max"] > error_threshold_ms
@@ -334,9 +389,7 @@ def evaluate_partial_timeline_dataset(
         if not case_id or case_id in case_ids:
             raise PartialTimelineEvaluationError("case ids must be unique/non-empty")
         case_ids.add(case_id)
-        rows.extend(
-            _case_rows(case, base=path.parent, error_threshold_ms=threshold)
-        )
+        rows.extend(_case_rows(case, base=path.parent, error_threshold_ms=threshold))
 
     by_language: dict[str, list[dict[str, Any]]] = defaultdict(list)
     by_risk: dict[str, list[dict[str, Any]]] = defaultdict(list)
