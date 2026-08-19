@@ -105,6 +105,7 @@ class PartialTimelineRepairTests(unittest.TestCase):
         self.assertEqual(report["status"], "preview_ready")
         self.assertFalse(report["releaseable"])
         self.assertFalse(report["automatic_timing_change_allowed"])
+        self.assertTrue(report["subtitle_text_unchanged"])
         self.assertEqual(report["proposed_change_count"], 1)
         self.assertEqual(report["review_count"], 0)
         self.assertIn("2\n00:00:02,000 --> 00:00:03,000\n这是第二句", preview)
@@ -334,6 +335,27 @@ class PartialTimelineRepairTests(unittest.TestCase):
         with self.assertRaisesRegex(PartialTimelineRepairError, "mapping is blocked"):
             extract_source_to_mix_mapping(
                 blocked,
+                expected_occurrence_id="occ-1",
+            )
+
+    def test_mapping_payload_requires_explicit_supported_mapping_kind(self):
+        payload = {
+            "occurrence_id": "occ-1",
+            "result": {
+                "timewarp": {
+                    "mapping": {
+                        "intercept": 0.0,
+                        "base_slope": 2.0,
+                        "breakpoints": [],
+                        "slope_deltas": [],
+                    },
+                    "blocked": False,
+                }
+            },
+        }
+        with self.assertRaisesRegex(PartialTimelineRepairError, "kind is missing"):
+            extract_source_to_mix_mapping(
+                payload,
                 expected_occurrence_id="occ-1",
             )
 
