@@ -175,7 +175,7 @@ v1 保留原 cue duration，只整体平移 start/end。这样不把 canonical k
 
 ### 3.7 Multilingual behavior
 
-Smart 的 exact canonical identity 与 affine timing math 本身不依赖中文 ASR，因此韩文/日文可以和中文一样走 Smart。语言仅在未来 Pro acoustic escalation 才影响 ASR/forced backend routing。
+Smart 的 exact canonical identity 与 affine timing math 本身不依赖中文 ASR，因此韩文/日文可以和中文一样走 Smart。
 
 所以 40 分钟大量韩日文并不自动等于 Max。若 canonical lyrics 和 editor matching 足够，Smart 可以不听音频完成大部分工作；只有多数 cue identity/timing 都无法建立、或局部 acoustic escalation 仍大量失败时才需要 Max。
 
@@ -194,21 +194,137 @@ Smart 的 exact canonical identity 与 affine timing math 本身不依赖中文 
 
 report schema：`smart-1.0`。
 
-## 4. Pro / Selective Audio Repair direction
+## 4. Pro / Selective Audio Repair v1
 
-下一阶段应把 Smart unresolved cue groups 转成 bounded acoustic jobs，而不是让用户重新跑全程：
+实现：
 
 ```text
-Smart review/escalation
--> bounded mix window
--> expected source position from Smart model
--> narrow rate search around prior/model
--> source<->mix local acoustic match
--> canonical-constrained forced alignment
--> ASR only where useful
+lyric_aligner/alignment/selective_repair.py
+lyric_aligner/alignment/local_acoustic_match.py
+scripts/v4_pro_selective.py
 ```
 
-混合语言的 ASR job 必须携带 per-span/per-job language hint：中文 span `zh`，英文 span `en`，code-switch/uncertain 用 auto，而不是整首 track language 强制覆盖。
+Pro v1 已完成 Smart→局部音频 evidence bridge，但仍保持 `timing_mutation_performed=false`。这不是旧 Partial/P9 proposal chain 的延伸，而是新的 staged production path。
+
+### 4.1 Smart review -> bounded jobs
+
+`build_selective_repair_plan()` 只扫描 Smart `timing_decisions/text_decisions` 的 review cue：
+
+```text
+Smart preserve/repair -> no Pro job
+Smart review          -> bounded Pro job
+```
+
+默认 mix window 为 editor cue 前后各 2500ms，太短时扩到至少 4500ms。mapped canonical occurrence 的 source window 以 line/token onset 为中心，默认向前 3500ms、向后 5000ms。
+
+mapped job 包含：
+
+```text
+cue_ordinal
+canonical_line_index
+canonical_text_sha256
+source_ordinal/source identity
+mix_window_ms
+source_window_ms
+editor cue start/end
+expected canonical source time
+Smart model rate_prior
+local asr_language_hint
+requested_capabilities
+```
+
+plan 不保存 raw canonical text。执行 ASR/forced 时使用 `canonical_text_by_job_id()` 从同一 canonical 输入重新验证 SHA 后在内存中恢复文本。
+
+没有单一 canonical identity 的 Smart review 不伪造 source mapping：它只能先执行 bounded `mix_asr + word_timestamps`，并计入 `unmapped_review_count`，必要时升级 Max/人工确认。
+
+### 4.2 Bounded source↔mix acoustic evidence
+
+`execute_local_source_match_jobs()` 复用既有：
+
+```text
+HPSS
+-> Chroma CENS
+-> MFCC
+-> retrieve_coarse_window
+```
+
+但与 Full V4 broad coarse search 有三个关键区别：
+
+1. mix 只 decode Smart 指定的几秒窗口；
+2. source 只 decode canonical line 附近几秒窗口；
+3. 有 Smart rate 时 slope 默认只搜索 `rate ± 0.06`，step 0.01。
+
+没有 rate prior 时才使用 0.75–1.35、step 0.05 的 local fallback range。
+
+retrieval 的 top candidate 给出 matched source start 和 estimated slope；由此将 canonical line/token onset 投回 mix：
+
+```text
+predicted_mix_start
+= mix_window_start
++ (canonical_source_onset - matched_source_window_start) / estimated_slope
+```
+
+输出还保存 fused/chroma/mfcc score、feature agreement、margin、ambiguity、editor residual。
+
+这些是 Pro 的独立 acoustic timing evidence；v1 不调用 SRT renderer，不直接 mutation。
+
+### 4.3 Local language routing
+
+`text/language_spans.py::asr_language_hint_for_text()` 根据当前 canonical line 的 language spans 产生本地 hint。
+
+规则：
+
+```text
+one supported local language -> zh/en/ko/ja
+mixed/code-switch/uncertain  -> None / ASR auto
+```
+
+`asr_executor.py::_job_language_hint()` 优先级：
+
+```text
+explicit job asr_language_hint
+-> canonical line inference
+-> whole-track language_profile only if canonical text unavailable
+```
+
+因此中文 track 的 all-English rap job 不再继承 `zh`；真正“中文 + English”同一行也不会被强行 pin 到任一语言。
+
+这里故意不把 Han-only unknown 自动认成 zh：若 track language 未知且文字可能是日文汉字，保持 auto 比错误 pin 更安全。调用 Pro 时可按 source 提供 `zh/ja/ko/en` profile。
+
+### 4.4 Pro CLI
+
+`scripts/v4_pro_selective.py`：
+
+```text
+Smart report + Smart SRT + timed canonical
+-> plan-out
+```
+
+可选执行：
+
+```text
+--mix-audio + --source-audio SOURCE=PATH + --acoustic-out
+-> bounded source<->mix acoustic evidence
+
+--mix-audio + --asr-model-id + --asr-out
+-> bounded faster-whisper evidence only for planned jobs
+```
+
+source language/audio key 均可用 canonical filename 或 zero-based source ordinal。
+
+external source forced alignment capability 已在 mapped job 计划中声明，但 standalone Pro CLI v1 尚未直接编排既有 external forced executor；这避免在还未完成 real-song calibration 前把 Pro orchestration 一次性做得过重。
+
+### 4.5 Current authority boundary
+
+Pro v1 可证明“只算哪里”和“局部声学证据如何产生”，但没有 public evidence 支持自动 write-back threshold。因此：
+
+```text
+Smart automatic repair -> only Smart's existing strict A-anchor policy
+Pro acoustic/ASR       -> evidence only
+Pro timing mutation    -> disabled pending private blind calibration
+```
+
+后续需要在真实歌曲上融合 Smart prediction + local source match + optional forced/ASR word timing，并测 false repair/false ready 后才开放自动写回。
 
 ## 5. Max / Full V4
 
@@ -233,20 +349,20 @@ automatic_timing_change_allowed = false
 release_gate_eligible = false
 ```
 
-这不与 Smart 的 deterministic A-anchor timing policy冲突，因为两者 authority 来源不同，不能互相提升。
+这不与 Smart/Pro staged path 冲突，因为 authority 来源不同，不能互相提升。
 
 ## 7. Validation boundary
 
-Public synthetic tests可以证明：
+Public synthetic tests 可以证明：
 
 - Standard frozen-timeline contract；
-- Smart exact/unique anchor grading；
-- leave-one-out interior repair；
-- start/end rate-prior requirement；
-- repeated lyric fail-closed；
-- Enhanced LRC token preservation；
-- Japanese exact canonical Smart path；
+- Smart exact/unique anchor grading、leave-one-out、edge prior、word timing；
+- Smart→Pro 只选择 unresolved cue；
+- Pro plan 不泄漏 raw canonical text；
+- English rap / code-switch local ASR routing；
+- bounded acoustic result 能形成 independent predicted mix time 且不 mutation；
+- Japanese/Korean 不因语言标签被强制 Max；
 - strict JSON / overwrite / threshold mechanics；
 - legacy P3/P4/P5 formal validation 仍保持原契约。
 
-Public CI 不能证明真实歌曲 false-auto rate，也不能证明当前 350/900/8000ms 常量是最终最佳生产阈值。扩大 B auto repair、piecewise auto repair 或更激进 timing mutation 前，必须用 private real-song calibration + independent blind 数据验证。
+Public CI 不能证明真实歌曲 false-auto rate，也不能证明 Smart 350/900/8000ms 或 Pro 0.62/0.012 等常量是最终最佳生产阈值。扩大 B auto repair、piecewise auto repair、Pro evidence fusion 自动写回前，必须用 private real-song calibration + independent blind 数据验证。
