@@ -127,6 +127,56 @@ class TextRepairBatchTests(unittest.TestCase):
             self.assertEqual(payload["error_count"], 1)
             self.assertEqual([job["status"] for job in payload["jobs"]], ["error", "ready"])
 
+    def test_batch_rejects_cross_job_output_overwriting_an_input_before_writing(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            first_source = root / "first.srt"
+            second_source = root / "second.srt"
+            lyric = root / "song.lrc"
+            manifest = root / "batch.json"
+            first_source.write_text(
+                "1\n00:00:01,000 --> 00:00:02,000\n第一句歌词\n",
+                encoding="utf-8",
+            )
+            second_original = "1\n00:00:03,000 --> 00:00:04,000\n第二句歌词\n"
+            second_source.write_text(second_original, encoding="utf-8")
+            lyric.write_text("[00:01.00]第一句歌词\n", encoding="utf-8")
+            manifest.write_text(
+                json.dumps(
+                    {
+                        "jobs": [
+                            {
+                                "id": "unsafe",
+                                "source_srt": first_source.name,
+                                "canonical_lyrics": [lyric.name],
+                                "out": second_source.name,
+                            },
+                            {
+                                "id": "reader",
+                                "source_srt": second_source.name,
+                                "canonical_lyrics": [lyric.name],
+                                "out": "reader.out.srt",
+                            },
+                        ]
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+
+            completed = subprocess.run(
+                [sys.executable, str(SCRIPT), "--manifest", str(manifest)],
+                cwd=REPOSITORY_ROOT,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+
+            self.assertNotEqual(completed.returncode, 0)
+            self.assertIn("must not overwrite any batch input", completed.stderr)
+            self.assertEqual(second_source.read_text(encoding="utf-8"), second_original)
+            self.assertFalse((root / "reader.out.srt").exists())
+
 
 if __name__ == "__main__":
     unittest.main()
