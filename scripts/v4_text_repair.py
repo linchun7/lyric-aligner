@@ -15,6 +15,22 @@ if str(REPOSITORY_ROOT) not in sys.path:
 from lyric_aligner.text_repair import write_repair_outputs
 
 
+def _validate_path_ownership(args: argparse.Namespace) -> None:
+    input_paths = {
+        args.source_srt.resolve(),
+        *(path.resolve() for path in args.canonical_lrc),
+    }
+    output_paths = [args.out.resolve()]
+    if args.report is not None:
+        output_paths.append(args.report.resolve())
+    if len(set(output_paths)) != len(output_paths):
+        raise ValueError("text-only repair output and report paths must be different")
+    if any(path in input_paths for path in output_paths):
+        raise ValueError(
+            "text-only repair output/report must not overwrite source SRT or canonical lyrics"
+        )
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--source-srt", required=True, type=Path)
@@ -31,8 +47,7 @@ def main() -> int:
     args = parser.parse_args()
 
     try:
-        if args.out.resolve() == args.source_srt.resolve():
-            raise ValueError("text-only repair refuses to overwrite the source SRT")
+        _validate_path_ownership(args)
         if not args.source_srt.is_file():
             raise ValueError(f"source SRT does not exist: {args.source_srt}")
         missing = [path for path in args.canonical_lrc if not path.is_file()]
