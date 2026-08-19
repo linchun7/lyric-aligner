@@ -13,6 +13,7 @@ lyric_aligner/
     asr_routing.py       # P5 weak -> second-pass plan
     asr_second_pass.py   # P6 second-pass composite
     forced_executor.py   # P7 external source forced alignment
+    forced_batch.py      # optional protocol 1.1 one-process batch execution
     forced_projection.py # P8 source forced evidence -> mix time
   evidence/
     editor.py
@@ -348,3 +349,21 @@ PR26 不重写 optimizer DAG，也不改变 `scripts/v4_run_legacy.py` 的 autho
 - **orchestrator ownership responsibility**：`lyric_aligner/pipeline/run_lock.py` 为 public `scripts/v4_run.py` 的一个 out-dir 提供 exclusive process lock。它只防止两个完整 orchestrator 同时写同一 output tree，不参与 stage scheduling、artifact identity、resume identity 或 timing authority。Lock 使用随机 owner token，退出时只删除自己的 lock；异常终止后的 stale lock 需要人工确认后清理，避免自动错误夺锁。
 
 这两项 hardening 都位于 authority graph 外围：不会更改 Source-to-Mix score/slope/threshold、timewarp selection、cut/overlap、review/release policy，也不会让 text-only 路径获得 timing authority。
+
+## 12. Forced-alignment batch protocol 1.1
+
+`lyric_aligner/alignment/forced_batch.py` 是 P7 external forced-alignment 的可选执行扩展，不创建新的 evidence family。默认 `scripts/v4_execute_forced_alignment.py` 仍使用 protocol `1.0` / `single`；显式 `--execution-mode batch` 才使用 protocol `1.1`。
+
+Batch responsibility：
+
+1. 根据现有 P7 plan 选择 exact source-forced jobs；
+2. 对每个 job 重新验证 occurrence/track、source audio SHA、canonical text SHA 与 bounded source window；
+3. 将 selected jobs 写入一个 ephemeral local request；
+4. 对 external command 只启动一次 `<command> --batch-request ... --batch-response ...`；
+5. response 必须 echo exact backend/model identity、`status=aligned_batch`，且 response job ID 集合必须与 request 完全相同；
+6. 每个 response job 再复用 protocol 1.0 的 `_normalize_response()` 做 source-window/boundary/span/canonical-offset 验证；
+7. formal evidence/artifact 只记录 identity/hash/timing、protocol/execution mode 与 command invocation count，不保存 raw lyric、source path 或完整 command。
+
+显式 `selected_job_ids=[]` 是 zero-work：不解析/启动 external executable，`command_invocation_count=0`。Batch timeout 仍是 fail-closed，并且 `--timeout-seconds` 覆盖整个 batch subprocess；大型真实模型必须显式给足 timeout，系统不会自动无限放宽。
+
+Batching 只减少重复模型进程启动，不改变 canonical text authority、P8 Source-to-Mix projection、P9 shadow fusion、cut/overlap、release gate 或任何 timing threshold。Backend adapter 的真实性能与准确率仍必须通过当前 upstream runtime review + private calibration/blind 验证。旧 WhisperX reference branch 未进入 main，因为其外部 runtime 假设在收口时已经漂移；后续 adapter 必须重新对当时的上游 API 做独立实现/验收。
