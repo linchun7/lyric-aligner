@@ -62,7 +62,7 @@ scripts/test_v4_partial_timeline_repair.py
 - cue trust 显式为 `trusted / untrusted / unknown`；
 - trusted cue timing 硬锁；
 - 只有 explicit untrusted cue 可接收 Source-to-Mix candidate；
-- mapping kind 只接受 `AFFINE / PIEWISE_RATE / CUT_AWARE`；
+- mapping kind 只接受 `AFFINE / PIECEWISE_RATE / CUT_AWARE`；
 - `rate change != cut`；
 - candidate 不能穿越 trusted neighbor，也不能与其他 repair candidate 重叠；
 - 结果固定 proposal-only，不自动写 authoritative SRT。
