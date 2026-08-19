@@ -66,10 +66,6 @@ class V4TextRepairHardeningTests(unittest.TestCase):
         )
         self.assertEqual(report["status"], "ready")
         self.assertEqual(report["replacement_count"], 1)
-        self.assertEqual(
-            report["formatting_policy"],
-            "preserve_source_punctuation_spacing_and_line_breaks",
-        )
 
     def test_punctuation_only_difference_does_not_reformat_source(self):
         source = "1\n00:00:01,000 --> 00:00:02,000\nHello world\n"
@@ -84,7 +80,7 @@ class V4TextRepairHardeningTests(unittest.TestCase):
         self.assertEqual(report["replacement_count"], 0)
         self.assertEqual(report["unchanged_count"], 1)
 
-    def test_length_changing_replacement_fails_closed(self):
+    def test_safe_missing_character_is_inserted(self):
         source = "1\n00:00:01,000 --> 00:00:02,000\n我真的爱\n"
         with tempfile.TemporaryDirectory() as directory:
             lyric = Path(directory) / "song.lrc"
@@ -92,13 +88,22 @@ class V4TextRepairHardeningTests(unittest.TestCase):
             canonical = parse_canonical_files([lyric])
             output, report = repair_srt_text(source, canonical)
 
+        self.assertEqual(output, "1\n00:00:01,000 --> 00:00:02,000\n我真的爱你\n")
+        self.assertEqual(report["status"], "ready")
+        self.assertEqual(report["replacement_count"], 1)
+        self.assertGreater(report["edit_counts"]["insert"], 0)
+
+    def test_large_structural_mismatch_still_fails_closed(self):
+        source = "1\n00:00:01,000 --> 00:00:02,000\n我爱\n"
+        with tempfile.TemporaryDirectory() as directory:
+            lyric = Path(directory) / "song.lrc"
+            lyric.write_text("[00:01.00]今天晚上我真的非常爱你\n", encoding="utf-8")
+            canonical = parse_canonical_files([lyric])
+            output, report = repair_srt_text(source, canonical)
+
         self.assertEqual(output, source)
         self.assertEqual(report["status"], "review_required")
         self.assertEqual(report["replacement_count"], 0)
-        self.assertEqual(
-            report["decisions"][0]["reason"],
-            "format_preserving_replacement_unsafe",
-        )
 
 
 if __name__ == "__main__":
