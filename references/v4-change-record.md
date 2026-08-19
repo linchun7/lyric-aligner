@@ -277,16 +277,152 @@ scripts/test_v4_coarse_mapper.py
 - `FeatureCacheSpec` key 绑定 source audio SHA-256、`sr`、`hop_length`、MFCC dimensionality、feature implementation ID 与 librosa version；
 - `v4_run.py` 生成在 `primary/` 与 `transitions/` 下的 coarse outputs 会自动解析到同一 V4-local `cache/features` 目录，因此同一 source 的后续 transition coarse 可以直接复用 numeric feature bundle；
 - cache hit 后不再 decode source audio，也不再运行该 source 的 HPSS/chroma/MFCC；
-- cache miss 正常从 SHA-bound source audio 计算并原子写入；
-- corrupt / incompatible / missing cache 一律当 miss，不 BLOCK 生产；
-- formal payload/artifact 仍绑定完整 source/mix SHA、task fingerprint、profile、algorithm version 和 upstream asset artifact；
-- cache 本身不是 upstream artifact。
+- standalone coarse CLI 可用 `--feature-cache-dir` 显式指定缓存目录。
 
-该性能层不修改 slope grid、score/margin threshold、cut/review 或 Source-to-Mix 选择逻辑。
+### Safety / reproducibility
 
-## 11. Text Repair V2：高频冻结时间轴文字修复
+- cache 不保存歌词、source absolute path、Source-to-Mix mapping、review decision 或完整 command；
+- cache miss/corrupt/incompatible entry 都回到 SHA-bound source audio 正常重算；cache write 失败不会 BLOCK production；
+- formal payload/artifact 不引用 cache path 或 cache file，仍绑定完整 source/mix SHA、task fingerprint、profile、algorithm version 和 upstream asset artifact；
+- `build_coarse_timewarp()` 只有在 cached `FeatureBundle` 的 `sr/hop_length` 与当前 coarse config 完全一致时才接受；
+- 新测试验证 cache roundtrip、key isolation、corruption-as-miss，以及 direct source extraction 与 precomputed source features 产生完全相同的 coarse result。
 
-针对“规范歌词可信、剪映时间轴总体可信并明确要求冻结”的高频生产场景，Text Repair V2 将旧 1:1 等长 fast path 升级为独立、确定性的文字修复能力：
+该优化只减少重复 source feature extraction；不改变 slope grid、candidate search、score/margin threshold、cut detection、fine routing、review policy、canonical/Source-to-Mix authority 或 release semantics。
+
+下一步性能优化优先做 safe artifact resume，然后再做 bounded worker 并发；普通歌曲 sparse probe 必须先有真实 benchmark/calibration，并在不确定时自动 fallback 当前 authoritative path。
+
+---
+
+## 2026-08-18 — Text-Only Subtitle Repair Fast Path
+
+真实生产反馈表明：当规范歌词已经可靠、剪映 SRT 时间轴明确要求冻结，只需要修正字词时，让任务进入完整 Source-to-Mix/coarse/fine/transition 链会产生与目标无关的音频计算。本轮因此增加独立的 text-only fast path，而不是降低完整 V4 的检查强度。
+
+新增：
+
+```text
+lyric_aligner/text_repair.py
+scripts/v4_text_repair.py
+scripts/test_v4_text_repair.py
+```
+
+### Text-only contract
+
+- CLI 只读取 source SRT 与按歌曲顺序重复传入的 canonical LRC/TXT/QRC；不读取 audio，不导入/调用 librosa，不运行 coarse、fine、transition、ASR 或 forced alignment；
+- LRC 多时间戳会展开为重复 canonical occurrence；Enhanced LRC `<mm:ss.xx>` 与 QRC `(start,duration)` 词级时间标记只被剥离，不用于修改 SRT 时间；
+- 匹配前使用 Unicode NFKC + casefold，并忽略 punctuation/whitespace/control 字符；随后执行单调 fuzzy sequence alignment；
+- 只有达到自动阈值且长度结构安全的 1:1 pair 才替换文字；短行采用更严格门槛；低置信、分段不一致、未匹配 cue 保持原字幕并报告 `review_required`；
+- 输出重新解析后逐 cue 比较原始 index line 与 timing line，任何变化都会 fail closed；CLI 还拒绝 `--out` 与 `--source-srt` 指向同一文件，因此不会原地覆盖原件；
+- report 记录 cue/canonical/replacement/review 数、逐 cue decision，以及 source/canonical/output SHA-256；不记录音频 lineage，因为该路径明确不消费音频。
+
+CLI 在 `status=ready` 时退出 0；只要存在未解决文本候选就输出 `review_required` 并退出 2。这个结果只代表“冻结时间轴前提下的文字修复是否还有待复核项”，不能被解释成完整 V4 的 timing/release confidence。
+
+### Safety / fallback
+
+Text-only path 的启用条件是任务语义明确为 **preserve timeline**，不是“中文就少检查”。如果存在缺失 cue、需要新增/拆分/合并字幕、cut/overlap、时间边界可疑或任何需要声学判断的情况，必须使用完整 V4。Canonical lyric 的文字真源地位不变；完整 V4 的 Source-to-Mix timing authority、threshold、review/fail-closed 与 release gate 均未改动。
+
+回滚该 fast path 只需删除新增 module/CLI/test，不需要迁移现有 V4 artifact。
+
+---
+
+## 2026-08-18 — Verified Mix Hash Reuse
+
+在 PR23 将 waveform decode 改为 bounded 后，coarse/fine CLI 仍存在一项重复整文件 I/O：`assert_manifest_paths()` 已经对 mix 重新计算 SHA-256 并与 task manifest 比对成功，随后构建 payload 时又调用 `sha256_file(args.mix_audio)` 再顺序读取整份 mix 一次。
+
+本轮只删除 **同一子进程内的第二次重复 hash**：
+
+```text
+scripts/v4_coarse_align.py
+scripts/v4_fine_align.py
+```
+
+两者仍先执行 `assert_manifest_paths()`；只有该校验确认当前 `--mix-audio` 路径与内容都和 task manifest 完全一致后，payload 才复用刚刚被验证过的 `task.inputs.audio.sha256`。因此正式 `mix_audio_sha256` 值与旧实现相同，没有跳过 manifest 内容校验，也没有改变 task fingerprint、artifact lineage 或任何对齐算法。
+
+这一步仍未消除不同 coarse/fine 子进程之间各自的 manifest 验证读取。下一轮完整 V4 性能工作应继续评估 parent-verified execution context / safe artifact resume，在不削弱 standalone CLI fail-closed 语义的前提下减少跨子进程重复 I/O。
+
+---
+
+## 2026-08-19 — PR25 Execution Optimizer + PR26 Post-Merge Hardening
+
+PR25 将前述 text-only fast path 与完整 V4 execution optimizer 一并合入。完整 V4 的原 authoritative orchestration 保留为 byte-identical `scripts/v4_run_legacy.py`；公开 `scripts/v4_run.py` 通过 optimizer 预执行 expensive deterministic stages，再由原 core 重建 timeline、issues、readiness 与 final artifact。
+
+PR25 execution-only 行为：
+
+- parent 正常完整 SHA 验证 task manifest 后创建 fresh-token verified-input session；child 只有在 manifest/task/path/stat/directory membership 全部匹配时才复用 parent-attested SHA，否则回退原完整验证；
+- coarse/fine/transition cross-run resume 仅在 clean current HEAD、task/algorithm/stage、producer commit、upstream artifact IDs、formal output SHA、stage-specific identity 与 runtime sidecar 全匹配时命中；
+- independent stage workers 固定 `1..4`，默认 2；
+- asset resolution 与 canonical timeline 仍 fresh rebuild；
+- execution cache/session/summary 均不进入 formal timing authority 或 artifact lineage。
+
+PR26 post-merge review hardening 修复三个真实语义缺口并补一个并发边界：
+
+1. **Canonical gap fail-closed**：单调 alignment 跳过 canonical lyric occurrence 时，text-only 不再可能报告 `ready`；该 occurrence 进入 `unmatched_canonical` 并计入 `review_count`，输出不新增 cue、不猜 timing。
+2. **Timed repeat ordering**：完全 timed 的单个 LRC/QRC 文件按真实 timestamp stable-sort occurrence，修复 `[00:10][00:30]副歌` 与 `[00:20]主歌` 被错误展开为“副歌/副歌/主歌”的问题；多个 canonical 文件仍按 CLI 参数歌曲顺序串联。
+3. **Preserve source formatting**：自动修复只替换 lexical/content 字符，保留剪映原 punctuation、spacing、line breaks；无法一一映射的长度/布局变化保持原文并 `review_required`。
+4. **Same out-dir exclusion**：public `v4_run.py` 在 `--out-dir` 创建 exclusive `.v4-run.lock`；第二个 orchestrator fail closed。Lock 使用 owner token，退出只删除自己的 lock；异常终止后的 stale lock 不自动猜测删除。
+
+新增 focused regression tests 覆盖 canonical gap、interleaved timestamps、多文件顺序、格式保留、长度变化 fail-closed、锁冲突/异常释放/ownership。所有这些 hardening 都不修改 Source-to-Mix algorithm、calibration threshold、timewarp selection、cut/overlap decision、review/release authority。
+
+---
+
+## 2026-08-19 — External Forced-Alignment Batch Protocol 1.1 Final Integration
+
+长期 draft PR #20 的核心需求是：P7 protocol 1.0 对每个 bounded forced-alignment job 启动一个 external subprocess，真实 CTC/singing backend 可能因此反复加载同一个大模型。最终收口不直接合并旧分支，而是从当前 post-PR26/27 main 重新集成 backend-neutral protocol 1.1。
+
+新增/更新：
+
+```text
+lyric_aligner/alignment/forced_batch.py
+lyric_aligner/alignment/__init__.py
+scripts/v4_execute_forced_alignment.py
+scripts/test_v4_forced_alignment_batch.py
+scripts/test_v4_forced_alignment_batch_end_to_end.py
+references/forced-alignment-batch-protocol.md
+```
+
+### Execution contract
+
+- `--execution-mode single` 仍是默认，保留 protocol 1.0 one-process-per-job 行为；
+- `--execution-mode batch` 使用 protocol 1.1，把所有 selected jobs 写入一个 ephemeral request，并只启动一次 external process；
+- backend/version/model/revision 必须由 response 精确回显；top-level status 必须为 `aligned_batch`；
+- response job IDs 必须与 request 精确一致，missing/extra/duplicate 全部 fail closed；
+- 每个 batch response row 再转换成 protocol 1.0 shape，并复用原 P7 `_normalize_response()` 验证 source window、line boundary、span monotonicity、canonical offsets 与 identity；
+- explicit selected jobs `[]` 是 zero-work，不解析/启动 external executable；
+- `--timeout-seconds` 覆盖整个 batch subprocess，不自动扩展为无限时长。
+
+Formal output 继续是：
+
+```text
+stage = source_forced_alignment_evidence
+role = forced_alignment_evidence
+timing_authority = auxiliary_source_forced_alignment_evidence
+```
+
+新增/明确的 execution metadata：
+
+```text
+protocol_version
+requested_execution_mode
+execution_mode
+command_invocation_count
+```
+
+Batch 不新增 evidence family，不绕过 P8 Source-to-Mix projection / CUT_AWARE，不改变 P9 shadow-only policy，也不提升任何 release/timing authority。临时 request 可包含 local source path 与 canonical text，但 formal evidence/artifact 仍不保存这些 raw 数据或完整 external command。
+
+### WhisperX stale branch disposition
+
+旧 `agent/v4-whisperx-reference-adapter` 没有合入。最终 review 对照当前 WhisperX upstream 后确认，旧 adapter 的 NLTK/Punkt 预检假设已经与当前 upstream runtime contract 漂移，因此不能因为“代码已经写过”就继续保留或生产化。未来若需要 WhisperX/SOFA/MFA adapter，必须基于当时最新 upstream API 重做/校验，并使用 private real-song calibration + blind-test 验证 accuracy。
+
+### CI boundary
+
+Unit tests 覆盖 one-process/two-jobs、selected subset、empty selection、missing/duplicate response IDs、formal privacy；real-subprocess E2E 证明 CLI 到 adapter protocol 的实际单进程调用、artifact lineage 与 protocol metadata。仍不能用 fake backend CI 宣称真实 singing accuracy。
+
+---
+
+## 2026-08-19 — Text Repair V2
+
+高频真实生产中，规范歌词通常可信、剪映 SRT 时间轴要求冻结，但文本错误不只包含等长错字，还包含漏字、多字，以及剪映断句比 LRC 多、少、位置不同，甚至连续 3–4 段的极端分句差异。旧 fast path 的“仅 1:1 + 等长 lexical replacement”会把这些明显可确定的文本问题大量推给人工复核。
+
+本轮把该路径升级为确定性的 Text Repair V2：
 
 ```text
 lyric_aligner/text_repair.py
@@ -298,57 +434,39 @@ scripts/test_v4_text_repair_v2.py
 scripts/test_v4_text_repair_batch.py
 ```
 
-硬边界：
+### V2 matching / edit contract
 
-- **永不读取 audio，永不修改 cue 数量、编号、开始时间、结束时间**；输出后重新解析并逐 cue 比较 timeline signature，任何变化 fail closed；
-- canonical LRC/TXT/QRC 仍是唯一 final text/order truth；多个 canonical 文件按调用顺序保持歌曲顺序，单个 fully-timed 文件内部按 timestamp stable-sort；LRC timestamp 间距/BPM 先验不参与 SRT timing 写回；
-- matching 使用 Unicode NFKC + casefold，并忽略标点/空白/control/format 与常见音乐装饰符进行比较，但输出保留源 SRT 的标点、空白、换行和装饰符；
-- 长字幕先寻找全局唯一、长度足够的 exact normalized 1:1 anchor，取最长单调 anchor chain；锚点之间才运行局部 banded DP，防止局部漏行把后续整段拖偏，同时避免全矩阵 span DP 的高频性能回退；
-- 局部 DP 支持 bounded span，最大 4 cue/4 canonical line；常见 2 段以内 span 需较高相似度与长度一致性，3–4 段仅在近乎完全一致时允许，因此覆盖更极端的多断句/少断句，但不把大跨度 fuzzy guess 当自动修复；canonical span 禁止跨不同歌词文件；
-- span 内以最小字符 edit script 执行 `replace / insert / delete`，因此可自动处理普通错字、漏字、多字；对于断句不同，canonical 内容按已有 cue 字符归属重新投影，**不会为了匹配 LRC 行界而移动/合并/拆分 cue 时间边界**；
-- span 低相似度不允许吞掉缺失歌词；真正的 canonical gap 仍进入 `unmatched_canonical`；subtitle gap、gap 邻域弱匹配、近似重复歌词竞争、结构差异过大、或重分配后会让已有 cue lexical content 为空继续 `review_required`；
-- report schema 2.0 增加 cue/canonical span、source/canonical/output text、字符 edit operations/count、`segmentation_span_count`、`cue_count_unchanged`，用于人工快速复核；
-- batch runner 接收多个彼此独立 job，单个 job error/review 不会把其他 job 输出误标为 ready；执行前对整个 manifest 做 path ownership preflight，禁止 duplicate job ID、重复 output/report/summary、以及任一输出覆盖任何 job 的 SRT/canonical 输入，避免顺序执行污染后续任务。
+- canonical lyric 仍是 final text/order truth；SRT cue count、index line、start/end timing 全部 immutable；输出后重新解析并逐 cue 比较 timeline signature，任何变化都 fail closed；
+- 长字幕先寻找长度足够、在 cue/canonical 两侧都唯一的 exact normalized 1:1 anchors，并取最长单调 anchor chain；锚点之间才执行局部 banded monotonic DP。这样既降低长文件 span matching 的计算量，也限制局部漏行把后续整段拖偏的风险；局部 band 无法到达终点时只逐级扩大到必要范围，而不是默认整首全矩阵；
+- 局部 span 最大为 4 cue / 4 canonical lines，且 canonical span 禁止跨不同歌词文件/歌曲。常见 span（最大 2 段）要求较高相似度与长度一致性；3–4 段只在拼接后近乎完全一致时放行，因此可以覆盖更极端的剪映多断句/少断句，同时不把大跨度 fuzzy guess 当自动修复；
+- span 采用 concatenated normalized text 评分，因此“剪映多断一句/少断一句/断句点与 LRC 不同”不再天然等于错误；只要 lexical sequence 高置信一致，就保留现有 cue boundary 和 timing；
+- span 内使用确定性最小字符 edit script，允许 `replace / insert / delete`，从而修复普通错字、漏字、多字；新增字符被投影到已有 cue lexical ownership，删除字符只删除 lexical content，不删除源标点/空格/换行；若多 cue 重分配会使某个现有 cue 的 lexical content 变空，则不自动处理而进入 review；
+- NFKC/casefold matching 忽略 punctuation/whitespace、Unicode control/format 与常见 `♪♫♬♩★☆` 装饰符；这些布局/装饰字符在输出中原样保留；
+- span 低相似度不会被用于吞掉 canonical gap；真实漏掉整句歌词继续进入 `unmatched_canonical`；subtitle gap、gap 邻域弱匹配、近似重复歌词竞争、会清空已有 cue 的重分配和大结构差异继续 fail closed 为 `review_required`；
+- Text Repair V2 不读取音频，也不依据 LRC timestamp 的绝对间距写回 SRT 时间。回归测试使用同一歌词顺序、不同 LRC timestamp spacing 验证输出文字一致且 SRT timeline 完全不变，因此 BPM 加速/减速在本模式中不会改变文字修复规则。
 
-`--auto-threshold` 仍是 1:1 自动匹配基础门槛，不应为了提高 coverage 随意降低；multi-span 另有更严格结构门槛。下一步应使用真实“剪映原始 SRT + canonical + 人工终稿”私有 benchmark 重点统计 false auto correction、auto coverage、review rate 与长文件耗时。首要 promotion gate 仍是 **timeline change = 0 且真实 benchmark false auto correction = 0**。
+### Report / batch
 
-Text Repair V2 **不负责“部分时间轴不可信”**。下一轮 Partial Timeline Repair 会把可信 cue 作为锁定锚点，只在不可信局部做声学重对齐；由于用户实际素材中 BPM 加减速是常态，该能力必须默认复用 Source-to-Mix 的 `AFFINE/PIECEWISE_RATE/CUT_AWARE` 语义，`rate change != cut`，绝不能用原曲绝对时间直接覆盖 mix-time cue。
-
-## 12. PR25 execution optimizer 与已合入 PR26 同 out-dir 保护
-
-PR25 在保持原 `scripts/v4_run.py` authoritative orchestration 字节级实现为 `scripts/v4_run_legacy.py` 的前提下，增加外围 execution optimizer：
-
-- parent 首次完整 SHA 验证 task manifest 后，使用 same-invocation verified-input session 减少 child 重复 SHA 读取；
-- coarse/fine/transition artifact 仅在 task、algorithm、producer clean HEAD、upstream artifact IDs、正式 output SHA 与 runtime sidecar 全部匹配时允许跨 run resume；
-- independent stages 使用 `--workers 1..4`，默认 2；
-- timeline/final issue/lineage 仍由原 authoritative core 重建。
-
-PR26 merge `004d2558f646993a44f51d855305f6ba285d04cd` 增加 `--out-dir/.v4-run.lock`：同一个 output tree 同时只允许一个 public `v4_run.py` orchestrator。第二个进程 fail closed；lock 带 owner token，退出时只删除自己的 lock。异常终止留下 stale lock 时，必须先确认没有真实 V4 run 仍在运行，再人工删除，禁止自动猜测 stale。
-
-这些 execution hardening 均不改变 Source-to-Mix slope grid、score/margin threshold、timewarp selection、cut/overlap decision、review policy 或 release semantics。
-
-## 13. External forced-alignment batch protocol 1.1
-
-P7 protocol 1.0 仍是默认兼容路径，每个 selected job 一个 external subprocess。Optional protocol 1.1 通过：
+Report 升级 schema 2.0，新增：
 
 ```text
-scripts/v4_execute_forced_alignment.py --execution-mode batch
+cue_span / canonical_span
+source_text / canonical_text / output_text
+edit_operations / edit_counts
+span_match_count
+segmentation_span_count
+cue_count_unchanged
 ```
 
-把全部 selected source-forced jobs 放入一个 ephemeral batch request，并只启动一次 external process。Batch response 必须 echo exact backend/version/model/revision，top-level status 必须为 `aligned_batch`，response job IDs 必须与 request 精确相等；每个 job 再复用 P7 protocol 1.0 的 boundary/span/canonical identity validator。
+`scripts/v4_text_repair_batch.py` 支持 JSON manifest 批量运行独立任务；每个普通 job error/review 独立报告，单个失败不会阻止后续无冲突 job 运行。为避免批量顺序污染，正式写文件前先对整个 manifest 做 path-ownership preflight：duplicate job id、重复 output/report/summary 路径、或任一 output/report/summary 覆盖任何 job 的 source SRT/canonical input 都立即 fail closed，尚未开始写输出。单任务 `v4_text_repair.py` 继续保持：ready=0，review_required=2；batch 为 all-ready=0、存在 review=2、存在 error=3。
 
-Formal evidence/artifact 新增/明确：
+### Safety / next phase
 
-```text
-protocol_version
-requested_execution_mode
-execution_mode
-command_invocation_count
-```
+本轮 **不读取音频、不修改 timing、不声称解决部分时间轴错误**。BPM/rate change 只在这里做“文字路径无感”的契约与回归保护，不把音频/timewarp 逻辑塞进高频 text-only 工具。
 
-`single` 默认行为不变；`batch` 只改变 external model process lifecycle，不改变 P7 evidence family、P8 projection、P9 shadow fusion 或 authority。显式 empty selected jobs 是 zero-work，不解析/启动 external command。`--timeout-seconds` 在 batch 模式覆盖整个 batch subprocess，大任务需要显式给足 timeout。
+下一轮 Partial Timeline Repair 会锁死已确认可信的 cue，只对不可信局部使用声学 evidence / Source-to-Mix 重对齐。由于真实素材中 BPM 加速/减速是常态，该能力必须从第一版就把变速当默认场景，基于 `AFFINE / PIECEWISE_RATE / CUT_AWARE` 的 Source-to-Mix timewarp 工作，继续遵守 `rate change != cut`；不能把原曲 LRC/source absolute time 直接覆盖剪映 mix-time。开头哼唱、说唱、多语言夹杂等无法由 editor timing 可靠覆盖的区域也属于下一轮局部候选，而不是本轮 text-only 自动改时范围。
 
-旧 `agent/v4-whisperx-reference-adapter` 没有进入生产代码基线：收口 review 时确认其外部 WhisperX/NLTK runtime 假设已经与当前 upstream 发生漂移。保留 stale branch 不再被视为安全策略；未来实际 adapter 必须从当时的最新 main/最新 upstream 重新实现或校验，并经过真实 private calibration/blind。
+真实推广前还应建立私有 Text Repair benchmark：`剪映原始 SRT + canonical + 人工终稿`，首要指标是 timeline change=0、false auto correction=0，其次才是 auto coverage、review rate 与长文件耗时。
 
 ---
 
