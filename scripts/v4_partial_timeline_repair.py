@@ -14,7 +14,6 @@ if str(REPOSITORY_ROOT) not in sys.path:
 
 from lyric_aligner.partial_timeline_repair import (
     PartialTimelineRepairError,
-    extract_source_to_mix_mapping,
     write_partial_timeline_preview,
 )
 
@@ -23,7 +22,8 @@ def _validate_path_ownership(args: argparse.Namespace) -> None:
     inputs = {
         args.source_srt.resolve(),
         args.canonical_lrc.resolve(),
-        args.mapping_json.resolve(),
+        args.forced_mix_evidence.resolve(),
+        args.forced_mix_evidence_artifact.resolve(),
     }
     outputs = [args.report.resolve()]
     if args.preview_out is not None:
@@ -45,18 +45,24 @@ def main() -> int:
         "--canonical-lrc",
         required=True,
         type=Path,
-        help="Timed canonical lyric for exactly one V4 occurrence.",
+        help="Canonical lyric for exactly one V4 occurrence; timestamps are text-order metadata only.",
     )
     parser.add_argument(
-        "--mapping-json",
+        "--forced-mix-evidence",
         required=True,
         type=Path,
-        help="Occurrence-bound V4 coarse/fine/cut Source-to-Mix payload.",
+        help="P8 forced_alignment_mix_projection payload for the current effective run.",
+    )
+    parser.add_argument(
+        "--forced-mix-evidence-artifact",
+        required=True,
+        type=Path,
+        help="Artifact manifest paired with --forced-mix-evidence.",
     )
     parser.add_argument(
         "--occurrence-id",
         required=True,
-        help="Expected V4 occurrence ID; must match the mapping payload.",
+        help="Expected V4 occurrence ID; selected evidence must belong to it.",
     )
     parser.add_argument(
         "--cue",
@@ -79,31 +85,20 @@ def main() -> int:
         for path, label in (
             (args.source_srt, "source SRT"),
             (args.canonical_lrc, "canonical lyric"),
-            (args.mapping_json, "mapping payload"),
+            (args.forced_mix_evidence, "forced mix evidence"),
+            (args.forced_mix_evidence_artifact, "forced mix evidence artifact"),
         ):
             if not path.is_file():
                 raise PartialTimelineRepairError(f"{label} does not exist: {path}")
-        try:
-            mapping_payload = json.loads(
-                args.mapping_json.read_text(encoding="utf-8-sig")
-            )
-        except json.JSONDecodeError as exc:
-            raise PartialTimelineRepairError(
-                f"mapping payload is invalid JSON: {exc}"
-            ) from exc
-        mapping, identity = extract_source_to_mix_mapping(
-            mapping_payload,
-            expected_occurrence_id=args.occurrence_id,
-        )
         report = write_partial_timeline_preview(
             args.source_srt,
             args.canonical_lrc,
-            mapping,
+            args.forced_mix_evidence,
+            args.forced_mix_evidence_artifact,
+            expected_occurrence_id=args.occurrence_id,
             repair_cue_numbers=args.cue,
             report_path=args.report,
             preview_out=args.preview_out,
-            mapping_payload_path=args.mapping_json,
-            mapping_identity=identity,
             text_match_threshold=args.text_match_threshold,
         )
     except (OSError, PartialTimelineRepairError, ValueError, AssertionError) as exc:
@@ -122,7 +117,7 @@ def main() -> int:
             "proposed_change_count",
             "selected_unchanged_count",
             "review_count",
-            "mapping_kind",
+            "timing_evidence",
         )
     }
     print(json.dumps(summary, ensure_ascii=False))
