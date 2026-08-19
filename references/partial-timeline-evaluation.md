@@ -15,6 +15,8 @@ calibration -> 观察失败类型/风险桶，冻结候选规则
 blind_test  -> 独立验证，不再针对 blind 样本调规则
 ```
 
+本 evaluator 负责 timing preview 与人工 truth 的指标计算；它**不替代**现有 P1 dataset protocol 对 source-group split isolation、候选冻结和 calibration→blind 的严格管理。
+
 ## 2. Dataset manifest
 
 ```json
@@ -51,11 +53,14 @@ editor_bad_timing
 
 ## 3. Human truth
 
-Truth 不需要歌词文本，只记录该 preview 已选 cue 的人工最终 mix-time 边界：
+Truth 不需要歌词文本，但必须绑定生成 preview 时的**同一份 source SRT、同一份 canonical LRC、同一个 occurrence**，并记录该 preview 已选 cue 的人工最终 mix-time 边界：
 
 ```json
 {
   "schema_version": "1.0",
+  "source_srt_sha256": "<64-hex>",
+  "canonical_lrc_sha256": "<64-hex>",
+  "occurrence_id": "<occurrence-id>",
   "cues": [
     {
       "cue_number": 128,
@@ -66,7 +71,9 @@ Truth 不需要歌词文本，只记录该 preview 已选 cue 的人工最终 mi
 }
 ```
 
-Truth cue 集合必须与对应 preview report 的 selected decisions **完全一致**。这样不能通过少报困难 cue 人为美化指标。
+Evaluator 会把这三个 identity 与 preview report 的 `inputs.source_srt_sha256`、`inputs.canonical_lrc_sha256`、`inputs.mapping_identity.occurrence_id` 精确比较；任一不一致直接拒绝统计。这样旧 truth 不能误用于新版 SRT/LRC 或另一个歌曲 occurrence。
+
+Truth cue 集合还必须与对应 preview report 的 selected decisions **完全一致**，不能通过少报困难 cue 人为美化指标。
 
 ## 4. 执行
 
@@ -145,6 +152,7 @@ Evaluator 会拒绝：
 - preview `automatic_timing_change_allowed != false`；
 - preview 未声明 `subtitle_text_unchanged=true`；
 - 非 `partial_timeline_repair_preview` 输入；
+- truth 与 preview 的 source SRT SHA / canonical LRC SHA / occurrence ID 不一致；
 - preview selected cue 与 truth cue 集合不完全一致；
 - duplicate cue/case identity；
 - 非法/非正 timing interval。
