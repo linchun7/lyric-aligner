@@ -1,7 +1,7 @@
 # Lyric Aligner v4 当前实施状态
 
 更新日期：2026-08-19  
-当前 main：P9 + Production Readiness Tooling + Windows validation hardening + bounded mix decode + source feature cache + PR25 text-only repair / safe execution optimizer 已合入；真实私有任务可从 V4 production path 开始  
+当前 main：P9 + Production Readiness Tooling + Windows validation hardening + bounded mix decode + source feature cache + PR25 execution optimizer + PR26 text-only/run-lock hardening 已合入；真实私有任务可从 V4 production path 开始  
 P8 merge：`00585a07b658ffea93509c4ed1a4b129deafd0a3`  
 P9 merge：`efbdbb926b03efdf1d91622d5c23cabef1f9850c`  
 PR21 merge：`04e0802156f62006c6b6af5b4ef59b1acc81ce86`  
@@ -9,6 +9,7 @@ PR22 merge：`2b4a13132e95a551392811407f48573b36edab95`
 PR23 merge：`4d7e086aedd2b56210368302d9a17df29fef6a0c`  
 PR24 merge：`0b1f38c98542eed9ec80034677cef4bf8e7f9791`  
 PR25 merge：`3bd5e388d8d68bf88233eee60e0d85dcd7816a3e`  
+PR26 merge：`004d2558f646993a44f51d855305f6ba285d04cd`  
 主线算法版本：`4.0.0a8`  
 Calibration profile：`production-bootstrap-2026-08-17-a7`
 
@@ -33,9 +34,10 @@ PR22  Windows command/bootstrap/privacy validation hardening
 PR23  bounded mix decode for coarse/fine production alignment
 PR24  source harmonic feature cache for repeated coarse jobs
 PR25  text-only repair + verified-input session + safe resume + bounded workers
+PR26  canonical-gap/timed-order/format-preserving repair + same-out-dir lock
 ```
 
-P3 validate #493、P4 #517、P5 #530、P6 #545、P7 #560 均在各自 merge 前全绿。P8 latest result tree 的 fast-core #1 完成 compile、documentation contract、完整 unit/E2E、Skill、privacy、diff-check 全绿后合入。P9 result tree 的 fast-core #2 同样全绿，日志显示 **Ran 324 tests / OK**；随后 P9 branch 与已经合入的 P8 main 同步 ancestry，再以 PR #19 合入。PR21 以 merge `04e0802156f62006c6b6af5b4ef59b1acc81ce86` 进入 main，补齐 Doctor、runtime snapshot 与 family calibration tooling。PR22 exact-head fast-core 与 Python 3.10/3.12/3.14 + ASR validate 全绿后，以 merge `2b4a13132e95a551392811407f48573b36edab95` 进入 main。PR23 exact-head fast-core #43 与 validate #675 全绿后，以 merge `4d7e086aedd2b56210368302d9a17df29fef6a0c` 进入 main。PR24 将同一 source track 的 harmonic features 做 SHA/config/runtime-bound disposable cache，合入 merge `0b1f38c98542eed9ec80034677cef4bf8e7f9791`。PR25 exact-head fast-core #77 与 validate #711 在 Python 3.10/3.12/3.14 + ASR 环境全绿后，以 merge `3bd5e388d8d68bf88233eee60e0d85dcd7816a3e` 进入 main；它保留原 authoritative `v4_run` core 不变，只在外围增加 text-only 路径与 execution optimizer。
+P3 validate #493、P4 #517、P5 #530、P6 #545、P7 #560 均在各自 merge 前全绿。P8 latest result tree 的 fast-core #1 完成 compile、documentation contract、完整 unit/E2E、Skill、privacy、diff-check 全绿后合入。P9 result tree 的 fast-core #2 同样全绿，日志显示 **Ran 324 tests / OK**；随后 P9 branch 与已经合入的 P8 main 同步 ancestry，再以 PR #19 合入。PR21 以 merge `04e0802156f62006c6b6af5b4ef59b1acc81ce86` 进入 main，补齐 Doctor、runtime snapshot 与 family calibration tooling。PR22 exact-head fast-core 与 Python 3.10/3.12/3.14 + ASR validate 全绿后，以 merge `2b4a13132e95a551392811407f48573b36edab95` 进入 main。PR23 exact-head fast-core #43 与 validate #675 全绿后，以 merge `4d7e086aedd2b56210368302d9a17df29fef6a0c` 进入 main。PR24 将同一 source track 的 harmonic features 做 SHA/config/runtime-bound disposable cache，合入 merge `0b1f38c98542eed9ec80034677cef4bf8e7f9791`。PR25 exact-head fast-core #77 与 validate #711 在 Python 3.10/3.12/3.14 + ASR 环境全绿后，以 merge `3bd5e388d8d68bf88233eee60e0d85dcd7816a3e` 进入 main；它保留原 authoritative `v4_run` core 不变，只在外围增加 text-only 路径与 execution optimizer。PR26 exact head `8539c1cd913918ea42468296a0a6d2005e822190` 的 fast-core #87 与 validate #722 全绿，392 项 unit/E2E 在 Python 3.10/3.12/3.14 均通过，随后以 merge `004d2558f646993a44f51d855305f6ba285d04cd` 进入 main；merge tree 与已验证 head tree 同为 `d87484280f80a22a7d7229233e68a93b39c49de9`。
 
 CI 同时增加：
 
@@ -242,9 +244,9 @@ PR24 增加可删除的本地 source feature cache：
 
 该性能层不修改 slope grid、score/margin threshold、cut/review 或 Source-to-Mix 选择逻辑。
 
-## 11. Text-only subtitle repair fast path（已合入 PR25；PR26 hardening）
+## 11. Text-only subtitle repair fast path（已合入 PR25；PR26 hardening 已合入）
 
-针对“规范歌词已经可靠、剪映时间轴已经可用、只需要修正字词”的真实生产场景，PR25 已合入独立 text-only path：
+针对“规范歌词已经可靠、剪映时间轴已经可用、只需要修正字词”的真实生产场景，PR25 已合入独立 text-only path，PR26 已完成 post-merge hardening：
 
 ```text
 lyric_aligner/text_repair.py
@@ -266,7 +268,7 @@ scripts/test_v4_text_repair_hardening.py
 
 这个入口只适用于 **preserve timeline** 的文字纠错，不是 V4 Source-to-Mix 的低精度替代。当 cue 缺失、分段改变、cut/overlap 或时间边界本身可疑时，必须回到完整 V4。
 
-## 12. PR25 execution optimizer 与 PR26 同 out-dir 保护
+## 12. PR25 execution optimizer 与已合入 PR26 同 out-dir 保护
 
 PR25 在保持原 `scripts/v4_run.py` authoritative orchestration 字节级实现为 `scripts/v4_run_legacy.py` 的前提下，增加外围 execution optimizer：
 
@@ -275,6 +277,6 @@ PR25 在保持原 `scripts/v4_run.py` authoritative orchestration 字节级实�
 - independent stages 使用 `--workers 1..4`，默认 2；
 - timeline/final issue/lineage 仍由原 authoritative core 重建。
 
-PR26 再增加 `--out-dir/.v4-run.lock`：同一个 output tree 同时只允许一个 public `v4_run.py` orchestrator。第二个进程 fail closed；lock 带 owner token，退出时只删除自己的 lock。异常终止留下 stale lock 时，必须先确认没有真实 V4 run 仍在运行，再人工删除，禁止自动猜测 stale。
+PR26 merge `004d2558f646993a44f51d855305f6ba285d04cd` 增加 `--out-dir/.v4-run.lock`：同一个 output tree 同时只允许一个 public `v4_run.py` orchestrator。第二个进程 fail closed；lock 带 owner token，退出时只删除自己的 lock。异常终止留下 stale lock 时，必须先确认没有真实 V4 run 仍在运行，再人工删除，禁止自动猜测 stale。
 
 这些 execution hardening 均不改变 Source-to-Mix slope grid、score/margin threshold、timewarp selection、cut/overlap decision、review policy 或 release semantics。
