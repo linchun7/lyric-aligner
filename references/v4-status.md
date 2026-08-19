@@ -62,7 +62,7 @@ scripts/test_v4_partial_timeline_repair.py
 - cue trust 显式为 `trusted / untrusted / unknown`；
 - trusted cue timing 硬锁；
 - 只有 explicit untrusted cue 可接收 Source-to-Mix candidate；
-- mapping kind 只接受 `AFFINE / PIECEWISE_RATE / CUT_AWARE`；
+- mapping kind 只接受 `AFFINE / PIEWISE_RATE / CUT_AWARE`；
 - `rate change != cut`；
 - candidate 不能穿越 trusted neighbor，也不能与其他 repair candidate 重叠；
 - 结果固定 proposal-only，不自动写 authoritative SRT。
@@ -84,18 +84,21 @@ scripts/test_v4_partial_timeline_repair_evidence.py
 
 P2 内部仍保留低层 mapping/cut 参数接口用于兼容与测试，但生产入口从 P3 起不再要求调用方提供这些标签。
 
-## 5. Partial Timeline Repair P3：effective-run lineage context
+## 5. Partial Timeline Repair P3：effective-run + fusion artifact lineage
 
 ```text
 lyric_aligner/timeline/partial_repair_context.py
+lyric_aligner/timeline/partial_repair_production.py
 scripts/test_v4_partial_timeline_repair_context.py
+scripts/test_v4_partial_timeline_repair_context_identity.py
+scripts/test_v4_partial_timeline_repair_production.py
 ```
 
-P3 的生产入口是：
+P3 正式生产入口只接受 formal artifact 四件套：
 
 ```text
 effective run + exact run artifact
-P9 fusion bound to the same run artifact
+P9 fusion + exact fusion artifact
 explicit cue trust
 ```
 
@@ -106,16 +109,19 @@ mapping_kind_by_occurrence
 confirmed_cut_occurrence_ids
 ```
 
-派生规则：
+派生与 lineage 规则：
 
 - 支持 `production_orchestration / review_resolution / overlap_recomposition / cut_rebuild / combined_recomposition`；
 - continuous mapping 直接读取 effective coarse 或已应用 Fine 的正式 `TimeWarp.mapping.mode`，只接受 `AFFINE / PIECEWISE_RATE`；
-- `mapping_source=fine` 必须与 `fine_applied=true`、Fine `applied=true`、Fine→coarse lineage 同时一致；
+- Fine 必须与 effective coarse 的 occurrence、track、canonical selection identity 完全一致，并满足 `fine_applied=true`、Fine `applied=true`、Fine→coarse artifact lineage；
 - `mapping_blocked=true` 只得到 unavailable，不会因为 review 中出现 `confirmed_cut` 就自动升级为 CUT_AWARE；
 - CUT_AWARE 只认已经 materialize 的 `cut_timewarp_rebuild` payload/artifact，且 cut count、confirmed candidate IDs、source review artifact 与 effective-run upstream 必须一致；
-- cut+overlap combined run 继续沿正式 cut mapping lineage得到 CUT_AWARE；overlap-only 保留原始 coarse/fine continuous mapping kind；
-- P9 的 `source_run_stage / source_run_artifact_id` 必须与 supplied effective run 完全相同；
+- cut+overlap combined run 继续沿正式 cut mapping lineage 得到 CUT_AWARE；overlap-only 保留原始 coarse/fine continuous mapping kind；
+- production bridge 验证 fusion artifact 的 stage/role/self-signature/output SHA/size，且 exact effective-run artifact 必须同时出现在 fusion payload、fusion artifact config 与 fusion upstream；
+- 手工改动 fusion JSON 导致 artifact output hash 不一致时 fail closed，不能改变 `source_timeline_boundary_ms` 后继续进入 repair；
 - report 不记录 coarse/fine/cut 的本地文件路径。
+
+低层 in-memory bridge 继续用于单元测试/组合调用；生产必须走 `partial_repair_production.py` 的 artifact-verified bridge。
 
 ## 6. 当前验证边界
 
@@ -124,6 +130,8 @@ Synthetic/CI 可以证明：
 ```text
 schema / lineage / artifact hash
 mapping-mode derivation
+Fine/coarse identity binding
+fusion payload/artifact integrity
 trusted timing locks
 rate-change/cut separation
 candidate monotonicity / non-overlap
