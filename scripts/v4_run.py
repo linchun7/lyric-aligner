@@ -11,7 +11,7 @@ ROOT = SCRIPTS.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from lyric_aligner.pipeline.run_lock import OutputRunLock
+from lyric_aligner.pipeline.run_lock import OutputRunLock, OutputRunLockError
 
 
 def _load(name: str, path: Path):
@@ -49,7 +49,7 @@ def main() -> int:
     try:
         with OutputRunLock(out_dir):
             return _OPTIMIZED.main()
-    except RuntimeError as exc:
+    except OutputRunLockError as exc:
         print(f"v4_run.py: error: {exc}", file=sys.stderr)
         return 2
 
