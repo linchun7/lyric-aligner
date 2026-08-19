@@ -173,9 +173,47 @@ class TextRepairBatchTests(unittest.TestCase):
             )
 
             self.assertNotEqual(completed.returncode, 0)
-            self.assertIn("must not overwrite any batch input", completed.stderr)
+            self.assertIn("must not overwrite manifest or any batch input", completed.stderr)
             self.assertEqual(second_source.read_text(encoding="utf-8"), second_original)
             self.assertFalse((root / "reader.out.srt").exists())
+
+    def test_batch_rejects_output_overwriting_manifest(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "source.srt"
+            lyric = root / "song.lrc"
+            manifest = root / "batch.json"
+            source.write_text(
+                "1\n00:00:01,000 --> 00:00:02,000\n第一句歌词\n",
+                encoding="utf-8",
+            )
+            lyric.write_text("[00:01.00]第一句歌词\n", encoding="utf-8")
+            original_manifest = json.dumps(
+                {
+                    "jobs": [
+                        {
+                            "id": "unsafe-manifest",
+                            "source_srt": source.name,
+                            "canonical_lyrics": [lyric.name],
+                            "out": manifest.name,
+                        }
+                    ]
+                },
+                ensure_ascii=False,
+            )
+            manifest.write_text(original_manifest, encoding="utf-8")
+
+            completed = subprocess.run(
+                [sys.executable, str(SCRIPT), "--manifest", str(manifest)],
+                cwd=REPOSITORY_ROOT,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+
+            self.assertNotEqual(completed.returncode, 0)
+            self.assertIn("must not overwrite manifest or any batch input", completed.stderr)
+            self.assertEqual(manifest.read_text(encoding="utf-8"), original_manifest)
 
 
 if __name__ == "__main__":
