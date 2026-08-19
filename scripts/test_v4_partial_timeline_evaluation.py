@@ -11,6 +11,11 @@ from lyric_aligner.evaluation.partial_timeline import (
 )
 
 
+SOURCE_SHA = "a" * 64
+CANONICAL_SHA = "b" * 64
+OCCURRENCE_ID = "occ-1"
+
+
 class PartialTimelineEvaluationTests(unittest.TestCase):
     def write_case(
         self,
@@ -29,6 +34,12 @@ class PartialTimelineEvaluationTests(unittest.TestCase):
             "automatic_timing_change_allowed": False,
             "subtitle_text_unchanged": True,
             "selected_cue_count": 4,
+            "inputs": {
+                "source_srt_sha256": SOURCE_SHA,
+                "canonical_lrc_sha256": CANONICAL_SHA,
+                "mapping_payload_sha256": "c" * 64,
+                "mapping_identity": {"occurrence_id": OCCURRENCE_ID},
+            },
             "decisions": [
                 {
                     "cue_number": 1,
@@ -78,6 +89,9 @@ class PartialTimelineEvaluationTests(unittest.TestCase):
         }
         truth_payload = truth or {
             "schema_version": "1.0",
+            "source_srt_sha256": SOURCE_SHA,
+            "canonical_lrc_sha256": CANONICAL_SHA,
+            "occurrence_id": OCCURRENCE_ID,
             "cues": [
                 {"cue_number": 1, "truth_start_ms": 1120, "truth_end_ms": 2080},
                 {"cue_number": 2, "truth_start_ms": 3200, "truth_end_ms": 4200},
@@ -114,9 +128,7 @@ class PartialTimelineEvaluationTests(unittest.TestCase):
     def test_evaluator_reports_error_and_failure_metrics_without_lyrics(self):
         with tempfile.TemporaryDirectory() as directory:
             path = self.write_case(Path(directory))
-            report = evaluate_partial_timeline_dataset(
-                path, error_threshold_ms=250
-            )
+            report = evaluate_partial_timeline_dataset(path, error_threshold_ms=250)
 
         self.assertEqual(report["mode"], "partial_timeline_preview_evaluation")
         self.assertEqual(report["split"], "calibration")
@@ -148,7 +160,7 @@ class PartialTimelineEvaluationTests(unittest.TestCase):
         serialized = json.dumps(report, ensure_ascii=False)
         self.assertNotIn("私人歌词甲", serialized)
         self.assertNotIn("canonical_text", serialized)
-        self.assertNotIn("text\"", serialized)
+        self.assertNotIn('"text"', serialized)
 
     def test_blind_split_is_preserved_and_does_not_change_authority(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -161,6 +173,9 @@ class PartialTimelineEvaluationTests(unittest.TestCase):
     def test_truth_must_cover_exact_selected_preview_cues(self):
         truth = {
             "schema_version": "1.0",
+            "source_srt_sha256": SOURCE_SHA,
+            "canonical_lrc_sha256": CANONICAL_SHA,
+            "occurrence_id": OCCURRENCE_ID,
             "cues": [
                 {"cue_number": 1, "truth_start_ms": 1000, "truth_end_ms": 2000}
             ],
@@ -172,15 +187,37 @@ class PartialTimelineEvaluationTests(unittest.TestCase):
             ):
                 evaluate_partial_timeline_dataset(path)
 
+    def test_truth_must_bind_exact_preview_inputs(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            path = self.write_case(root)
+            truth = json.loads((root / "truth.json").read_text(encoding="utf-8"))
+            truth["source_srt_sha256"] = "d" * 64
+            (root / "truth.json").write_text(json.dumps(truth), encoding="utf-8")
+            with self.assertRaisesRegex(
+                PartialTimelineEvaluationError, "input identity mismatch"
+            ):
+                evaluate_partial_timeline_dataset(path)
+
+    def test_truth_requires_occurrence_and_sha_identity(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            path = self.write_case(root)
+            truth = json.loads((root / "truth.json").read_text(encoding="utf-8"))
+            truth.pop("occurrence_id")
+            (root / "truth.json").write_text(json.dumps(truth), encoding="utf-8")
+            with self.assertRaisesRegex(
+                PartialTimelineEvaluationError, "truth requires occurrence_id"
+            ):
+                evaluate_partial_timeline_dataset(path)
+
     def test_preview_authority_flags_must_remain_fail_closed(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             path = self.write_case(root)
             preview = json.loads((root / "preview.json").read_text(encoding="utf-8"))
             preview["releaseable"] = True
-            (root / "preview.json").write_text(
-                json.dumps(preview), encoding="utf-8"
-            )
+            (root / "preview.json").write_text(json.dumps(preview), encoding="utf-8")
             with self.assertRaisesRegex(
                 PartialTimelineEvaluationError, "non-releaseable"
             ):
@@ -192,9 +229,7 @@ class PartialTimelineEvaluationTests(unittest.TestCase):
             path = self.write_case(root)
             preview = json.loads((root / "preview.json").read_text(encoding="utf-8"))
             preview["subtitle_text_unchanged"] = False
-            (root / "preview.json").write_text(
-                json.dumps(preview), encoding="utf-8"
-            )
+            (root / "preview.json").write_text(json.dumps(preview), encoding="utf-8")
             with self.assertRaisesRegex(
                 PartialTimelineEvaluationError, "preserve subtitle text"
             ):
@@ -244,9 +279,7 @@ class PartialTimelineEvaluationTests(unittest.TestCase):
             path = self.write_case(root)
             preview = json.loads((root / "preview.json").read_text(encoding="utf-8"))
             preview["decisions"][0]["action"] = "auto_apply"
-            (root / "preview.json").write_text(
-                json.dumps(preview), encoding="utf-8"
-            )
+            (root / "preview.json").write_text(json.dumps(preview), encoding="utf-8")
             with self.assertRaisesRegex(
                 PartialTimelineEvaluationError, "invalid action"
             ):
@@ -258,9 +291,7 @@ class PartialTimelineEvaluationTests(unittest.TestCase):
             path = self.write_case(root)
             preview = json.loads((root / "preview.json").read_text(encoding="utf-8"))
             preview["selected_cue_count"] = 99
-            (root / "preview.json").write_text(
-                json.dumps(preview), encoding="utf-8"
-            )
+            (root / "preview.json").write_text(json.dumps(preview), encoding="utf-8")
             with self.assertRaisesRegex(
                 PartialTimelineEvaluationError, "does not match decisions"
             ):
