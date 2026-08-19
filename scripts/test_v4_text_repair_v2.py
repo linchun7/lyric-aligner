@@ -108,20 +108,20 @@ class TextRepairV2Tests(unittest.TestCase):
 
     def test_lrc_timestamp_spacing_does_not_affect_text_repair(self):
         source = (
-            "1\n00:00:10,000 --> 00:00:11,000\n第一巨\n\n"
-            "2\n00:00:11,000 --> 00:00:12,000\n第二句\n"
+            "1\n00:00:10,000 --> 00:00:11,000\n这是第一巨歌词\n\n"
+            "2\n00:00:11,000 --> 00:00:12,000\n这是第二句歌词\n"
         )
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             normal = root / "normal.lrc"
             faster = root / "faster.lrc"
-            normal.write_text("[00:10.00]第一句\n[00:20.00]第二句\n", encoding="utf-8")
-            faster.write_text("[00:10.00]第一句\n[00:15.00]第二句\n", encoding="utf-8")
+            normal.write_text("[00:10.00]这是第一句歌词\n[00:20.00]这是第二句歌词\n", encoding="utf-8")
+            faster.write_text("[00:10.00]这是第一句歌词\n[00:15.00]这是第二句歌词\n", encoding="utf-8")
             normal_output, normal_report = repair_srt_text(source, parse_canonical_files([normal]))
             faster_output, faster_report = repair_srt_text(source, parse_canonical_files([faster]))
 
         self.assertEqual(normal_output, faster_output)
-        self.assertIn("第一句", normal_output)
+        self.assertIn("这是第一句歌词", normal_output)
         self.assertEqual(normal_report["status"], "ready")
         self.assertEqual(faster_report["status"], "ready")
         self.assert_timeline_unchanged(source, normal_output)
