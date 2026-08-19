@@ -25,6 +25,22 @@ ASR / forced    -> auxiliary acoustic evidence
 
 ---
 
+## 2026-08-19 — Smart / Pro v1.1.1 repair-only收口
+
+本轮只修复 review 中发现的生产 bug / 回归风险，不增加新算法、不放宽阈值、不开放 Pro timing write-back：
+
+- Smart 对全部自动 timing repair 生成最终组合时间轴后再次检查 overlap；禁止新 overlap，也禁止扩大编辑器原本已有的 overlap；
+- `bpm_derived` 不再与 `exact_daw` 一样硬锁 rate：DAW 精确倍率可继续作为 hard prior，BPM 推导值只做 soft plausibility；若与稳定 A-anchor rate 冲突，只阻止自动 mutation，不用软先验推翻已验证 preserve；
+- Enhanced LRC 最后 token 的合法 `end_ms=None` 不再导致 Smart→Pro 基础 planner 在 source window 计算阶段崩溃；
+- Pro v1.1 只接受当前 `smart-1.1` schema + 当前 Smart policy，旧 Smart artifact 必须重新跑 Smart，避免旧 `false-ready` 语义漏掉 Pro escalation；
+- adaptive source window 现在至少覆盖 `mix query duration × 最大候选 slope + frame margin`，避免窗口短于 acoustic query 而产生零候选；
+- acoustic region 只合并真正请求 `source_local_acoustic_match` 的 jobs，ASR-only job 不再无意义扩大 acoustic decode/feature region；
+- `max_jobs` 现在约束最终 job 总数（包含 shadow competitor），summary 明确 primary/competitor/omitted 数量；
+- Smart/Pro 所有 artifact output 增加统一路径碰撞 guard，禁止覆盖 source SRT、canonical lyrics、mix/source audio 或其他输出 artifact；
+- Pro 只 hash/bind 当前 plan 实际使用到的 source audio，避免 40–60 分钟任务中对无关原曲做整文件 I/O。
+
+新增 regression tests 覆盖 open-ended Enhanced LRC、组合 overlap、existing-overlap worsening、soft BPM prior、stale Smart rejection、acoustic window 最小长度、ASR-only region isolation、max-jobs total cap 与 artifact path collision。
+
 ## 2026-08-19 — Smart / Pro v1.1 daily-production hardening
 
 Smart 新增 `timeline/smart_policy.py`，保留 v1 A-anchor affine engine，但修正 production semantics：
