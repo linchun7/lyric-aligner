@@ -6,7 +6,9 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
 from pathlib import Path
+from typing import Any
 
 from lyric_aligner.timeline.anchor_repair import (
     parse_timed_canonical_files,
@@ -23,6 +25,19 @@ def _sha256(path: Path) -> str:
         for chunk in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def _json_safe(value: Any) -> Any:
+    """Convert non-finite diagnostic floats to JSON null recursively."""
+    if isinstance(value, float) and not math.isfinite(value):
+        return None
+    if isinstance(value, dict):
+        return {key: _json_safe(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_json_safe(item) for item in value]
+    if isinstance(value, tuple):
+        return [_json_safe(item) for item in value]
+    return value
 
 
 def _resolve_source_key(key: str, source_names: list[str]) -> int:
@@ -48,6 +63,8 @@ def _parse_key_value(values: list[str], source_names: list[str]) -> dict[int, fl
         raw_key, raw_number = value.split("=", 1)
         source_ordinal = _resolve_source_key(raw_key.strip(), source_names)
         number = float(raw_number)
+        if not math.isfinite(number):
+            raise ValueError(f"non-finite numeric value is not allowed: {raw_number!r}")
         result[source_ordinal] = number
     return result
 
@@ -89,9 +106,10 @@ def main() -> int:
 
     source = args.source_srt.resolve()
     output = args.output_srt.resolve()
-    report_path = args.report.resolve()
     if source == output:
         parser.error("Smart mode never overwrites the source SRT; choose a separate --output-srt")
+    if not math.isfinite(args.auto_threshold):
+        parser.error("--auto-threshold must be finite")
     if args.auto_threshold < PRODUCTION_MIN_AUTO_THRESHOLD:
         parser.error(
             f"production --auto-threshold cannot be below {PRODUCTION_MIN_AUTO_THRESHOLD}"
@@ -113,8 +131,10 @@ def main() -> int:
 
     if source_bpms and args.target_bpm is None:
         parser.error("--source-bpm requires --target-bpm")
-    if args.target_bpm is not None and args.target_bpm <= 0:
-        parser.error("--target-bpm must be positive")
+    if args.target_bpm is not None and (
+        not math.isfinite(args.target_bpm) or args.target_bpm <= 0
+    ):
+        parser.error("--target-bpm must be a finite positive number")
     for source_ordinal, source_bpm in source_bpms.items():
         if source_bpm <= 0:
             parser.error("source BPM values must be positive")
@@ -154,6 +174,7 @@ def main() -> int:
         source_names[index]: value for index, value in sorted(rate_priors.items())
     }
     report["output_srt_sha256"] = _sha256(args.output_srt)
+    report = _json_safe(report)
     args.report.parent.mkdir(parents=True, exist_ok=True)
     args.report.write_text(
         json.dumps(report, ensure_ascii=False, indent=2, allow_nan=False) + "\n",
@@ -168,7 +189,7 @@ def main() -> int:
         "timing_review_count": report["timing_review_count"],
         "output_srt": str(args.output_srt),
         "report": str(args.report),
-    }, ensure_ascii=False))
+    }, ensure_ascii=False, allow_nan=False))
     return 0
 
 
