@@ -12,6 +12,7 @@ from lyric_aligner.alignment.local_acoustic_v11 import execute_region_source_mat
 from lyric_aligner.alignment.selective_policy import build_selective_repair_plan_v11
 from lyric_aligner.text_repair import SubtitleCue
 from lyric_aligner.timeline.anchor_repair import TimedCanonicalOccurrence
+from lyric_aligner.timeline.smart_policy import SMART_POLICY_ID, SMART_SCHEMA_VERSION
 
 
 def _cue(ordinal: int, start_ms: int, end_ms: int, text: str) -> SubtitleCue:
@@ -45,6 +46,8 @@ def _canonical(ordinal: int, source_ordinal: int, time_ms: int, text: str):
 class SelectivePolicyV11Tests(unittest.TestCase):
     def _smart_report(self):
         return {
+            "schema_version": SMART_SCHEMA_VERSION,
+            "policy_id": SMART_POLICY_ID,
             "mode": "smart_anchor_timeline_repair_no_audio",
             "audio_read": False,
             "models": [
@@ -113,10 +116,11 @@ class SelectivePolicyV11Tests(unittest.TestCase):
         self.assertIn("source_forced_alignment", primary[1]["requested_capabilities"])
         self.assertEqual(competitor[0]["source_ordinal"], 1)
         self.assertEqual(competitor[0]["boundary_role"], "next_source")
-        self.assertEqual(plan["summary"]["region_count"], 1)
+        self.assertEqual(plan["summary"]["acoustic_region_count"], 1)
+        self.assertEqual(plan["summary"]["region_count"], 2)
         self.assertLess(
-            plan["summary"]["planned_mix_audio_ms_merged"],
-            plan["summary"]["planned_mix_audio_ms_unmerged"],
+            plan["summary"]["planned_acoustic_mix_audio_ms_merged"],
+            plan["summary"]["planned_acoustic_mix_audio_ms_unmerged"],
         )
 
     def test_acoustic_executor_extracts_mix_features_once_per_region(self) -> None:
