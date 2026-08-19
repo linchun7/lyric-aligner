@@ -1,7 +1,7 @@
 # Lyric Aligner v4 当前实施状态
 
 更新日期：2026-08-19  
-当前生产代码基线：P9 + Production Readiness Tooling + Windows validation hardening + bounded mix decode + source feature cache + PR25 execution optimizer + PR26 run-lock hardening + Text Repair V2 + optional forced-alignment batch protocol 1.1  
+当前生产代码基线：P9 + Production Readiness Tooling + Windows validation hardening + bounded mix decode + source feature cache + PR25 execution optimizer + PR26 run-lock hardening + Text Repair V2 + optional forced-alignment batch protocol 1.1；Partial Timeline Repair V1 当前仅为非发布 preview 开发线  
 P8 merge：`00585a07b658ffea93509c4ed1a4b129deafd0a3`  
 P9 merge：`efbdbb926b03efdf1d91622d5c23cabef1f9850c`  
 PR21 merge：`04e0802156f62006c6b6af5b4ef59b1acc81ce86`  
@@ -36,6 +36,7 @@ PR24  source harmonic feature cache for repeated coarse jobs
 PR25  text-only repair + verified-input session + safe resume + bounded workers
 PR26  canonical-gap/timed-order/format-preserving repair + same-out-dir lock
 Text V2 deterministic typo/missing/extra-char + anchored bounded segmentation-span repair, immutable timing
+Partial V1 selected-cue Source-to-Mix timing preview only; non-releaseable and automatic timing disabled
 Batch  external forced-alignment protocol 1.1 (optional; single remains default)
 ```
 
@@ -316,3 +317,18 @@ command_invocation_count
 `single` 默认行为不变；`batch` 只改变 external model process lifecycle，不改变 P7 evidence family、P8 projection、P9 shadow fusion 或 authority。显式 empty selected jobs 是 zero-work，不解析/启动 external command。`--timeout-seconds` 在 batch 模式覆盖整个 batch subprocess，大任务需要显式给足 timeout。
 
 旧 `agent/v4-whisperx-reference-adapter` 没有进入生产代码基线：收口 review 时确认其外部 WhisperX/NLTK runtime 假设已经与当前 upstream 发生漂移。保留 stale branch 不再被视为安全策略；未来实际 adapter 必须从当时的最新 main/最新 upstream 重新实现或校验，并经过真实 private calibration/blind。
+
+## 14. Partial Timeline Repair V1：仅生成非发布 timing preview
+
+PR #31 开发线新增 `lyric_aligner/partial_timeline_repair.py` 与 `scripts/v4_partial_timeline_repair.py`，目标不是绕过 calibration 直接自动改时间，而是把“绝大部分剪映时间可信、只有少量 cue 需要重算”的高频场景拆成可审计的局部 preview。
+
+当前 V1 固定：
+
+- 用户必须显式重复 `--cue` 指定要检查的 numeric SRT cue；未选 cue 的 timing、全部 cue 的编号和文字均 immutable；
+- 每次只消费一个 canonical timed lyric occurrence 与一个 occurrence-bound V4 Source-to-Mix mapping payload；`--occurrence-id` 必须与 payload 精确一致，blocked mapping 或未 applied fine mapping 直接拒绝；
+- timing 候选只接受唯一的 1 cue ↔ 1 canonical line 文本身份；1↔N / N↔1、重复 subtitle/canonical 文本、低相似度、last-line open end 都进入 review，不为提高 coverage 猜测；
+- `AFFINE / PIECEWISE_RATE` 复用既有 source→mix inverse；`CUT_AWARE` 继续沿用 P8 规则，source boundary 落在 confirmed gap 或 interval 跨 confirmed cut 时 `unprojectable`；
+- 所有候选投影完成后再和锁定/同时选中的相邻 cue 做全局单调检查；建议区间一旦与相邻区间重叠就不写 preview；
+- 可选 `--preview-out` 只生成 **NON-RELEASEABLE** SRT 预览，report 永久写入 `releaseable=false`、`automatic_timing_change_allowed=false`。公共 synthetic CI 只能验证投影数学、选择性写入和 fail-closed 规则，不能把该 preview 提升成正式 timing authority。
+
+因此 Partial V1 是“局部时间建议/人工复核工具”，不是新的 release path。真正允许自动写回 authoritative timeline 仍需真实私有歌曲 calibration + 独立 blind-test 证明收益并另行修改 production authority contract。
