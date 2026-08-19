@@ -1,12 +1,12 @@
-"""Smart v1.1 production policy layered on Anchor Timeline Repair v1.
+"""Smart production policy layered on no-audio Anchor Timeline Repair.
 
-The v1 timing model remains the deterministic no-audio engine. This module
-hardens production semantics around it: inability to validate is escalated,
-B-grade identities may be confirmed only by an already-ready A-anchor model,
-combined repairs may not worsen subtitle overlaps, BPM-derived rates stay soft
-while exact DAW stretch ratios may remain hard priors, and low-similarity text
-reviews may be recovered from independently-ready timing evidence through
-bilateral interior anchors or stricter one-sided song-edge anchors.
+Smart keeps Text Repair V2 as the conservative baseline, then separates text
+identity from timing authority.  Ready A-anchor timing evidence may recover
+reviews first; an independent song-local sequence projection may then reconcile
+severe-ASR text that the similarity matcher cannot bootstrap.  Sequence-
+projected text is deliberately capped below B grade and can never create timing
+anchors.  Canonical lyrics own text/order, while trusted Jianying cue boundaries
+remain the display-segmentation prior.
 """
 
 from __future__ import annotations
@@ -30,10 +30,11 @@ from lyric_aligner.timeline.anchor_repair import (
     apply_timing_decisions,
     build_anchor_timing_plan,
 )
+from lyric_aligner.timeline.sequence_reconcile import reconcile_text_from_sequence_projection
 from lyric_aligner.timeline.text_recovery import recover_text_reviews_from_timing
 
 SMART_SCHEMA_VERSION = "smart-1.1"
-SMART_POLICY_ID = "smart-validation-policy-2026-08-19-v1.1.3"
+SMART_POLICY_ID = "smart-validation-policy-2026-08-19-v1.2.0"
 _BPM_COMPATIBILITY_TOLERANCE = 0.03
 
 
@@ -274,7 +275,7 @@ def smart_repair_srt_text_v11(
     rate_prior_by_source: Mapping[int, float] | None = None,
     rate_prior_metadata_by_source: Mapping[int, Mapping[str, object]] | None = None,
 ) -> tuple[str, dict[str, object]]:
-    """Run text repair + Smart timing with v1.1 production semantics."""
+    """Run canonical text reconciliation + Smart timing production semantics."""
 
     parts, cues = parse_srt_text(source_text)
     replacements, text_decisions, operations = build_repair_plan_v2(
@@ -287,6 +288,9 @@ def smart_repair_srt_text_v11(
     )
 
     hard_priors = _hard_rate_priors(rate_prior_by_source, rate_prior_metadata_by_source)
+
+    # Preserve v1.1 behavior first: a genuinely ready four-A timing model may
+    # recover reviews.  This remains the strongest no-audio text evidence.
     initial_timing, initial_models = build_anchor_timing_plan(
         cues,
         timed_canonical,
@@ -294,7 +298,6 @@ def smart_repair_srt_text_v11(
         rate_prior_by_source=hard_priors,
     )
     del initial_timing
-
     recovery_replacements, text_decisions, recovery = recover_text_reviews_from_timing(
         cues,
         timed_canonical,
@@ -302,6 +305,21 @@ def smart_repair_srt_text_v11(
         initial_models,
     )
     replacements.update(recovery_replacements)
+
+    # Break the severe-ASR bootstrap deadlock without changing timing gates.
+    # The projection uses baseline strong text identities (A plus robust B),
+    # reconciles canonical sequence into existing editor cues, and caps all
+    # recovered scores below B grade so it cannot manufacture timing anchors.
+    sequence_replacements, text_decisions, sequence_recovery, sequence_models = (
+        reconcile_text_from_sequence_projection(
+            cues,
+            timed_canonical,
+            text_decisions,
+            rate_prior_by_source=hard_priors,
+        )
+    )
+    replacements.update(sequence_replacements)
+
     text_repaired = render_repaired_srt(parts, cues, replacements)
     text_payload = _text_payload(text_decisions)
 
@@ -333,6 +351,12 @@ def smart_repair_srt_text_v11(
         "text_timing_recovery_block_count": recovery.resolved_block_count,
         "text_edge_timing_recovery_count": recovery.resolved_edge_cue_count,
         "text_edge_timing_recovery_block_count": recovery.resolved_edge_block_count,
+        "text_sequence_reconciled_cue_count": sequence_recovery.reconciled_cue_count,
+        "text_sequence_reconciled_region_count": sequence_recovery.reconciled_region_count,
+        "text_sequence_resolved_review_count": sequence_recovery.resolved_review_cue_count,
+        "text_sequence_frontier_cue_count": sequence_recovery.frontier_cue_count,
+        "text_sequence_frontier_run_count": sequence_recovery.frontier_run_count,
+        "text_sequence_projection_models": [asdict(item) for item in sequence_models],
         "text_review_count": text_review_count,
         "timing_repair_count": sum(item.action == "repair" for item in timing),
         "timing_review_count": unresolved_count,

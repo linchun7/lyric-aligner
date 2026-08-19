@@ -1,13 +1,13 @@
 # Lyric Aligner v4 实施记录与关键代码说明
 
-> 真实生产 workload 的 normative baseline 见 `references/production-requirements.md`。Smart / Pro v1.1 设计细节见 `references/smart-pro-v1-1.md`。
+> 真实生产 workload 的 normative baseline 见 `references/production-requirements.md`。当前状态见 `references/v4-status.md`，Smart / Pro 兼容约束见 `references/smart-pro-v1-1.md`。
 
 ## 1. Responsibility graph
 
 ```text
 Canonical lyric -> final text/order truth
 Editor SRT      -> strong but rebuttable mix-time + display-segmentation prior
-Timed canonical -> Smart no-audio timing evidence
+Timed canonical -> Smart no-audio sequence/timing evidence
 Source-to-Mix   -> Pro/Max primary acoustic timing truth
 ASR / forced    -> auxiliary evidence
 P9 fusion       -> legacy Partial shadow diagnostics
@@ -29,16 +29,16 @@ trusted Jianying cue       = display segmentation strong prior
 word/token/audio evidence  = may rebut editor boundary when independently strong
 ```
 
-更高模式必须满足**能力单调性**：可以增加证据、解决更多 review，但没有更强反证时不得破坏较低模式已经安全成立的文字、cue ownership 或 timing。
+更高模式可以增加证据、减少 review，但没有更强反证时不得破坏较低模式已经安全成立的文字、cue ownership 或 timing。
 
 禁止：
 
 ```text
 ASR/forced text -> final canonical lyric
 LRC line break -> silently resegment trusted editor cues
-higher mode -> regress a lower-mode safe result without stronger evidence
+higher mode -> regress lower-mode safe result without stronger evidence
 one cue -> prove its own timing model
-text recovered from timing -> become a primary timing anchor
+sequence/timing recovered text -> become a primary timing anchor
 unvalidated preserve -> task ready
 BPM-derived prior -> silently become exact DAW rate
 combined repair -> worsen editor overlap
@@ -55,11 +55,11 @@ Standard 冻结 editor timeline，只做 deterministic canonical text repair。�
 
 Text Repair V2 负责 lexical-first 主文本匹配，包括 bounded 1↔N / N↔1 / N↔N span。similarity、length-ratio、ambiguity、layout-boundary guards 不因 Smart 升级而降低。
 
-重要 segmentation contract：当一个多 cue span 的 editor 连续文字与 canonical 连续文字规范化后已经一致，只是 canonical LRC 行换行不同，Text Repair 保留原 editor cue ownership。LRC 行换行本身不能把词从一个正确 cue 搬到另一个 cue。
+`text_repair._assign_targets()` 以 editor 原字符 ownership 为主做 canonical edit script。连续 editor/canonical 文本已经一致而仅 LRC 换行不同的 span，必须保持 editor cue segmentation；LRC 行边界本身不拥有跨 cue 搬字权限。
 
-严重 ASR 乱码如果无法通过 lexical guards，会先进入 review，再由 Smart 的独立 timing evidence决定是否能恢复 canonical text。
+严重 ASR 乱码如果 lexical evidence 不够，会进入 review；Smart 可以用独立 sequence/timing evidence继续处理，但不得通过降低 Text Repair threshold 来制造更多 false auto。
 
-## 3. Smart / Anchor Timeline Repair v1.1.3
+## 3. Smart / Sequence Reconciliation + Anchor Timeline Repair v1.2.0
 
 核心文件：
 
@@ -67,120 +67,211 @@ Text Repair V2 负责 lexical-first 主文本匹配，包括 bounded 1↔N / N�
 lyric_aligner/timeline/anchor_repair.py
 lyric_aligner/timeline/smart_policy.py
 lyric_aligner/timeline/text_recovery.py
+lyric_aligner/timeline/sequence_reconcile.py
 scripts/v4_smart_repair.py
 lyric_aligner/io/path_safety.py
 ```
 
-### 3.1 Canonical representation
-
-Smart 复用 `text/canonical_lyrics.py`，保留：
+Smart report schema 继续 `smart-1.1`；当前 policy id：
 
 ```text
-CanonicalLine.time_ms
-CanonicalLine.tokens[]
-CanonicalToken.start_ms/end_ms
-line_lrc / enhanced_lrc / qrc_word_timing
+smart-validation-policy-2026-08-19-v1.2.0
 ```
 
-`parse_timed_canonical_files()` 同时提供 timing-rich occurrence 与 Text Repair canonical view。首 token onset 在合理 line-local 范围内可作为更细 anchor onset；token end 不直接强迫 SRT end，canonical 行/token 边界也不自动成为 final subtitle segmentation。
+### 3.1 Canonical representation
 
-### 3.2 Identity / affine model
+`parse_timed_canonical_files()` 复用 `text/canonical_lyrics.py`，同时提供：
 
-Identity grade：
+```text
+TimedCanonicalOccurrence.time_ms
+TimedCanonicalOccurrence.tokens[]
+CanonicalToken.start_ms/end_ms
+line_lrc / enhanced_lrc / qrc_word_timing
+RepairCanonicalLine text view
+```
+
+首 token onset 在合理 line-local 范围内可成为更细 timing onset；token end/LRC line break 不直接强迫 final SRT end 或 cue segmentation。
+
+### 3.2 Primary timing identity / affine model
+
+主 timing identity grade：
 
 ```text
 A: exact + unique + 1:1 + unchanged
-B: unique 1:1 + high similarity + safe small text repair
-C: merge/split/gap/repeated/ambiguous/other
+B: 1:1 + high similarity + safe text repair
+C: merge/split/gap/repeated/ambiguous/sequence-recovered/other
 ```
 
-只有 A 可建立主 timing model。普通单曲仍使用：
+只有 A 可建立 `SongTimingModel`。普通单曲仍优先：
 
 ```text
 source_time = offset + rate * mix_time
 ```
 
-rate authority：
+- `exact_daw` -> hard rate prior；
+- `bpm_derived` -> soft plausibility only；
+- 无 hard prior -> A anchors robust pairwise median rate；
+- candidate 自动 timing repair 使用 leave-one-out / independent support，不能用自身证明自身；
+- B 只能被 already-ready A model 二次确认，不得建立 primary model；
+- C 永不建立 primary model。
 
-- `exact_daw` 进入 `build_anchor_timing_plan()` hard prior；
-- `bpm_derived` 不进入 hard-prior map，由 A anchors robust estimate rate；
-- BPM-derived 只做兼容性检查；相对差异超过 3% 时阻止自动 repair；
-- 没有 external hard prior 时使用 `robust_anchor_estimate`。
+### 3.3 v1.1.x ready-model text recovery
 
-report 将实际模型 rate 来源与外部 prior 来源分开：
+`text_recovery.py` 保留两条更强 no-audio text recovery：
 
-```text
-rate_provenance
-rate_prior_provenance
-rate_prior_value
-bpm_prior_relative_error
-bpm_prior_compatible
-```
-
-### 3.3 Anti-circular + readiness
-
-候选 A cue 必须 leave-one-out 后重新建 independent model，再判断自身 residual。
-
-- `timing_model_not_ready` -> review；
-- 无唯一 timed canonical mapping -> review；
-- C-grade identity -> review；
-- B 不参与建模，只能被 already-ready A-anchor model 二次确认；
-- recovered text 不倒灌为 A/B primary timing evidence。
-
-### 3.4 Severe-ASR canonical text recovery
-
-执行顺序固定：
-
-```text
-Text Repair V2 lexical plan
-    -> original A-grade decisions only
-    -> build initial affine timing model
-    -> text_recovery revisits bounded review blocks
-    -> materialize recovered canonical text
-    -> rebuild final timing plan/report
-```
-
-#### Interior bilateral path
-
-延续 v1.1.2：
-
-1. review block 左右都是 `score >= 0.92` single-line text anchors；
-2. 两侧 anchors 同 source；
-3. source initial affine model 已 `ready`；
-4. 两侧 anchor 各自与 model 误差 `<= 750ms`；
-5. canonical gap 非空、连续、同源；
-6. cue starts 与 predicted onsets 单调；
-7. 每 cue 第一 canonical onset 与 editor start `<= 750ms`；
-8. 单 cue 最多 4 canonical lines，单 block 最多 8 cues；
-9. canonical gap 必须完整消费。
+1. bilateral interior：ready four-A timing model + 左右同源 strong text anchors + complete canonical gap + compatible onsets；
+2. narrow song-edge：ready model + one-sided consecutive strong anchors + edge scope + tighter onset guard，并只允许真正 unmapped editor-only ad-lib 作为透明层。
 
 成功 reason：
 
 ```text
 timing_model_confirms_canonical_sequence
+timing_model_confirms_song_edge_canonical
 ```
 
-#### Song-edge one-sided path — v1.1.3
+它们仍在 Sequence Projection 之前执行，因为 independently-ready timing model 是更强证据。
 
-真实生产回归表明：歌曲开头/结尾若被 editor-only ad-lib 隔开，双侧 anchor contract 可能漏掉 timing 已高度吻合的 severe-ASR lyric cue。v1.1.3 增加更窄的一侧恢复，不放宽 Text Repair 阈值：
+### 3.4 为什么需要 Sequence Projection
 
-1. initial affine model 必须已由独立 A anchors `ready`；
-2. candidate 只能位于该 source 的首/尾 4 条 canonical rows；
-3. 可用的一侧必须至少有 2 条**紧邻、连续 canonical、score>=0.92** 强 anchor；
-4. anchor/model residual 各 `<=750ms`；
-5. candidate predicted onset 与 editor cue start 使用更紧的 `<=500ms`；
-6. block 中允许留在原地的跨越项只允许 `canonical_ordinal=None && canonical_span=None` 的真正 unmapped review cue，即 editor-only ad-lib；最多 3 条；
-7. 任何 weak mapped cue 都不是透明层，立即阻断 one-sided recovery；
-8. ad-lib 不删除、不改写，继续 review；
-9. 恢复后的 lyric cue 仍不成为 A timing anchor，也不获得 timing 自动写回权限。
+真实 severe-ASR 会出现 bootstrap deadlock：
+
+```text
+editor text 错成另一句话
+-> lexical span similarity 低 / mapping 错
+-> 只有 3 个真正 A anchors
+-> primary timing model 按四-A gate不 ready
+-> ready-model text recovery 无法启动
+-> 错误 editor text 被原样 materialize
+```
+
+放宽 lexical threshold 或四-A timing gate都会增加 false repair / circularity。v1.2.0 因此新增**只用于文字 identity 的独立投影**，不改变 timing gate。
+
+### 3.5 SequenceProjectionModel
+
+`sequence_reconcile.build_sequence_projection_models()` 从 baseline text decisions 建 text-only affine projection。
+
+无 exact hard prior：
+
+```text
+>= 3 unique/exact/1:1/unchanged A text anchors
+>= 4 total A/B strong text anchors
+source span >= 8000ms
+mix span    >= 8000ms
+robust pairwise rate in [0.5, 2.0]
+median abs residual <= 450ms
+750ms inlier fraction >= 0.75
+```
+
+有 exact hard rate prior 时可在 `>=2 A strong anchors` 下使用 hard rate + median offset。BPM-derived prior不进入 hard map。
+
+这个 model 的唯一职责：**判断 canonical sequence 在 editor 时间轴上的大致投影位置，从而恢复文字 identity。** 它不是 `SongTimingModel`，也不能授权 timing repair。
+
+### 3.6 Anti-circularity：sequence text 永远不变 timing anchor
+
+`sequence_reconcile._projected_decision()` 将所有 sequence-projected decision 的 score cap 到 `0.91`：
+
+```text
+score < 0.92
+=> anchor_repair._decision_grade() 最多 C
+=> 不可能成为 A/B timing anchor
+```
+
+因此典型目标行为是：
+
+```text
+baseline: 3 A + 1 B
+text-only Sequence Projection: ready
+severe-ASR text: safely recovered
+final primary timing model: anchor_count 仍然 = 3
+final timing status: 仍可能 insufficient_anchors / review
+```
+
+文字可以确定而 timing 仍 unresolved；这是刻意设计，不是失败。
+
+### 3.7 Strongly bounded canonical sequence reconciliation
+
+对 model-consistent strong anchors 按 editor cue 顺序排序。只有**相邻 strong anchors 同 source**且中间至少存在一个 review 时，才尝试 bounded sequence reconciliation。
+
+设：
+
+```text
+left strong anchor
+editor weak/review cues...
+right strong anchor
+```
+
+两侧 canonical ordinal 唯一确定完整 gap。`_partition_bounded_region()` 不使用乱码 lexical similarity作为入场门槛，而是把 gap 的连续 canonical rows 分给现有 editor cues。
+
+约束：
+
+- strong anchors 自身 residual <= 750ms；
+- block 最多 16 cues；
+- canonical row count 必须在 `[cue_count, 4*cue_count]`；
+- editor starts 与 projected onsets 单调；
+- 每 cue 第一 projected onset 与 editor start <=1300ms；
+- assigned last onset 不得明显越过 editor cue end；
+- canonical gap 必须完整消费，不能丢行/回退/跨 source。
+
+partition cost：
+
+```text
+current cue first-onset error
++ next canonical onset vs next editor cue start boundary error
++ small text-length ownership penalty
+```
+
+关键点是**用“下一条 canonical onset 是否对得上下一 editor cue start”决定 1↔N 分配**。例如 8 条短 LRC lines 可以稳定分入 4 个较长 editor cues；不会因为 LRC 有 8 行就创建 8 个 SRT cues。
 
 成功 reason：
 
 ```text
-timing_model_confirms_song_edge_canonical
+sequence_projection_confirms_bounded_canonical
 ```
 
-report：
+### 3.8 Frontier walk
+
+如果 severe-ASR 位于最前/最后 strong anchor 外侧，`reconcile_text_from_sequence_projection()` 可沿 source canonical 顺序向外逐 cue 处理。
+
+保守停止条件：
+
+- current first projected onset 与 cue start >900ms；
+- editor time 非单调；
+- 遇到另一 model-consistent strong anchor；
+- 没有可接受 candidate；
+- 已证明当前 cue 后，下一 canonical onset 与下一 editor cue start boundary delta >1600ms。
+
+frontier multi-line assignment 还要求 editor/canonical similarity >=0.42；这是为了防止在只有单侧序列约束时，仅凭 timing 把多条 canonical line 塞入一个弱 cue。
+
+成功 reason：
+
+```text
+sequence_projection_confirms_frontier_canonical
+```
+
+这个 stop rule 是 cut/ad-lib 安全边界：允许恢复 break 之前已经被证明的 lyric cue，但禁止越过 break 继续追更远 LRC。
+
+### 3.9 Segmentation authority
+
+Sequence Projection 不处理纯 Standard-safe、无 review 的 region。因此已有可信 editor cue ownership不会因为新层存在而被重新分句。
+
+对 severe-ASR bounded region，canonical 决定完整字符/行顺序；projection 只决定这些 canonical rows 应归属哪个**已有** editor cue。cue number/start/end 不改变。
+
+要真正移动 editor cue boundary，仍需要 Enhanced/QRC word evidence 或 Pro/Max audio evidence；line-LRC 不足以授权。
+
+### 3.10 Final timing / overlap safety
+
+Sequence reconciliation 后重新调用 `build_anchor_timing_plan()`。sequence decisions 是 C grade，不增加 A model anchors。
+
+`smart_policy.py` 的 timing hardening继续：
+
+- `timing_model_not_ready` / no unique mapping / C identity -> review/Pro escalation；
+- soft BPM conflict 阻止 mutation；
+- 单 cue repair不得制造新 overlap；
+- 所有 repairs 合成后逐相邻 pair 检查：`new_overlap_ms <= original_overlap_ms`；否则相关 repair全部降 review。
+
+### 3.11 Report
+
+既有字段：
 
 ```text
 text_review_count_before_timing_recovery
@@ -191,57 +282,24 @@ text_edge_timing_recovery_block_count
 text_review_count
 ```
 
-### 3.5 Segmentation authority regression
-
-Public regression 使用合成文本锁定以下结构：
+v1.2.0 新增：
 
 ```text
-editor cues:
-第一段歌词到这里
-下一小句仍在同一画面
-最后几个字继续播放
-
-canonical LRC lines:
-第一段歌词到这里下一小句
-仍在同一画面最后几个字继续播放
+text_sequence_reconciled_cue_count
+text_sequence_reconciled_region_count
+text_sequence_resolved_review_count
+text_sequence_frontier_cue_count
+text_sequence_frontier_run_count
+text_sequence_projection_models
 ```
 
-两边连续规范文本一致，只有行分句不同。Standard/Smart 必须保持 editor 三个 cue 的文字 ownership；不得把某段连续文字迁移到前/后 cue。这个 contract 与“canonical lyric 决定文字/顺序”不冲突：canonical 决定**字是什么、顺序是什么**，可信 editor cue 决定**这些字在哪个显示时间块**，除非有更强 boundary evidence 推翻它。
+`text_sequence_projection_models` 是 text-only diagnostic，不得与 `models`（primary timing models）混为一谈。
 
-### 3.6 Final timeline overlap guard
+### 3.12 Artifact path safety
 
-`smart_policy.py` 有两层 guard：
-
-1. 单条 proposal 不得制造原本不存在的新 overlap；
-2. 所有 repair 合成最终 timeline 后逐相邻 pair 检查：
-
-```text
-new_overlap_ms <= original_overlap_ms
-```
-
-组合后 overlap 增大时，涉及 repair 全部降级 review。
-
-### 3.7 Artifact path safety
-
-`io/path_safety.py::validate_separate_artifact_paths()` 检查：
-
-- output 不得等于任何 input；
-- 两个 output 不得共享同一路径。
-
-Smart CLI 在任何 artifact write 前检查 source SRT、canonical lyrics、output SRT、report。
+`io/path_safety.py::validate_separate_artifact_paths()` 继续在任何 artifact write 前拒绝 output-input / output-output 路径碰撞。
 
 ## 4. Pro / Selective Audio Repair v1.1.1
-
-核心文件：
-
-```text
-lyric_aligner/alignment/selective_repair.py
-lyric_aligner/alignment/selective_policy.py
-lyric_aligner/alignment/local_acoustic_match.py
-lyric_aligner/alignment/local_acoustic_v11.py
-scripts/v4_pro_selective.py
-lyric_aligner/io/path_safety.py
-```
 
 Pro 仍是 staged evidence path：
 
@@ -256,14 +314,14 @@ Smart unresolved
 
 ### 4.1 Exact Smart policy binding
 
-`build_selective_repair_plan_v11()` 验证：
+`build_selective_repair_plan_v11()` 必须验证：
 
 ```text
 smart_report.schema_version == SMART_SCHEMA_VERSION
 smart_report.policy_id      == SMART_POLICY_ID
 ```
 
-Smart policy 升到 v1.1.3 后，旧 Smart report 自动 stale，必须重跑。
+Smart policy 升到 v1.2.0 后，所有 v1.1.3 及更早 report 自动 stale，必须重跑 Smart。
 
 ### 4.2 Reason-aware routing
 
@@ -274,28 +332,19 @@ no word timing + source identity needs reinforcement -> source_forced_alignment
 unmapped review                  -> mix_asr + word_timestamps only
 ```
 
-如果 Smart 已安全恢复 text，但 timing 仍 review，Pro 只按剩余 timing reason 路由，不重复做已解决的 text review。
+如果 Smart 已安全恢复 text、但 timing 仍 review，Pro 只按剩余 timing reason 路由，不重复做已解决 text review。
 
-Pro 只能处理 Smart 自己明确 unresolved 的 cue；因此 Smart false-ready 不会被 Pro 自动兜底，segmentation/monotonicity contract 必须在 Smart 入口自身测试。
+Pro 只能处理 Smart 明确 unresolved 的 cue；因此 Smart false-ready 不会被 Pro 自动兜底，segmentation/sequence monotonicity contract 必须在 Smart 自身 CI。
 
-### 4.3 Existing v1.1.1 hardening
+### 4.3 Existing hardening
 
-继续保持：
-
-- Enhanced LRC final token `end_ms=None` compatibility；
-- adaptive source window 至少覆盖 `mix query duration × max candidate slope + 750ms`；
-- ASR-only jobs 不扩大 acoustic region；
-- final `max_jobs` 包含 shadow competitors；
-- boundary competitor `shadow_evidence_only=true`；
-- per-line language hint 优先 whole-track profile；
-- only-needed source audio hash/bind；
-- Smart/Pro output path collision fail closed。
+继续保持：Enhanced LRC final token `end_ms=None` compatibility、adaptive source window、ASR-only region isolation、final `max_jobs` cap、shadow competitors、per-line language hint、only-needed source hash/bind 与 path safety。
 
 ## 5. Max / Full V4
 
 Max 保留 coarse/Fine/cut/transition/overlap/ASR/forced/P9 等完整能力，只处理 broad untrusted timeline 与复杂 source identity。
 
-Max 也必须遵守 segmentation authority：line-LRC 本身不能强迫 final subtitle cue boundary。要推翻可信 editor segmentation，需要更强的 word/token/audio evidence；更重的模式不是“天然可以重分句”的许可证。
+Max 也必须遵守 segmentation authority：line-LRC 本身不能强迫 final subtitle cue boundary；推翻可信 editor segmentation 需要更强 word/token/audio evidence。
 
 ## 6. Legacy Partial Timeline Repair P1–P5
 
@@ -315,14 +364,15 @@ Smart/Pro 与旧 P9/P4 authority 来源独立，不能互相提升。
 Public tests必须证明：
 
 - Standard/Smart 不因 LRC 行换行不同跨可信 editor cue 搬字；
-- Smart no-audio / A-anchor / leave-one-out contracts；
+- Smart primary timing four-A/leave-one-out contracts不变；
+- 3A+1B 只能建立 text-only Sequence Projection，不能提升 primary timing anchor count；
+- severe-ASR bounded 4-cue/8-line 等 canonical sequence 可在 projection 稳定时恢复；
+- projection 证据不足/不稳必须 fail closed；
+- frontier 遇到 timing break/cut/ad-lib 必须停止；
+- existing ready-model bilateral/song-edge recovery继续成立；
 - insufficient/unvalidated timing 必须 Pro escalation；
-- severe-ASR interior recovery 仅在 bilateral anchors + independently-ready model + compatible onset 成立；
-- song-edge recovery 仅在 edge scope + ready model + >=2 consecutive one-sided strong anchors + <=500ms candidate onset 成立；
-- unmapped ad-lib 保留，weak mapped cue 不可被跨过；
-- recovered text 不升级为 A timing anchor；
 - final combined overlap 不新增/扩大；
 - exact DAW hard prior 与 BPM-derived soft prior；
 - Enhanced LRC / stale Smart / acoustic source-window / ASR-only region / max-jobs / path collision / forced protocol / multilingual routing继续不回归。
 
-Public CI 仍不能证明真实歌曲 false-auto / false acoustic match。Pro evidence fusion 与自动 timing writeback必须等待 private real-song calibration + independent blind。真实生产 failure 应转换成同构的合成 regression，禁止将歌曲、cue、timestamp 或任务文本 hard-code 到 production algorithm/public test。
+Public CI 不能证明真实歌曲 false-auto。每次 private real-song failure 应抽象成同构 synthetic regression，禁止歌曲、cue、timestamp 或真实歌词 hard-code 到 production algorithm/public test。
