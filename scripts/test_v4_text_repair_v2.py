@@ -128,10 +128,10 @@ class TextRepairV2Tests(unittest.TestCase):
 
     def test_missing_character_at_existing_cue_boundary_requires_review(self):
         source = (
-            "1\n00:00:01,000 --> 00:00:02,000\n我爱\n\n"
+            "1\n00:00:01,000 --> 00:00:02,000\n我真的爱\n\n"
             "2\n00:00:02,000 --> 00:00:03,000\n你\n"
         )
-        output, report = repair_srt_text(source, canonical("我爱着你"))
+        output, report = repair_srt_text(source, canonical("我真的爱着你"))
         self.assertEqual(output, source)
         self.assertEqual(report["status"], "review_required")
         self.assertEqual(report["cue_review_count"], 2)
