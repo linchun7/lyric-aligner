@@ -11,10 +11,10 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
-import math
 from pathlib import Path
 
 from lyric_aligner.alignment.asr_executor import (
+    AsrExecutionError,
     FasterWhisperExecutionConfig,
     execute_faster_whisper_jobs,
 )
@@ -52,6 +52,33 @@ def _sha256(path: Path) -> str:
         for chunk in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def _validate_smart_bindings(
+    smart_report: dict,
+    *,
+    smart_srt: Path,
+    canonical_lyrics: list[Path],
+) -> None:
+    expected_srt = str(smart_report.get("output_srt_sha256") or "").strip()
+    if not expected_srt:
+        raise ValueError("Smart report is missing output_srt_sha256 binding")
+    if _sha256(smart_srt) != expected_srt:
+        raise ValueError("Smart report/SRT SHA-256 mismatch")
+
+    inputs = smart_report.get("inputs")
+    if not isinstance(inputs, dict):
+        raise ValueError("Smart report is missing input bindings")
+    expected_canonical = inputs.get("canonical_lyrics")
+    if not isinstance(expected_canonical, list) or len(expected_canonical) != len(canonical_lyrics):
+        raise ValueError("Smart report/canonical input count mismatch")
+    for expected, actual in zip(expected_canonical, canonical_lyrics):
+        if not isinstance(expected, dict):
+            raise ValueError("Smart report has invalid canonical input binding")
+        if str(expected.get("name") or "") != actual.name:
+            raise ValueError("Smart report/canonical filename or order mismatch")
+        if str(expected.get("sha256") or "") != _sha256(actual):
+            raise ValueError(f"Smart report/canonical SHA-256 mismatch: {actual.name}")
 
 
 def _source_names(timed) -> list[str]:
@@ -127,6 +154,11 @@ def main() -> int:
 
     try:
         smart_report = _load_json(args.smart_report)
+        _validate_smart_bindings(
+            smart_report,
+            smart_srt=args.smart_srt,
+            canonical_lyrics=args.canonical_lyrics,
+        )
         source_text = args.smart_srt.read_text(encoding="utf-8-sig")
         _, cues = parse_srt_text(source_text)
         timed, _ = parse_timed_canonical_files(args.canonical_lyrics)
@@ -207,7 +239,7 @@ def main() -> int:
 
         print(json.dumps(summary, ensure_ascii=False, allow_nan=False))
         return 0
-    except (OSError, ValueError, json.JSONDecodeError) as exc:
+    except (OSError, ValueError, json.JSONDecodeError, AsrExecutionError) as exc:
         parser.error(str(exc))
 
 
