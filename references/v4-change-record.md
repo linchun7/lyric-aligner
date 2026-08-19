@@ -25,6 +25,24 @@ ASR / forced    -> auxiliary acoustic evidence
 
 ---
 
+## 2026-08-19 — Smart v1.1.2 severe-ASR text recovery
+
+真实 190 歌单回归暴露出一个 Smart 文本层缺口：当 Jianying 把整句识别成几乎完全不同的文字时，Text Repair V2 的相似度/segmentation safety 会正确进入 review，但旧 Smart 会把该错误 editor text 原样留在输出；这把“timing/identity 尚未完全确认”错误地等同成“canonical text 也不能恢复”。
+
+本轮不降低 Text Repair V2 阈值，也不引入 audio/ASR，而是在 `timeline/text_recovery.py` 增加严格的第二阶段 text recovery：
+
+- 第一阶段仍只用原有高可信 A anchors 建 ready affine model；review cue 不参与建模；
+- 只处理被两个高可信 single-line canonical text anchors 包围的 interior review block；
+- 两侧 anchors 必须属于同一歌曲，并各自与 ready affine model 在 750ms 内一致；
+- 两侧 anchors 之间的 canonical line gap 必须完整、连续、同源，并能按 predicted LRC onset 单调分配到 review cue starts；
+- 每个 cue 的第一 canonical onset 与 editor start 必须在 750ms 内；每 cue 最多 4 canonical lines、每 block 最多 8 cues；
+- canonical gap 为 0 的 ad-lib、歌曲边界/单侧 block、跨歌 block、模型不 ready 或 timing 不匹配的 block 继续 review；
+- recovery 只替换文字，不把低相似度 cue 提升为 A anchor，也不授予新的 timing auto-write 权限；multi-line recovered cue 仍可保留 timing review / Pro escalation。
+
+Smart report 新增：`text_review_count_before_timing_recovery`、`text_timing_recovery_count`、`text_timing_recovery_block_count`。schema 继续 `smart-1.1`，policy id 升到 v1.1.2，确保旧 artifact 不被 Pro 当成当前 Smart 结果。
+
+新增 regression tests 覆盖：ready model + bilateral anchors 可恢复完全低相似度的 1↔N text block；模型不 ready 不恢复；review cue timing 与 model 偏离时不恢复；recovery 不自动变成 timing anchor。
+
 ## 2026-08-19 — Smart / Pro v1.1.1 repair-only收口
 
 本轮只修复 review 中发现的生产 bug / 回归风险，不增加新算法、不放宽阈值、不开放 Pro timing write-back：

@@ -19,6 +19,8 @@ Typical inputs are:
 
 Canonical lyrics are the authority for lyric text and lyric order. Editor ASR, generic ASR, and acoustic models may establish identity or timing evidence, but must not rewrite canonical lyric truth from recognition guesses.
 
+**Text certainty and timing certainty are separate axes.** If canonical sequence can be independently established while cue timing still needs review, the system should repair the known-wrong editor text and keep only the timing question unresolved. A timing review is not permission to preserve editor ASR text that contradicts already-proven canonical lyrics.
+
 ## 2. Language distribution
 
 The common case is Chinese music with canonical lyrics. English phrases or rap can occur inside Chinese songs.
@@ -90,6 +92,9 @@ Internal basis: Anchor Timeline Repair.
 - model the dominant constant-rate transformation robustly;
 - preserve normal cues;
 - change only a small number of timing outliers when multiple independent evidence families support the change;
+- when editor ASR text is severely wrong, a ready timing model plus bilateral canonical anchors may resolve the canonical text/order even if lexical similarity is low;
+- text recovered from timing/order evidence must not become a primary timing anchor merely because its text was repaired;
+- unresolved timing can remain review/Pro even after text has been safely repaired;
 - unresolved cases become review/selective-audio escalation, not guesses.
 
 This is the intended default production mode for the common workload.
@@ -125,6 +130,8 @@ Suggested trust classes:
 - **B evidence:** a small safe text repair was needed, but identity remains strong. B evidence may support/check a model but should not establish the primary model by itself.
 - **C evidence:** span merge/split, gap, repeated occurrence, large edit, or otherwise ambiguous identity. C evidence must not build the primary timing model.
 
+A low-similarity editor cue may have its **text** recovered from a timing model only if that model was built independently from A anchors and bilateral canonical-order constraints already bound the candidate span. Such recovery does not promote the cue into A/B timing evidence and must not create a circular proof path.
+
 Outlier decisions should use robust fitting and leave-one-out/independent-neighbor logic so that the candidate cue does not circularly validate its own timing.
 
 ## 8. Timing change policy
@@ -143,7 +150,7 @@ A timing change requires multiple independent supports such as:
 
 Interior repairs should prefer evidence from both sides. Edge extrapolation at a song start/end needs stronger one-sided support and/or a known rate prior.
 
-If evidence is insufficient, keep the original timing and return review/Pro escalation.
+If evidence is insufficient, keep the original timing and return review/Pro escalation. This does not prevent separately repairing lyric text when canonical text/order has already been independently established.
 
 ## 9. Piecewise and cut behavior
 
@@ -170,18 +177,21 @@ MUST:
 5. Never rebuild all timing merely to fix a small number of cues.
 6. Treat canonical lyrics as text/order authority.
 7. Treat Jianying timing as a strong but rebuttable prior.
-8. Require multiple independent supports before automatically changing timing.
-9. Fail closed to preserve/review/Pro escalation when proof is insufficient.
-10. Run expensive acoustic work locally before escalating to Max.
-11. Never overwrite original inputs; write separate outputs/artifacts.
-12. Never improve benchmarks with song/cue/timestamp-specific hard-coding.
-13. Optimize false-repair/false-ready risk before optimizing for fewer reviews.
-14. Keep the four product modes semantically distinct even if implementation components are shared.
+8. Keep text certainty separate from timing certainty; do not keep known-wrong editor text merely because timing remains review.
+9. Require multiple independent supports before automatically changing timing.
+10. Fail closed to preserve/review/Pro escalation when proof is insufficient.
+11. Run expensive acoustic work locally before escalating to Max.
+12. Never overwrite original inputs; write separate outputs/artifacts.
+13. Never improve benchmarks with song/cue/timestamp-specific hard-coding.
+14. Optimize false-repair/false-ready risk before optimizing for fewer reviews.
+15. Keep the four product modes semantically distinct even if implementation components are shared.
 
 ## 12. Acceptance direction
 
 The key production metrics are not only raw alignment accuracy. Measure at least:
 
+- false text repairs;
+- canonical-text recovery rate on severely corrupted editor ASR;
 - false timing repairs;
 - false-ready decisions;
 - percentage of original trusted cues preserved;
