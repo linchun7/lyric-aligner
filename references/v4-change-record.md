@@ -15,7 +15,8 @@ Max      = Full V4 Alignment（完整 audio）
 
 ```text
 Canonical lyric -> final text/order truth
-Jianying timing -> strong but rebuttable prior
+Jianying timing / cue boundary -> strong but rebuttable prior
+LRC line break -> grouping/onset evidence, not final subtitle segmentation authority
 Timed canonical -> primary no-audio timing evidence for Smart
 Source-to-Mix   -> primary acoustic timing truth for Pro/Max
 ASR / forced    -> auxiliary acoustic evidence
@@ -25,9 +26,40 @@ ASR / forced    -> auxiliary acoustic evidence
 
 ---
 
+## 2026-08-19 — Smart v1.1.3 segmentation authority + song-edge text recovery
+
+真实生产复核暴露两个可泛化缺口：
+
+1. canonical LRC 与 editor SRT 的连续文字/顺序一致、但换行分组不同，较高模式不能把 LRC line break 错当成 final subtitle cue boundary，导致文字跨原本正确的 editor cue 搬移；
+2. severe-ASR lyric 位于歌曲开头/结尾且前后夹有 editor-only ad-lib 时，v1.1.2 的 bilateral-only text recovery 会因缺少一侧紧邻强 anchor 而漏修，即使该歌曲已经有独立 ready affine model 且 lyric onset 与 editor cue 高度吻合。
+
+本轮把这两类问题收口为 Smart v1.1.3 的通用生产合同，不写入歌曲/cue/timestamp hard-code，也不降低 Text Repair V2 阈值：
+
+- 明确 `canonical lyric = text/order authority`，但 `canonical LRC line break != final subtitle cue segmentation authority`；
+- Standard/Smart 对连续文字已经一致的 bounded span 保留 editor 原 cue ownership；没有更强 boundary evidence 时，高阶模式不得仅按 LRC 换行跨 cue 搬字；
+- 新增能力单调性规则：Higher mode 可以增加证据、减少 review，但无更强反证时不得破坏 lower-mode 已安全成立的 text/cue ownership/timing；
+- `timeline/text_recovery.py` 保留 v1.1.2 bilateral interior recovery，并增加严格的 song-edge one-sided recovery；
+- one-sided recovery 只允许 source 首/尾 4 条 canonical rows，initial model 必须已由独立 A anchors `ready`；
+- 可用一侧至少需要 2 条紧邻、canonical 连续、`score>=0.92` 的强 anchor，且各自与 model residual `<=750ms`；
+- candidate predicted onset 与 editor cue start 使用更紧的 `<=500ms`；
+- 只能跨过 `canonical_ordinal=None && canonical_span=None` 的真正 unmapped review cue，作为 editor-only ad-lib；最多 3 条；任何 weak mapped cue 都阻断 one-sided recovery；
+- ad-lib 本身保持原文和 review；recovered lyric text 不升级为 A timing anchor，也不获得 timing 自动写回权限；
+- Smart report 新增 `text_edge_timing_recovery_count` 与 `text_edge_timing_recovery_block_count`；schema 继续 `smart-1.1`，policy id 升为 v1.1.3；
+- Pro 继续通过共享 `SMART_POLICY_ID` 精确绑定当前 Smart，因此旧 v1.1.2 report 自动 stale，必须重跑 Smart。
+
+新增 public regression 使用**合成同构文本**覆盖：
+
+- Standard：canonical 连续文本与 editor 连续文本一致但 LRC/editor 行分组不同，输出必须逐 cue 原样保持；
+- Smart：同结构下也不得跨 cue 搬字；
+- Smart song-start：unmapped ad-lib + severe-ASR lyric + 一侧连续强 anchors 时可恢复 lyric text，同时保留 ad-lib；
+- 既有 unit contract 继续证明 weak mapped 邻居不能被跳过借远处 anchor；
+- recovered text 继续不能形成 circular timing proof。
+
+兼容/回滚：本轮没有改变 Smart CLI 参数、Pro timing authority 或 Max 默认策略；如需回滚，可回到 v1.1.2 policy commit，但对应 Smart artifact 必须与 policy id 一致，不得把 v1.1.2/v1.1.3 report 混用。
+
 ## 2026-08-19 — Smart v1.1.2 severe-ASR text recovery
 
-真实 190 歌单回归暴露出一个 Smart 文本层缺口：当 Jianying 把整句识别成几乎完全不同的文字时，Text Repair V2 的相似度/segmentation safety 会正确进入 review，但旧 Smart 会把该错误 editor text 原样留在输出；这把“timing/identity 尚未完全确认”错误地等同成“canonical text 也不能恢复”。
+真实生产回归暴露出一个 Smart 文本层缺口：当 Jianying 把整句识别成几乎完全不同的文字时，Text Repair V2 的相似度/segmentation safety 会正确进入 review，但旧 Smart 会把该错误 editor text 原样留在输出；这把“timing/identity 尚未完全确认”错误地等同成“canonical text 也不能恢复”。
 
 本轮不降低 Text Repair V2 阈值，也不引入 audio/ASR，而是在 `timeline/text_recovery.py` 增加严格的第二阶段 text recovery：
 
