@@ -339,3 +339,12 @@ Readiness tooling 是 additive metadata/evaluation layer，不进入 renderer、
 `output/.../v4/cache/execution_summary.json` 只记录 resume/memo/executed/worker 计数，明确属于 disposable execution state，不进入 formal artifact lineage，因此 cache 命中与线程调度不会改变 semantic artifact identity。
 
 详细契约见 `references/v4-execution-optimization.md`。
+
+### 11.1 PR26 post-merge hardening responsibility
+
+PR26 不重写 optimizer DAG，也不改变 `scripts/v4_run_legacy.py` 的 authoritative responsibility，只在两个边界增加 fail-closed 保护：
+
+- **text-only repair responsibility**：`lyric_aligner/text_repair.py` 只在冻结 cue/timing 前提下做文本匹配。Canonical occurrence 未匹配、长度/布局无法一一保留、或 cue 匹配低置信时必须进入 `review_required`；自动写回只替换 lexical/content 字符，保留 source SRT 的 punctuation、spacing、line breaks。完全 timed 的单个 LRC/QRC 文件按实际 timestamp stable-sort occurrence，多文件仍按调用方歌曲顺序连接。
+- **orchestrator ownership responsibility**：`lyric_aligner/pipeline/run_lock.py` 为 public `scripts/v4_run.py` 的一个 out-dir 提供 exclusive process lock。它只防止两个完整 orchestrator 同时写同一 output tree，不参与 stage scheduling、artifact identity、resume identity 或 timing authority。Lock 使用随机 owner token，退出时只删除自己的 lock；异常终止后的 stale lock 需要人工确认后清理，避免自动错误夺锁。
+
+这两项 hardening 都位于 authority graph 外围：不会更改 Source-to-Mix score/slope/threshold、timewarp selection、cut/overlap、review/release policy，也不会让 text-only 路径获得 timing authority。
