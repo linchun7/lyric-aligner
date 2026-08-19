@@ -16,6 +16,7 @@ from lyric_aligner.alignment.local_acoustic_match import (
     execute_local_source_match_jobs,
 )
 from lyric_aligner.alignment.selective_repair import (
+    SelectiveRepairPlanningError,
     build_selective_repair_plan,
     canonical_text_by_job_id,
 )
@@ -106,7 +107,7 @@ class SelectiveRepairTests(unittest.TestCase):
             ],
         }
 
-    def test_only_smart_review_cues_become_bounded_pro_jobs(self) -> None:
+    def sample_inputs(self):
         cues = [
             _cue(0, 10_000, 11_000, "中文歌词"),
             _cue(1, 20_000, 21_000, "I keep running"),
@@ -117,6 +118,10 @@ class SelectiveRepairTests(unittest.TestCase):
             _canonical(1, 0, 22_000, "I keep running"),
             _canonical(2, 0, 33_000, "中文 and English"),
         ]
+        return cues, canonical
+
+    def test_only_smart_review_cues_become_bounded_pro_jobs(self) -> None:
+        cues, canonical = self.sample_inputs()
         plan = build_selective_repair_plan(
             smart_report=self.smart_report(),
             cues=cues,
@@ -134,6 +139,34 @@ class SelectiveRepairTests(unittest.TestCase):
         self.assertLess(english["mix_window_ms"][0], 20_000)
         self.assertGreater(english["mix_window_ms"][1], 21_000)
         self.assertNotIn("I keep running", str(plan))
+
+    def test_unstable_smart_rate_does_not_narrow_pro_search(self) -> None:
+        cues, canonical = self.sample_inputs()
+        report = self.smart_report()
+        report["models"][0]["status"] = "unstable"
+        plan = build_selective_repair_plan(
+            smart_report=report,
+            cues=cues,
+            canonical=canonical,
+            language_by_source={0: "zh"},
+        )
+        self.assertIsNone(plan["jobs"][0]["rate_prior"])
+        self.assertIsNone(plan["jobs"][1]["rate_prior"])
+
+    def test_smart_report_count_mismatch_fails_closed(self) -> None:
+        cues, canonical = self.sample_inputs()
+        report = self.smart_report()
+        report["cue_count"] = len(cues) + 1
+        with self.assertRaisesRegex(
+            SelectiveRepairPlanningError,
+            "Smart report/SRT cue count mismatch",
+        ):
+            build_selective_repair_plan(
+                smart_report=report,
+                cues=cues,
+                canonical=canonical,
+                language_by_source={0: "zh"},
+            )
 
     def test_private_canonical_lookup_is_reconstructed_outside_plan(self) -> None:
         cues = [_cue(0, 20_000, 21_000, "I keep running")]
