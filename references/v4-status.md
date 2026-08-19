@@ -316,3 +316,26 @@ command_invocation_count
 `single` 默认行为不变；`batch` 只改变 external model process lifecycle，不改变 P7 evidence family、P8 projection、P9 shadow fusion 或 authority。显式 empty selected jobs 是 zero-work，不解析/启动 external command。`--timeout-seconds` 在 batch 模式覆盖整个 batch subprocess，大任务需要显式给足 timeout。
 
 旧 `agent/v4-whisperx-reference-adapter` 没有进入生产代码基线：收口 review 时确认其外部 WhisperX/NLTK runtime 假设已经与当前 upstream 发生漂移。保留 stale branch 不再被视为安全策略；未来实际 adapter 必须从当时的最新 main/最新 upstream 重新实现或校验，并经过真实 private calibration/blind。
+
+## 14. Partial Timeline Repair P1（开发中，shadow-only）
+
+当前开发分支 `agent/partial-timeline-repair-p1` 开始实现 Text Repair V2 之后的下一阶段。P1 只建立局部时间轴修复的安全 planner，不直接写回生产 SRT，也不提升 timing/release authority。
+
+新增核心：
+
+```text
+lyric_aligner/timeline/partial_repair.py
+scripts/test_v4_partial_timeline_repair.py
+```
+
+当前契约：
+
+- cue trust 必须显式为 `trusted / untrusted / unknown`；全 trusted 路由 `preserve`，明确混合 trusted+untrusted 路由 `hybrid`，存在 unknown 或缺少可信锚点时路由 `rebuild`；
+- `trusted` cue 的原始 start/end 被硬锁，不读取候选 timing 覆盖它；
+- 不可信 cue 的候选 timing 只接受 `source_to_mix` 来源，mapping kind 只接受 `AFFINE / PIECEWISE_RATE / CUT_AWARE`；editor/ASR timing 不能直接成为候选 authority；
+- `PIECEWISE_RATE` 被视为连续变速映射，继续固定 `rate change != cut`；BPM 不能产生 `BPM_LOCKED` 一类硬 slope mapping；
+- `CUT_AWARE` 只有在上游已独立确认 cut 后才可使用；cross-cut / confirmed-gap `unprojectable` 候选直接 block；
+- 候选不能越过左右任一已锁 trusted cue，也不能与其他待修 cue 的候选区间互相重叠；否则 fail closed；
+- `propose_repair` 仅表示结构上可供后续 calibrated policy 使用，当前仍 `proposal_only=true`、`publish_ready=false`，不会自动修改 authoritative timeline。
+
+P1 promotion gate 是：旧测试全绿 + 新结构回归全绿 + trusted timing 零变化 + rate-change/cut/overlap guard 全部 fail-closed。真正自动写回局部时间轴仍必须等待真实 private calibration/blind 证明阈值安全。

@@ -91,7 +91,7 @@ primary_timing_authority = source_to_mix_only
 forced_alignment_authority = auxiliary_acoustic_evidence_only
 ```
 
-每个 forced job 必须绑定已知 occurrence/canonical line/track/canonical_text_sha256；job IDs 与 canonical line identity 必须唯一。`projected` job 才提供 mix boundary；`unprojectable` 会显式进入 diagnostics，但不计为可用 auxiliary boundary family。`unprojectable` payload 若携带 mix boundary 会 fail closed。
+每个 job 必须绑定已知 occurrence/canonical line/track/canonical_text_sha256；job IDs 与 canonical line identity 必须唯一。`projected` job 才提供 mix boundary；`unprojectable` 会显式进入 diagnostics，但不计为可用 auxiliary boundary family。`unprojectable` payload 若携带 mix boundary 会 fail closed。
 
 ### 3. Conflict policy
 
@@ -467,3 +467,28 @@ cue_count_unchanged
 下一轮 Partial Timeline Repair 会锁死已确认可信的 cue，只对不可信局部使用声学 evidence / Source-to-Mix 重对齐。由于真实素材中 BPM 加速/减速是常态，该能力必须从第一版就把变速当默认场景，基于 `AFFINE / PIECEWISE_RATE / CUT_AWARE` 的 Source-to-Mix timewarp 工作，继续遵守 `rate change != cut`；不能把原曲 LRC/source absolute time 直接覆盖剪映 mix-time。开头哼唱、说唱、多语言夹杂等无法由 editor timing 可靠覆盖的区域也属于下一轮局部候选，而不是本轮 text-only 自动改时范围。
 
 真实推广前还应建立私有 Text Repair benchmark：`剪映原始 SRT + canonical + 人工终稿`，首要指标是 timeline change=0、false auto correction=0，其次才是 auto coverage、review rate 与长文件耗时。
+
+---
+
+## 2026-08-19 — Partial Timeline Repair P1 shadow planner
+
+开始实现 Text Repair V2 之后的局部时间轴修复，但本轮仍严格保持 shadow-only，不自动写 authoritative SRT。
+
+新增：
+
+```text
+lyric_aligner/timeline/partial_repair.py
+scripts/test_v4_partial_timeline_repair.py
+```
+
+行为：
+
+- 显式 cue trust 分类为 `trusted / untrusted / unknown`，并据此选择 `preserve / hybrid / rebuild` 路由；
+- trusted cue 是 timing lock，候选不能覆盖或穿越这些边界；
+- timing candidate 只允许来自 Source-to-Mix，并接受 `AFFINE / PIECEWISE_RATE / CUT_AWARE`；editor/ASR timing 仍只是辅助 evidence；
+- 连续变速映射继续遵守 `rate change != cut`，不存在 BPM 硬 slope 锁定模式；
+- CUT_AWARE cross-cut / confirmed-gap 无法投影时 block，不桥接假连续区间；
+- 多个局部 repair candidate 之间也必须保持非重叠单调性，否则一起 block；
+- `propose_repair` 只是结构候选，输出固定 `proposal_only=true`、`publish_ready=false`，等待真实 calibration/blind 后续决定是否存在安全自动写回门槛。
+
+这一步只建立 Partial Timeline Repair 的安全骨架，不改变 main 当前 `automatic_timing_change_allowed=false`。
