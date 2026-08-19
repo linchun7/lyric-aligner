@@ -12,6 +12,7 @@ import json
 from pathlib import Path
 from typing import Any, Iterable, Sequence
 
+from lyric_aligner import __version__
 from lyric_aligner.contracts.artifacts import (
     validate_artifact_output,
     validate_upstream_artifact,
@@ -131,12 +132,17 @@ def bridge_effective_artifacts_to_partial_repair(
     fusion_artifact_path: Path,
     explicit_trust: Iterable[ExplicitCueTrust],
 ) -> tuple[list[CueTrust], list[TimingCandidate], dict[str, Any]]:
-    """Build P3 repair inputs from fully verified run + fusion artifacts."""
+    """Build P3 repair inputs from fully verified current-version artifacts."""
 
     context = derive_effective_run_mapping_context(
         run_path=run_path,
         run_artifact_path=run_artifact_path,
     )
+    if context.algorithm_version != __version__:
+        raise PartialTimelineRepairError(
+            "Partial Timeline Repair production inputs use a non-current "
+            "algorithm version"
+        )
     fusion, fusion_artifact = _load_verified_fusion(
         context=context,
         fusion_path=fusion_path,
@@ -157,4 +163,5 @@ def bridge_effective_artifacts_to_partial_repair(
     report["effective_run_mapping_context"] = context.to_report()
     report["fusion_artifact_id"] = str(fusion_artifact.get("artifact_id") or "")
     report["production_inputs_artifact_verified"] = True
+    report["production_algorithm_version_current"] = True
     return trust, candidates, report
