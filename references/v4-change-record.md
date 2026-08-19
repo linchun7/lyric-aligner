@@ -1,8 +1,8 @@
 # Lyric Aligner v4 关键变更记录
 
-> 2026-08-19 P3 前的完整历史变更记录保存在 `references/archive/2026-08-19-pre-p3-v4-change-record.md`。本文件从 P3 起记录当前阶段新增行为；早期 a3–a8、P1–P9、PR21–PR26、Text Repair V2 与 forced-alignment batch protocol 1.1 的完整细节均保留在归档快照和 Git 历史中。
+> 2026-08-19 P3 前的完整历史变更记录保存在 `references/archive/2026-08-19-pre-p3-v4-change-record.md`。本文件从 P3 起记录当前阶段新增行为；更早历史保留在归档快照和 Git 历史中。
 
-## 当前不变的 authority
+## 当前 authority
 
 ```text
 Canonical lyric -> final text/order truth
@@ -11,163 +11,154 @@ Editor / ASR / forced -> auxiliary evidence
 P9 fusion      -> uncalibrated shadow diagnostics
 ```
 
-固定：
+全局固定：
 
 ```text
-policy_calibrated = false
 release_gate_eligible = false
 automatic_timing_change_allowed = false
 ```
 
----
-
-## 2026-08-19 — Partial Timeline Repair P1 shadow planner
-
-新增：
-
-```text
-lyric_aligner/timeline/partial_repair.py
-scripts/test_v4_partial_timeline_repair.py
-```
-
-建立局部时间轴修复的 fail-closed 结构骨架：显式 `trusted / untrusted / unknown` cue trust；trusted cue timing 硬锁；candidate 只接受 Source-to-Mix；mapping kind 只接受 `AFFINE / PIECEWISE_RATE / CUT_AWARE`；`rate change != cut`；候选不得穿越 trusted neighbor 或与其他 repair candidate 重叠。输出仍为 proposal-only。
+P9 本身继续 `policy_calibrated=false`。P4 新增的 trust-policy lock 可以证明“某个 cue-trust candidate 已经过 strict calibration + independent blind gate”，但只允许生成 cue trust proposal，不提升 timing/release authority。
 
 ---
 
-## 2026-08-19 — Partial Timeline Repair P2 evidence bridge
+## 2026-08-19 — Partial Timeline Repair P1
 
-新增：
-
-```text
-lyric_aligner/timeline/partial_repair_evidence.py
-scripts/test_v4_partial_timeline_repair_evidence.py
-```
-
-把 P9 canonical/editor line identity 接入 P1，但不提升 P9 authority：
-
-- P9 `LOW/MEDIUM/HIGH/CONFLICT` 只做 diagnostics；
-- `HIGH` 不自动生成 trusted；`CONFLICT` 不自动生成 untrusted；
-- trust 只接受 `human_review` 或未来独立 blind-lock 的 `calibrated_policy`；
-- 一 editor cue 对多 canonical line 时 ambiguous/fail-closed；
-- repair candidate 只使用 P9 authoritative `source_timeline_boundary_ms`；
-- P9 open-end `start+1ms` sentinel 被拒绝；
-- CUT_AWARE 低层接口要求独立 confirmed-cut identity，单独 mapping label 不算 cut 证明。
-
-P2 仍不写 SRT timing。
+新增 `lyric_aligner/timeline/partial_repair.py`。建立 `trusted / untrusted / unknown` cue trust、trusted timing hard lock、Source-to-Mix-only candidate、`AFFINE / PIECEWISE_RATE / CUT_AWARE`、`rate change != cut`、trusted-neighbor 与 candidate-overlap fail-closed guards。输出 proposal-only。
 
 ---
 
-## 2026-08-19 — Partial Timeline Repair P3 formal lineage context
+## 2026-08-19 — Partial Timeline Repair P2
+
+新增 `lyric_aligner/timeline/partial_repair_evidence.py`。P9 `LOW/MEDIUM/HIGH/CONFLICT` 只做 diagnostics；`HIGH` 不自动 trusted，`CONFLICT` 不自动 untrusted；一 editor cue 对多 canonical line 时 ambiguous；candidate 只使用 `source_timeline_boundary_ms`；open-end 1ms sentinel 被拒绝。
+
+---
+
+## 2026-08-19 — Partial Timeline Repair P3
 
 新增：
 
 ```text
 lyric_aligner/timeline/partial_repair_context.py
 lyric_aligner/timeline/partial_repair_production.py
-scripts/test_v4_partial_timeline_repair_context.py
-scripts/test_v4_partial_timeline_repair_context_identity.py
-scripts/test_v4_partial_timeline_repair_production.py
 ```
 
-### 目标
+P3 正式生产路径要求 effective run/artifact + P9 fusion/artifact 四件套：
 
-移除生产调用方对以下标签的责任：
+- continuous mapping 从 exact coarse/Fine `TimeWarp.mapping.mode` 派生；
+- Fine occurrence/track/canonical-selection identity 与 coarse 完全一致；
+- `mapping_blocked=true` -> unavailable；
+- CUT_AWARE 只认 materialized `cut_timewarp_rebuild` lineage；
+- fusion artifact 验证 exact output SHA/size/self-signature，并绑定 exact effective-run artifact；
+- tampered fusion JSON fail closed；
+- 正式 production bridge 只接受当前 algorithm version。
+
+P3 仍不自动写 timing。
+
+---
+
+## 2026-08-19 — Partial Timeline Repair P4 strict calibrated trust lock
+
+新增：
 
 ```text
-mapping_kind_by_occurrence
-confirmed_cut_occurrence_ids
+lyric_aligner/timeline/partial_repair_trust.py
+lyric_aligner/timeline/partial_repair_trust_production.py
+scripts/v4_build_partial_trust_lock.py
+scripts/test_v4_partial_timeline_repair_trust.py
+scripts/test_v4_partial_timeline_repair_trust_production.py
 ```
 
-并进一步禁止生产入口信任一个脱离 formal artifact 的可变 P9 fusion JSON。P3 正式生产路径要求 effective run/artifact 与 fusion/artifact 四件套全部验证后才进入 P2/P1。
+### 1. 不发明公开阈值
 
-### Continuous mapping
-
-支持 effective run stage：
+P4 不把 synthetic test 或 P9 `HIGH` 当成校准依据，而是直接复用 canonical strict workflow：
 
 ```text
-production_orchestration
-review_resolution
-overlap_recomposition
-cut_rebuild
-combined_recomposition
+scripts/v4_calibration_workflow.py
+lyric_aligner/evaluation/strict_workflow.py
 ```
 
-对于未 cut-rebuild occurrence：
+Trust lock builder 重新验证：
 
-- `mapping_source=coarse` 时验证 exact coarse payload/artifact、自签名/output hash、task/algorithm/occurrence identity及其为 effective-run upstream；直接读取 `result.timewarp.mapping.mode`；
-- `mapping_source=fine` 时除上述检查外，还要求 `fine_applied=true`、Fine `result.applied=true`、Fine artifact upstream 包含 exact coarse artifact；
-- Fine 的 occurrence、track、`canonical_selection_sha256` 必须与 effective coarse 完全一致，同 task 内错拼另一 track/canonical 也会 fail closed；
-- continuous mode 只允许 `AFFINE / PIECEWISE_RATE`；AFFINE 不得夹带 rate breakpoints，PIECEWISE_RATE 必须有实际 breakpoint；
-- 不从 BPM 或 LRC timestamp 推导 mapping kind；
-- `mapping_blocked=true` 返回 unavailable context，不产生 timing candidate。
+- selection self-hash；
+- calibration baseline/candidate split、dataset/revision、candidate ID/revision/runtime identity；
+- calibration evaluation/policy file SHA；
+- selected candidate 的 calibration gate 重新计算结果；
+- independent blind baseline/candidate 与 selection candidate/baseline lock；
+- blind gate self-hash、blind policy/evaluation/selection file SHA；
+- blind gate 重新计算结果；
+- strict evaluation `source_group_isolation_enforced=true`；
+- calibration 与 blind 的 ground-truth identity / case IDs 必须不同；
+- selected runtime algorithm version 必须等于当前版本。
 
-### Confirmed cut / CUT_AWARE
+### 2. Scope coverage fail closed
 
-CUT_AWARE 只在以下事实链完整时成立：
+只有 blind policy 中显式声明、且 blind gate 实际通过的 `language:*` scope 才写入：
 
 ```text
-occurrence.mapping_source = cut_aware_rebuild
-occurrence.cut_rebuilt = true
-cut_mapping_path + cut_mapping_artifact_path exist
-artifact stage = cut_timewarp_rebuild
-artifact role = cut_aware_timewarp
-payload result.kind = CUT_AWARE
-cut count agrees across occurrence / payload / artifact evidence
-confirmed_candidate_ids complete
-source_review_artifact_id agrees
-cut mapping artifact + source review artifact are upstream of effective run
+eligible_language_scopes
 ```
 
-因此 `review_resolution` 里即使已经出现 `decision_action=confirmed_cut`，在 dedicated cut rebuild 尚未 materialize 前仍不会被 P3 当作 CUT_AWARE。
-
-对于 combined cut+overlap run，P3 沿继承的 cut occurrence/cut mapping lineage 得到 CUT_AWARE；overlap-only run 不改变底层 Source-to-Mix mapping kind。
-
-### Formal P9 fusion artifact binding
-
-正式入口 `bridge_effective_artifacts_to_partial_repair()` 要求：
+如果 blind policy 只约束 `overall`，trust lock 仍可生成用于审计，但：
 
 ```text
-run payload <-> run artifact exact output hash
-fusion payload <-> fusion artifact exact output hash
-fusion artifact stage = evidence_fusion_shadow
-fusion artifact role = evidence_fusion
-fusion.task/algorithm/source_run_stage/source_run_artifact_id exact
-fusion artifact normalized_config.source_run_artifact_id exact
-exact effective run artifact is upstream of fusion artifact
-fusion artifact evidence keeps shadow-only / uncalibrated / no-release / no-auto-mutation
+cue_trust_generation_allowed = false
 ```
 
-因此手工修改 P9 `source_timeline_boundary_ms` 后继续使用旧 artifact 会在 output hash 校验处直接失败。低层 payload bridge 继续作为测试/组合 API，但不再是正式生产入口。
+因此总体指标不能自动外推到未单独验证的语言。
 
-### Privacy / authority
-
-P3 report 只记录 occurrence ID、stage、artifact ID、mapping kind、cut count、状态/reason；不输出 coarse/fine/cut 本地路径。Formal production report 额外记录 fusion artifact ID 与 `production_inputs_artifact_verified=true`。
-
-本阶段仍固定：
+Trust lock 始终：
 
 ```text
-proposal_only = true
-publish_ready = false
+policy_calibrated = true
+independent_blind_gate_passed = true
 automatic_timing_change_allowed = false
+release_gate_eligible = false
 ```
 
-### Regression coverage
+这里的 calibrated 只表示 cue-trust policy 的 calibration/blind identity 已锁定，不表示 P9 自身阈值已校准，也不表示可自动写 SRT。
 
-新增测试覆盖：
+### 3. Calibrated decision contract
 
-- base AFFINE；
-- applied Fine PIECEWISE_RATE；
-- Fine/coarse track mismatch；
-- Fine/coarse canonical-selection mismatch；
-- review-only confirmed cut 仍 unavailable；
-- materialized cut -> CUT_AWARE；
-- combined cut+overlap -> CUT_AWARE；
-- overlap-only 保留 continuous mapping；
-- 伪造 cut label 无 artifact fail closed；
-- mapping artifact 不在 effective-run upstream fail closed；
-- production bridge 无需 caller mapping/cut labels；
-- tampered fusion payload output hash fail closed；
-- fusion artifact 必须把 exact effective run 作为 config binding + upstream；
-- P9 payload 必须绑定 exact effective-run stage/artifact。
+私有 selected candidate 可以输出 cue-level decision，但低层 payload 必须：
 
-P3 通过 final exact-head CI 后，下一阶段才接 private calibration + independent blind-test 的 calibrated trust policy；不会用 synthetic CI 宣称真实 timing accuracy。
+- self-hash；
+- bind exact trust-policy lock SHA；
+- bind selected candidate ID/revision/runtime；
+- bind exact P9 fusion artifact ID；
+- 每个 cue number 唯一；
+- scope 为 `language:*` 且与 P9 `language_profile` 完全一致；
+- status 只允许 `trusted / untrusted / unknown`；
+- 不允许 `automatic_timing_change_allowed=true`。
+
+安全降级：
+
+- blind 未覆盖该 language scope -> `unknown`；
+- editor→canonical binding 缺失/多义 -> `unknown`；
+- P9 `CONFLICT` + candidate 决策 `trusted` -> 强制 `unknown`；
+- P9 `HIGH` 在没有 calibrated decision 时不会生成任何 trust；
+- explicit `human_review` 对同 cue 覆盖 calibrated decision。
+
+### 4. Formal production decision artifact
+
+正式生产不接受只有 self-hash 的 decision JSON。`partial_repair_trust_production.py` 额外要求 formal artifact：
+
+```text
+stage = partial_timeline_trust_decisions
+role = cue_trust_decisions
+```
+
+并验证：
+
+- task fingerprint / current algorithm version；
+- artifact self-signature；
+- decision output SHA/size；
+- normalized config 中 exact trust lock SHA、candidate ID/revision/runtime、fusion artifact ID；
+- exact fusion artifact 是 upstream；
+- evidence 明确 `policy_calibrated=true`、`independent_blind_gate_passed=true`，但 timing mutation/release 均 false。
+
+随后才进入 P3 artifact-verified bridge，因此 P4 只改变“trust 从哪里来”的可审计性，不改变 Source-to-Mix timing authority。
+
+### 5. Public CI 边界
+
+Public synthetic tests 只证明 strict lock/identity/scope/artifact mechanics。仓库不会提交一个假的“已经校准好的生产 trust lock”，也不会因为这些测试通过就宣称真实歌曲 accuracy 或 automatic repair safety。
