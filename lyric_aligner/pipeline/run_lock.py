@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import secrets
 from pathlib import Path
 
 
@@ -14,6 +15,7 @@ class OutputRunLock:
         self.out_dir = Path(out_dir).resolve()
         self.path = self.out_dir / ".v4-run.lock"
         self._acquired = False
+        self._token = secrets.token_hex(16)
 
     def __enter__(self) -> "OutputRunLock":
         self.out_dir.mkdir(parents=True, exist_ok=True)
@@ -27,7 +29,11 @@ class OutputRunLock:
             ) from exc
         try:
             payload = json.dumps(
-                {"schema_version": "1.0", "pid": os.getpid()},
+                {
+                    "schema_version": "1.0",
+                    "pid": os.getpid(),
+                    "token": self._token,
+                },
                 ensure_ascii=True,
                 sort_keys=True,
             ) + "\n"
@@ -43,6 +49,11 @@ class OutputRunLock:
 
     def __exit__(self, exc_type, exc, traceback) -> bool:
         if self._acquired:
-            self.path.unlink(missing_ok=True)
+            try:
+                payload = json.loads(self.path.read_text(encoding="utf-8"))
+            except (OSError, ValueError, json.JSONDecodeError):
+                payload = {}
+            if secrets.compare_digest(str(payload.get("token") or ""), self._token):
+                self.path.unlink(missing_ok=True)
             self._acquired = False
         return False
