@@ -9,6 +9,7 @@ trust decision artifact is ready to feed the proposal-only P1-P4 chain.
 
 from __future__ import annotations
 
+import re
 from collections import Counter
 from pathlib import Path
 from typing import Any
@@ -27,11 +28,24 @@ from lyric_aligner.timeline.partial_repair_trust_production import (
 
 
 PARTIAL_REPAIR_READINESS_SCHEMA_VERSION = "1.0"
+_POSIX_ABSOLUTE_PATH = re.compile(
+    r"(?<![A-Za-z0-9_.-])/(?:[^\s'\";:/]+/)+[^\s'\";:]+"
+)
+_WINDOWS_ABSOLUTE_PATH = re.compile(
+    r"(?i)(?<![A-Za-z0-9_.-])[A-Z]:[\\/](?:[^\s'\";:]+[\\/])*[^\s'\";:]+"
+)
 
 
 def _prefix(value: object) -> str | None:
     text = str(value or "").strip()
     return text[:12] if len(text) >= 12 else None
+
+
+def _safe_detail(exc: BaseException) -> str:
+    text = str(exc).strip() or exc.__class__.__name__
+    text = _WINDOWS_ABSOLUTE_PATH.sub("<local_path>", text)
+    text = _POSIX_ABSOLUTE_PATH.sub("<local_path>", text)
+    return text
 
 
 def _line_summary(fusion: dict[str, Any]) -> tuple[int, list[str]]:
@@ -210,7 +224,7 @@ def inspect_partial_timeline_repair_readiness(
                     }
                 )
             except (OSError, ValueError, PartialTimelineRepairError) as exc:
-                lineage["detail"] = str(exc)
+                lineage["detail"] = _safe_detail(exc)
 
     trust_lock = {
         "provided": trust_lock_path is not None,
@@ -243,7 +257,7 @@ def inspect_partial_timeline_repair_readiness(
                 }
             )
         except (OSError, ValueError, PartialTimelineRepairError) as exc:
-            trust_lock["detail"] = str(exc)
+            trust_lock["detail"] = _safe_detail(exc)
 
     decisions = {
         "provided": decision_path is not None or decision_artifact_path is not None,
@@ -298,7 +312,7 @@ def inspect_partial_timeline_repair_readiness(
                     }
                 )
             except (OSError, ValueError, PartialTimelineRepairError) as exc:
-                decisions["detail"] = str(exc)
+                decisions["detail"] = _safe_detail(exc)
 
     action = _action(
         requested=requested,
