@@ -20,6 +20,29 @@ from lyric_aligner.timeline.partial_repair_trust import (
 )
 
 
+_INPUT_ARGUMENTS = (
+    "selection",
+    "calibration_baseline",
+    "calibration_candidate",
+    "calibration_policy",
+    "blind_gate",
+    "blind_baseline",
+    "blind_candidate",
+    "blind_policy",
+)
+
+
+def _ensure_output_is_distinct(args: argparse.Namespace) -> None:
+    output = args.out.resolve()
+    for name in _INPUT_ARGUMENTS:
+        source = getattr(args, name).resolve()
+        if output == source:
+            raise PartialTimelineRepairError(
+                "trust lock output must not overwrite an input file: "
+                f"{getattr(args, name).name}"
+            )
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--selection", required=True, type=Path)
@@ -34,6 +57,7 @@ def main() -> int:
     args = parser.parse_args()
 
     try:
+        _ensure_output_is_distinct(args)
         payload = build_calibrated_trust_policy_lock(
             selection_path=args.selection,
             calibration_baseline_path=args.calibration_baseline,
@@ -45,7 +69,13 @@ def main() -> int:
             blind_policy_path=args.blind_policy,
         )
         atomic_write_json(args.out, payload)
-    except (OSError, ValueError, json.JSONDecodeError, StrictEvaluationError, PartialTimelineRepairError) as exc:
+    except (
+        OSError,
+        ValueError,
+        json.JSONDecodeError,
+        StrictEvaluationError,
+        PartialTimelineRepairError,
+    ) as exc:
         parser.error(str(exc))
 
     print(
@@ -60,7 +90,7 @@ def main() -> int:
                 "trust_policy_lock_sha256": payload[
                     "trust_policy_lock_sha256"
                 ],
-                "out": str(args.out),
+                "out_file": args.out.name,
             },
             ensure_ascii=False,
         )
