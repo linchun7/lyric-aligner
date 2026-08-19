@@ -8,6 +8,10 @@ import secrets
 from pathlib import Path
 
 
+class OutputRunLockError(RuntimeError):
+    """Raised when the selected V4 output directory is already locked."""
+
+
 class OutputRunLock:
     """Fail closed when two production orchestrators target the same out-dir."""
 
@@ -23,7 +27,7 @@ class OutputRunLock:
         try:
             fd = os.open(self.path, flags, 0o600)
         except FileExistsError as exc:
-            raise RuntimeError(
+            raise OutputRunLockError(
                 "another V4 production run is already using this out-dir; "
                 f"verify no run is active before removing {self.path}"
             ) from exc
