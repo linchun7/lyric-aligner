@@ -5,9 +5,9 @@ description: Reconstruct, review, materialize, diagnose and render multilingual 
 
 # Lyric Aligner
 
-当前生产主路径为 **Standard -> Smart -> Pro -> Max**。当前 Smart / Pro 已收口到 v1.1.1；完整 Full V4 主线算法版本及最新合并状态以 `references/v4-status.md` 为准。
+当前生产主路径为 **Standard -> Smart -> Pro -> Max**。当前 Smart 已收口到 v1.1.3，Pro 仍为 v1.1.1；完整 Full V4 主线算法版本及最新合并状态以 `references/v4-status.md` 为准。
 
-这个项目的生产原则不是“让 ASR 重写歌词”，而是：**canonical lyric 决定最终文字与顺序；Jianying timing 是强但可推翻的先验；Smart 先用 timed canonical + editor majority anchors 做 0-audio 验证；Pro/Max 才引入 Source-to-Mix acoustic evidence。** 任何无法由现有证据安全证明的情况继续 review/BLOCK，**不得静默回退 v3.9，不得手工拼/改 artifact 绕过 lineage。**
+这个项目的生产原则不是“让 ASR 重写歌词”，而是：**canonical lyric 决定最终文字与顺序；canonical LRC line break 不等于最终 subtitle cue boundary；Jianying timing / cue segmentation 是强但可推翻的先验；Smart 先用 timed canonical + editor majority anchors 做 0-audio 验证；Pro/Max 才引入 Source-to-Mix acoustic evidence。** 更高模式可以增加证据和修复能力，但没有更强独立反证时，不得破坏较低模式已经安全成立的 text / cue ownership / timing。任何无法由现有证据安全证明的情况继续 review/BLOCK，**不得静默回退 v3.9，不得手工拼/改 artifact 绕过 lineage。**
 
 ## 生产模式选择：任何真实任务必须先做
 
@@ -36,7 +36,11 @@ python scripts/v4_text_repair.py ...
 audio_read = false
 cue count / number / start / end 全部冻结
 canonical lyric = final text/order truth
+trusted editor cue ownership = display segmentation prior
+LRC line break != subtitle cue boundary authority
 ```
+
+如果 editor 多个 cue 拼接后的连续文字已经与 canonical 连续文字一致，只是 LRC 的行换行不同，**必须保留 editor 原 cue ownership，不得仅为模仿 LRC 分行跨 cue 搬字。**
 
 **只要用户要求“不要动时间轴”，就优先 Standard，不要擅自调用 Smart/Pro/Max。**
 
@@ -56,9 +60,9 @@ canonical lyric = final text/order truth
 python scripts/v4_smart_repair.py ...
 ```
 
-Smart 仍然不读音频。它使用 canonical timing、A-anchor majority、可用的逐字 timing 和可选 rate prior。`exact_daw` 可作为 hard rate prior；`bpm_derived` 只是 soft plausibility prior。
+Smart 仍然不读音频。它先继承 Standard/Text Repair V2.1 的安全文字结果，再使用 canonical timing、A-anchor majority、可用的逐字 timing 和可选 rate prior。`exact_daw` 可作为 hard rate prior；`bpm_derived` 只是 soft plausibility prior。
 
-Smart v1.1.1 的 `ready` 表示 timing 已被实际验证/安全修复，而不是“因为没能力判断所以原样保留”。下列情况必须 `review` / `pro_escalation_required=true`：
+Smart v1.1.3 的 `ready` 表示 timing 已被实际验证/安全修复，而不是“因为没能力判断所以原样保留”。下列情况必须 `review` / `pro_escalation_required=true`：
 
 ```text
 timing model not ready
@@ -67,6 +71,14 @@ C-grade identity
 BPM soft prior conflicts with an otherwise proposed automatic repair
 combined repair would create or worsen overlap
 ```
+
+Smart 的 severe-ASR text recovery 不降低 Text Repair 阈值：
+
+- interior review 优先要求双侧 canonical 强 anchor + independently-ready affine model；
+- song-edge 只有在 candidate 位于歌曲首/尾少数 canonical rows、模型已独立 ready、可用一侧至少有 2 条紧邻/连续/高可信 anchor、candidate onset 与 editor start 高度吻合时，才允许严格的一侧恢复；
+- editor-only ad-lib 只有完全没有 canonical claim 时才可作为透明间隔，ad-lib 本身不删除、不改写；
+- weak mapped cue 不能被跨过借远处 anchor；
+- recovered text 永远不能因为“文字被修对了”就升级成 A timing anchor。
 
 **韩文、日文、英文或其他外文不是升级 Max 的条件。** 只要 canonical identity 和 timed anchors 够强，仍先 Smart。
 
@@ -84,7 +96,7 @@ combined repair would create or worsen overlap
 python scripts/v4_pro_selective.py ...
 ```
 
-Pro v1.1.1 必须绑定**当前 Smart schema + current Smart policy + exact Smart SRT/canonical hashes**。旧 Smart artifact 不能直接复用；如果版本不匹配，先重新跑 Smart。
+Pro v1.1.1 必须绑定**当前 Smart schema + current Smart policy + exact Smart SRT/canonical hashes**。Smart v1.1.3 policy 更新后，旧 Smart artifact 不能直接复用；如果版本不匹配，先重新跑 Smart。
 
 Pro 按失败原因选择局部 evidence：
 
@@ -110,7 +122,7 @@ unmapped review
 timing_mutation_performed = false
 ```
 
-即 Pro 当前负责**局部取证和定位**，不因为声学结果看起来很强就自动写回字幕时间。
+即 Pro 当前负责**局部取证和定位**，不因为声学结果看起来很强就自动写回字幕时间。Pro 只处理 Smart 明确 unresolved 的 cue；因此不能假设 Smart 的 false-ready 会自动被 Pro 兜底。
 
 ### Max（Full V4 / 重型 fallback）
 
@@ -128,7 +140,7 @@ timing_mutation_performed = false
 python scripts/v4_run.py ...
 ```
 
-**Max 是 fallback，不是“更准所以默认用”的模式。** 日常剪映字幕修复不能为了少量坏 cue 重扫 40–60 分钟完整节目。
+**Max 是 fallback，不是“更准所以默认用”的模式。** 日常剪映字幕修复不能为了少量坏 cue 重扫 40–60 分钟完整节目。Max 同样必须遵守 segmentation authority：line-LRC grouping 不能单独推翻可信 editor cue boundary；需要更强 word/token/audio evidence。
 
 ### 模式选择速查
 
@@ -154,6 +166,8 @@ Smart ready -> 无理由再跑 Pro   不需要
 Pro local issue -> 全曲 ASR      不允许为了“更智能”扩大成本
 外文 -> 自动 Max                 错误
 rate change -> 自动当 cut        错误
+LRC 换行 -> 强制重分 editor cue  错误
+higher mode -> 无证据覆盖 lower-mode safe result  错误
 ```
 
 ## Codex 开始任何真实任务前必须先读
@@ -192,9 +206,9 @@ references/v4-change-record.md
 
 ## 不可违反的原则
 
-1. **Canonical lyric 是最终文字与顺序真源。** ASR、编辑器、forced aligner 都不能替换 final text/order。
+1. **Canonical lyric 是最终文字与顺序真源，但不是无条件的 line-break / subtitle segmentation 真源。** ASR、编辑器、forced aligner 都不能替换 final text/order；LRC 行换行也不能单独把文字跨可信 editor cue 搬移。
 2. **模式必须按 cheapest sufficient evidence 选择。** Standard/Smart 不读音频；Pro 只读 Smart unresolved 的局部音频；Source-to-Mix 全局/重型 reconstruction 主要属于 Max。
-3. **Jianying timing 是强但可推翻的先验。** 普通 Smart 任务应保留多数可信 cue，只修少量有多重独立证据支持的 outlier。
+3. **Jianying timing / credible cue segmentation 是强但可推翻的先验。** 普通 Smart 任务应保留多数可信 cue，只修少量有多重独立证据支持的 outlier。
 4. `rate change != cut`；forward source-position discontinuity 才能进入 candidate-level cut review。
 5. `confirmed_cut` 仍必须经过 local cut locator → CUT_AWARE mapping → cut-aware canonical timeline。
 6. line-LRC 只有整个可推断行区间都位于 source gap 才可整行删除；partial-line 一律 review。
@@ -217,6 +231,8 @@ references/v4-change-record.md
 23. **Smart 是普通“多数 timing 正确、少数 timing 可疑”任务的默认入口。** 不得把原曲 LRC/source absolute time 直接覆盖到 edited mix；必须经 rate/anchor model。
 24. **Pro 只能处理当前 Smart unresolved 的 bounded regions。** 不得无理由重扫已被 Smart 验证的正常 cue；当前仍不得自动 timing writeback。
 25. **永远不覆盖原始输入。** Standard/Smart/Pro/Max 都写独立 outputs/artifacts；Smart/Pro CLI 的路径碰撞必须 fail closed。
+26. **Higher mode 必须保持能力单调性。** 没有更强独立证据时，不得退化 lower-mode 已安全成立的 text、cue ownership/display segmentation 或 timing。
+27. **Recovered text 不得形成循环证据。** 无论 interior 还是 song-edge text recovery，都只能消费已经独立 ready 的 model，不能反向把自己的恢复结果提升为 primary timing anchor。
 
 ## 权威文档
 
@@ -268,9 +284,11 @@ python scripts/v4_text_repair_batch.py `
 
 V2.1 先用唯一 exact 文本锚点把长字幕切成局部区间，再在区间内运行 bounded monotonic span DP。常见 1↔1 / 1↔2 / 2↔1 / 2↔2 可在高置信下自动处理；真实 canonical gap、额外 subtitle cue、近似重复歌词歧义、gap 邻域弱匹配、会把现有 cue 清空的重分配或结构差异过大继续 `review_required`。
 
+如果 span 连续文字已经一致，仅 LRC/editor line grouping 不同，V2.1 保留 editor cue ownership，不执行仅由 LRC 换行驱动的跨 cue 文字迁移。
+
 这个入口完全不读取音频，也不依据 LRC timestamp 修改 SRT timing，因此 **BPM 加速/减速不会改变 Standard 的文字修复规则**。
 
-### 2. Smart / Anchor Timeline Repair v1.1.1
+### 2. Smart / Anchor Timeline Repair v1.1.3
 
 日常“剪映 timing 大部分正确”的任务优先：
 
@@ -536,6 +554,7 @@ python scripts/v4_evaluate_evidence_families.py ...
 Smart/Pro 是日常主力时，优先拿真实生产文件统计：
 
 ```text
+Smart false text repair / cross-cue text move
 Smart false timing repair
 Smart false-ready
 Smart -> Pro escalation rate
@@ -563,6 +582,7 @@ editor识别差语言
 - Smart 无法建立可验证 timing model；
 - Smart canonical occurrence identity 不唯一；
 - Smart 自动 repair 会制造或扩大 overlap；
+- Smart song-edge text recovery 不满足 edge scope / independently-ready model / consecutive one-sided anchors / onset tolerance；
 - Pro report / Smart SRT / canonical hashes 或 Smart policy/schema 不匹配；
 - Pro local evidence 不足或明显冲突；
 - overlap interval 与 localized cut boundary 相交；
@@ -595,6 +615,6 @@ git diff --check
 ## 后续优先级
 
 1. 日常真实任务优先按 **Smart -> Pro** 生产链收集 private calibration / blind 数据；
-2. 先修真实样本暴露的 bug、误判和性能回归，不无样本继续堆算法；
+2. 先修真实样本暴露的 bug、误判和性能回归，并把 failure pattern 转成合成通用 regression，不无样本继续堆算法；
 3. Pro 自动 timing writeback、B-grade 更大权限、piecewise 扩展等都必须等独立 blind 数据证明安全后再考虑；
 4. Max 继续保留为 broad-untrusted / complex-structure fallback，不把其成本结构重新带回普通生产主路径。
