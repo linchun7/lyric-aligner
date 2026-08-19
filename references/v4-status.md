@@ -29,7 +29,7 @@ Max      -> Full V4 Alignment
 - production `auto-threshold >= 0.72`；
 - report schema `2.1`。
 
-## 3. Smart — Anchor Timeline Repair v1.1
+## 3. Smart — Anchor Timeline Repair v1.1.1
 
 Smart 是日常主力 no-audio 模式：**大部分信剪映，只推翻少量能被多重独立证据证明错误的 timing。**
 
@@ -51,9 +51,17 @@ Smart 保留 line-level LRC timestamp、Enhanced LRC/QRC word/token timestamp。
 source_time = offset + rate * mix_time
 ```
 
-单倍率优先；DAW exact stretch ratio 优先于 BPM-derived `target_bpm / source_bpm`；无 prior 时由 A anchors robust estimate。少量同歌多 rate / cut 仍升级而不是强迫普通任务进入重链路。
+单倍率优先。v1.1.1 明确区分 rate authority：
 
-### 3.2 v1.1 validation semantics
+```text
+exact_daw     -> hard prior，可固定 rate
+bpm_derived   -> soft plausibility，不硬锁 rate
+anchor_estimated -> 无 hard prior 时由 A anchors robust estimate
+```
+
+BPM-derived 与稳定 A-anchor rate 冲突时，不用软先验重建模型；但该冲突会阻止自动 timing mutation。少量同歌多 rate / cut 仍升级而不是强迫普通任务进入重链路。
+
+### 3.2 Validation / overlap safety
 
 v1.1 修正“没验证成功却看起来 ready”的缺口：
 
@@ -61,23 +69,19 @@ v1.1 修正“没验证成功却看起来 ready”的缺口：
 - 无唯一 timed canonical mapping -> review / Pro escalation；
 - C-grade identity -> review / Pro escalation；
 - B-grade 只能由已经 ready 的 A-anchor model 做二次确认，不能反向参与建模；
-- report schema = `smart-1.1`，新增 `pro_escalation_required` 与 validated-preserve 统计。
+- report schema 保持 `smart-1.1`，policy id 更新到当前 v1.1.1 修复策略。
 
-自动 repair 仍要求 leave-one-out independent model、足够左右 A anchors / rate-supported edge extrapolation、最大 shift guard。v1.1 额外增加 **no-new-overlap**：原 SRT 不重叠的相邻 cue 不得被 Smart 自动修成新的 overlap。
+自动 repair 仍要求 leave-one-out independent model、足够左右 A anchors / rate-supported edge extrapolation、最大 shift guard。v1.1.1 在单条 no-new-overlap 之外增加**最终组合时间轴复检**：
 
-### 3.3 Rate provenance
+- 不得制造新 overlap；
+- 不得扩大编辑器原本已有的 overlap；
+- 两条分别看似安全、组合后发生冲突时，相关 repair 全部降级 review。
 
-report/model 现在区分：
+### 3.3 Output safety
 
-```text
-exact_daw
-bpm_derived
-anchor_estimated
-```
+Smart CLI 现在统一检查 `source SRT + canonical lyrics` 与 `output SRT + report` 的真实解析路径：任何 output-input 或 output-output 碰撞都在写文件前 fail closed，落实“原始输入永不覆盖”。
 
-这使后续 calibration 可以分别评估不同 prior 的可信度，不再把三个来源当作同一种 evidence。
-
-## 4. Pro — Selective Audio Repair v1.1
+## 4. Pro — Selective Audio Repair v1.1.1
 
 Pro 是 Smart unresolved 的局部声学层，仍保持：
 
@@ -95,9 +99,18 @@ lyric_aligner/alignment/local_acoustic_v11.py
 scripts/v4_pro_selective.py
 ```
 
-### 4.1 Reason-aware routing
+### 4.1 Exact Smart contract
 
-v1 的 mapped review 曾同时请求 acoustic + ASR + forced。v1.1 改为按原因花计算：
+Pro v1.1.1 只接受当前：
+
+```text
+schema_version = smart-1.1
+policy_id      = current Smart v1.1.1 policy
+```
+
+旧 Smart artifact 必须重跑 Smart；不能让旧版本中“model not ready 但 preserve”的语义漏过 Pro escalation。
+
+### 4.2 Reason-aware routing
 
 - timing review + canonical identity -> local source↔mix acoustic first；
 - text/identity review -> bounded ASR + word timestamps；
@@ -105,39 +118,57 @@ v1 的 mapped review 曾同时请求 acoustic + ASR + forced。v1.1 改为按原
 - 已有 Enhanced LRC/QRC word timing 时避免重复 forced；
 - unmapped review -> bounded ASR only，不伪造 source identity。
 
-### 4.2 Merged local regions
+Enhanced LRC 最后 token 合法的 `end_ms=None` 现已兼容，不会再在基础 Pro planner 的 source-window 计算阶段崩溃。
 
-相邻 Smart review cue 会被分配到 merged mix region。`local_acoustic_v11.py` 每个 region 只 decode / extract 一次 mix features，但每个 cue 仍保持独立 source window、canonical identity 与 retrieval result。
+### 4.3 Local region / source-window fixes
 
-report/plan 同时记录：
+acoustic region 现在只由真正请求 `source_local_acoustic_match` 的 jobs 合并；ASR-only jobs 保持自己的 bounded window，不再扩大 acoustic decode region。
+
+source window 仍优先利用 word/token timing 或下一 canonical onset，但还必须满足 acoustic search 的最低数学长度：
 
 ```text
-planned_mix_audio_ms_unmerged
-planned_mix_audio_ms_merged
-region_count
-region_merge_saved_ms
+source_window_duration
+>= mix_query_duration × max_candidate_slope + frame_margin
 ```
 
-### 4.3 Adaptive source windows
+因此不会因为 adaptive window 太短而产生 `coarse retrieval produced no candidates` 的伪失败。
 
-优先使用 word/token timing；没有逐字 timing 时利用下一 canonical line onset 推导窗口，减少短句宽搜并避免长 rap 被固定窗口截断；最后一行使用 bounded fallback。
+plan 现在明确记录：
 
-### 4.4 Song-boundary dual-source evidence
+```text
+job_count
+primary_job_count
+boundary_competitor_job_count
+boundary_competitor_omitted_due_to_max_jobs
+acoustic_region_count
+planned_acoustic_mix_audio_ms_unmerged / merged
+```
 
-位于歌曲首/尾两行的 timing review 可增加相邻歌曲 competitor：
+`max_jobs` 约束最终 jobs 总数，包括 shadow competitors。
+
+### 4.4 Song-boundary / ASR / forced authority
+
+歌曲首尾 dual-source competitor 仍是：
 
 ```text
 shadow_evidence_only = true
-boundary_role = previous_source | next_source
 ```
-
-competitor 只用于 join/crossfade 双源声学判断，不直接生成 timing mutation。
-
-### 4.5 ASR / forced
 
 mixed-language per-line routing继续有效：中文歌纯英文 rap -> `en`，code-switch -> auto，韩/日 pure line -> `ko/ja`。
 
-`scripts/v4_pro_selective.py` 现在已能显式调用现有 external forced-alignment protocol；forced 仍是 auxiliary source-side evidence，canonical lyric 仍是最终文字/顺序 authority。
+external forced alignment 仍是 auxiliary source-side evidence，canonical lyric 仍是最终文字/顺序 authority。
+
+### 4.5 Output/I/O safety
+
+Pro CLI 在写任何 plan/acoustic/ASR/forced artifact 前检查：
+
+- Smart report / Smart SRT；
+- canonical lyrics；
+- mix audio；
+- source audios；
+- 所有 output artifacts。
+
+任何路径碰撞 fail closed。Acoustic/forced 阶段也只 hash/bind 当前 plan 真正需要的 source ordinal，避免对未使用原曲做整文件 I/O。
 
 ## 5. Max — Full V4 Alignment
 
@@ -160,7 +191,16 @@ Smart/Pro 不借用 P9 HIGH 或 P4 trust lock 获得新的自动修复权限，�
 
 ## 7. 当前验证边界与下一步
 
-Public CI 负责证明 deterministic contracts、Smart escalation/overlap safety、Pro reason routing/region reuse/boundary competitor、mixed-language routing、external forced orchestration compatibility、Python/ASR environment 与 legacy tests。
+Public CI 需要证明：
+
+- Smart escalation + final overlap safety；
+- exact DAW hard prior / BPM-derived soft prior 语义；
+- Enhanced LRC open-ended token 可进入 Pro；
+- Pro 拒绝 stale Smart artifact；
+- adaptive source window 足够支持 planned slope search；
+- ASR-only region 不扩大 acoustic decode；
+- max-jobs、path collision、source-I/O 收口；
+- Python/ASR environment 与 legacy tests 全部继续通过。
 
 Private real-song calibration + independent blind 仍是 Pro 自动写回前的关键 gate：
 

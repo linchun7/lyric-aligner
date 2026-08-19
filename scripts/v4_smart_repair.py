@@ -10,6 +10,7 @@ import math
 from pathlib import Path
 from typing import Any
 
+from lyric_aligner.io.path_safety import PathCollisionError, validate_separate_artifact_paths
 from lyric_aligner.timeline.anchor_repair import parse_timed_canonical_files
 from lyric_aligner.timeline.smart_policy import smart_repair_srt_text_v11
 from lyric_aligner.text_repair import DEFAULT_AUTO_THRESHOLD, PRODUCTION_MIN_AUTO_THRESHOLD
@@ -102,10 +103,23 @@ def main() -> int:
     )
     args = parser.parse_args()
 
-    source = args.source_srt.resolve()
-    output = args.output_srt.resolve()
-    if source == output:
-        parser.error("Smart mode never overwrites the source SRT; choose a separate --output-srt")
+    try:
+        validate_separate_artifact_paths(
+            inputs={
+                "source_srt": args.source_srt,
+                **{
+                    f"canonical_lyrics[{index}]": path
+                    for index, path in enumerate(args.canonical_lyrics)
+                },
+            },
+            outputs={
+                "output_srt": args.output_srt,
+                "report": args.report,
+            },
+        )
+    except PathCollisionError as exc:
+        parser.error(str(exc))
+
     if not math.isfinite(args.auto_threshold):
         parser.error("--auto-threshold must be finite")
     if args.auto_threshold < PRODUCTION_MIN_AUTO_THRESHOLD:

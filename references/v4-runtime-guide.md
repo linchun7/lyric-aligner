@@ -30,7 +30,7 @@ python scripts/v4_text_repair.py `
 
 Text Repair V2.1 冻结 cue count/number/start/end，canonical 是最终文字/顺序 truth，production `--auto-threshold >= 0.72`。
 
-## 3. Smart v1.1
+## 3. Smart v1.1.1
 
 ### 3.1 基本调用
 
@@ -44,6 +44,8 @@ python scripts/v4_smart_repair.py `
 
 Smart 要求 timestamped canonical。Enhanced LRC / QRC 的逐字/逐词 timestamp 会自动利用。
 
+**v1.1.1 写文件前会检查所有路径碰撞。** `output-srt` 或 `report` 不得与 source SRT、任一 canonical lyric 或彼此同路径；发现碰撞直接 fail closed，不会覆盖原件。
+
 ### 3.2 BPM / exact stretch
 
 已知目标 140 BPM：
@@ -54,11 +56,13 @@ Smart 要求 timestamped canonical。Enhanced LRC / QRC 的逐字/逐词 timesta
 --source-bpm "02.lrc=132"
 ```
 
-内部派生：
+内部仍记录：
 
 ```text
 rate_prior = target_bpm / source_bpm
 ```
+
+但从 v1.1.1 起，`bpm_derived` 是 **soft plausibility**，不再像 DAW 精确倍率一样固定模型 rate。若 A anchors 能稳定估计 rate，则以 A anchors 为主；BPM 与其差异过大时阻止自动 mutation，并进入 review。
 
 若 DAW/Cubase 有真实 stretch ratio，优先：
 
@@ -66,17 +70,21 @@ rate_prior = target_bpm / source_bpm
 --rate-prior "01.lrc=1.09375"
 ```
 
-v1.1 report 明确区分：
+`exact_daw` 仍可作为 hard prior。
+
+report 现在区分：
 
 ```text
-exact_daw
-bpm_derived
-anchor_estimated
+models[].rate_provenance
+models[].rate_prior_provenance
+models[].rate_prior_value
+models[].bpm_prior_relative_error
+models[].bpm_prior_compatible
 ```
 
-### 3.3 Smart v1.1 的 ready 语义
+### 3.3 Smart ready / overlap 安全
 
-`ready` 现在表示 timing 已被 Smart 实际验证/安全修复；以下不再只是“原样保留然后装作 ready”，而会 `review` 并交给 Pro：
+`ready` 表示 timing 已被 Smart 实际验证/安全修复；以下会 `review` 并交给 Pro：
 
 - timing model 不 ready；
 - 无唯一 timed-canonical mapping；
@@ -84,20 +92,25 @@ anchor_estimated
 
 B-grade 不能建立 timing model，只能由 already-ready A-anchor model 二次确认。
 
-原 v1 的 leave-one-out、左右 anchor、edge rate prior、最大 shift 等限制继续有效。v1.1 再加：**不得制造原 SRT 中不存在的新 overlap**。
+原 v1 的 leave-one-out、左右 anchor、edge hard-rate prior、最大 shift 等限制继续有效。v1.1.1 对自动 repair 做两层 overlap guard：
 
-Smart report schema = `smart-1.1`，关键字段：
+1. 单条 proposal 不得制造原 SRT 中不存在的新 overlap；
+2. 所有 repair 组合成最终 proposal timeline 后再次检查，相邻 cue 的 overlap 不得比编辑器原值更大。
+
+因此两条 cue 即使分别检查安全，但组合后互相冲突，也会统一降级 review。
+
+Smart report schema 仍是 `smart-1.1`，但 policy id 更新为当前 v1.1.1 policy；关键字段：
 
 ```text
 status
+policy_id
 pro_escalation_required
 timing_validated_preserve_count
 timing_repair_count
 timing_review_count
-models[].rate_provenance
 ```
 
-## 4. Pro v1.1
+## 4. Pro v1.1.1
 
 ### 4.1 先只计划，不读 audio
 
@@ -111,7 +124,9 @@ python scripts/v4_pro_selective.py `
   --plan-out "output/<任务>/<任务>_PRO_PLAN.json"
 ```
 
-v1.1 reason-aware routing：
+Pro v1.1.1 必须读取**当前 Smart v1.1.1 policy** 产出的 `smart-1.1` report。旧 Smart report 即使 schema 相同，只要 policy id 不是当前版本，也会要求重新跑 Smart，避免旧 false-ready 语义漏掉 escalation。
+
+reason-aware routing：
 
 ```text
 timing review -> local source<->mix acoustic first
@@ -120,22 +135,35 @@ no word timing + source-side identity needs help -> forced alignment
 unmapped review -> bounded ASR only
 ```
 
-已有逐字 Enhanced LRC/QRC 时不重复请求 source forced alignment。
+已有逐字 Enhanced LRC/QRC 时不重复请求 source forced alignment。Enhanced LRC 最后 token 合法的 `end_ms=None` 已兼容，不再导致计划阶段报错。
 
-### 4.2 Region 合并与自适应 source window
+### 4.2 Region 合并与 source window
 
-相邻 review cue 会被合并进同一 `region_id`。局部声学执行每个 region 只 decode / extract 一次 mix features；cue/source identity 仍逐条独立。
+**只有 acoustic jobs 才参与 acoustic region 合并。** ASR-only jobs 保持各自 mix window，不会把相邻 acoustic decode/feature 区域无意义扩大。
 
 计划会记录：
 
 ```text
+job_count
+primary_job_count
+boundary_competitor_job_count
+boundary_competitor_omitted_due_to_max_jobs
 region_count
-planned_mix_audio_ms_unmerged
-planned_mix_audio_ms_merged
-region_merge_saved_ms
+acoustic_region_count
+planned_mix_audio_ms_unmerged / merged
+planned_acoustic_mix_audio_ms_unmerged / merged
 ```
 
-source window：逐字 timing 优先；否则利用下一 canonical onset；最后一行使用 bounded fallback。
+`--max-jobs` 现在约束最终 job 总数，包含 shadow boundary competitor；超出的 competitor 会记录 omitted 数量，而不是悄悄超过上限。
+
+source window 仍优先使用逐字 timing；否则利用下一 canonical onset；最后一行使用 bounded fallback。除此之外，任何 acoustic source window 都必须满足：
+
+```text
+source_window_duration
+>= mix_query_duration × max_candidate_slope + frame_margin
+```
+
+这避免 query 需要的 source span 比窗口本身更长而出现“无候选”的假失败。
 
 ### 4.3 局部 source↔mix 声学验证
 
@@ -160,6 +188,8 @@ boundary_role = previous_source | next_source
 
 这是 join/crossfade 双源判断，不是自动 timing authority。
 
+v1.1.1 acoustic 输出只 hash 当前 acoustic plan 真正使用到的 source audio；未被本次 Pro 任务使用的原曲不做额外整文件 I/O。
+
 ### 4.4 局部 Whisper
 
 ```powershell
@@ -171,8 +201,6 @@ boundary_role = previous_source | next_source
 语言按当前 canonical line 路由：中文歌纯英文 rap -> `en`；code-switch -> auto；韩/日 pure line -> `ko/ja`。
 
 ### 4.5 External forced alignment
-
-v1.1 已把既有 external forced-aligner protocol 接入 standalone Pro CLI。示例：
 
 ```powershell
 python scripts/v4_pro_selective.py `
@@ -190,7 +218,20 @@ python scripts/v4_pro_selective.py `
   --forced-model-revision "<revision>"
 ```
 
-Forced alignment 仍是 auxiliary source-side evidence；canonical lyric 仍拥有最终文字/顺序 authority。
+Forced alignment 仍是 auxiliary source-side evidence；canonical lyric 仍拥有最终文字/顺序 authority。v1.1.1 只为实际请求 forced alignment 的 source 建 binding/hash。
+
+### 4.6 Pro artifact 路径安全
+
+在写 `plan-out / acoustic-out / asr-out / forced-out` 前，Pro 会统一检查它们不得覆盖：
+
+- Smart report；
+- Smart SRT；
+- canonical lyrics；
+- mix audio；
+- 任一 source audio；
+- 其他 Pro output artifact。
+
+所有碰撞均 fail closed。
 
 ## 5. 少量同歌多速度
 
@@ -223,9 +264,9 @@ Smart/Pro 不借用 P9/P4 authority，也不会反向提升旧 chain。
 5. Pro 只处理 bounded regions，按原因选择 acoustic / ASR / forced
 6. Pro evidence 当前仍不自动写 timing
 7. broad untrusted / complex structure / Pro 无法收敛 -> Max
-8. 永远保留原输入，写独立 outputs/artifacts
+8. 永远保留原输入，写独立 outputs/artifacts；路径碰撞必须 fail closed
 ```
 
 ## 9. 验证边界
 
-Public CI 能验证 deterministic policy、no-new-overlap、reason routing、region reuse、boundary shadow competitor、forced orchestration contract 与 Python/ASR compatibility。真实歌曲 false-auto / false acoustic match 仍必须通过 private calibration + independent blind；通过前不开放 Pro 自动 timing write-back。
+Public CI 能验证 deterministic policy、最终 overlap guard、soft BPM semantics、Enhanced LRC open token、stale Smart rejection、reason routing、acoustic-only region reuse、source-window minimum、path collision、forced orchestration contract 与 Python/ASR compatibility。真实歌曲 false-auto / false acoustic match 仍必须通过 private calibration + independent blind；通过前不开放 Pro 自动 timing write-back。

@@ -1,13 +1,15 @@
 """Smart v1.1 production policy layered on Anchor Timeline Repair v1.
 
-The v1 timing model remains the deterministic no-audio engine.  This module
+The v1 timing model remains the deterministic no-audio engine. This module
 hardens production semantics around it: inability to validate is escalated,
 B-grade identities may be confirmed only by an already-ready A-anchor model,
-and an automatic shift may not create a new subtitle overlap.
+combined repairs may not worsen subtitle overlaps, and BPM-derived rates stay
+soft while exact DAW stretch ratios may remain hard priors.
 """
 
 from __future__ import annotations
 
+import math
 from dataclasses import asdict, replace
 from typing import Mapping, Sequence
 
@@ -28,19 +30,15 @@ from lyric_aligner.timeline.anchor_repair import (
 )
 
 SMART_SCHEMA_VERSION = "smart-1.1"
-SMART_POLICY_ID = "smart-validation-policy-2026-08-19-v1"
+SMART_POLICY_ID = "smart-validation-policy-2026-08-19-v1.1.1"
+_BPM_COMPATIBILITY_TOLERANCE = 0.03
 
 
 def _creates_new_overlap(
     cues: Sequence[SubtitleCue],
     decision: TimingDecision,
 ) -> bool:
-    """Return True only when a proposed repair introduces a new overlap.
-
-    Existing editor overlaps are not treated as errors here; Smart is allowed to
-    preserve or reduce them.  The safety invariant is narrower: a cue pair that
-    did not overlap before Smart may not newly overlap after an automatic shift.
-    """
+    """Return True when one proposed repair creates a previously absent overlap."""
 
     if decision.proposed_start_ms is None or decision.proposed_end_ms is None:
         return False
@@ -78,8 +76,6 @@ def _harden_timing_decisions(
             "timing_model_not_ready",
             "no_unique_timed_canonical_mapping",
         }:
-            # Preserve the editor timing physically, but do not report it as
-            # validated.  Pro must receive this unresolved cue.
             decision = replace(
                 decision,
                 action="review",
@@ -87,7 +83,6 @@ def _harden_timing_decisions(
                 evidence=tuple((*decision.evidence, "pro_escalation_required")),
             )
         elif decision.action == "preserve" and decision.anchor_grade == "C":
-            # C-grade identity is not strong enough to claim timing validation.
             decision = replace(
                 decision,
                 action="review",
@@ -100,8 +95,6 @@ def _harden_timing_decisions(
             and decision.model_status == "ready"
             and decision.residual_ms is not None
         ):
-            # B never builds the model.  It may only be secondarily confirmed
-            # by the already-ready A-anchor model.
             decision = replace(
                 decision,
                 evidence=tuple((*decision.evidence, "B_confirmed_by_A_model")),
@@ -110,24 +103,146 @@ def _harden_timing_decisions(
     return hardened
 
 
+def _overlap_ms(left_end: int, right_start: int) -> int:
+    return max(0, int(left_end) - int(right_start))
+
+
+def _harden_combined_timeline(
+    cues: Sequence[SubtitleCue],
+    decisions: Sequence[TimingDecision],
+) -> list[TimingDecision]:
+    """Downgrade repairs when the final combined proposal worsens any overlap."""
+
+    by_cue = {item.cue_ordinal: item for item in decisions}
+    proposed: list[tuple[int, int]] = []
+    original: list[tuple[int, int]] = []
+    for cue in cues:
+        old = _cue_times(cue)
+        original.append(old)
+        decision = by_cue.get(cue.ordinal)
+        if (
+            decision is not None
+            and decision.action == "repair"
+            and decision.proposed_start_ms is not None
+            and decision.proposed_end_ms is not None
+        ):
+            proposed.append(
+                (int(decision.proposed_start_ms), int(decision.proposed_end_ms))
+            )
+        else:
+            proposed.append(old)
+
+    unsafe_repairs: set[int] = set()
+    for index in range(len(cues) - 1):
+        old_overlap = _overlap_ms(original[index][1], original[index + 1][0])
+        new_overlap = _overlap_ms(proposed[index][1], proposed[index + 1][0])
+        if new_overlap <= old_overlap:
+            continue
+        for cue_ordinal in (index, index + 1):
+            decision = by_cue.get(cue_ordinal)
+            if decision is not None and decision.action == "repair":
+                unsafe_repairs.add(cue_ordinal)
+
+    output: list[TimingDecision] = []
+    for decision in decisions:
+        if decision.cue_ordinal in unsafe_repairs:
+            decision = replace(
+                decision,
+                action="review",
+                reason="proposed_shift_increases_overlap",
+                evidence=tuple((*decision.evidence, "combined_overlap_guard")),
+            )
+        output.append(decision)
+    return output
+
+
+def _hard_rate_priors(
+    rate_prior_by_source: Mapping[int, float] | None,
+    metadata: Mapping[int, Mapping[str, object]] | None,
+) -> dict[int, float]:
+    """Keep exact/legacy priors hard; treat explicitly BPM-derived priors as soft."""
+
+    values = rate_prior_by_source or {}
+    meta = metadata or {}
+    output: dict[int, float] = {}
+    for source_ordinal, value in values.items():
+        provenance = str(meta.get(source_ordinal, {}).get("provenance") or "")
+        if provenance == "bpm_derived":
+            continue
+        output[source_ordinal] = float(value)
+    return output
+
+
+def _bpm_prior_compatibility(
+    models,
+    metadata: Mapping[int, Mapping[str, object]] | None,
+) -> dict[int, tuple[float, bool]]:
+    meta = metadata or {}
+    result: dict[int, tuple[float, bool]] = {}
+    for model in models:
+        prior = meta.get(model.source_ordinal)
+        if not prior or str(prior.get("provenance") or "") != "bpm_derived":
+            continue
+        try:
+            value = float(prior.get("value"))
+        except (TypeError, ValueError):
+            continue
+        if not math.isfinite(value) or value <= 0 or not math.isfinite(float(model.rate)):
+            continue
+        relative = abs(float(model.rate) - value) / value
+        result[model.source_ordinal] = (
+            relative,
+            relative <= _BPM_COMPATIBILITY_TOLERANCE,
+        )
+    return result
+
+
+def _harden_bpm_conflicts(
+    decisions: Sequence[TimingDecision],
+    compatibility: Mapping[int, tuple[float, bool]],
+) -> list[TimingDecision]:
+    """A soft BPM conflict blocks automatic mutation but does not invalidate preserves."""
+
+    output: list[TimingDecision] = []
+    for decision in decisions:
+        item = compatibility.get(decision.source_ordinal) if decision.source_ordinal is not None else None
+        if decision.action == "repair" and item is not None and not item[1]:
+            decision = replace(
+                decision,
+                action="review",
+                reason="bpm_prior_conflict",
+                evidence=tuple((*decision.evidence, "soft_bpm_prior_conflict")),
+            )
+        output.append(decision)
+    return output
+
+
 def _model_payload(
     models,
     rate_prior_metadata_by_source: Mapping[int, Mapping[str, object]] | None,
+    bpm_compatibility: Mapping[int, tuple[float, bool]],
 ) -> list[dict[str, object]]:
     metadata = rate_prior_metadata_by_source or {}
     rows: list[dict[str, object]] = []
     for model in models:
         row = asdict(model)
         prior = metadata.get(model.source_ordinal)
-        if prior is not None:
-            row["rate_provenance"] = str(prior.get("provenance") or "unknown")
-            row["rate_prior_value"] = prior.get("value")
-        elif model.rate_source == "robust_anchor_estimate":
+        prior_provenance = str(prior.get("provenance") or "unknown") if prior else "none"
+        row["rate_prior_provenance"] = prior_provenance
+        row["rate_prior_value"] = prior.get("value") if prior else None
+        if model.rate_source == "robust_anchor_estimate":
             row["rate_provenance"] = "anchor_estimated"
-            row["rate_prior_value"] = None
+        elif prior_provenance == "exact_daw":
+            row["rate_provenance"] = "exact_daw"
         else:
-            row["rate_provenance"] = "none"
-            row["rate_prior_value"] = None
+            row["rate_provenance"] = model.rate_source or "none"
+        compatibility = bpm_compatibility.get(model.source_ordinal)
+        if compatibility is not None:
+            row["bpm_prior_relative_error"] = round(float(compatibility[0]), 6)
+            row["bpm_prior_compatible"] = bool(compatibility[1])
+        else:
+            row["bpm_prior_relative_error"] = None
+            row["bpm_prior_compatible"] = None
         rows.append(row)
     return rows
 
@@ -163,13 +278,17 @@ def smart_repair_srt_text_v11(
         for item in text_decisions
     ]
 
+    hard_priors = _hard_rate_priors(rate_prior_by_source, rate_prior_metadata_by_source)
     raw_timing, models = build_anchor_timing_plan(
         cues,
         timed_canonical,
         text_payload,
-        rate_prior_by_source=rate_prior_by_source,
+        rate_prior_by_source=hard_priors,
     )
+    bpm_compatibility = _bpm_prior_compatibility(models, rate_prior_metadata_by_source)
     timing = _harden_timing_decisions(cues, raw_timing)
+    timing = _harden_bpm_conflicts(timing, bpm_compatibility)
+    timing = _harden_combined_timeline(cues, timing)
     rendered = apply_timing_decisions(text_repaired, timing)
 
     unresolved_count = sum(item.action == "review" for item in timing)
@@ -189,7 +308,7 @@ def smart_repair_srt_text_v11(
         "timing_validated_preserve_count": sum(item.action == "preserve" for item in timing),
         "pro_escalation_required": bool(unresolved_count or text_review_count),
         "status": "review_required" if (unresolved_count or text_review_count) else "ready",
-        "models": _model_payload(models, rate_prior_metadata_by_source),
+        "models": _model_payload(models, rate_prior_metadata_by_source, bpm_compatibility),
         "timing_decisions": [asdict(item) for item in timing],
         "text_decisions": text_payload,
         "alignment_span_count": sum(item.kind == "match" for item in operations),
