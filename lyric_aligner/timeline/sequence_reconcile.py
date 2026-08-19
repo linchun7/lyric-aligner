@@ -1,15 +1,16 @@
 """Song-local canonical sequence reconciliation for Smart text recovery.
 
 This module breaks the text-first bootstrap deadlock without weakening Text
-Repair thresholds or Smart timing gates.  It builds an independent text-only
-affine projection from baseline high-confidence lyric identities.  The
+Repair thresholds or Smart timing gates. It builds an independent text-only
+affine projection from baseline high-confidence lyric identities. The
 projection may reconcile weak/review text inside a strongly bounded canonical
 sequence or cautiously propagate from the outermost strong anchor until timing
 or text evidence stops agreeing.
 
-Sequence-projected text is final-text evidence only.  Its decision score is
+Sequence-projected text is final-text evidence only. Its decision score is
 capped below B grade, so it can never become an A/B timing anchor or bootstrap
-its own timing authority.
+its own timing authority. Results already recovered by the stronger, independently
+ready four-A timing path are immutable to this lower-authority layer.
 """
 
 from __future__ import annotations
@@ -21,8 +22,20 @@ from functools import lru_cache
 from statistics import median
 from typing import Mapping, Sequence
 
-from lyric_aligner.text_repair import MatchDecision, SubtitleCue, _normalize_for_match, _pair_score
+from lyric_aligner.text_repair import (
+    MatchDecision,
+    SubtitleCue,
+    _normalize_for_match,
+    _pair_score,
+)
 from lyric_aligner.timeline.anchor_repair import TimedCanonicalOccurrence, _cue_times
+
+_PROTECTED_STRONGER_RECOVERY_REASONS = frozenset(
+    {
+        "timing_model_confirms_canonical_sequence",
+        "timing_model_confirms_song_edge_canonical",
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -64,8 +77,17 @@ class _TextAnchor:
     grade: str
 
 
+def _protected(decision: MatchDecision | None) -> bool:
+    return decision is not None and decision.reason in _PROTECTED_STRONGER_RECOVERY_REASONS
+
+
 def _single_span(decision: MatchDecision | None) -> tuple[int, int] | None:
-    if decision is None or decision.action == "review" or decision.canonical_span is None:
+    if (
+        decision is None
+        or decision.action == "review"
+        or _protected(decision)
+        or decision.canonical_span is None
+    ):
         return None
     start, end = decision.canonical_span
     if end - start != 1:
@@ -79,7 +101,6 @@ def _anchor_inventory(
     decisions: Sequence[MatchDecision],
 ) -> list[_TextAnchor]:
     canonical_by_ordinal = {item.ordinal: item for item in canonical}
-    decision_by_cue = {item.cue_ordinal: item for item in decisions}
     canonical_counts: dict[int, Counter[str]] = defaultdict(Counter)
     for item in canonical:
         canonical_counts[item.source_ordinal][item.normalized] += 1
@@ -100,6 +121,7 @@ def _anchor_inventory(
             cue_counts[source_ordinal][cue.normalized] += 1
 
     anchors: list[_TextAnchor] = []
+    decision_by_cue = {item.cue_ordinal: item for item in decisions}
     for cue in cues:
         decision = decision_by_cue.get(cue.ordinal)
         span = _single_span(decision)
@@ -157,8 +179,8 @@ def build_sequence_projection_models(
 
     Without an exact hard rate prior a model needs at least three unique exact
     A anchors plus one additional A/B anchor, with useful time span and stable
-    residuals.  This is intentionally weaker than Smart timing's four-A gate,
-    but it cannot authorize timing mutation.
+    residuals. This gate is intentionally weaker than Smart timing's four-A
+    gate, but its output has no timing-mutation authority.
     """
 
     priors = rate_prior_by_source or {}
@@ -166,8 +188,8 @@ def build_sequence_projection_models(
     grouped: dict[int, list[_TextAnchor]] = defaultdict(list)
     for item in anchors:
         grouped[item.source_ordinal].append(item)
-
     source_names = {item.source_ordinal: item.source for item in canonical}
+
     models: list[SequenceProjectionModel] = []
     for source_ordinal in sorted(source_names):
         rows = sorted(grouped.get(source_ordinal, []), key=lambda item: item.cue_ordinal)
@@ -219,12 +241,9 @@ def build_sequence_projection_models(
         if prior is not None:
             rate = float(prior)
             rate_source = "exact_rate_prior"
-            if not 0.5 <= rate <= 2.0:
-                status = "invalid_rate_prior"
+            status = "candidate" if 0.5 <= rate <= 2.0 else "invalid_rate_prior"
+            if status != "candidate":
                 rate = 1.0
-                rate_source = "invalid_rate_prior"
-            else:
-                status = "candidate"
         elif estimated is not None:
             rate = estimated
             rate_source = "robust_strong_text_anchors"
@@ -252,8 +271,12 @@ def build_sequence_projection_models(
             )
             continue
 
-        offset = float(median([item.source_time_ms - rate * item.mix_start_ms for item in rows]))
-        residuals = [item.source_time_ms - (offset + rate * item.mix_start_ms) for item in rows]
+        offset = float(
+            median([item.source_time_ms - rate * item.mix_start_ms for item in rows])
+        )
+        residuals = [
+            item.source_time_ms - (offset + rate * item.mix_start_ms) for item in rows
+        ]
         inliers = [value for value in residuals if abs(value) <= inlier_threshold_ms]
         med = float(median(abs(value) for value in residuals))
         fraction = len(inliers) / len(rows)
@@ -284,11 +307,20 @@ def build_sequence_projection_models(
     return models, anchors
 
 
-def _consistent_anchor(anchor: _TextAnchor, model: SequenceProjectionModel, tolerance_ms: int = 750) -> bool:
-    return abs(anchor.mix_start_ms - model.source_to_mix_ms(anchor.source_time_ms)) <= tolerance_ms
+def _consistent_anchor(
+    anchor: _TextAnchor,
+    model: SequenceProjectionModel,
+    tolerance_ms: int = 750,
+) -> bool:
+    return (
+        abs(anchor.mix_start_ms - model.source_to_mix_ms(anchor.source_time_ms))
+        <= tolerance_ms
+    )
 
 
-def _source_rows(canonical: Sequence[TimedCanonicalOccurrence]) -> dict[int, list[TimedCanonicalOccurrence]]:
+def _source_rows(
+    canonical: Sequence[TimedCanonicalOccurrence],
+) -> dict[int, list[TimedCanonicalOccurrence]]:
     result: dict[int, list[TimedCanonicalOccurrence]] = defaultdict(list)
     for item in canonical:
         result[item.source_ordinal].append(item)
@@ -308,12 +340,7 @@ def _partition_bounded_region(
     start_tolerance_ms: int = 1300,
     boundary_tolerance_ms: int = 2500,
 ) -> list[list[TimedCanonicalOccurrence]] | None:
-    """Partition a complete canonical gap while keeping editor cue ownership.
-
-    LRC line boundaries are evidence only.  The best partition is the one whose
-    next canonical onset best predicts the next editor cue start, with a small
-    secondary penalty for changing the amount of text owned by each cue.
-    """
+    """Partition a complete canonical gap while keeping editor cue ownership."""
 
     if not block_cues or not gap:
         return None
@@ -342,14 +369,19 @@ def _partition_bounded_region(
             if next_line > len(gap):
                 break
             remaining_lines = len(gap) - next_line
-            if remaining_lines < remaining_cues or remaining_lines > remaining_cues * max_lines_per_cue:
+            if (
+                remaining_lines < remaining_cues
+                or remaining_lines > remaining_cues * max_lines_per_cue
+            ):
                 continue
             first_predicted = predicted[line_index]
             last_predicted = predicted[next_line - 1]
             start_delta = abs(first_predicted - cue_start)
             if start_delta > start_tolerance_ms or last_predicted > cue_end + 1500:
                 continue
-            next_predicted = predicted[next_line] if next_line < len(gap) else right_predicted
+            next_predicted = (
+                predicted[next_line] if next_line < len(gap) else right_predicted
+            )
             next_cue_start = (
                 starts[cue_index + 1]
                 if cue_index + 1 < len(block_cues)
@@ -359,9 +391,16 @@ def _partition_bounded_region(
             if boundary_delta > boundary_tolerance_ms:
                 continue
             source_length = max(1, len(cue.normalized))
-            target_length = max(1, sum(len(item.normalized) for item in gap[line_index:next_line]))
+            target_length = max(
+                1,
+                sum(len(item.normalized) for item in gap[line_index:next_line]),
+            )
             length_penalty = abs(math.log(target_length / source_length))
-            local_cost = start_delta / 900.0 + boundary_delta / 900.0 + 0.35 * length_penalty
+            local_cost = (
+                start_delta / 900.0
+                + boundary_delta / 900.0
+                + 0.35 * length_penalty
+            )
             tail = solve(cue_index + 1, next_line)
             if tail is None:
                 continue
@@ -433,16 +472,25 @@ def _frontier_choice(
             continue
         boundary_delta: int | None = None
         if next_cue_start_ms is not None:
-            if reverse:
-                next_row = rows[-count - 1] if len(rows) > count else None
-            else:
-                next_row = rows[count] if len(rows) > count else None
+            next_row = (
+                rows[-count - 1]
+                if reverse and len(rows) > count
+                else rows[count]
+                if not reverse and len(rows) > count
+                else None
+            )
             if next_row is not None:
-                boundary_delta = abs(model.source_to_mix_ms(next_row.anchor_time_ms) - next_cue_start_ms)
+                boundary_delta = abs(
+                    model.source_to_mix_ms(next_row.anchor_time_ms) - next_cue_start_ms
+                )
         source_length = max(1, len(cue.normalized))
         target_length = max(1, len(target_normalized))
         length_penalty = abs(math.log(target_length / source_length))
-        cost = start_delta / 900.0 + 0.50 * (1.0 - similarity) + 0.25 * length_penalty
+        cost = (
+            start_delta / 900.0
+            + 0.50 * (1.0 - similarity)
+            + 0.25 * length_penalty
+        )
         if boundary_delta is not None:
             cost += min(boundary_delta, 2500) / 1200.0
         candidates.append((cost, assigned, boundary_delta))
@@ -467,10 +515,11 @@ def reconcile_text_from_sequence_projection(
 ]:
     """Reconcile weak Smart text with song-local canonical order and timing.
 
-    Existing strong Text Repair results are immutable.  Weak/review decisions
-    may be replaced only inside a fully bounded same-song sequence or during a
-    cautious outer-frontier walk.  The walk stops at the first timing break,
-    preserving genuine editor-only ad-libs/cuts instead of forcing the LRC.
+    Stronger ready-model recoveries and baseline strong identities are
+    immutable. Weak/review decisions may be replaced only inside a fully
+    bounded same-song sequence or during a cautious outer-frontier walk. The
+    frontier stops at the first timing break instead of chasing LRC across a
+    cut/editor-only region.
     """
 
     models, baseline_anchors = build_sequence_projection_models(
@@ -479,7 +528,9 @@ def reconcile_text_from_sequence_projection(
         decisions,
         rate_prior_by_source=rate_prior_by_source,
     )
-    ready_models = {item.source_ordinal: item for item in models if item.status == "ready"}
+    ready_models = {
+        item.source_ordinal: item for item in models if item.status == "ready"
+    }
     if not ready_models:
         return {}, list(decisions), SequenceRecoverySummary(), models
 
@@ -506,7 +557,9 @@ def reconcile_text_from_sequence_projection(
     consistent.sort(key=lambda item: item.cue_ordinal)
     strong_cues = {item.cue_ordinal for item in consistent}
 
-    # First reconcile complete gaps between consecutive model-consistent strong anchors.
+    # Complete gaps between adjacent model-consistent strong anchors. If a
+    # stronger ready-model recovery already exists anywhere inside the block,
+    # this lower-authority layer leaves the entire block untouched.
     for left, right in zip(consistent, consistent[1:]):
         if left.source_ordinal != right.source_ordinal:
             continue
@@ -515,8 +568,12 @@ def reconcile_text_from_sequence_projection(
         block = list(cues[left.cue_ordinal + 1 : right.cue_ordinal])
         if not block or len(block) > max_bounded_cues:
             continue
-        if not any(decision_by_cue.get(cue.ordinal) is not None and decision_by_cue[cue.ordinal].action == "review" for cue in block):
+        block_decisions = [decision_by_cue.get(cue.ordinal) for cue in block]
+        if any(_protected(item) for item in block_decisions):
             continue
+        if not any(item is not None and item.action == "review" for item in block_decisions):
+            continue
+
         positions = source_position[left.source_ordinal]
         left_pos = positions.get(left.canonical_ordinal)
         right_pos = positions.get(right.canonical_ordinal)
@@ -535,10 +592,13 @@ def reconcile_text_from_sequence_projection(
         )
         if partition is None:
             continue
-        pending: list[tuple[SubtitleCue, MatchDecision, list[TimedCanonicalOccurrence]]] = []
+
+        pending: list[
+            tuple[SubtitleCue, MatchDecision, list[TimedCanonicalOccurrence]]
+        ] = []
         for cue, assigned in zip(block, partition):
             original = output_by_cue.get(cue.ordinal)
-            if original is None or cue.ordinal in strong_cues:
+            if original is None or cue.ordinal in strong_cues or _protected(original):
                 pending = []
                 break
             pending.append((cue, original, assigned))
@@ -558,8 +618,8 @@ def reconcile_text_from_sequence_projection(
                 resolved_reviews.add(cue.ordinal)
         region_count += 1
 
-    # Then walk only outside each song's outermost strong anchors.  A timing break
-    # stops the walk; it is not legal to jump across the break to chase the LRC.
+    # Walk only outside each source's outermost strong anchors. Any stronger
+    # recovered decision is a hard stop, not something to be relabelled.
     by_source: dict[int, list[_TextAnchor]] = defaultdict(list)
     for anchor in consistent:
         by_source[anchor.source_ordinal].append(anchor)
@@ -571,7 +631,6 @@ def reconcile_text_from_sequence_projection(
         positions = source_position[source_ordinal]
         anchors.sort(key=lambda item: item.cue_ordinal)
 
-        # Forward frontier.
         last = anchors[-1]
         pos = positions[last.canonical_ordinal] + 1
         cue_index = last.cue_ordinal + 1
@@ -580,6 +639,9 @@ def reconcile_text_from_sequence_projection(
             if cue_index in global_strong:
                 break
             cue = cues[cue_index]
+            original = output_by_cue.get(cue.ordinal)
+            if original is None or _protected(original):
+                break
             previous_start, _ = _cue_times(cues[cue_index - 1])
             cue_start, _ = _cue_times(cue)
             if cue_start <= previous_start:
@@ -593,9 +655,6 @@ def reconcile_text_from_sequence_projection(
             if choice is None:
                 break
             assigned, boundary_delta = choice
-            original = output_by_cue.get(cue.ordinal)
-            if original is None:
-                break
             decision = _projected_decision(
                 cue,
                 original,
@@ -616,8 +675,6 @@ def reconcile_text_from_sequence_projection(
         if run_changed:
             frontier_runs += 1
 
-        # Backward frontier.  Only the projected first onset needs to match the
-        # current editor cue; a mismatch stops before crossing a preceding song/ad-lib.
         first = anchors[0]
         pos = positions[first.canonical_ordinal] - 1
         cue_index = first.cue_ordinal - 1
@@ -626,19 +683,18 @@ def reconcile_text_from_sequence_projection(
             if cue_index in global_strong:
                 break
             cue = cues[cue_index]
+            original = output_by_cue.get(cue.ordinal)
+            if original is None or _protected(original):
+                break
             cue_start, _ = _cue_times(cue)
             if cue_index + 1 < len(cues):
                 next_start, _ = _cue_times(cues[cue_index + 1])
                 if cue_start >= next_start:
                     break
-            available = rows[: pos + 1]
-            choice = _frontier_choice(cue, available, model, None, reverse=True)
+            choice = _frontier_choice(cue, rows[: pos + 1], model, None, reverse=True)
             if choice is None:
                 break
             assigned, _ = choice
-            original = output_by_cue.get(cue.ordinal)
-            if original is None:
-                break
             decision = _projected_decision(
                 cue,
                 original,
