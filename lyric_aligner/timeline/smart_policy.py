@@ -1,12 +1,9 @@
 """Smart v1.1 production policy layered on Anchor Timeline Repair v1.
 
-The v1 timing model remains the deterministic no-audio engine. This module
-hardens production semantics around it: inability to validate is escalated,
-B-grade identities may be confirmed only by an already-ready A-anchor model,
-combined repairs may not worsen subtitle overlaps, BPM-derived rates stay soft
-while exact DAW stretch ratios may remain hard priors, and low-similarity text
-reviews may be recovered from independently-ready timing evidence through
-bilateral interior anchors or stricter one-sided song-edge anchors.
+The strict A-anchor affine model remains the only automatic timing-mutation
+authority. Smart may additionally use bounded local-bilateral and robust exact-
+consensus affine evidence for TEXT recovery only. Those recovery models never
+promote their recovered cues into primary timing anchors.
 """
 
 from __future__ import annotations
@@ -31,10 +28,21 @@ from lyric_aligner.timeline.anchor_repair import (
     build_anchor_timing_plan,
 )
 from lyric_aligner.timeline.text_recovery import recover_text_reviews_from_timing
+from lyric_aligner.timeline.text_recovery_consensus import (
+    recover_text_reviews_from_consensus,
+)
 
 SMART_SCHEMA_VERSION = "smart-1.1"
-SMART_POLICY_ID = "smart-validation-policy-2026-08-19-v1.1.3"
+SMART_POLICY_ID = "smart-validation-policy-2026-08-19-v1.1.4"
 _BPM_COMPATIBILITY_TOLERANCE = 0.03
+
+_RECOVERY_REASONS = {
+    "timing_model_confirms_canonical_sequence",
+    "timing_model_confirms_song_edge_canonical",
+    "local_bilateral_span_preserves_editor_segmentation",
+    "local_bilateral_timing_confirms_canonical_sequence",
+    "exact_consensus_timing_confirms_mapped_canonical",
+}
 
 
 def _creates_new_overlap(
@@ -208,7 +216,11 @@ def _harden_bpm_conflicts(
 
     output: list[TimingDecision] = []
     for decision in decisions:
-        item = compatibility.get(decision.source_ordinal) if decision.source_ordinal is not None else None
+        item = (
+            compatibility.get(decision.source_ordinal)
+            if decision.source_ordinal is not None
+            else None
+        )
         if decision.action == "repair" and item is not None and not item[1]:
             decision = replace(
                 decision,
@@ -230,7 +242,9 @@ def _model_payload(
     for model in models:
         row = asdict(model)
         prior = metadata.get(model.source_ordinal)
-        prior_provenance = str(prior.get("provenance") or "unknown") if prior else "none"
+        prior_provenance = (
+            str(prior.get("provenance") or "unknown") if prior else "none"
+        )
         row["rate_prior_provenance"] = prior_provenance
         row["rate_prior_value"] = prior.get("value") if prior else None
         if model.rate_source == "robust_anchor_estimate":
@@ -250,19 +264,42 @@ def _model_payload(
     return rows
 
 
-def _text_payload(text_decisions) -> list[dict[str, object]]:
-    return [
-        {
-            "cue_ordinal": item.cue_ordinal,
-            "canonical_ordinal": item.canonical_ordinal,
-            "cue_span": list(item.cue_span) if item.cue_span else None,
-            "canonical_span": list(item.canonical_span) if item.canonical_span else None,
-            "score": item.score,
-            "action": item.action,
-            "reason": item.reason,
-        }
-        for item in text_decisions
-    ]
+def _text_payload(
+    text_decisions,
+    *,
+    for_timing: bool = False,
+) -> list[dict[str, object]]:
+    rows: list[dict[str, object]] = []
+    for item in text_decisions:
+        score = float(item.score)
+        if for_timing and item.reason in _RECOVERY_REASONS:
+            # Recovered text may be canonical-correct, but it must never become
+            # a primary A/B timing anchor merely because text was recovered.
+            score = min(score, 0.919)
+        rows.append(
+            {
+                "cue_ordinal": item.cue_ordinal,
+                "canonical_ordinal": item.canonical_ordinal,
+                "cue_span": list(item.cue_span) if item.cue_span else None,
+                "canonical_span": (
+                    list(item.canonical_span) if item.canonical_span else None
+                ),
+                "score": score,
+                "action": item.action,
+                "reason": item.reason,
+            }
+        )
+    return rows
+
+
+def _recovery_model_pool(strict_models, consensus_models):
+    """Return models usable for TEXT recovery, preferring strict A models."""
+
+    by_source = {item.source_ordinal: item for item in consensus_models}
+    for item in strict_models:
+        if item.status == "ready":
+            by_source[item.source_ordinal] = item
+    return [by_source[key] for key in sorted(by_source)]
 
 
 def smart_repair_srt_text_v11(
@@ -274,7 +311,7 @@ def smart_repair_srt_text_v11(
     rate_prior_by_source: Mapping[int, float] | None = None,
     rate_prior_metadata_by_source: Mapping[int, Mapping[str, object]] | None = None,
 ) -> tuple[str, dict[str, object]]:
-    """Run text repair + Smart timing with v1.1 production semantics."""
+    """Run Standard text repair followed by Smart v1.1.4 no-audio policy."""
 
     parts, cues = parse_srt_text(source_text)
     replacements, text_decisions, operations = build_repair_plan_v2(
@@ -286,32 +323,58 @@ def smart_repair_srt_text_v11(
         item.action == "review" for item in text_decisions
     )
 
-    hard_priors = _hard_rate_priors(rate_prior_by_source, rate_prior_metadata_by_source)
+    hard_priors = _hard_rate_priors(
+        rate_prior_by_source,
+        rate_prior_metadata_by_source,
+    )
+
+    # This is the only model family that may later authorize timing mutation.
     initial_timing, initial_models = build_anchor_timing_plan(
         cues,
         timed_canonical,
-        _text_payload(text_decisions),
+        _text_payload(text_decisions, for_timing=True),
         rate_prior_by_source=hard_priors,
     )
     del initial_timing
 
-    recovery_replacements, text_decisions, recovery = recover_text_reviews_from_timing(
+    # Text-only v1.1.4 stage. Local two-boundary interpolation and robust exact
+    # consensus may recover canonical text without weakening the strict A model.
+    (
+        consensus_replacements,
+        text_decisions,
+        consensus_models,
+        consensus,
+    ) = recover_text_reviews_from_consensus(
         cues,
         timed_canonical,
         text_decisions,
-        initial_models,
     )
-    replacements.update(recovery_replacements)
-    text_repaired = render_repaired_srt(parts, cues, replacements)
-    text_payload = _text_payload(text_decisions)
+    replacements.update(consensus_replacements)
 
+    # Existing bounded bilateral/edge recovery may consume either a strict A
+    # model or, if unavailable, a high-quality exact-consensus TEXT model.
+    recovery_models = _recovery_model_pool(initial_models, consensus_models)
+    strict_replacements, text_decisions, recovery = recover_text_reviews_from_timing(
+        cues,
+        timed_canonical,
+        text_decisions,
+        recovery_models,
+    )
+    replacements.update(strict_replacements)
+    text_repaired = render_repaired_srt(parts, cues, replacements)
+
+    # Recovered cues are score-capped in the timing-only payload, guaranteeing
+    # that text recovery cannot promote itself into A/B primary timing evidence.
     raw_timing, models = build_anchor_timing_plan(
         cues,
         timed_canonical,
-        text_payload,
+        _text_payload(text_decisions, for_timing=True),
         rate_prior_by_source=hard_priors,
     )
-    bpm_compatibility = _bpm_prior_compatibility(models, rate_prior_metadata_by_source)
+    bpm_compatibility = _bpm_prior_compatibility(
+        models,
+        rate_prior_metadata_by_source,
+    )
     timing = _harden_timing_decisions(cues, raw_timing)
     timing = _harden_bpm_conflicts(timing, bpm_compatibility)
     timing = _harden_combined_timeline(cues, timing)
@@ -319,6 +382,15 @@ def smart_repair_srt_text_v11(
 
     unresolved_count = sum(item.action == "review" for item in timing)
     text_review_count = sum(item.action == "review" for item in text_decisions)
+    consensus_recovery_count = (
+        consensus.local_bilateral_cue_count
+        + consensus.consensus_timing_cue_count
+    )
+    total_recovery_count = consensus_recovery_count + recovery.resolved_cue_count
+    total_recovery_blocks = (
+        consensus.local_bilateral_block_count + recovery.resolved_block_count
+    )
+
     report: dict[str, object] = {
         "schema_version": SMART_SCHEMA_VERSION,
         "policy_id": SMART_POLICY_ID,
@@ -326,22 +398,45 @@ def smart_repair_srt_text_v11(
         "audio_read": False,
         "cue_count": len(cues),
         "canonical_line_count": len(timed_canonical),
-        "word_timed_canonical_count": sum(item.has_word_timing for item in timed_canonical),
-        "text_replacement_count": sum(item.action == "replace" for item in text_decisions),
+        "word_timed_canonical_count": sum(
+            item.has_word_timing for item in timed_canonical
+        ),
+        "text_replacement_count": sum(
+            item.action == "replace" for item in text_decisions
+        ),
         "text_review_count_before_timing_recovery": text_review_count_before_recovery,
-        "text_timing_recovery_count": recovery.resolved_cue_count,
-        "text_timing_recovery_block_count": recovery.resolved_block_count,
+        "text_timing_recovery_count": total_recovery_count,
+        "text_timing_recovery_block_count": total_recovery_blocks,
+        "text_local_bilateral_recovery_count": consensus.local_bilateral_cue_count,
+        "text_local_bilateral_recovery_block_count": (
+            consensus.local_bilateral_block_count
+        ),
+        "text_local_segmentation_preserve_count": (
+            consensus.local_segmentation_preserve_count
+        ),
+        "text_local_timing_partition_count": consensus.local_timing_partition_count,
+        "text_consensus_timing_recovery_count": consensus.consensus_timing_cue_count,
+        "text_consensus_model_count": consensus.consensus_model_count,
+        "text_strict_timing_recovery_count": recovery.resolved_cue_count,
         "text_edge_timing_recovery_count": recovery.resolved_edge_cue_count,
         "text_edge_timing_recovery_block_count": recovery.resolved_edge_block_count,
         "text_review_count": text_review_count,
         "timing_repair_count": sum(item.action == "repair" for item in timing),
         "timing_review_count": unresolved_count,
-        "timing_validated_preserve_count": sum(item.action == "preserve" for item in timing),
+        "timing_validated_preserve_count": sum(
+            item.action == "preserve" for item in timing
+        ),
         "pro_escalation_required": bool(unresolved_count or text_review_count),
-        "status": "review_required" if (unresolved_count or text_review_count) else "ready",
-        "models": _model_payload(models, rate_prior_metadata_by_source, bpm_compatibility),
+        "status": (
+            "review_required" if (unresolved_count or text_review_count) else "ready"
+        ),
+        "models": _model_payload(
+            models,
+            rate_prior_metadata_by_source,
+            bpm_compatibility,
+        ),
         "timing_decisions": [asdict(item) for item in timing],
-        "text_decisions": text_payload,
+        "text_decisions": _text_payload(text_decisions),
         "alignment_span_count": sum(item.kind == "match" for item in operations),
     }
     return rendered, report
