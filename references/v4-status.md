@@ -27,9 +27,21 @@ release_gate_eligible = false
 
 P4 的 `policy_calibrated=true` 仅证明某个 cue-trust candidate 已经过 strict calibration + independent blind；它不改变 P9 authority，也不授权自动改 SRT。P5 的 `proposal_inputs_ready` 也只表示 formal inputs 已就绪。
 
-## 2. Text Repair V2
+## 2. Text Repair V2.1
 
-已成立并进入主线。适用于“规范歌词可信、剪映时间轴冻结、只修文字”：不读取 audio，不改变 cue count/number/start/end；支持确定性错字、漏字、多字与 bounded segmentation-span repair；不确定时 `review_required`。
+V2 已成立并进入主线；V2.1 是不扩大责任范围的 hardening。适用于“规范歌词可信、剪映时间轴冻结、只修文字”：不读取 audio，不改变 cue count/number/start/end；支持确定性错字、漏字、多字与 bounded segmentation-span repair；不确定时 `review_required`。
+
+V2.1 当前生产事实：
+
+- timestamped 作词/作曲/制作等 metadata 在去时间标签后再次过滤；
+- canonical 单文件 timed/untimed 正文混合直接 fail closed；纯 timed 与纯 untimed 输入继续支持；
+- insert 落 cue 边界、空格边界或换行边界时不猜归属，保持原字幕并 review；
+- unmatched canonical occurrence 改为 coverage warning，不单独把 cue repair 判失败；`review_count` 只统计 cue-level review；
+- gap 邻近的低置信度匹配、附近相似歌词歧义、会清空既有 cue 的 segmentation 继续 fail closed；
+- unique exact anchor chain 已从 O(n²) 改为稳定 tie-break 的 O(n log n)，并覆盖 2000-cue regression；
+- core API 可用于实验阈值，但正式 single/batch CLI 不允许 `auto-threshold < 0.72`；batch 在写文件前预检所有 job threshold；
+- report schema = `2.1`，batch summary schema = `1.1`；
+- 输出后仍重新解析并强制验证 cue count + number + timing signature 完全不变。
 
 ## 3. Partial Timeline Repair P1–P4
 
@@ -51,7 +63,7 @@ P9 `LOW/MEDIUM/HIGH/CONFLICT` 只做 diagnostics；HIGH 不自动 trusted；CONF
 
 ## 4. P5 Doctor/readiness
 
-P5 代码已实现，合并只允许发生在最终 exact head 的 fast-core + full validate gate 全绿之后。
+P5 代码已实现并合入主线。
 
 新增：
 
@@ -110,9 +122,13 @@ formal calibrated decision artifact valid
 
 ## 6. 代码层完成后的真实下一步
 
-P5 通过最终 CI 并合入后，当前代码层安全/readiness 骨架完成。下一阶段不是继续编 synthetic threshold，而是在 private real-song 数据上：
+Text Repair V2.1 与 Partial Timeline Repair P1–P5 代码层安全骨架完成后，下一阶段不是继续编 synthetic threshold，而是在 private real-song 数据上：
 
 ```text
+Text Repair V2.1 real production batch
+-> 记录 cue review / coverage warning / false repair
+
+以及 timing 路径：
 strict calibration
 -> independent blind
 -> real trust lock
