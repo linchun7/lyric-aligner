@@ -15,7 +15,10 @@ from lyric_aligner.text_repair import (
 
 def canonical(*lines: str) -> list[CanonicalLine]:
     from lyric_aligner.text_repair import _normalize_for_match
-    return [CanonicalLine(i, "song.lrc", text, _normalize_for_match(text)) for i, text in enumerate(lines)]
+    return [
+        CanonicalLine(i, "song.lrc", text, _normalize_for_match(text))
+        for i, text in enumerate(lines)
+    ]
 
 
 class TextRepairV2Tests(unittest.TestCase):
@@ -28,7 +31,10 @@ class TextRepairV2Tests(unittest.TestCase):
     def test_missing_character_is_inserted_without_timing_change(self):
         source = "1\n00:00:01,000 --> 00:00:02,000\n我真的爱\n"
         output, report = repair_srt_text(source, canonical("我真的爱你"))
-        self.assertEqual(output, "1\n00:00:01,000 --> 00:00:02,000\n我真的爱你\n")
+        self.assertEqual(
+            output,
+            "1\n00:00:01,000 --> 00:00:02,000\n我真的爱你\n",
+        )
         self.assertEqual(report["status"], "ready")
         self.assertGreater(report["edit_counts"]["insert"], 0)
         self.assert_timeline_unchanged(source, output)
@@ -51,10 +57,41 @@ class TextRepairV2Tests(unittest.TestCase):
         self.assertEqual(report["segmentation_span_count"], 1)
         self.assert_timeline_unchanged(source, output)
 
+    def test_three_editor_cues_can_match_one_canonical_line_when_near_exact(self):
+        source = (
+            "1\n00:00:01,000 --> 00:00:02,000\n我曾经\n\n"
+            "2\n00:00:02,000 --> 00:00:03,000\n跨过山\n\n"
+            "3\n00:00:03,000 --> 00:00:04,000\n和大海\n"
+        )
+        output, report = repair_srt_text(source, canonical("我曾经跨过山和大海"))
+        self.assertEqual(output, source)
+        self.assertEqual(report["status"], "ready")
+        self.assertEqual(report["segmentation_span_count"], 1)
+        self.assert_timeline_unchanged(source, output)
+
     def test_one_editor_cue_can_match_two_canonical_lines(self):
         source = "1\n00:00:01,000 --> 00:00:03,000\n我曾经跨过山和大海也穿过人山人海\n"
         output, report = repair_srt_text(
-            source, canonical("我曾经跨过山和大海", "也穿过人山人海")
+            source,
+            canonical("我曾经跨过山和大海", "也穿过人山人海"),
+        )
+        self.assertEqual(output, source)
+        self.assertEqual(report["status"], "ready")
+        self.assertEqual(report["segmentation_span_count"], 1)
+        self.assert_timeline_unchanged(source, output)
+
+    def test_one_editor_cue_can_match_three_canonical_lines_when_near_exact(self):
+        source = (
+            "1\n00:00:01,000 --> 00:00:04,000\n"
+            "我曾经跨过山和大海也穿过人山人海看过许多风景\n"
+        )
+        output, report = repair_srt_text(
+            source,
+            canonical(
+                "我曾经跨过山和大海",
+                "也穿过人山人海",
+                "看过许多风景",
+            ),
         )
         self.assertEqual(output, source)
         self.assertEqual(report["status"], "ready")
@@ -67,7 +104,8 @@ class TextRepairV2Tests(unittest.TestCase):
             "2\n00:00:02,000 --> 00:00:03,000\n和大海也穿过人山人海\n"
         )
         output, report = repair_srt_text(
-            source, canonical("我曾经跨过山和大海", "也穿过人山人海")
+            source,
+            canonical("我曾经跨过山和大海", "也穿过人山人海"),
         )
         self.assertEqual(output, source)
         self.assertEqual(report["status"], "ready")
@@ -80,7 +118,8 @@ class TextRepairV2Tests(unittest.TestCase):
             "2\n00:00:02,000 --> 00:00:03,000\n和大海也穿过人山人海\n"
         )
         output, report = repair_srt_text(
-            source, canonical("我曾经跨过山和大海", "也穿过人山人海")
+            source,
+            canonical("我曾经跨过山和大海", "也穿过人山人海"),
         )
         self.assertIn("我曾经跨过山", output)
         self.assertNotIn("杉", output)
@@ -90,7 +129,10 @@ class TextRepairV2Tests(unittest.TestCase):
     def test_punctuation_line_breaks_and_music_marks_survive_insert(self):
         source = "1\n00:00:01,000 --> 00:00:03,000\n♪ 你，真\n的爱 ♪\n"
         output, report = repair_srt_text(source, canonical("你真的很爱"))
-        self.assertEqual(output, "1\n00:00:01,000 --> 00:00:03,000\n♪ 你，真\n的很爱 ♪\n")
+        self.assertEqual(
+            output,
+            "1\n00:00:01,000 --> 00:00:03,000\n♪ 你，真\n的很爱 ♪\n",
+        )
         self.assertEqual(report["status"], "ready")
         self.assert_timeline_unchanged(source, output)
 
@@ -99,7 +141,10 @@ class TextRepairV2Tests(unittest.TestCase):
             "1\n00:00:01,000 --> 00:00:02,000\n第一句\n\n"
             "2\n00:00:03,000 --> 00:00:04,000\n第三句\n"
         )
-        output, report = repair_srt_text(source, canonical("第一句", "第二句", "第三句"))
+        output, report = repair_srt_text(
+            source,
+            canonical("第一句", "第二句", "第三句"),
+        )
         self.assertEqual(output, source)
         self.assertEqual(report["status"], "review_required")
         self.assertEqual(report["unmatched_canonical_count"], 1)
@@ -115,10 +160,22 @@ class TextRepairV2Tests(unittest.TestCase):
             root = Path(directory)
             normal = root / "normal.lrc"
             faster = root / "faster.lrc"
-            normal.write_text("[00:10.00]这是第一句歌词\n[00:20.00]这是第二句歌词\n", encoding="utf-8")
-            faster.write_text("[00:10.00]这是第一句歌词\n[00:15.00]这是第二句歌词\n", encoding="utf-8")
-            normal_output, normal_report = repair_srt_text(source, parse_canonical_files([normal]))
-            faster_output, faster_report = repair_srt_text(source, parse_canonical_files([faster]))
+            normal.write_text(
+                "[00:10.00]这是第一句歌词\n[00:20.00]这是第二句歌词\n",
+                encoding="utf-8",
+            )
+            faster.write_text(
+                "[00:10.00]这是第一句歌词\n[00:15.00]这是第二句歌词\n",
+                encoding="utf-8",
+            )
+            normal_output, normal_report = repair_srt_text(
+                source,
+                parse_canonical_files([normal]),
+            )
+            faster_output, faster_report = repair_srt_text(
+                source,
+                parse_canonical_files([faster]),
+            )
 
         self.assertEqual(normal_output, faster_output)
         self.assertIn("这是第一句歌词", normal_output)
