@@ -42,17 +42,17 @@ same canonical text/order, Smart keeps the editor cue ownership. Moving words
 between otherwise-correct cues requires stronger boundary evidence than a line
 LRC break.
 
-The 190 regression that motivated this contract is structurally equivalent to:
+Public regression uses synthetic but structurally equivalent text:
 
 ```text
 editor:
-  为他而学着唱的情歌
-  他早忘了但是还在你的播放
-  列表里面排到前几位
+  第一段歌词到这里
+  下一小句仍在同一画面
+  最后几个字继续播放
 
 canonical LRC:
-  为他而学着唱的情歌他早忘了
-  但是还在你的播放列表里面排到前几位
+  第一段歌词到这里下一小句
+  仍在同一画面最后几个字继续播放
 ```
 
 The continuous lyric text/order is the same; only grouping differs. Standard and
@@ -88,10 +88,10 @@ timing_model_confirms_canonical_sequence
 
 #### Song-edge one-sided recovery — v1.1.3
 
-A real 190 song-start failure showed that an editor-only ad-lib can remove the
-left anchor even though the first canonical lyric cue is timing-consistent and
-the rest of the song supplies a stable affine model. v1.1.3 therefore adds a
-narrower one-sided path instead of lowering lexical thresholds.
+A real production song-edge failure showed that an editor-only ad-lib can remove
+the left/right anchor even though the first/last canonical lyric cue is timing-
+consistent and the rest of the song supplies a stable affine model. v1.1.3 adds
+a narrower one-sided path instead of lowering lexical thresholds.
 
 It requires all of the following:
 
