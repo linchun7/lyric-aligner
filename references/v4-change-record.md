@@ -420,7 +420,7 @@ Unit tests 覆盖 one-process/two-jobs、selected subset、empty selection、mis
 
 ## 2026-08-19 — Text Repair V2
 
-高频真实生产中，规范歌词通常可信、剪映 SRT 时间轴要求冻结，但文本错误不只包含等长错字，还包含漏字、多字，以及剪映断句比 LRC 多、少或位置不同。旧 fast path 的“仅 1:1 + 等长 lexical replacement”会把这些明显可确定的文本问题大量推给人工复核。
+高频真实生产中，规范歌词通常可信、剪映 SRT 时间轴要求冻结，但文本错误不只包含等长错字，还包含漏字、多字，以及剪映断句比 LRC 多、少、位置不同，甚至连续 3–4 段的极端分句差异。旧 fast path 的“仅 1:1 + 等长 lexical replacement”会把这些明显可确定的文本问题大量推给人工复核。
 
 本轮把该路径升级为确定性的 Text Repair V2：
 
@@ -431,16 +431,19 @@ scripts/v4_text_repair_batch.py
 scripts/test_v4_text_repair.py
 scripts/test_v4_text_repair_hardening.py
 scripts/test_v4_text_repair_v2.py
+scripts/test_v4_text_repair_batch.py
 ```
 
 ### V2 matching / edit contract
 
-- canonical lyric 仍是 final text/order truth；SRT cue count、index line、start/end timing 全部 immutable；
-- monotonic DP 增加受限 span：`1↔1`、`1↔2`、`2↔1`、`2↔2`，最大只跨 2 个 cue/2 行 lyric，并禁止 canonical span 跨不同歌词文件；
-- span 采用 concatenated normalized text 评分，因此“剪映多断一句/少断一句/断句点与 LRC 不同”不再天然等于错误；只要合并后的 lexical sequence 高置信一致，就保留现有 cue boundary 和 timing；
-- span 内使用确定性最小字符 edit script，允许 `replace / insert / delete`，从而修复普通错字、漏字、多字；新增字符被投影到已有 cue lexical 边界，删除字符只删除 lexical content，不删除源标点/空格/换行；
-- NFKC/casefold matching 继续忽略 punctuation/whitespace，并进一步忽略 Unicode control/format 与常见 `♪♫♬♩★☆` 装饰符；这些布局/装饰字符在输出中原样保留；
-- span 低相似度不会被用于吞掉 canonical gap；真实漏掉整句歌词继续进入 `unmatched_canonical`；subtitle gap、gap 邻域弱匹配、近似重复歌词竞争和大结构差异继续 fail closed 为 `review_required`。
+- canonical lyric 仍是 final text/order truth；SRT cue count、index line、start/end timing 全部 immutable；输出后重新解析并逐 cue 比较 timeline signature，任何变化都 fail closed；
+- 长字幕先寻找长度足够、在 cue/canonical 两侧都唯一的 exact normalized 1:1 anchors，并取最长单调 anchor chain；锚点之间才执行局部 banded monotonic DP。这样既降低长文件 span matching 的计算量，也限制局部漏行把后续整段拖偏的风险；局部 band 无法到达终点时只逐级扩大到必要范围，而不是默认整首全矩阵；
+- 局部 span 最大为 4 cue / 4 canonical lines，且 canonical span 禁止跨不同歌词文件/歌曲。常见 span（最大 2 段）要求较高相似度与长度一致性；3–4 段只在拼接后近乎完全一致时放行，因此可以覆盖更极端的剪映多断句/少断句，同时不把大跨度 fuzzy guess 当自动修复；
+- span 采用 concatenated normalized text 评分，因此“剪映多断一句/少断一句/断句点与 LRC 不同”不再天然等于错误；只要 lexical sequence 高置信一致，就保留现有 cue boundary 和 timing；
+- span 内使用确定性最小字符 edit script，允许 `replace / insert / delete`，从而修复普通错字、漏字、多字；新增字符被投影到已有 cue lexical ownership，删除字符只删除 lexical content，不删除源标点/空格/换行；若多 cue 重分配会使某个现有 cue 的 lexical content 变空，则不自动处理而进入 review；
+- NFKC/casefold matching 忽略 punctuation/whitespace、Unicode control/format 与常见 `♪♫♬♩★☆` 装饰符；这些布局/装饰字符在输出中原样保留；
+- span 低相似度不会被用于吞掉 canonical gap；真实漏掉整句歌词继续进入 `unmatched_canonical`；subtitle gap、gap 邻域弱匹配、近似重复歌词竞争、会清空已有 cue 的重分配和大结构差异继续 fail closed 为 `review_required`；
+- Text Repair V2 不读取音频，也不依据 LRC timestamp 的绝对间距写回 SRT 时间。回归测试使用同一歌词顺序、不同 LRC timestamp spacing 验证输出文字一致且 SRT timeline 完全不变，因此 BPM 加速/减速在本模式中不会改变文字修复规则。
 
 ### Report / batch
 
@@ -455,10 +458,12 @@ segmentation_span_count
 cue_count_unchanged
 ```
 
-`scripts/v4_text_repair_batch.py` 支持 JSON manifest 批量运行独立任务；每个 job 独立报告 ready/review/error，任何单 job 失败不会把其他 job 误标为成功。单任务 `v4_text_repair.py` 继续保持：ready=0，review_required=2；batch 为 all-ready=0、存在 review=2、存在 error=3。
+`scripts/v4_text_repair_batch.py` 支持 JSON manifest 批量运行独立任务；每个普通 job error/review 独立报告，单个失败不会阻止后续无冲突 job 运行。为避免批量顺序污染，正式写文件前先对整个 manifest 做 path-ownership preflight：duplicate job id、重复 output/report/summary 路径、或任一 output/report/summary 覆盖任何 job 的 source SRT/canonical input 都立即 fail closed，尚未开始写输出。单任务 `v4_text_repair.py` 继续保持：ready=0，review_required=2；batch 为 all-ready=0、存在 review=2、存在 error=3。
 
 ### Safety / next phase
 
-本轮 **不读取音频、不修改 timing、不声称解决部分时间轴错误**。下一轮 Partial Timeline Repair 会锁死已确认可信的 cue，只对不可信局部使用声学 evidence / Source-to-Mix 重对齐。由于真实素材中 BPM 加速/减速是常态，该能力必须默认基于 `AFFINE / PIECEWISE_RATE / CUT_AWARE` 的 Source-to-Mix timewarp 工作，继续遵守 `rate change != cut`，不能用原曲绝对时间直接覆盖剪映 mix-time。
+本轮 **不读取音频、不修改 timing、不声称解决部分时间轴错误**。BPM/rate change 只在这里做“文字路径无感”的契约与回归保护，不把音频/timewarp 逻辑塞进高频 text-only 工具。
 
-真实推广前还应建立私有 Text Repair benchmark：`剪映原始 SRT + canonical + 人工终稿`，首要指标是 timeline change=0、false auto correction=0，其次才是 auto coverage 与 review rate。
+下一轮 Partial Timeline Repair 会锁死已确认可信的 cue，只对不可信局部使用声学 evidence / Source-to-Mix 重对齐。由于真实素材中 BPM 加速/减速是常态，该能力必须从第一版就把变速当默认场景，基于 `AFFINE / PIECEWISE_RATE / CUT_AWARE` 的 Source-to-Mix timewarp 工作，继续遵守 `rate change != cut`；不能把原曲 LRC/source absolute time 直接覆盖剪映 mix-time。开头哼唱、说唱、多语言夹杂等无法由 editor timing 可靠覆盖的区域也属于下一轮局部候选，而不是本轮 text-only 自动改时范围。
+
+真实推广前还应建立私有 Text Repair benchmark：`剪映原始 SRT + canonical + 人工终稿`，首要指标是 timeline change=0、false auto correction=0，其次才是 auto coverage、review rate 与长文件耗时。
