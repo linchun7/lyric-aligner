@@ -35,6 +35,7 @@ class CanonicalLine:
     source: str
     text: str
     normalized: str
+    source_ordinal: int = 0
 
 
 @dataclass(frozen=True)
@@ -116,7 +117,7 @@ def _lrc_timestamp_ms(match: re.Match[str]) -> int:
 def parse_canonical_files(paths: Iterable[Path]) -> list[CanonicalLine]:
     """Parse canonical occurrences in file order and timed order within each file."""
     lines: list[CanonicalLine] = []
-    for path in paths:
+    for source_ordinal, path in enumerate(paths):
         text, _ = _read_utf8(path)
         entries: list[tuple[int | None, int, str, str]] = []
         sequence = 0
@@ -153,6 +154,7 @@ def parse_canonical_files(paths: Iterable[Path]) -> list[CanonicalLine]:
                     source=path.name,
                     text=cleaned,
                     normalized=normalized,
+                    source_ordinal=source_ordinal,
                 )
             )
     if not lines:
@@ -214,7 +216,10 @@ def _canonical_span_allowed(
     start: int,
     end: int,
 ) -> bool:
-    return end - start <= 1 or len({line.source for line in canonical[start:end]}) == 1
+    return (
+        end - start <= 1
+        or len({line.source_ordinal for line in canonical[start:end]}) == 1
+    )
 
 
 def _span_score_allowed(
