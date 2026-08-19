@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any
 
 from lyric_aligner.io.text import read_task_text
-from lyric_aligner.text.normalization import META_RE, clean_text
+from lyric_aligner.text.normalization import clean_text, is_metadata_text
 
 LRC_RE = re.compile(r"\[(\d{1,3}):(\d{2})(?:[.:](\d{1,3}))?\](.*)")
 ENHANCED_TOKEN_RE = re.compile(r"<(\d{1,3}):(\d{2})(?:[.:](\d{1,3}))?>")
@@ -119,6 +119,12 @@ def _qrc(line_start_ms: int, line_duration_ms: int, body: str) -> tuple[str, tup
     return clean_text("".join(pieces)), tuple(tokens)
 
 
+def _title_like_intro(start_ms: int, text: str) -> bool:
+    """Recognize the common ``artist - title`` first timed row in consumer LRC."""
+
+    return start_ms <= 1000 and " - " in text
+
+
 def parse_canonical_lyrics(
     path: Path,
     *,
@@ -152,8 +158,6 @@ def parse_canonical_lyrics(
             raise CanonicalLyricError(f"invalid LRC timestamp at line {line_number}") from exc
         text, tokens = _enhanced(body.strip())
         if not text:
-            # Role preflight also drops empty timestamp alternatives, preserving
-            # the same index space.
             continue
         groups.setdefault(start, []).append(
             _Alternative(text, tokens, "enhanced_lrc" if tokens else "line_lrc")
@@ -166,12 +170,14 @@ def parse_canonical_lyrics(
             lexical = [
                 index
                 for index, item in enumerate(alternatives)
-                if item.text and not META_RE.match(item.text)
+                if item.text
+                and not is_metadata_text(item.text)
+                and not _title_like_intro(start, item.text)
             ]
-            # Timestamped credits/metadata are common in consumer LRC files and
-            # are not canonical lyric alternatives. With no explicit TrackAsset
-            # selection, a metadata-only timestamp group is therefore ignored.
-            # Multiple lexical alternatives remain ambiguous and fail closed.
+            # Timestamped credits/role labels/title rows are common in consumer
+            # LRC files and are not canonical lyric alternatives. Metadata-only
+            # groups are ignored when no explicit TrackAsset selection exists;
+            # true multiple lexical alternatives still fail closed.
             if not lexical:
                 continue
             if len(lexical) != 1:
@@ -184,7 +190,11 @@ def parse_canonical_lyrics(
                 f"canonical alternative index {selected_index} is out of range at {start}ms"
             )
         selected = alternatives[selected_index]
-        if not selected.text or META_RE.match(selected.text):
+        if (
+            not selected.text
+            or is_metadata_text(selected.text)
+            or _title_like_intro(start, selected.text)
+        ):
             raise CanonicalLyricError(
                 f"canonical selection points to metadata/blank text at {start}ms"
             )
