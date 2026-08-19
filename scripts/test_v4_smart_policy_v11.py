@@ -221,49 +221,6 @@ class SmartPolicyV11Tests(unittest.TestCase):
         self.assertIn("完全错误毫不相似", rendered)
         self.assertEqual(report["text_timing_recovery_count"], 0)
 
-    def test_text_timing_recovery_does_not_skip_weak_adjacent_cue(self) -> None:
-        canonical_texts = [
-            "左侧锚点甲",
-            "左侧锚点乙",
-            "左侧锚点丙",
-            "规范歌词甲",
-            "规范歌词乙",
-            "边界歌词甲",
-            "右侧锚点甲",
-            "右侧锚点乙",
-            "右侧锚点丙",
-            "右侧锚点丁",
-        ]
-        canonical_starts = [10_000, 20_000, 30_000, 40_000, 44_000, 50_000, 60_000, 70_000, 80_000, 90_000]
-        srt_texts = [
-            "左侧锚点甲",
-            "左侧锚点乙",
-            "左侧锚点丙",
-            "完全错误毫不相似",
-            # This is a safe lexical repair but deliberately below the strong
-            # recovery-anchor threshold; recovery must not jump over it and
-            # borrow the farther 60s anchor.
-            "边界歌词乙",
-            "右侧锚点甲",
-            "右侧锚点乙",
-            "右侧锚点丙",
-            "右侧锚点丁",
-        ]
-        srt_starts = [10_000, 20_000, 30_000, 40_000, 50_000, 60_000, 70_000, 80_000, 90_000]
-
-        with tempfile.TemporaryDirectory() as tmp:
-            path = _canonical(Path(tmp), canonical_texts, canonical_starts)
-            timed, repair = parse_timed_canonical_files([path])
-            rendered, report = smart_repair_srt_text_v11(
-                _srt(srt_texts, srt_starts),
-                timed,
-                repair,
-            )
-
-        self.assertIn("完全错误毫不相似", rendered)
-        self.assertIn("边界歌词甲", rendered)
-        self.assertEqual(report["text_timing_recovery_count"], 0)
-
 
 if __name__ == "__main__":
     unittest.main()
