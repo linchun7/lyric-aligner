@@ -15,6 +15,10 @@ if str(REPOSITORY_ROOT) not in sys.path:
     sys.path.insert(0, str(REPOSITORY_ROOT))
 
 from lyric_aligner import __version__
+from lyric_aligner.alignment.forced_batch import (
+    FORCED_ALIGNMENT_BATCH_PROTOCOL_VERSION,
+    execute_external_forced_alignment_batch,
+)
 from lyric_aligner.alignment.forced_executor import (
     FORCED_ALIGNMENT_PROTOCOL_VERSION,
     ExternalForcedAlignmentConfig,
@@ -197,6 +201,15 @@ def main() -> int:
     parser.add_argument("--model-id", required=True)
     parser.add_argument("--model-revision", required=True)
     parser.add_argument("--timeout-seconds", type=float, default=120.0)
+    parser.add_argument(
+        "--execution-mode",
+        choices=("single", "batch"),
+        default="single",
+        help=(
+            "single keeps protocol 1.0 one-process-per-job behavior; batch uses "
+            "protocol 1.1 and one process for all selected jobs"
+        ),
+    )
     parser.add_argument("--job-id", action="append", default=None)
     parser.add_argument("--out", required=True, type=Path)
     parser.add_argument("--artifact-out", required=True, type=Path)
@@ -273,13 +286,29 @@ def main() -> int:
             model_revision=args.model_revision,
             timeout_seconds=args.timeout_seconds,
         )
-        evidence = execute_external_forced_alignment_jobs(
-            plan=plan,
-            bindings=bindings,
-            canonical_text_by_job_id=canonical_by_job,
-            config=config,
-            selected_job_ids=args.job_id,
-        )
+        if args.execution_mode == "batch":
+            evidence = execute_external_forced_alignment_batch(
+                plan=plan,
+                bindings=bindings,
+                canonical_text_by_job_id=canonical_by_job,
+                config=config,
+                selected_job_ids=args.job_id,
+            )
+            protocol_version = FORCED_ALIGNMENT_BATCH_PROTOCOL_VERSION
+        else:
+            evidence = execute_external_forced_alignment_jobs(
+                plan=plan,
+                bindings=bindings,
+                canonical_text_by_job_id=canonical_by_job,
+                config=config,
+                selected_job_ids=args.job_id,
+            )
+            evidence.setdefault("execution_mode", "single_job_subprocess")
+            evidence.setdefault(
+                "command_invocation_count",
+                evidence["job_count"] if evidence.get("command_invoked") else 0,
+            )
+            protocol_version = FORCED_ALIGNMENT_PROTOCOL_VERSION
         evidence.update(
             {
                 "algorithm_version": __version__,
@@ -303,7 +332,9 @@ def main() -> int:
             algorithm_version=__version__,
             outputs=(("forced_alignment_evidence", args.out),),
             normalized_config={
-                "protocol_version": FORCED_ALIGNMENT_PROTOCOL_VERSION,
+                "protocol_version": protocol_version,
+                "requested_execution_mode": args.execution_mode,
+                "execution_mode": evidence["execution_mode"],
                 "backend_id": args.backend_id,
                 "backend_version": args.backend_version,
                 "model_id": args.model_id,
@@ -332,7 +363,10 @@ def main() -> int:
                 "backend_id": args.backend_id,
                 "model_id": args.model_id,
                 "model_revision": args.model_revision,
+                "protocol_version": protocol_version,
+                "execution_mode": evidence["execution_mode"],
                 "command_invoked": evidence["command_invoked"],
+                "command_invocation_count": evidence["command_invocation_count"],
                 "job_count": evidence["job_count"],
                 "canonical_text_authority_unchanged": True,
                 "timing_authority": "auxiliary_source_forced_alignment_evidence",
@@ -358,7 +392,10 @@ def main() -> int:
                 "backend_id": evidence["backend_id"],
                 "model_id": evidence["model_id"],
                 "model_revision": evidence["model_revision"],
+                "protocol_version": protocol_version,
+                "execution_mode": evidence["execution_mode"],
                 "command_invoked": evidence["command_invoked"],
+                "command_invocation_count": evidence["command_invocation_count"],
                 "jobs": evidence["job_count"],
                 "artifact_id": artifact["artifact_id"],
                 "out": str(args.out),

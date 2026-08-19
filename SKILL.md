@@ -54,13 +54,14 @@ references/v4-change-record.md
 10. `TrackAsset / TrackOccurrence / ResolvedAssetBinding` 确定后，下游不得重新猜 source/LRC/canonical selection。
 11. Review Decision 必须 task-scoped + exact base-run-scoped；所有 materialization/evidence 必须绑定 exact source run/artifact lineage。
 12. P7 forced alignment 只在 **source time** 产生 auxiliary evidence；进入 fusion 前必须经 P8 exact Source-to-Mix projection。
-13. P8 `CUT_AWARE` line 跨 confirmed gap/cut 必须 `unprojectable`，不得 bridge；spans 可独立保留合法局部证据。
-14. P9 fusion 只接受 mix-time editor/ASR/forced evidence；任意可用 auxiliary pair 超阈值就是 `CONFLICT`，不得用 2-of-3 多数票隐藏 outlier。
-15. P9 的 `LOW/MEDIUM/HIGH/CONFLICT` 都是 **uncalibrated shadow state**；`HIGH` 也不得自动改 authoritative timing 或视为 release confidence。
-16. Final renderer 只接受 `ready_for_render + issues=[] + legacy_fallback_used=false`，并验证 exact task/profile/artifact lineage。
-17. 所有 stage 都绑定 task fingerprint、algorithm version、upstream IDs、materialized SHA-256；涉及模型的 evidence 还必须绑定 backend/model revision。
-18. 所有实质性更新必须同步 owning docs；CI 不通过不得合并。
-19. Runtime snapshot / doctor / family evaluator 都是可复现与诊断层，不改变 Source-to-Mix authority；没有独立 blind-test 结果不得把 auxiliary family 提升为自动 timing/release authority。
+13. P7 protocol `1.0` single-job 与 optional protocol `1.1` batch 只改变 external aligner 进程组织；两者必须产生同一类 source-time auxiliary evidence，batch 不能提升 authority。
+14. P8 `CUT_AWARE` line 跨 confirmed gap/cut 必须 `unprojectable`，不得 bridge；spans 可独立保留合法局部证据。
+15. P9 fusion 只接受 mix-time editor/ASR/forced evidence；任意可用 auxiliary pair 超阈值就是 `CONFLICT`，不得用 2-of-3 多数票隐藏 outlier。
+16. P9 的 `LOW/MEDIUM/HIGH/CONFLICT` 都是 **uncalibrated shadow state**；`HIGH` 也不得自动改 authoritative timing 或视为 release confidence。
+17. Final renderer 只接受 `ready_for_render + issues=[] + legacy_fallback_used=false`，并验证 exact task/profile/artifact lineage。
+18. 所有 stage 都绑定 task fingerprint、algorithm version、upstream IDs、materialized SHA-256；涉及模型的 evidence 还必须绑定 backend/model revision。
+19. 所有实质性更新必须同步 owning docs；CI 不通过不得合并。
+20. Runtime snapshot / doctor / family evaluator 都是可复现与诊断层，不改变 Source-to-Mix authority；没有独立 blind-test 结果不得把 auxiliary family 提升为自动 timing/release authority。
 
 ## 权威文档
 
@@ -68,6 +69,7 @@ references/v4-change-record.md
 - 状态：`references/v4-status.md`
 - 架构：`references/v4-implementation.md`
 - 变更：`references/v4-change-record.md`
+- forced batch protocol：`references/forced-alignment-batch-protocol.md`
 - 文档契约：`references/documentation-contract.md`
 - 数据/盲测：`references/dataset-protocol.md`
 
@@ -177,19 +179,29 @@ python scripts/v4_alignment_backends.py `
   --external-forced-aligner-command '"<executable>" <adapter-args>'
 ```
 
-然后执行：
+默认协议 1.0 保持 one-process-per-job：
 
 ```powershell
 python scripts/v4_execute_forced_alignment.py ...
 ```
 
-P7 formal output 是 source-time：
+如果真实 backend 每次进程启动都会重新加载大模型，并且 adapter 实现 `references/forced-alignment-batch-protocol.md` 的 protocol 1.1，可以显式启用：
+
+```powershell
+python scripts/v4_execute_forced_alignment.py ... `
+  --execution-mode batch `
+  --timeout-seconds <整个 batch 可接受的上限秒数>
+```
+
+`batch` 会把所有 selected jobs 放入一个临时 request，并只启动一次 external process。Response job IDs 必须与 request 精确一致，每个 job 仍走 P7 原有 source-window/boundary/span fail-closed validator。显式 `--job-id` 为空列表的程序化调用仍表示 zero-work，不会解析/启动 command。`--timeout-seconds` 在 batch 模式覆盖整个 subprocess，因此大任务需要显式设置足够值；不会自动取消 timeout。
+
+P7 formal output 无论 single/batch 都是 source-time：
 
 ```text
 source_forced_alignment_evidence / forced_alignment_evidence
 ```
 
-真实 backend 必须记录：backend/package version、model/checkpoint revision、language/G2P resources、runtime/device identity。不要把“executable 找得到”写成“模型准确”。
+真实 backend 必须记录：backend/package version、model/checkpoint revision、language/G2P resources、runtime/device identity。不要把“executable 找得到”写成“模型准确”。Batch protocol 本身不等于某个 WhisperX/SOFA/MFA adapter 已获生产批准；adapter 仍需对当前 upstream runtime 单独 review，并用 private calibration/blind 验证。
 
 ### 6. Forced evidence Source→Mix projection
 
