@@ -248,7 +248,9 @@ def extract_source_to_mix_mapping(
         raise PartialTimelineRepairError("Source-to-Mix mapping is blocked")
 
     kind = str(mapping.get("kind") or mapping.get("mode") or "").strip()
-    if kind and kind not in {"AFFINE", "PIECEWISE_RATE", "CUT_AWARE"}:
+    if not kind:
+        raise PartialTimelineRepairError("Source-to-Mix mapping kind is missing")
+    if kind not in {"AFFINE", "PIECEWISE_RATE", "CUT_AWARE"}:
         raise PartialTimelineRepairError(
             f"unsupported Source-to-Mix mapping kind: {kind}"
         )
@@ -260,7 +262,7 @@ def extract_source_to_mix_mapping(
             payload.get("canonical_selection_sha256") or ""
         ),
         "mapping_source": mapping_source,
-        "mapping_kind": kind or "CONTINUOUS",
+        "mapping_kind": kind,
     }
     return mapping, identity
 
@@ -510,7 +512,7 @@ def build_partial_timeline_preview(
         "automatic_timing_change_allowed": False,
         "timing_authority": "source_to_mix_only",
         "text_authority": "canonical_lyrics_only",
-        "source_srt_text_unchanged": True,
+        "subtitle_text_unchanged": True,
         "cue_count_unchanged": True,
         "unselected_cues_timing_unchanged": True,
         "cue_count": len(cues),
@@ -520,9 +522,7 @@ def build_partial_timeline_preview(
         "selected_unchanged_count": unchanged_count,
         "review_count": review_count,
         "text_match_threshold": text_match_threshold,
-        "mapping_kind": str(
-            mapping.get("kind") or mapping.get("mode") or "CONTINUOUS"
-        ),
+        "mapping_kind": str(mapping.get("kind") or mapping.get("mode")),
         "decisions": decisions,
         "safety": (
             "preview only: selected cues require unique one-cue/one-line text identity; "
