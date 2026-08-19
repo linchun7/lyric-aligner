@@ -57,8 +57,11 @@ def main() -> int:
             "canonical_line_count",
             "replacement_count",
             "unchanged_count",
+            "cue_review_count",
+            "unmatched_canonical_count",
             "review_count",
             "timeline_unchanged",
+            "formatting_policy",
             "output_srt_sha256",
         )
     }
