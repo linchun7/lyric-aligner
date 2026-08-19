@@ -12,6 +12,7 @@ import argparse
 import hashlib
 import json
 from pathlib import Path
+from typing import Any, Mapping
 
 from lyric_aligner.alignment.asr_executor import (
     AsrExecutionError,
@@ -32,6 +33,7 @@ from lyric_aligner.alignment.selective_repair import (
 )
 from lyric_aligner.assets.bindings import CanonicalOriginal, ResolvedAssetBinding
 from lyric_aligner.assets.resolver import canonical_selection_sha256
+from lyric_aligner.io.path_safety import PathCollisionError, validate_separate_artifact_paths
 from lyric_aligner.text_repair import parse_srt_text
 from lyric_aligner.timeline.anchor_repair import parse_timed_canonical_files
 
@@ -122,6 +124,26 @@ def _parse_string_mapping(values: list[str], source_names: list[str]) -> dict[in
     return result
 
 
+def _required_source_ordinals(plan: Mapping[str, Any], capability: str) -> set[int]:
+    output: set[int] = set()
+    jobs = plan.get("jobs")
+    if not isinstance(jobs, list):
+        return output
+    for job in jobs:
+        if not isinstance(job, Mapping):
+            continue
+        if capability not in (job.get("requested_capabilities") or []):
+            continue
+        value = job.get("source_ordinal")
+        if value is None:
+            continue
+        try:
+            output.add(int(value))
+        except (TypeError, ValueError):
+            continue
+    return output
+
+
 def _forced_bindings(
     *,
     timed,
@@ -158,7 +180,7 @@ def _forced_bindings(
                 track_id=source_names[source_ordinal],
                 artist="Smart Pro",
                 title=source_names[source_ordinal],
-                version_id="smart-pro-v1.1",
+                version_id="smart-pro-v1.1.1",
                 nominal_start_ms=0,
                 middle_cut="unknown",
                 language_profile=str(languages.get(source_ordinal, "auto") or "auto"),
@@ -229,6 +251,33 @@ def main() -> int:
         timed, _ = parse_timed_canonical_files(args.canonical_lyrics)
         source_names = _source_names(timed)
         languages = _parse_string_mapping(args.source_language, source_names)
+        source_values = _parse_string_mapping(args.source_audio, source_names)
+        source_paths = {index: Path(value) for index, value in source_values.items()}
+
+        collision_inputs: dict[str, Path] = {
+            "smart_report": args.smart_report,
+            "smart_srt": args.smart_srt,
+            **{
+                f"canonical_lyrics[{index}]": path
+                for index, path in enumerate(args.canonical_lyrics)
+            },
+            **{
+                f"source_audio[{source_names[index]}]": path
+                for index, path in sorted(source_paths.items())
+            },
+        }
+        if args.mix_audio is not None:
+            collision_inputs["mix_audio"] = args.mix_audio
+        validate_separate_artifact_paths(
+            inputs=collision_inputs,
+            outputs={
+                "plan_out": args.plan_out,
+                "acoustic_out": args.acoustic_out,
+                "asr_out": args.asr_out,
+                "forced_out": args.forced_out,
+            },
+        )
+
         plan = build_selective_repair_plan_v11(
             smart_report=smart_report,
             cues=cues,
@@ -256,6 +305,7 @@ def main() -> int:
             "product_mode": "Pro",
             "policy_id": plan.get("policy_id"),
             "plan": str(args.plan_out),
+            "job_count": plan["summary"].get("job_count", 0),
             "primary_job_count": plan["summary"].get("primary_job_count", 0),
             "boundary_competitor_job_count": plan["summary"].get("boundary_competitor_job_count", 0),
             "region_count": plan["summary"].get("region_count", 0),
@@ -264,22 +314,23 @@ def main() -> int:
             "timing_mutation_performed": False,
         }
 
-        source_values = _parse_string_mapping(args.source_audio, source_names)
-        source_paths = {index: Path(value) for index, value in source_values.items()}
-
         if args.acoustic_out is not None:
             if args.mix_audio is None:
                 parser.error("--acoustic-out requires --mix-audio")
+            required_sources = _required_source_ordinals(plan, "source_local_acoustic_match")
+            acoustic_paths = {
+                index: path for index, path in source_paths.items() if index in required_sources
+            }
             evidence = execute_region_source_match_jobs(
                 mix_audio_path=args.mix_audio,
                 plan=plan,
-                source_audio_by_source_ordinal=source_paths,
+                source_audio_by_source_ordinal=acoustic_paths,
                 config=LocalAcousticMatchConfig(sr=args.acoustic_sr),
             )
             evidence["mix_audio_sha256"] = _sha256(args.mix_audio)
             evidence["source_audio_sha256_by_source"] = {
                 source_names[index]: _sha256(path)
-                for index, path in sorted(source_paths.items())
+                for index, path in sorted(acoustic_paths.items())
             }
             _write_json(args.acoustic_out, evidence)
             summary["acoustic_out"] = str(args.acoustic_out)
@@ -320,13 +371,21 @@ def main() -> int:
             missing = [label for label, value in required.items() if not str(value or "").strip()]
             if missing:
                 parser.error("--forced-out requires " + ", ".join(missing))
-            if not source_paths:
-                parser.error("--forced-out requires --source-audio mappings")
+            required_sources = _required_source_ordinals(plan, "source_forced_alignment")
+            forced_paths = {
+                index: path for index, path in source_paths.items() if index in required_sources
+            }
+            if required_sources and len(forced_paths) != len(required_sources):
+                missing_sources = sorted(required_sources - set(forced_paths))
+                parser.error(
+                    "--forced-out is missing --source-audio for source ordinals "
+                    + ", ".join(str(value) for value in missing_sources)
+                )
             bindings = _forced_bindings(
                 timed=timed,
                 source_names=source_names,
                 canonical_lyrics=args.canonical_lyrics,
-                source_paths=source_paths,
+                source_paths=forced_paths,
                 languages=languages,
             )
             lookup = canonical_text_by_job_id(plan, timed)
@@ -353,6 +412,7 @@ def main() -> int:
         OSError,
         ValueError,
         json.JSONDecodeError,
+        PathCollisionError,
         AsrExecutionError,
         ForcedAlignmentExecutionError,
     ) as exc:
