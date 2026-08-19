@@ -55,16 +55,18 @@ class SmartSequenceFrontierGuardTests(unittest.TestCase):
         )
         self.assertIsNone(choice)
 
-    def test_single_line_frontier_needs_modest_lexical_support_even_when_timing_matches(self) -> None:
+    def test_normal_length_severe_asr_can_still_use_single_line_sequence_timing(self) -> None:
         choice = _frontier_choice(
-            self._cue("完全无关的编辑器文字"),
-            [self._line("另一句毫不相似的规范歌词")],
+            self._cue("完全错误内容甲甲甲甲"),
+            [self._line("规范目标内容乙乙乙乙")],
             self._model(),
             next_cue_start_ms=None,
         )
-        self.assertIsNone(choice)
+        self.assertIsNotNone(choice)
+        assert choice is not None
+        self.assertEqual([item.text for item in choice[0]], ["规范目标内容乙乙乙乙"])
 
-    def test_corrupted_but_recognizable_single_line_can_still_use_frontier(self) -> None:
+    def test_corrupted_but_recognizable_single_line_can_use_frontier(self) -> None:
         choice = _frontier_choice(
             self._cue("这厢是梦寐脸上画中的仙"),
             [self._line("这厢是梦梅恋上画中的仙")],
