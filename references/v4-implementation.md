@@ -1,197 +1,230 @@
 # Lyric Aligner v4 实施记录与关键代码说明
 
-> P3 前的完整实施/架构记录保存在 `references/archive/2026-08-19-pre-p3-v4-implementation.md`。本文件聚焦当前 responsibility graph、Text Repair V2.1 与 Partial Timeline Repair P1–P5。
+> P3 前完整实施/架构记录见 `references/archive/2026-08-19-pre-p3-v4-implementation.md`。真实生产 workload 的 normative baseline 见 `references/production-requirements.md`。
 
-## 1. Authority graph
+## 1. Responsibility graph
 
 ```text
 Canonical lyric -> final text/order truth
-Source-to-Mix  -> primary timing truth
-TrackAsset     -> source/canonical identity truth
-Editor SRT     -> auxiliary mix-time evidence
-ASR            -> auxiliary mix-time acoustic evidence
-Forced P7/P8   -> auxiliary acoustic evidence
-P9 fusion      -> uncalibrated multi-family shadow diagnostics
-P4 trust lock  -> calibrated cue-trust proposal eligibility only
-P5 Doctor      -> read-only readiness diagnostics only
+Editor SRT      -> strong but rebuttable mix-time prior
+Timed canonical -> Smart no-audio timing evidence
+Source-to-Mix   -> Pro/Max acoustic timing truth
+ASR / forced    -> auxiliary acoustic evidence
+P9 fusion       -> legacy Partial shadow diagnostics
+P4 trust lock   -> legacy Partial calibrated proposal eligibility
+```
+
+产品计算路径：
+
+```text
+Standard -> Smart -> Pro -> Max
 ```
 
 禁止：
 
 ```text
 ASR/forced text -> final canonical lyric
-source-ms evidence -> direct mix-ms comparison
+one cue -> prove its own timing model
 rate change -> implicit cut
-review confirmed_cut flag -> CUT_AWARE without materialization
-P9 HIGH -> automatic trust/timing mutation
-mutable fusion/decision JSON without artifact validation -> production input
-synthetic CI -> claim real calibration/accuracy
-P5 proposal_inputs_ready -> automatic timing write-back
+foreign-language label -> automatic Max
+P9 HIGH -> Smart timing authority
+rare piecewise case -> force all normal songs through heavy mapping
 ```
 
-## 2. Text Repair V2.1
+## 2. Standard / Text Repair V2.1
 
-冻结 timeline 的文字修复层，不读取 audio、不改变 cue count/number/start/end。需要 timing 判断的任务进入 Source-to-Mix/Partial Timeline Repair。
+Text Repair 是 frozen-timeline 文字修复层：不读取 audio，不改变 cue count/number/start/end。它继续负责 deterministic canonical matching、文字纠错、layout-preserving render 与 fail-closed ambiguity guards。
 
-### 2.1 Canonical parser hardening
+V2.1 的主要安全事实保持：
 
-`parse_canonical_files()` 先识别 LRC/QRC occurrence，再清理 enhanced/token timing；清理后重新执行 metadata filter，避免 `[00:00.00]作词：...` 等 timestamped metadata 进入 canonical text。
+- timestamped metadata 二次过滤；
+- same-file timed/untimed lyric body 混合 fail closed；
+- cue/whitespace/line-break boundary insertion fail closed；
+- coverage warning 与 cue review 分离；
+- unique exact anchors 使用 O(n log n) stable Fenwick chain；
+- production `auto-threshold >= 0.72`；
+- render 后重新断言 frozen timeline signature。
 
-同一 canonical 文件允许：
+过去“凡 timing 任务都进入 Source-to-Mix”不再是主产品顺序。现在先进入 Smart；Smart 无法证明的局部问题进入 Pro，只有 broad failure 才进入 Max。
+
+## 3. Smart / Anchor Timeline Repair v1
+
+实现：
 
 ```text
-all timed occurrences
-or
-all untimed lyric lines
+lyric_aligner/timeline/anchor_repair.py
+scripts/v4_smart_repair.py
 ```
 
-但不允许 timed/untimed 正文混合。混合输入直接 `ValueError` fail closed，避免单条 untimed 文本让原本可按 occurrence timestamp 排序的文件退化为书写顺序。
+Smart 与 legacy Partial Timeline Repair 是平行责任，不要求先跑 P3/P4/P9，也不读取 audio。
 
-### 2.2 Frozen-layout insertion guard
+### 3.1 Canonical representation reuse
 
-Text Repair 仍只在 content-character 序列上计算 deterministic edit script，并保留原 cue 的 punctuation / whitespace / line break / decorative marks。
-
-V2.1 在字符插入时额外识别：
+仓库原有 `lyric_aligner/text/canonical_lyrics.py` 已有：
 
 ```text
-existing cue boundary
-whitespace boundary inside a cue
-line-break boundary inside a cue
+CanonicalLine.time_ms
+CanonicalLine.tokens[]
+CanonicalToken.start_ms/end_ms
+line_lrc / enhanced_lrc / qrc_word_timing
 ```
 
-若 insert 正好落在这些边界，字符属于哪一侧无法由 frozen timeline/layout 唯一确定，因此不自动移动空格或换行，也不猜 cue ownership；整段保持原文并进入 review。
+Smart 直接复用它，而不是继续依赖 Text Repair 内部会丢 timing 的简化 canonical representation。
 
-### 2.3 Coverage 与 cue safety 分离
+`parse_timed_canonical_files()` 同时生成：
 
-`unmatched_canonical` 继续完整报告，但不再自动计入 `review_count`。V2.1 report schema `2.1`：
+1. `TimedCanonicalOccurrence`：保留 source identity、line timestamp、tokens、timing format；
+2. Text Repair `CanonicalLine` view：只用于复用 V2.1 span alignment。
+
+因此 Standard 不需要改变 parser contract，Smart 又能利用逐字时间。
+
+`TimedCanonicalOccurrence.anchor_time_ms` 默认 line timestamp；当存在首 token 且它位于 line timestamp 附近的合理窗口时优先使用首 token onset。word/token end 目前只保留为 evidence，不直接决定 SRT end。
+
+### 3.2 Text identity -> timing observation
+
+Smart 先调用 `build_repair_plan_v2()`，得到 cue/canonical span 与 score/action，再建立 timing observations。
+
+Identity grade：
 
 ```text
-status / review_count / cue_review_count
-    -> 只表达当前 SRT cue 是否存在需要人工复核的文字修复
-
-coverage_status / coverage_warning_count / unmatched_canonical_count
-    -> 表达 canonical lyric 是否有未覆盖 occurrence
+A: exact + unique + 1:1 + unchanged
+B: unique 1:1 + high similarity + safe small text repair
+C: merge/split/gap/repeated/ambiguous/other
 ```
 
-因此剪辑导致 canonical 有额外歌词但现有 SRT cue 全部安全时，任务可 `ready + coverage warning`。这不放松 `_gap_guarded()`：低于 0.96 的匹配如果邻接 alignment gap，仍进入 `adjacent_alignment_gap_requires_review`。
+A 才可建立 timing model。B/C 不能因为 Smart model 后来吻合就升级成建模证据，从结构上避免 circular proof。
 
-### 2.4 Exact-anchor scalability
+### 3.3 Per-song affine model
 
-`_unique_exact_anchors()` 保留原规则：只选择 cue/canonical 两侧都唯一、normalized length >= 4 的 exact anchors，并取最长严格单调 canonical-index 链。
-
-旧实现对 candidate 做 O(n²) LIS DP。V2.1 改为 Fenwick prefix-best：
+普通生产事实是单曲大多统一 time-stretch，所以 v1 先做：
 
 ```text
-query canonical indices < current
--> choose greatest chain length
--> tie 时选更早 candidate index
--> update current canonical index
+source_time = offset + rate * mix_time
 ```
 
-复杂度降为 O(n log n)，且 tie-break 与原 DP 的“最早 predecessor / 最早 max end”保持一致。公共测试加入 2000-cue unique-exact 规模回归，不使用脆弱 wall-clock assertion。
+若没有 prior：
 
-### 2.5 Production threshold boundary
+- 对 A anchors 计算相隔至少 3s 的 pairwise slopes；
+- 取 median 作为 robust rate；
+- 以 `source - rate*mix` 的 median 得 offset；
+- 按 750ms residual 做 inlier selection；
+- 无 prior 时用 inliers 再 refine 一次。
 
-core `build_repair_plan_v2()` 仍接受 0.5–1.0 以支持实验/校准代码；正式 `v4_text_repair.py` 与 `v4_text_repair_batch.py` 以 `PRODUCTION_MIN_AUTO_THRESHOLD=0.72` 锁住生产下限。batch 对 global 和 job-level threshold 在任何输出写入前统一预检。
+若有 exact `rate_prior`：固定 rate，只 robust 估 offset。若 anchors 自己估出的 rate 与 prior 相差超过 3%，模型标记 `rate_prior_conflict`，不自动 timing repair。
 
-### 2.6 Immutable output assertion
-
-修复后必须重新 `parse_srt_text(rendered)`，并验证：
+BPM only 时：
 
 ```text
-len(input cues) == len(output cues)
-timeline_signature(input) == timeline_signature(output)
+rate_prior = target_bpm / source_bpm
 ```
 
-其中 signature = `(cue.number, cue.timing)`。任何 cue count / number / timing 变化都立即 `AssertionError`。
+如果 DAW 提供 exact stretch ratio，应直接传 exact ratio，优先于 BPM 派生。
 
-## 3. Partial Timeline Repair 分层
+### 3.4 Model readiness
+
+首版：
 
 ```text
-P1  timeline/partial_repair.py
-    explicit cue trust + local structural guards
-
-P2  timeline/partial_repair_evidence.py
-    P9 editor/canonical identity bridge
-
-P3a timeline/partial_repair_context.py
-    effective-run/artifact lineage -> mapping/cut context
-
-P3b timeline/partial_repair_production.py
-    formal run/fusion payload+artifact verification
-
-P4a timeline/partial_repair_trust.py
-    strict calibration/blind trust lock + low-level decision semantics
-
-P4b timeline/partial_repair_trust_production.py
-    formal cue-trust decision artifact verification
-
-P5a timeline/partial_repair_readiness.py
-    read-only P3/P4 readiness composition
-
-P5b doctor_partial.py
-    backward-compatible Doctor extension + partial_repair:* requirements
+minimum A anchors = 4
+inlier residual threshold = 750ms
+ready if median abs residual <= 450ms
+      and inlier fraction >= 0.70
 ```
 
-正式生产必须复用 P3/P4 formal validators；P5 不重新实现一套较宽松的 lineage/trust 判断。
+否则 `insufficient_anchors / insufficient_rate_evidence / unstable / rate_prior_conflict`，保持 editor timing 并升级 review/Pro，而不是猜。
 
-## 4. P1/P2/P3/P4 responsibility summary
+### 3.5 Leave-one-out outlier decision
 
-P1：`trusted / untrusted / unknown`，trusted timing hard lock，Source-to-Mix-only candidate，候选不得穿越 trusted neighbor 或相互重叠。
-
-P2：P9 shadow level 不直接生成 trust；editor cue 必须唯一绑定 canonical line；candidate boundary 只使用 authoritative `source_timeline_boundary_ms`。
-
-P3：验证 effective run/artifact exact task/algorithm/stage/output hash；从 coarse/Fine `TimeWarp.mapping.mode` 派生 continuous mapping；CUT_AWARE 只来自 materialized `cut_timewarp_rebuild`；fusion 必须绑定 exact effective-run artifact 并通过 output SHA/size/self-signature/upstream 校验。
-
-P4：trust lock 重新验证 strict calibration/blind selection、candidate revision/runtime、evaluation/policy hashes、source-group isolation、calibration/blind identity separation 和 blind language-scope gates。formal decision artifact 必须绑定 exact lock/candidate/runtime/fusion identity。P9 CONFLICT trusted decision 会安全降级；human review 优先。
-
-## 5. P5a `timeline/partial_repair_readiness.py`
-
-`inspect_partial_timeline_repair_readiness()` 是只读编排器。输入可包含：
+A cue 自身若参加全局模型，不能用该模型直接证明自己错误。因此判断 A candidate 时：
 
 ```text
-run_path / run_artifact_path
-fusion_path / fusion_artifact_path
-trust_lock_path
-decision_path / decision_artifact_path
+remove candidate
+-> refit independent A-anchor model
+-> predict candidate source timestamp back to mix time
+-> compare editor start
 ```
 
-### 5.1 P3 lineage inspection
-
-调用 `inspect_partial_repair_artifacts()` 复用正式 P3 验证，因此 incomplete pair、tampered output、wrong artifact lineage、blocked mapping 等继续 fail closed。成功后只输出 privacy-safe 摘要：
+v1：
 
 ```text
-run_stage
-artifact ID prefix
-fusion CONFLICT count
-fusion language scopes
-AFFINE / PIECEWISE_RATE / CUT_AWARE counts
-unavailable occurrence count
-confirmed cut occurrence count
+abs residual <= 350ms -> preserve
+350..900ms            -> preserve（不足以推翻 editor）
+>= 900ms               -> repair candidate
+> 8000ms shift          -> review
 ```
 
-### 5.2 P4 lock inspection
+真正 auto repair 还需：
 
-调用 `load_calibrated_trust_policy_lock()`。`valid=true` 只说明 strict calibration/blind lock 本身有效；`actionable=true` 还要求 lock 的 `cue_trust_generation_allowed` 为真，即至少存在显式 blind-gated `language:*` scope。
+- interior：左侧至少 2 个、右侧至少 2 个独立 A anchors；
+- start/end extrapolation：必须有 rate prior + 单侧至少 3 个 A anchors；
+- proposed timing 通过 structural guard，不逆序、不越过邻居的基本时间结构。
 
-### 5.3 Formal decision inspection
+v1 保留原 cue duration，只整体平移 start/end。这样不把 canonical karaoke token duration 直接强加给字幕显示时长。
 
-只有 decision payload/artifact 成对、P3 lineage valid、trust lock valid 时才继续。P5 调用 `validate_calibrated_trust_decision_artifact()` 检查 formal artifact，再调用 `calibrated_decisions_to_explicit_trust()` 复用正式 scope/conflict/binding 语义。报告只保留 decision 数和 trusted/untrusted/unknown 等计数。
+### 3.6 Piecewise behavior
 
-### 5.4 Status state machine
+同一首歌多速度段是 minority case。v1 **不自动拟合 piecewise**；single-rate model 被证据推翻时会 unstable/conflict 并升级。
+
+未来应先从 private real-song failures 证明需求，再增加：
+
+- shared-offset break；
+- piecewise-rate segment；
+- cut-aware local handling。
+
+原则仍是 `Affine first; piecewise on evidence`。
+
+### 3.7 Multilingual behavior
+
+Smart 的 exact canonical identity 与 affine timing math 本身不依赖中文 ASR，因此韩文/日文可以和中文一样走 Smart。语言仅在未来 Pro acoustic escalation 才影响 ASR/forced backend routing。
+
+所以 40 分钟大量韩日文并不自动等于 Max。若 canonical lyrics 和 editor matching 足够，Smart 可以不听音频完成大部分工作；只有多数 cue identity/timing 都无法建立、或局部 acoustic escalation 仍大量失败时才需要 Max。
+
+### 3.8 CLI/report
+
+`scripts/v4_smart_repair.py`：
+
+- source SRT 与 output SRT 必须不同路径；
+- canonical files 按 mix/song 顺序传入；
+- `--rate-prior SOURCE=RATIO` 支持 exact ratio；
+- `--target-bpm` + `--source-bpm SOURCE=BPM` 支持 BPM-derived prior；
+- exact rate prior 对同 source 优先；
+- production text threshold 不得低于 0.72；
+- non-finite numeric args fail closed；
+- diagnostic Infinity 在 JSON 输出层正规化为 null，report 始终 strict JSON。
+
+report schema：`smart-1.0`。
+
+## 4. Pro / Selective Audio Repair direction
+
+下一阶段应把 Smart unresolved cue groups 转成 bounded acoustic jobs，而不是让用户重新跑全程：
 
 ```text
-no partial input                         -> not_requested
-invalid/incomplete lineage               -> blocked
-valid lineage, no lock                   -> human_review_or_calibration_required
-invalid lock                             -> blocked
-valid but non-actionable lock            -> human_review_required
-actionable lock, no decisions            -> calibrated_decisions_required
-invalid decisions                        -> blocked
-all formal P3/P4 inputs valid            -> proposal_inputs_ready
+Smart review/escalation
+-> bounded mix window
+-> expected source position from Smart model
+-> narrow rate search around prior/model
+-> source<->mix local acoustic match
+-> canonical-constrained forced alignment
+-> ASR only where useful
 ```
 
-所有状态均固定：
+混合语言的 ASR job 必须携带 per-span/per-job language hint：中文 span `zh`，英文 span `en`，code-switch/uncertain 用 auto，而不是整首 track language 强制覆盖。
+
+## 5. Max / Full V4
+
+Full V4 继续保留 coarse/Fine/cut/transition/overlap/ASR/forced/P9 等完整能力，处理 broad untrusted timeline 与复杂 source identity。它从“所有 timing 任务默认入口”调整为最后一档 heavy fallback。
+
+## 6. Legacy Partial Timeline Repair P1–P5
+
+旧 P1–P5 formal proposal chain 不删除：
+
+- P1 explicit cue trust + structural candidate guards；
+- P2 P9/editor/canonical identity bridge；
+- P3 exact effective-run/fusion formal lineage；
+- P4 strict calibration + independent blind trust lock/decision artifact；
+- P5 Doctor/readiness。
+
+该链路继续固定：
 
 ```text
 proposal_only = true
@@ -200,38 +233,20 @@ automatic_timing_change_allowed = false
 release_gate_eligible = false
 ```
 
-### 5.5 Privacy
+这不与 Smart 的 deterministic A-anchor timing policy冲突，因为两者 authority 来源不同，不能互相提升。
 
-readiness 不输出 raw lyric/subtitle text 或 artifact output path；validator exception detail 会把 POSIX/Windows absolute local path 替换为 `<local_path>`。
+## 7. Validation boundary
 
-## 6. P5b `doctor_partial.py`
+Public synthetic tests可以证明：
 
-`build_doctor_report_with_partial_repair()` 包装既有 `build_doctor_report()`，不重写稳定 Doctor core。旧 requirements 仍交给原 Doctor；新增 partial requirements 独立计算后合并结果：
+- Standard frozen-timeline contract；
+- Smart exact/unique anchor grading；
+- leave-one-out interior repair；
+- start/end rate-prior requirement；
+- repeated lyric fail-closed；
+- Enhanced LRC token preservation；
+- Japanese exact canonical Smart path；
+- strict JSON / overwrite / threshold mechanics；
+- legacy P3/P4/P5 formal validation 仍保持原契约。
 
-```text
-partial_repair:lineage
-partial_repair:trust_lock
-partial_repair:actionable_scope
-partial_repair:decisions
-partial_repair:proposal_inputs
-```
-
-未知 `partial_repair:*` requirement 继续抛 `DoctorError`。Doctor 原有 API、stage recommendation 与 legacy requirement 语义保持不变。
-
-## 7. CLI extension
-
-`scripts/v4_doctor.py` 改用 `build_doctor_report_with_partial_repair()`，新增：
-
-```text
---partial-trust-lock
---partial-trust-decisions
---partial-trust-decisions-artifact
-```
-
-并将五个 `partial_repair:*` requirements 加入允许集合。未提供 partial-repair 输入时，Doctor 仍可按旧方式工作。
-
-## 8. Validation boundary
-
-Public synthetic tests可证明：Text Repair frozen-timeline assertion、parser metadata/mixed-timing guard、layout-boundary insertion fail-closed、coverage/report semantics、exact-anchor 2000-cue scale behavior、production threshold preflight、P3/P4 validator 复用、Doctor requirement wiring、readiness state machine、mapping/conflict/scope 摘要、formal decision pair validation、path redaction、proposal-only authority flags、Python compatibility。
-
-Public CI 不能证明真实 private candidate 已通过 blind gate、真实歌曲准确率、false-auto rate 或 automatic timing write-back safety。因此 Text Repair V2.1 仍只负责文字，P5 只完成 readiness infrastructure，不提升 release authority。
+Public CI 不能证明真实歌曲 false-auto rate，也不能证明当前 350/900/8000ms 常量是最终最佳生产阈值。扩大 B auto repair、piecewise auto repair 或更激进 timing mutation 前，必须用 private real-song calibration + independent blind 数据验证。
