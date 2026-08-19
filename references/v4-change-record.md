@@ -21,9 +21,44 @@ Source-to-Mix   -> primary acoustic timing truth for Pro/Max
 ASR / forced    -> auxiliary acoustic evidence
 ```
 
-旧 Partial Timeline Repair P1–P5 的 `proposal_only / automatic_timing_change_allowed=false / release_gate_eligible=false` 约束继续保持，但这些 flags **只约束该 calibration/P9 production bridge**。Smart 是独立的 deterministic no-audio 路径，不从 P9 HIGH 或 P4 trust lock 获得 timing authority；它只在自身的 A-anchor + independent model + structural guards 同时满足时做受限 timing repair。
+旧 Partial Timeline Repair P1–P5 的 `proposal_only / automatic_timing_change_allowed=false / release_gate_eligible=false` 约束继续保持，但这些 flags **只约束该 calibration/P9 production bridge**。Smart/Pro 是独立的 staged production path；Pro v1 只生成/执行局部 evidence，不因此获得自动 timing write-back 权限。
 
 ---
+
+## 2026-08-19 — Pro / Selective Audio Repair v1 evidence bridge
+
+新增 `lyric_aligner/alignment/selective_repair.py`：
+
+- 只把 Smart report 中 `timing review` / `text review` cue 转成 Pro jobs；已经 preserve/repair 的正常 cue 不重复跑 audio；
+- 每个 job 绑定 cue ordinal、canonical occurrence、source ordinal、canonical text SHA、Smart rate、editor cue time；plan 不保存 raw canonical text；
+- mix window 默认仅 cue 前后各 2.5s（不足时扩到至少 4.5s）；
+- 有 canonical identity 时按 LRC/逐字 token timing 建局部 source window，并请求 `source_local_acoustic_match + source_forced_alignment + mix_asr + word_timestamps`；
+- 无 canonical identity 的 Smart review 只能先请求 bounded mix ASR，并明确计入 unmapped escalation；
+- 输出计划统计未合并的总 mix audio 毫秒数，用于验证 Pro 是否真正只花局部计算量。
+
+新增 `lyric_aligner/alignment/local_acoustic_match.py`：
+
+- 复用 Full V4 已有 HPSS/Chroma CENS/MFCC retrieval，但只 decode Smart 选择的 mix/source bounded windows；
+- 有 Smart rate 时默认只在 `rate ± 0.06` 的窄范围搜索；无 prior 才使用较宽但仍局部的 slope range；
+- 从 local source match 反推出 canonical lyric onset 的 `predicted_mix_start_ms`，同时输出 score/margin/feature agreement/editor residual；
+- Pro v1 **只输出 acoustic timing evidence，不直接修改 SRT**，等待 private real-song calibration/blind 决定自动写回门槛。
+
+新增 `scripts/v4_pro_selective.py`：
+
+- 必需输入 Smart report + Smart SRT + 同一组 timed canonical lyrics；
+- 默认只生成 Pro plan，仍然 0 audio execution；
+- 可选 `--mix-audio + --source-audio + --acoustic-out` 执行 bounded source↔mix evidence；
+- 可选 `--asr-model-id + --asr-out` 只对 plan 内 mix windows 执行 faster-whisper；
+- source language 可按 canonical filename/ordinal 提供，供局部 ASR routing 使用。
+
+修正 mixed-language ASR routing：
+
+- `text/language_spans.py` 新增 canonical-line 级 `asr_language_hint_for_text()`；
+- `alignment/asr_executor.py` 优先使用 explicit job hint；没有 explicit hint 时根据当前 canonical line 重新判断；只有缺少 canonical text 时才回退 whole-track profile；
+- 因此中文 track 中的纯英文 rap line 使用 `en`，真正中英 code-switch 返回 `None/auto`，不再被全曲 `zh` 强制覆盖；
+- 韩文/日文 pure local line 同样分别得到 `ko` / `ja`；语言标签仍不决定是否进入 Max。
+
+新增 synthetic/unit tests 覆盖 Smart→Pro only-unresolved selection、raw canonical privacy、英文 rap/local mixed-language hint、bounded acoustic timing evidence 与 no-mutation contract。
 
 ## 2026-08-19 — Smart / Anchor Timeline Repair v1
 
@@ -70,7 +105,7 @@ P1：`partial_repair.py` 建立 explicit trusted/untrusted/unknown、trusted har
 
 P2：`partial_repair_evidence.py` 保持 P9 shadow-only；P9 HIGH 不自动 trusted，CONFLICT 不自动 untrusted；editor cue 必须唯一 canonical identity。
 
-P3：`partial_repair_context.py` / `partial_repair_production.py` 验证 exact effective-run + fusion formal lineage，从 coarse/Fine/cut lineage 派生 mapping；CUT_AWARE 只认 materialized cut lineage。
+P3：`partial_repair_context.py` / `partial_repair_production.py` 验证 exact effective-run + fusion formal lineage，从 coarse/Fine/cut lineage派生 mapping；CUT_AWARE 只认 materialized cut lineage。
 
 P4：`partial_repair_trust.py` / `partial_repair_trust_production.py` 复用 strict calibration + independent blind；formal decisions 绑定 exact lock/candidate/runtime/fusion identity，P9 CONFLICT 不得自动提升。
 

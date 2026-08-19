@@ -25,7 +25,7 @@ Standard -> Smart -> Pro -> Max
 
 ### Pro
 
-只对 Smart 无法解决的局部窗口读取 audio。新的 Smart→Pro bridge 尚在下一阶段实施。
+只对 Smart 无法解决的局部窗口读取 audio。当前已实现 Smart→Pro bounded plan、局部 source↔mix 声学 evidence 与 bounded faster-whisper；Pro v1 暂不自动把声学结果写回 SRT。
 
 适合：英文 rap、古风/特殊唱法、歌曲交界、局部 identity/timing 冲突等少量困难位置。
 
@@ -72,7 +72,7 @@ python scripts/v4_smart_repair.py `
   --report "output/<任务>/<任务>_SMART.json"
 ```
 
-canonical 文件必须按 mix/song 顺序给出。Smart v1 要求 timestamped canonical；若只有 untimed TXT，使用 Standard，或后续升级 Pro/Max 获取 acoustic timing evidence。
+canonical 文件必须按 mix/song 顺序给出。Smart v1 要求 timestamped canonical；若只有 untimed TXT，使用 Standard，或升级 Pro/Max 获取 acoustic timing evidence。
 
 Enhanced LRC / QRC 中已有逐字/逐词 timestamp 时会自动保留并利用，无需额外开关。
 
@@ -162,20 +162,104 @@ Affine first
 
 ## 5. Pro：Smart unresolved 才读局部 audio
 
-新的 Pro 产品路径下一阶段实现，目标是：
+### 5.1 先只生成计划
 
-```text
-Smart unresolved cue/group
--> bounded mix window
--> Smart 预测 source position
--> narrow source window / narrow rate range
--> source<->mix acoustic matching
--> forced alignment / ASR only where useful
+```powershell
+python scripts/v4_pro_selective.py `
+  --smart-report "output/<任务>/<任务>_SMART.json" `
+  --smart-srt "output/<任务>/<任务>_SMART.srt" `
+  --canonical-lyrics "lyrics/01.lrc" "lyrics/02.lrc" `
+  --source-language "01.lrc=zh" `
+  --source-language "02.lrc=zh" `
+  --plan-out "output/<任务>/<任务>_PRO_PLAN.json"
 ```
 
-不会因为一两条困难 cue 把 40 分钟节目重新全扫。
+这一步不读取 audio。只把 Smart 中的 `timing review/text review` cue 变成 bounded jobs。已经 preserve/repair 的 cue 不进入 Pro。
 
-中英混合、韩日等需要 acoustic 时，ASR language hint 应按局部 canonical span/job 路由，而不是只看整首 track language。
+计划默认：
+
+```text
+mix: cue 前后约 2.5s
+source: canonical line/token 附近约 3.5s before + 5s after
+```
+
+plan 内不保存 raw canonical text，只保存 SHA 与 identity。
+
+### 5.2 做局部 source↔mix 声学验证
+
+若原曲音频齐全：
+
+```powershell
+python scripts/v4_pro_selective.py `
+  --smart-report "output/<任务>/<任务>_SMART.json" `
+  --smart-srt "output/<任务>/<任务>_SMART.srt" `
+  --canonical-lyrics "lyrics/01.lrc" "lyrics/02.lrc" `
+  --source-language "01.lrc=zh" `
+  --source-language "02.lrc=zh" `
+  --plan-out "output/<任务>/<任务>_PRO_PLAN.json" `
+  --mix-audio "private/<任务>/input/mix.wav" `
+  --source-audio "01.lrc=private/<任务>/source/01.wav" `
+  --source-audio "02.lrc=private/<任务>/source/02.wav" `
+  --acoustic-out "output/<任务>/<任务>_PRO_ACOUSTIC.json"
+```
+
+Pro 不跑 Full V4 broad coarse search，而是在 Smart 已知位置附近使用 bounded HPSS/Chroma/MFCC retrieval。
+
+如果 Smart 有可靠 rate，Pro 默认只搜：
+
+```text
+rate ± 0.06
+```
+
+从最佳 local source match 会得到：
+
+```text
+predicted_mix_start_ms
+editor_start_residual_ms
+estimated_slope
+fused/chroma/mfcc score
+margin / ambiguity
+```
+
+当前 `timing_mutation_performed=false`：声学证据先用于校准和后续 fusion，不直接改 SRT。
+
+### 5.3 只对局部窗口跑 Whisper
+
+```powershell
+python scripts/v4_pro_selective.py `
+  --smart-report "output/<任务>/<任务>_SMART.json" `
+  --smart-srt "output/<任务>/<任务>_SMART.srt" `
+  --canonical-lyrics "lyrics/01.lrc" "lyrics/02.lrc" `
+  --source-language "01.lrc=zh" `
+  --source-language "02.lrc=zh" `
+  --plan-out "output/<任务>/<任务>_PRO_PLAN.json" `
+  --mix-audio "private/<任务>/input/mix.wav" `
+  --asr-model-id "<faster-whisper-model>" `
+  --asr-out "output/<任务>/<任务>_PRO_ASR.json"
+```
+
+没有 `--include-private-asr-text` 时，输出不保存 raw ASR text，只保留 hash、置信度、word timing 和 canonical support。
+
+### 5.4 中英/韩日语言路由
+
+Pro 先看当前 canonical line，而不是只看整首 track：
+
+```text
+中文 track + 纯英文 rap line -> en
+中文 + English 同一行        -> auto
+韩文纯行                      -> ko
+日文纯行                      -> ja
+```
+
+如果 canonical 文本本身无法确定语言，则保持 ASR auto，不为了“省识别”强行猜语言。
+
+因此 40 分钟大量韩/日歌曲也不等于一定 Max：先 Smart；只有 Smart unresolved 才 Pro；只有局部证据仍无法建立、或者整体 timeline 广泛不可信才 Max。
+
+### 5.5 Pro 当前边界
+
+mapped Pro job 已请求 `source_forced_alignment` capability，但 `v4_pro_selective.py` v1 尚未直接编排 external forced-aligner。当前直接可执行的是 local source↔mix acoustic + faster-whisper 两条 bounded evidence。
+
+Pro v1 不自动 write-back timing。真实歌曲 blind 校准通过后，再加入 evidence fusion/write-back gate。
 
 ## 6. Max：完整 V4
 
@@ -200,7 +284,7 @@ CUT_AWARE 仍只在正式 materialized cut lineage 后成立。
 
 ## 7. Legacy Partial Timeline Repair P1–P5
 
-旧 Partial chain 继续用于 formal P3/P4/P5 proposal/calibration workflow。其 authority 不因 Smart 上线而改变：
+旧 Partial chain 继续用于 formal P3/P4/P5 proposal/calibration workflow。其 authority 不因 Smart/Pro 上线而改变：
 
 ```text
 proposal_only = true
@@ -211,7 +295,7 @@ release_gate_eligible = false
 
 P9 HIGH 仍不能直接生成 trusted/timing mutation；P5 `proposal_inputs_ready` 仍只表示 formal proposal inputs 已就绪。
 
-Smart 不依赖该 chain，也不能反向提升它的 authority。
+Smart/Pro 不依赖该 chain，也不能反向提升它的 authority。
 
 ## 8. 推荐生产顺序
 
@@ -219,16 +303,17 @@ Smart 不依赖该 chain，也不能反向提升它的 authority。
 1. canonical lyrics + Jianying SRT 到位
 2. timing 完全可信 -> Standard
 3. timing 大部分可信、少量可疑 -> Smart（默认）
-4. 检查 Smart report 的 timing review / model unstable / ambiguity
-5. 少量 unresolved -> Pro selective audio（完成 bridge 后）
-6. broad untrusted / complex structure / Pro 无法收敛 -> Max
-7. 始终保留原始输入，只写独立 outputs/artifacts
+4. Smart 能安全修的直接修；review cue -> Pro plan
+5. Pro 只处理这些 bounded windows
+6. Pro acoustic/ASR evidence 当前先 review/calibration
+7. broad untrusted / complex structure / Pro 无法收敛 -> Max
+8. 始终保留原始输入，只写独立 outputs/artifacts
 ```
 
 对于大量韩文/日文的 40 分钟节目：先看 canonical 配对与 Smart model coverage，而不是直接按语言选 Max。
 
 ## 9. 验证边界
 
-公共 CI 可以验证 Standard/Smart 的 deterministic contracts、synthetic outlier、重复歌词保护、word timing 保留、rate-prior edge repair、strict JSON、旧 P3/P4/P5 formal contract 与 Python compatibility。
+公共 CI 可以验证 Standard/Smart deterministic contracts、Smart→Pro selective planning、局部语言 hint、bounded acoustic no-mutation contract、strict JSON、旧 P3/P4/P5 formal contract 与 Python compatibility。
 
-公共 CI 不能证明真实歌曲 false-auto rate。当前 Smart 350/900/8000ms 等边界需要在 private real-song calibration + independent blind 上继续验证，之后才能决定是否扩大 B-anchor auto repair、piecewise repair 或更激进 write-back。
+公共 CI 不能证明真实歌曲 false-auto rate/false acoustic match。当前 Smart 350/900/8000ms、Pro local retrieval score/margin 等边界需要在 private real-song calibration + independent blind 上验证；通过前不开放 Pro 自动 timing write-back。
