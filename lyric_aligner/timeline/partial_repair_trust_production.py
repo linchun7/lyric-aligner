@@ -43,13 +43,15 @@ def _load_json(path: Path, *, label: str) -> dict[str, Any]:
     return payload
 
 
-def _validate_decision_artifact(
+def validate_calibrated_trust_decision_artifact(
     *,
     decision_path: Path,
     decision_artifact_path: Path,
     fusion_artifact_path: Path,
     trust_lock: dict[str, Any],
 ) -> dict[str, Any]:
+    """Validate formal decision output/lineage without generating cue trust."""
+
     decision_artifact = _load_json(
         decision_artifact_path, label="calibrated trust decision artifact"
     )
@@ -147,7 +149,7 @@ def bridge_calibrated_trust_artifacts_to_partial_repair(
     """Artifact-verified P4 production wrapper; still no timing write-back."""
 
     trust_lock = load_calibrated_trust_policy_lock(trust_lock_path)
-    decision_artifact = _validate_decision_artifact(
+    decision_artifact = validate_calibrated_trust_decision_artifact(
         decision_path=decision_path,
         decision_artifact_path=decision_artifact_path,
         fusion_artifact_path=fusion_artifact_path,
