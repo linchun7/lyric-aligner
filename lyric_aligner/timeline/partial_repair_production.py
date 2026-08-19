@@ -123,16 +123,19 @@ def _load_verified_fusion(
     return fusion, artifact
 
 
-def bridge_effective_artifacts_to_partial_repair(
+def inspect_partial_repair_artifacts(
     *,
-    cues: Sequence[Cue],
     run_path: Path,
     run_artifact_path: Path,
     fusion_path: Path,
     fusion_artifact_path: Path,
-    explicit_trust: Iterable[ExplicitCueTrust],
-) -> tuple[list[CueTrust], list[TimingCandidate], dict[str, Any]]:
-    """Build P3 repair inputs from fully verified current-version artifacts."""
+) -> tuple[EffectiveRunMappingContext, dict[str, Any], dict[str, Any]]:
+    """Validate current-version P3 run/fusion artifacts without building cues.
+
+    This is a read-only inspection primitive for Doctor/readiness tooling. It
+    performs the same mapping/fusion lineage checks used by the production
+    bridge but does not create trust or timing candidates.
+    """
 
     context = derive_effective_run_mapping_context(
         run_path=run_path,
@@ -145,6 +148,26 @@ def bridge_effective_artifacts_to_partial_repair(
         )
     fusion, fusion_artifact = _load_verified_fusion(
         context=context,
+        fusion_path=fusion_path,
+        fusion_artifact_path=fusion_artifact_path,
+    )
+    return context, fusion, fusion_artifact
+
+
+def bridge_effective_artifacts_to_partial_repair(
+    *,
+    cues: Sequence[Cue],
+    run_path: Path,
+    run_artifact_path: Path,
+    fusion_path: Path,
+    fusion_artifact_path: Path,
+    explicit_trust: Iterable[ExplicitCueTrust],
+) -> tuple[list[CueTrust], list[TimingCandidate], dict[str, Any]]:
+    """Build P3 repair inputs from fully verified current-version artifacts."""
+
+    context, fusion, fusion_artifact = inspect_partial_repair_artifacts(
+        run_path=run_path,
+        run_artifact_path=run_artifact_path,
         fusion_path=fusion_path,
         fusion_artifact_path=fusion_artifact_path,
     )
