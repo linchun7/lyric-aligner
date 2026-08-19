@@ -57,13 +57,16 @@ P2 仍不写 SRT timing。
 
 ---
 
-## 2026-08-19 — Partial Timeline Repair P3 effective-run lineage context
+## 2026-08-19 — Partial Timeline Repair P3 formal lineage context
 
 新增：
 
 ```text
 lyric_aligner/timeline/partial_repair_context.py
+lyric_aligner/timeline/partial_repair_production.py
 scripts/test_v4_partial_timeline_repair_context.py
+scripts/test_v4_partial_timeline_repair_context_identity.py
+scripts/test_v4_partial_timeline_repair_production.py
 ```
 
 ### 目标
@@ -75,7 +78,7 @@ mapping_kind_by_occurrence
 confirmed_cut_occurrence_ids
 ```
 
-P3 改为从 exact effective run + artifact lineage 派生 mapping/cut context，并要求 P9 fusion 绑定同一个 effective-run artifact。
+并进一步禁止生产入口信任一个脱离 formal artifact 的可变 P9 fusion JSON。P3 正式生产路径要求 effective run/artifact 与 fusion/artifact 四件套全部验证后才进入 P2/P1。
 
 ### Continuous mapping
 
@@ -93,6 +96,7 @@ combined_recomposition
 
 - `mapping_source=coarse` 时验证 exact coarse payload/artifact、自签名/output hash、task/algorithm/occurrence identity及其为 effective-run upstream；直接读取 `result.timewarp.mapping.mode`；
 - `mapping_source=fine` 时除上述检查外，还要求 `fine_applied=true`、Fine `result.applied=true`、Fine artifact upstream 包含 exact coarse artifact；
+- Fine 的 occurrence、track、`canonical_selection_sha256` 必须与 effective coarse 完全一致，同 task 内错拼另一 track/canonical 也会 fail closed；
 - continuous mode 只允许 `AFFINE / PIECEWISE_RATE`；AFFINE 不得夹带 rate breakpoints，PIECEWISE_RATE 必须有实际 breakpoint；
 - 不从 BPM 或 LRC timestamp 推导 mapping kind；
 - `mapping_blocked=true` 返回 unavailable context，不产生 timing candidate。
@@ -118,22 +122,26 @@ cut mapping artifact + source review artifact are upstream of effective run
 
 对于 combined cut+overlap run，P3 沿继承的 cut occurrence/cut mapping lineage 得到 CUT_AWARE；overlap-only run 不改变底层 Source-to-Mix mapping kind。
 
-### P9 binding
+### Formal P9 fusion artifact binding
 
-生产入口 `bridge_effective_run_to_partial_repair()` 额外要求：
+正式入口 `bridge_effective_artifacts_to_partial_repair()` 要求：
 
 ```text
-fusion.task_fingerprint_sha256 == effective run task
-fusion.algorithm_version == effective run algorithm
-fusion.source_run_stage == effective run artifact stage
-fusion.source_run_artifact_id == exact effective run artifact_id
+run payload <-> run artifact exact output hash
+fusion payload <-> fusion artifact exact output hash
+fusion artifact stage = evidence_fusion_shadow
+fusion artifact role = evidence_fusion
+fusion.task/algorithm/source_run_stage/source_run_artifact_id exact
+fusion artifact normalized_config.source_run_artifact_id exact
+exact effective run artifact is upstream of fusion artifact
+fusion artifact evidence keeps shadow-only / uncalibrated / no-release / no-auto-mutation
 ```
 
-只有全部一致后，lineage-derived mapping context 才进入 P2 bridge。
+因此手工修改 P9 `source_timeline_boundary_ms` 后继续使用旧 artifact 会在 output hash 校验处直接失败。低层 payload bridge 继续作为测试/组合 API，但不再是正式生产入口。
 
 ### Privacy / authority
 
-P3 report 只记录 occurrence ID、stage、artifact ID、mapping kind、cut count、状态/reason；不输出 coarse/fine/cut 本地路径。
+P3 report 只记录 occurrence ID、stage、artifact ID、mapping kind、cut count、状态/reason；不输出 coarse/fine/cut 本地路径。Formal production report 额外记录 fusion artifact ID 与 `production_inputs_artifact_verified=true`。
 
 本阶段仍固定：
 
@@ -149,6 +157,8 @@ automatic_timing_change_allowed = false
 
 - base AFFINE；
 - applied Fine PIECEWISE_RATE；
+- Fine/coarse track mismatch；
+- Fine/coarse canonical-selection mismatch；
 - review-only confirmed cut 仍 unavailable；
 - materialized cut -> CUT_AWARE；
 - combined cut+overlap -> CUT_AWARE；
@@ -156,6 +166,8 @@ automatic_timing_change_allowed = false
 - 伪造 cut label 无 artifact fail closed；
 - mapping artifact 不在 effective-run upstream fail closed；
 - production bridge 无需 caller mapping/cut labels；
-- P9 必须绑定 exact effective-run artifact。
+- tampered fusion payload output hash fail closed；
+- fusion artifact 必须把 exact effective run 作为 config binding + upstream；
+- P9 payload 必须绑定 exact effective-run stage/artifact。
 
 P3 通过 final exact-head CI 后，下一阶段才接 private calibration + independent blind-test 的 calibrated trust policy；不会用 synthetic CI 宣称真实 timing accuracy。
