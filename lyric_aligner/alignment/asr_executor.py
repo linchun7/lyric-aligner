@@ -19,7 +19,7 @@ from typing import Any, Callable, Iterable
 from lyric_aligner.text.language_spans import asr_language_hint_for_text
 
 
-ASR_EVIDENCE_SCHEMA_VERSION = "1.1"
+ASR_EVIDENCE_SCHEMA_VERSION = "1.0"
 
 
 class AsrExecutionError(RuntimeError):
