@@ -162,7 +162,7 @@ timing_model_confirms_canonical_sequence
 
 #### Song-edge one-sided path — v1.1.3
 
-真实 190《在梅边》暴露：歌曲开头被 editor-only ad-lib 隔开时，双侧 anchor contract 会漏掉一个 timing 已高度吻合的 severe-ASR lyric cue。v1.1.3 增加更窄的一侧恢复，不放宽 Text Repair 阈值：
+真实生产回归表明：歌曲开头/结尾若被 editor-only ad-lib 隔开，双侧 anchor contract 可能漏掉 timing 已高度吻合的 severe-ASR lyric cue。v1.1.3 增加更窄的一侧恢复，不放宽 Text Repair 阈值：
 
 1. initial affine model 必须已由独立 A anchors `ready`；
 2. candidate 只能位于该 source 的首/尾 4 条 canonical rows；
@@ -193,20 +193,20 @@ text_review_count
 
 ### 3.5 Segmentation authority regression
 
-190 的 11:24 案例成为永久回归：
+Public regression 使用合成文本锁定以下结构：
 
 ```text
 editor cues:
-为他而学着唱的情歌
-他早忘了但是还在你的播放
-列表里面排到前几位
+第一段歌词到这里
+下一小句仍在同一画面
+最后几个字继续播放
 
 canonical LRC lines:
-为他而学着唱的情歌他早忘了
-但是还在你的播放列表里面排到前几位
+第一段歌词到这里下一小句
+仍在同一画面最后几个字继续播放
 ```
 
-两边连续规范文本一致，只有行分句不同。Standard/Smart 必须保持 editor 三个 cue 的文字 ownership；不得把“他早忘了”移到前一 cue。这个 contract 与“canonical lyric 决定文字/顺序”不冲突：canonical 决定**字是什么、顺序是什么**，可信 editor cue 决定**这些字在哪个显示时间块**，除非有更强 boundary evidence 推翻它。
+两边连续规范文本一致，只有行分句不同。Standard/Smart 必须保持 editor 三个 cue 的文字 ownership；不得把某段连续文字迁移到前/后 cue。这个 contract 与“canonical lyric 决定文字/顺序”不冲突：canonical 决定**字是什么、顺序是什么**，可信 editor cue 决定**这些字在哪个显示时间块**，除非有更强 boundary evidence 推翻它。
 
 ### 3.6 Final timeline overlap guard
 
@@ -325,4 +325,4 @@ Public tests必须证明：
 - exact DAW hard prior 与 BPM-derived soft prior；
 - Enhanced LRC / stale Smart / acoustic source-window / ASR-only region / max-jobs / path collision / forced protocol / multilingual routing继续不回归。
 
-Public CI 仍不能证明真实歌曲 false-auto / false acoustic match。Pro evidence fusion 与自动 timing writeback必须等待 private real-song calibration + independent blind。190 真实回归继续作为 Smart 文本/segmentation 方向的生产验收样本，但不得将具体歌曲、cue 或 timestamp hard-code 到 production algorithm。
+Public CI 仍不能证明真实歌曲 false-auto / false acoustic match。Pro evidence fusion 与自动 timing writeback必须等待 private real-song calibration + independent blind。真实生产 failure 应转换成同构的合成 regression，禁止将歌曲、cue、timestamp 或任务文本 hard-code 到 production algorithm/public test。
