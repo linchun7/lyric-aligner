@@ -1,8 +1,16 @@
 from __future__ import annotations
 
+import tempfile
 import unittest
+from pathlib import Path
 
-from lyric_aligner.text_repair import CanonicalLine, parse_srt_text, repair_srt_text, timeline_signature
+from lyric_aligner.text_repair import (
+    CanonicalLine,
+    parse_canonical_files,
+    parse_srt_text,
+    repair_srt_text,
+    timeline_signature,
+)
 
 
 def canonical(*lines: str) -> list[CanonicalLine]:
@@ -97,6 +105,26 @@ class TextRepairV2Tests(unittest.TestCase):
         self.assertEqual(report["unmatched_canonical_count"], 1)
         self.assertEqual(report["unmatched_canonical"][0]["text"], "第二句")
         self.assert_timeline_unchanged(source, output)
+
+    def test_lrc_timestamp_spacing_does_not_affect_text_repair(self):
+        source = (
+            "1\n00:00:10,000 --> 00:00:11,000\n第一巨\n\n"
+            "2\n00:00:11,000 --> 00:00:12,000\n第二句\n"
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            normal = root / "normal.lrc"
+            faster = root / "faster.lrc"
+            normal.write_text("[00:10.00]第一句\n[00:20.00]第二句\n", encoding="utf-8")
+            faster.write_text("[00:10.00]第一句\n[00:15.00]第二句\n", encoding="utf-8")
+            normal_output, normal_report = repair_srt_text(source, parse_canonical_files([normal]))
+            faster_output, faster_report = repair_srt_text(source, parse_canonical_files([faster]))
+
+        self.assertEqual(normal_output, faster_output)
+        self.assertIn("第一句", normal_output)
+        self.assertEqual(normal_report["status"], "ready")
+        self.assertEqual(faster_report["status"], "ready")
+        self.assert_timeline_unchanged(source, normal_output)
 
 
 if __name__ == "__main__":
