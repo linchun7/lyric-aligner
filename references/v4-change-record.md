@@ -26,6 +26,87 @@ ASR / forced    -> auxiliary acoustic evidence
 
 ---
 
+## 2026-08-19 — Smart v1.1.4 parser + text-only evidence hardening
+
+真实生产重跑在 v1.1.3 后继续暴露两类通用问题：
+
+1. 普通消费级 LRC 会把标题、制作人员、歌手角色标签与歌词一样 timestamp；旧 `parse_canonical_lyrics()` 会把 metadata-only timestamp group 当作“零 lexical candidate 的歧义”并直接阻断 Smart；
+2. strict A-anchor timing model 为了 mutation 安全会排除重复歌词与复杂 span，但这些 editor/canonical exact mappings 对**文字恢复**仍然是强证据；同时 severe-ASR block 可能只有局部左右边界足够，整首歌却无法建立 strict A model。若 Smart 只依赖 strict model，就会比旧轻量模式漏修更多文字。
+
+本轮不降低 Text Repair V2 `auto-threshold`，也不扩大 automatic timing authority，而是新增明确分离的 **text-only evidence layer**：
+
+### Canonical parser
+
+- `text/normalization.py` 扩展常见 timestamped credits，支持 `:` / `：`；
+- 新增 Latin/digit role-label 识别；
+- 最前约 1 秒内的常见 `artist - title` timed row 不进入 canonical lyric；
+- 没有显式 TrackAsset selection 时，metadata-only timestamp group 直接忽略；
+- 同 timestamp 真正存在多个 lexical alternatives 时仍 fail closed；
+- 显式 selection 指向 metadata/blank/title 时仍拒绝。
+
+### Local bilateral text recovery
+
+新增 `timeline/text_recovery_consensus.py`：
+
+- bounded review block 最多 8 cue；
+- 左右 boundary 必须各是非 review、1↔1、single canonical mapping，score `>=0.80`；
+- 两侧同 source，canonical gap 连续同源；
+- 只用左右 boundary 构造局部 affine interpolation，rate `0.5–2.0`；该模型只服务当前 block 的 text recovery，不进入 final timing mutation。
+
+优先运行 whole-span ownership projection：当 review block 连续 editor text 与 canonical gap 连续 text grouped score `>=0.55` 时，复用 Text Repair `_assign_targets()`，把 canonical 正确字符按**原 editor cue ownership**回填。一个 canonical line 横跨多个 editor cue 时不制造伪 canonical timing span。
+
+reason：
+
+```text
+local_bilateral_span_preserves_editor_segmentation
+```
+
+若 lexical evidence 太弱，则用 local affine + canonical onsets 进行 bounded partition：first-onset tolerance `750ms`、boundary guard `500ms`、每 cue 最多 4 canonical lines。
+
+reason：
+
+```text
+local_bilateral_timing_confirms_canonical_sequence
+```
+
+### Exact-consensus text model
+
+从 **recovery 前 original decisions** 中收集 exact + unchanged + 1↔1 mappings。与 strict A model 不同，重复副歌 exact rows 允许参加 robust fit，因为该模型只确认文字，不写 timing。
+
+模型必须满足：
+
+```text
+anchor_count >= 6
+distinct normalized exact texts >= 3
+inlier_fraction >= 0.80
+median_abs_residual_ms <= 150
+```
+
+provenance：
+
+```text
+text_exact_consensus_only
+```
+
+remaining mapped 1↔1 text review 只有当 projected canonical onset 位于 `editor cue interval ±250ms` 时才能恢复。若 editor cue 以单个常见中文语气词开头，只有 projected canonical onset 比 cue start 至少晚 `300ms` 才保留该 leading ad-lib。
+
+reason：
+
+```text
+exact_consensus_timing_confirms_mapped_canonical
+```
+
+### Anti-circularity / timing authority
+
+- local bilateral model 与 text-consensus model 永远不作为 final timing mutation model；
+- final timing 仍只使用 strict A anchors / exact DAW hard prior；
+- 所有 text recovery reasons 进入 timing planner 前强制 score cap `<0.92`，因此 recovered cue 不会因为文字被修对而升为 A/B timing evidence；
+- existing strict bilateral/edge text recovery 可以在**文字阶段**消费 strict A-ready model，strict model 不存在时也可消费通过高质量 gate 的 text-consensus model，但仍不能提升 timing authority。
+
+Smart policy id 升到 v1.1.4，schema 保持 `smart-1.1`；Pro 的 current-policy binding 会把旧 Smart report 自动视为 stale。
+
+新增合成 regression 覆盖：timestamped metadata、local whole-span segmentation preservation、severe-ASR local onset partition、high-quality consensus low-sim recovery、onset-outside-cue rejection、leading ad-lib timing condition，以及 recovered reason 不能成为 primary timing grade。
+
 ## 2026-08-19 — Smart v1.1.3 segmentation authority + song-edge text recovery
 
 真实生产复核暴露两个可泛化缺口：
@@ -47,142 +128,53 @@ ASR / forced    -> auxiliary acoustic evidence
 - Smart report 新增 `text_edge_timing_recovery_count` 与 `text_edge_timing_recovery_block_count`；schema 继续 `smart-1.1`，policy id 升为 v1.1.3；
 - Pro 继续通过共享 `SMART_POLICY_ID` 精确绑定当前 Smart，因此旧 v1.1.2 report 自动 stale，必须重跑 Smart。
 
-新增 public regression 使用**合成同构文本**覆盖：
-
-- Standard：canonical 连续文本与 editor 连续文本一致但 LRC/editor 行分组不同，输出必须逐 cue 原样保持；
-- Smart：同结构下也不得跨 cue 搬字；
-- Smart song-start：unmapped ad-lib + severe-ASR lyric + 一侧连续强 anchors 时可恢复 lyric text，同时保留 ad-lib；
-- 既有 unit contract 继续证明 weak mapped 邻居不能被跳过借远处 anchor；
-- recovered text 继续不能形成 circular timing proof。
-
-兼容/回滚：本轮没有改变 Smart CLI 参数、Pro timing authority 或 Max 默认策略；如需回滚，可回到 v1.1.2 policy commit，但对应 Smart artifact 必须与 policy id 一致，不得把 v1.1.2/v1.1.3 report 混用。
+新增 public regression 使用**合成同构文本**覆盖：Standard/Smart segmentation preservation、unmapped ad-lib + severe-ASR lyric + 一侧连续强 anchors、weak mapped cue 不可跳过，以及 recovered text 不形成 circular timing proof。
 
 ## 2026-08-19 — Smart v1.1.2 severe-ASR text recovery
 
-真实生产回归暴露出一个 Smart 文本层缺口：当 Jianying 把整句识别成几乎完全不同的文字时，Text Repair V2 的相似度/segmentation safety 会正确进入 review，但旧 Smart 会把该错误 editor text 原样留在输出；这把“timing/identity 尚未完全确认”错误地等同成“canonical text 也不能恢复”。
+Text Repair V2 因 editor ASR 严重错误而 lexical review 时，旧 Smart 会把错误 editor text 原样留在输出。本轮不降低 Text Repair 阈值、不引入 audio，而增加严格第二阶段 text recovery：
 
-本轮不降低 Text Repair V2 阈值，也不引入 audio/ASR，而是在 `timeline/text_recovery.py` 增加严格的第二阶段 text recovery：
+- 先用原有高可信 A anchors 建 ready affine model；review cue 不参与建模；
+- interior review block 只在双侧高可信 single-line anchors、同歌、model-compatible、连续 canonical gap、onset 单调与 bounded span 全部成立时恢复；
+- recovery 只替换文字，不提升 timing authority。
 
-- 第一阶段仍只用原有高可信 A anchors 建 ready affine model；review cue 不参与建模；
-- 只处理被两个高可信 single-line canonical text anchors 包围的 interior review block；
-- 两侧 anchors 必须属于同一歌曲，并各自与 ready affine model 在 750ms 内一致；
-- 两侧 anchors 之间的 canonical line gap 必须完整、连续、同源，并能按 predicted LRC onset 单调分配到 review cue starts；
-- 每个 cue 的第一 canonical onset 与 editor start 必须在 750ms 内；每 cue 最多 4 canonical lines、每 block 最多 8 cues；
-- canonical gap 为 0 的 ad-lib、歌曲边界/单侧 block、跨歌 block、模型不 ready 或 timing 不匹配的 block 继续 review；
-- recovery 只替换文字，不把低相似度 cue 提升为 A anchor，也不授予新的 timing auto-write 权限；multi-line recovered cue 仍可保留 timing review / Pro escalation。
-
-Smart report 新增：`text_review_count_before_timing_recovery`、`text_timing_recovery_count`、`text_timing_recovery_block_count`。schema 继续 `smart-1.1`，policy id 升到 v1.1.2，确保旧 artifact 不被 Pro 当成当前 Smart 结果。
-
-新增 regression tests 覆盖：ready model + bilateral anchors 可恢复完全低相似度的 1↔N text block；模型不 ready 不恢复；review cue timing 与 model 偏离时不恢复；recovery 不自动变成 timing anchor。
+Smart report 新增 `text_review_count_before_timing_recovery`、`text_timing_recovery_count`、`text_timing_recovery_block_count`。
 
 ## 2026-08-19 — Smart / Pro v1.1.1 repair-only收口
 
-本轮只修复 review 中发现的生产 bug / 回归风险，不增加新算法、不放宽阈值、不开放 Pro timing write-back：
-
-- Smart 对全部自动 timing repair 生成最终组合时间轴后再次检查 overlap；禁止新 overlap，也禁止扩大编辑器原本已有的 overlap；
-- `bpm_derived` 不再与 `exact_daw` 一样硬锁 rate：DAW 精确倍率可继续作为 hard prior，BPM 推导值只做 soft plausibility；若与稳定 A-anchor rate 冲突，只阻止自动 mutation，不用软先验推翻已验证 preserve；
-- Enhanced LRC 最后 token 的合法 `end_ms=None` 不再导致 Smart→Pro 基础 planner 在 source window 计算阶段崩溃；
-- Pro v1.1 只接受当前 `smart-1.1` schema + 当前 Smart policy，旧 Smart artifact 必须重新跑 Smart，避免旧 `false-ready` 语义漏掉 Pro escalation；
-- adaptive source window 现在至少覆盖 `mix query duration × 最大候选 slope + frame margin`，避免窗口短于 acoustic query 而产生零候选；
-- acoustic region 只合并真正请求 `source_local_acoustic_match` 的 jobs，ASR-only job 不再无意义扩大 acoustic decode/feature region；
-- `max_jobs` 现在约束最终 job 总数（包含 shadow competitor），summary 明确 primary/competitor/omitted 数量；
-- Smart/Pro 所有 artifact output 增加统一路径碰撞 guard，禁止覆盖 source SRT、canonical lyrics、mix/source audio 或其他输出 artifact；
-- Pro 只 hash/bind 当前 plan 实际使用到的 source audio，避免 40–60 分钟任务中对无关原曲做整文件 I/O。
-
-新增 regression tests 覆盖 open-ended Enhanced LRC、组合 overlap、existing-overlap worsening、soft BPM prior、stale Smart rejection、acoustic window 最小长度、ASR-only region isolation、max-jobs total cap 与 artifact path collision。
+- Smart 最终组合时间轴禁止新 overlap，也禁止扩大编辑器原本已有 overlap；
+- `bpm_derived` 为 soft plausibility，`exact_daw` 才可 hard-lock rate；
+- Enhanced LRC final token `end_ms=None` 可安全进入 Pro；
+- Pro 只接受 current Smart schema + policy；
+- adaptive source window 覆盖 acoustic query × candidate slope；
+- ASR-only job 不扩大 acoustic region；
+- `max_jobs` 约束最终 jobs 总数，包括 shadow competitor；
+- Smart/Pro output path collision fail closed；
+- Pro 只 hash/bind plan 真正需要的 source audio。
 
 ## 2026-08-19 — Smart / Pro v1.1 daily-production hardening
 
-Smart 新增 `timeline/smart_policy.py`，保留 v1 A-anchor affine engine，但修正 production semantics：
+Smart 新增 production semantics：未验证 timing、无唯一 identity、C-grade identity 均 review；B-grade 不能建立 timing model；rate provenance 显式区分 exact DAW / BPM-derived / anchor-estimated。
 
-- `timing_model_not_ready`、无唯一 timed-canonical identity、C-grade identity 不再以普通 `preserve` 让任务看起来 `ready`，而是明确 `review` 并设置 `pro_escalation_required=true`；
-- B-grade 仍不得建立 timing model，只允许由已经 ready 的 A-anchor model 做二次确认；
-- timing repair 新增 no-new-overlap guard：原本不重叠的相邻 cue 不得被 Smart 自动修成新的 overlap；
-- Smart report schema 升到 `smart-1.1`，新增 validated preserve / escalation 语义；
-- rate prior 记录 provenance：`exact_daw / bpm_derived / anchor_estimated`，避免把 DAW 精确倍率与 BPM 推导值混成同等证据。
-
-Pro 新增 `alignment/selective_policy.py` 与 `alignment/local_acoustic_v11.py`：
-
-- 从“mapped review 一律 ASR + acoustic + forced”改成 reason-aware routing：timing review 优先 local source↔mix acoustic；text/identity review 才优先 ASR；无逐字 timing 且 source-side identity 确实需要加强时才请求 forced alignment；
-- 相邻 review cue 合并成 mix regions；声学执行对每个 region 只 decode / extract mix features 一次，但仍保留每条 cue 独立 source query；
-- source window 优先利用 Enhanced LRC/QRC token timing；否则利用下一行 canonical onset 自适应，减少短句无意义宽搜并避免长 rap 被固定 5s 窗口截断；
-- 歌曲首尾两行 timing review 可增加相邻歌曲的 shadow acoustic competitor，用于 join/crossfade 双源判断；competitor 明确 `shadow_evidence_only=true`，不能直接改 timing；
-- `scripts/v4_pro_selective.py` 现在可显式调用既有 external forced-alignment protocol，仍属于 auxiliary evidence；
-- Pro v1.1 继续 `timing_mutation_performed=false`，自动写回必须等待 private real-song calibration + independent blind。
-
-新增测试覆盖：Smart 未验证状态升级、no-new-overlap guard、rate provenance、Pro reason-aware routing、边界双源 competitor、merged-region mix feature reuse。
+Pro 增加 reason-aware routing、局部 acoustic region reuse、自适应 source window、歌曲边界 shadow competitor、external forced protocol 入口；仍 `timing_mutation_performed=false`。
 
 ## 2026-08-19 — Pro / Selective Audio Repair v1 evidence bridge
 
-新增 `lyric_aligner/alignment/selective_repair.py`：
+新增 `alignment/selective_repair.py` 与 `alignment/local_acoustic_match.py`：只把 Smart unresolved cue 转成 bounded Pro jobs；局部 decode source/mix；有 Smart rate 时窄 slope search；只输出 acoustic evidence，不直接改 SRT。
 
-- 只把 Smart report 中 `timing review` / `text review` cue 转成 Pro jobs；已经 preserve/repair 的正常 cue 不重复跑 audio；
-- 每个 job 绑定 cue ordinal、canonical occurrence、source ordinal、canonical text SHA、Smart rate、editor cue time；plan 不保存 raw canonical text；
-- mix window 默认仅 cue 前后各 2.5s（不足时扩到至少 4.5s）；
-- 有 canonical identity 时按 LRC/逐字 token timing 建局部 source window；v1.1 再按 failure reason 收窄实际 capability；
-- 无 canonical identity 的 Smart review 只能先请求 bounded mix ASR，并明确计入 unmapped escalation；
-- 输出计划统计局部 mix audio 毫秒数，用于验证 Pro 是否真正只花局部计算量。
-
-新增 `lyric_aligner/alignment/local_acoustic_match.py`：
-
-- 复用 Full V4 已有 HPSS/Chroma CENS/MFCC retrieval，但只 decode Smart 选择的 mix/source bounded windows；
-- 有 Smart rate 时默认只在 `rate ± 0.06` 的窄范围搜索；无 prior 才使用较宽但仍局部的 slope range；
-- 从 local source match 反推出 canonical lyric onset 的 `predicted_mix_start_ms`，同时输出 score/margin/feature agreement/editor residual；
-- Pro **只输出 acoustic timing evidence，不直接修改 SRT**，等待 private real-song calibration/blind 决定自动写回门槛。
-
-新增 `scripts/v4_pro_selective.py`：
-
-- 必需输入 Smart report + Smart SRT + 同一组 timed canonical lyrics；
-- 默认只生成 Pro plan，仍然 0 audio execution；
-- 可选执行 bounded source↔mix evidence、faster-whisper 以及 v1.1 external forced alignment；
-- source language 可按 canonical filename/ordinal 提供，供局部 ASR routing 使用。
-
-修正 mixed-language ASR routing：
-
-- `text/language_spans.py` 新增 canonical-line 级 `asr_language_hint_for_text()`；
-- `alignment/asr_executor.py` 优先使用 explicit job hint；没有 explicit hint 时根据当前 canonical line 重新判断；只有缺少 canonical text 时才回退 whole-track profile；
-- 因此中文 track 中的纯英文 rap line 使用 `en`，真正中英 code-switch 返回 `None/auto`，不再被全曲 `zh` 强制覆盖；
-- 韩文/日文 pure local line 同样分别得到 `ko` / `ja`；语言标签仍不决定是否进入 Max。
+`scripts/v4_pro_selective.py` 支持计划生成、bounded acoustic、bounded faster-whisper 与 external forced；mixed-language ASR routing 以 local canonical span 为优先 language hint。
 
 ## 2026-08-19 — Smart / Anchor Timeline Repair v1
 
-新增生产基线 `references/production-requirements.md`，明确真实任务以“规范歌词齐全、剪映时间轴大部分可信、中文为主、单曲通常单一匀速变速”为主路径。韩文/日文或整段外文不因语言标签自动进入 Max；有可靠 canonical identity 时仍先走 Smart，局部困难再升级 Pro，只有整体 mapping/timeline 广泛不可信时进入 Max。
-
-新增 `lyric_aligner/timeline/anchor_repair.py`：
-
-- Smart 不读取 audio；先复用 Text Repair V2.1 的 deterministic cue↔canonical span alignment；
-- canonical timing 改用 `text/canonical_lyrics.py`，保留 line timestamp，并自动保留 Enhanced LRC / QRC 的 word/token timing；
-- 逐字 timing 作为更细的 onset/boundary evidence，不直接强迫 SRT display segmentation 等同于逐字歌词；
-- cue identity 分 A/B/C：仅 original editor text 与 canonical 唯一、exact、1:1、monotonic-safe 的 A anchor 可建立主 timing model；
-- 每首歌默认拟合 `source_time = offset + rate * mix_time`；无 rate prior 时以 A anchors 的 robust pairwise median slope 建模；有 exact stretch ratio 时直接作为强 prior；由 BPM 推导时 `rate_prior = target_bpm / source_bpm`；
-- 单 cue 判断使用 leave-one-out 独立模型，避免 cue 用自己的 timing 证明自己；
-- v1 初始安全边界：`preserve <= 350ms`、`repair >= 900ms`、单次 auto shift `<= 8000ms`；
-- interior 自动 timing repair 要求至少左右各 2 个独立 A anchors；歌曲首/尾只允许在有 rate prior 且单侧至少 3 个 A anchors 时自动外推；
-- v1 只做 dominant affine model；少量同歌多 rate、局部 cut 等升级而不是强迫普通歌曲走重链路。
+新增生产基线 `references/production-requirements.md`。Smart 不读 audio；复用 Text Repair deterministic alignment；保留 LRC/Enhanced LRC/QRC timing；A/B/C identity 分级；每歌优先 dominant affine model；leave-one-out 防循环；只修证据充分的小量 timing outlier；rare multi-rate/cut 升级而不污染普通主路径。
 
 ## 2026-08-19 — Text Repair V2.1 hardening
 
-Text Repair 继续保持 frozen-timeline text-only 责任：不读 audio，不改变 SRT cue count / number / start / end。
-
-- canonical parser 在移除 LRC/QRC 时间标签后再次过滤 metadata；
-- 同一 canonical 文件 timed/untimed lyric body 混合 fail closed；
-- 字符插入落 cue/whitespace/line-break boundary 时 review；
-- unmatched canonical line 与 cue-level review 分离；
-- unique exact anchor chain 从 O(n²) 改为 O(n log n) Fenwick；
-- production `auto-threshold` floor = 0.72；
-- report schema = 2.1，并在输出后重新断言 timeline signature 完全不变。
+Text Repair 保持 frozen timeline：不读 audio、不改变 cue count/number/start/end。metadata filtering、mixed timed/untimed fail-closed、boundary insertion review、coverage/report 语义、O(n log n) exact anchor chain 与 production threshold floor 均已收口。
 
 ## 2026-08-19 — Partial Timeline Repair P1–P5
 
-P1：`partial_repair.py` 建立 explicit trusted/untrusted/unknown、trusted hard lock、Source-to-Mix-only candidate、AFFINE/PIECEWISE_RATE/CUT_AWARE 与 neighbor/overlap guards。
-
-P2：`partial_repair_evidence.py` 保持 P9 shadow-only；P9 HIGH 不自动 trusted，CONFLICT 不自动 untrusted；editor cue 必须唯一 canonical identity。
-
-P3：`partial_repair_context.py` / `partial_repair_production.py` 验证 exact effective-run + fusion formal lineage，从 coarse/Fine/cut lineage 派生 mapping；CUT_AWARE 只认 materialized cut lineage。
-
-P4：`partial_repair_trust.py` / `partial_repair_trust_production.py` 复用 strict calibration + independent blind；formal decisions 绑定 exact lock/candidate/runtime/fusion identity，P9 CONFLICT 不得自动提升。
-
-P5：`partial_repair_readiness.py` / `doctor_partial.py` 提供 read-only readiness。该链路继续固定：
+P1–P5 formal calibration/proposal/readiness chain 继续固定：
 
 ```text
 proposal_only = true
