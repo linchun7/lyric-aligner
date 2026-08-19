@@ -1,33 +1,43 @@
 # Lyric Aligner v4 生产运行手册
 
 更新：2026-08-19  
-主线算法版本：`4.0.0a8`
+主线算法版本：`4.0.0a9`
 
-> P4 前的完整长版手册保存在 `references/archive/2026-08-19-pre-p4-v4-runtime-guide.md`。本文件描述 Text Repair V2.1、Partial Timeline Repair P1–P5 与当前生产边界。
+> P4 前完整长版手册见 `references/archive/2026-08-19-pre-p4-v4-runtime-guide.md`。真实生产 workload 与产品设计基线见 `references/production-requirements.md`。
 
-## 1. 不变的 authority
-
-```text
-Canonical lyric -> final text/order truth
-Source-to-Mix  -> primary timing truth
-Editor / ASR / forced -> auxiliary evidence
-P9 fusion      -> uncalibrated shadow diagnostics
-P4 trust lock  -> calibrated cue-trust proposal eligibility only
-P5 Doctor      -> read-only readiness diagnostics only
-```
-
-始终：
+## 1. 四档模式怎么选
 
 ```text
-proposal_only = true
-publish_ready = false
-automatic_timing_change_allowed = false
-release_gate_eligible = false
+Standard -> Smart -> Pro -> Max
 ```
 
-## 2. 冻结剪映时间轴，只修文字
+### Standard
 
-使用 Text Repair V2.1：
+只修文字，绝对不改剪映 timing；不读取 audio。
+
+适合：你已经完全信任剪映时间轴。
+
+### Smart
+
+默认主力模式。先做 Standard 文字配对，再用 timed LRC、可用的逐字 timing、Jianying 大量正确 cue、以及 BPM/实际 stretch ratio 建立 no-audio anchor model，只推翻少量有多重独立证据的 timing outlier。
+
+适合：剪映时间轴大部分正确，只有少数 cue 可疑。
+
+### Pro
+
+只对 Smart 无法解决的局部窗口读取 audio。新的 Smart→Pro bridge 尚在下一阶段实施。
+
+适合：英文 rap、古风/特殊唱法、歌曲交界、局部 identity/timing 冲突等少量困难位置。
+
+### Max
+
+完整 Full V4 Source-to-Mix/acoustic path。
+
+适合：大部分 timing 本身就不可信、canonical mapping coverage 太弱、复杂 cut/overlap/reorder，或 Pro 局部处理仍无法解决。
+
+**韩文/日文不是自动 Max 条件。** 如果有规范 timed lyrics 且 editor cue 能稳定与 canonical 配对，Smart 的文本 identity + timing math 仍然成立；只有证据不足时才升级 Pro/Max。
+
+## 2. Standard：冻结剪映时间轴，只修文字
 
 ```powershell
 python scripts/v4_text_repair.py `
@@ -37,29 +47,139 @@ python scripts/v4_text_repair.py `
   --report "output/<任务>/<任务>_TEXT_REPAIR.json"
 ```
 
-它不读取 audio，不改变 cue count / number / start / end。输出写回后会重新解析 SRT，并再次比较 cue count、number 与 timing signature；任何变化都会直接失败。
+Text Repair V2.1：
 
-V2.1 的生产规则：
+- 不读取 audio；
+- cue count / number / start / end 完全冻结；
+- canonical 是最终文字/顺序 truth；
+- timestamped metadata、mixed timed/untimed body、layout-boundary insertion、ambiguous match 等继续 fail closed；
+- coverage warning 与 cue review 分开；
+- production `--auto-threshold` 不得低于 0.72。
 
-- timestamped metadata（作词、作曲、制作等）会在移除时间标签后再次过滤；
-- 同一 canonical 文件不能混合 timed lyric occurrence 与未标时正文；出现这种情况直接 fail closed。纯 timed LRC/QRC 与纯 untimed TXT 仍可使用；
-- 缺字如果恰落 cue 边界、空格边界或换行边界，不猜字符应该属于哪一侧，保持原字幕并 `review_required`；
-- canonical 中有歌词而当前 SRT 没有对应 cue 时，记录 `coverage_status=warning` / `coverage_warning_count`，但它本身不再把文字修复任务判成失败；可疑 cue 本身仍按 gap guard / ambiguity guard 进入人工复核；
-- report schema 为 `2.1`。
+批量任务继续使用 `scripts/v4_text_repair_batch.py`。
 
-正式 CLI 默认 `--auto-threshold 0.72`，允许提高但**不允许降低到 0.72 以下**。core Python API 仍保留实验阈值能力；正式单任务和 batch runner 都会拒绝生产阈值降级。
+## 3. Smart：无音频智能修文字 + 少量 timing
 
-批处理：
+### 3.1 最简单调用
 
 ```powershell
-python scripts/v4_text_repair_batch.py `
-  --manifest "private/<任务>/text-repair-batch.json" `
-  --summary "output/<任务>/text-repair-summary.json"
+python scripts/v4_smart_repair.py `
+  --source-srt "private/<任务>/input/source.srt" `
+  --canonical-lyrics `
+    "private/<任务>/input/lyrics/01.lrc" `
+    "private/<任务>/input/lyrics/02.lrc" `
+  --output-srt "output/<任务>/<任务>_SMART.srt" `
+  --report "output/<任务>/<任务>_SMART.json"
 ```
 
-batch 会在任何输出写入前统一预检 path ownership 和所有 job-level `auto_threshold`。`coverage_warning_job_count` 与 `review_required_count` 分开统计；仅有 coverage warning 的任务仍返回 ready/exit 0。
+canonical 文件必须按 mix/song 顺序给出。Smart v1 要求 timestamped canonical；若只有 untimed TXT，使用 Standard，或后续升级 Pro/Max 获取 acoustic timing evidence。
 
-## 3. 时间轴任务先完成 Source-to-Mix 主链
+Enhanced LRC / QRC 中已有逐字/逐词 timestamp 时会自动保留并利用，无需额外开关。
+
+### 3.2 已知 BPM
+
+如果成品统一到 140 BPM：
+
+```powershell
+python scripts/v4_smart_repair.py `
+  --source-srt "private/<任务>/input/source.srt" `
+  --canonical-lyrics "lyrics/01.lrc" "lyrics/02.lrc" `
+  --target-bpm 140 `
+  --source-bpm "01.lrc=128" `
+  --source-bpm "02.lrc=132" `
+  --output-srt "output/<任务>/<任务>_SMART.srt" `
+  --report "output/<任务>/<任务>_SMART.json"
+```
+
+内部使用：
+
+```text
+rate_prior = target_bpm / source_bpm
+```
+
+例如 `128 -> 140`，rate prior = `1.09375`。
+
+### 3.3 已知实际 stretch ratio
+
+若 Cubase/DAW 能给出真实 time-stretch ratio，优先直接传：
+
+```powershell
+--rate-prior "01.lrc=1.09375"
+```
+
+exact `--rate-prior` 对同一 source 优先于 BPM-derived value。
+
+### 3.4 Smart 会自动改什么
+
+v1 只允许 A-grade exact/unique/1:1 cue 自动 timing repair，并要求 leave-one-out independent model。
+
+普通中间 cue 需要左右各至少 2 个独立 A anchors；歌曲第一句/最后一句缺一侧时，必须有 rate prior 且另一侧至少 3 个 A anchors。
+
+当前首版安全线：
+
+```text
+<= 350ms deviation -> preserve
+350..900ms         -> preserve
+>= 900ms            -> candidate
+> 8000ms shift      -> review
+```
+
+模型还必须稳定，candidate 不能破坏邻居基本时间结构。
+
+B/C identity、重复副歌、模型不稳定、rate prior conflict、支持不足都会保留原 timing 并进入 review，不猜。
+
+### 3.5 Smart report
+
+JSON report 会记录：
+
+- `audio_read=false`；
+- text replacement/review count；
+- word-timed canonical coverage；
+- 每首歌 affine model；
+- 每条 cue 的 preserve/repair/review；
+- residual 与 evidence reasons。
+
+原 source SRT 永远不覆盖；Smart 必须写独立 output path。
+
+## 4. 少量同歌多速度怎么办
+
+生产中大多数歌曲是整个 occurrence 单一 stretch ratio，因此 Smart v1 采用：
+
+```text
+Affine first
+```
+
+少量歌曲若出现：
+
+```text
+120 -> 130
+125 -> 130
+```
+
+并且发生在同一首歌不同区段，当前 Smart v1 不会为了覆盖这个 rare case 自动拟合 piecewise；它更可能表现为 model unstable / rate prior conflict，然后进入 review/Pro/Max。
+
+后续只有真实 private 样本证明有必要，才增加 evidence-triggered piecewise。速度变化本身永远不等于 cut。
+
+## 5. Pro：Smart unresolved 才读局部 audio
+
+新的 Pro 产品路径下一阶段实现，目标是：
+
+```text
+Smart unresolved cue/group
+-> bounded mix window
+-> Smart 预测 source position
+-> narrow source window / narrow rate range
+-> source<->mix acoustic matching
+-> forced alignment / ASR only where useful
+```
+
+不会因为一两条困难 cue 把 40 分钟节目重新全扫。
+
+中英混合、韩日等需要 acoustic 时，ASR language hint 应按局部 canonical span/job 路由，而不是只看整首 track language。
+
+## 6. Max：完整 V4
+
+Smart/Pro 解决不了、或时间轴整体本身不可信时，再运行完整 Source-to-Mix 主链：
 
 ```powershell
 python scripts/v4_run.py ...
@@ -69,118 +189,46 @@ python scripts/v4_rebuild_cut.py ...              # confirmed cut 后
 python scripts/v4_compose_materializations.py ... # cut+overlap 同时存在时
 ```
 
-必须得到 authoritative effective run + exact artifact。BPM/rate change 属于连续映射：
+连续 mapping：
 
 ```text
 AFFINE / PIECEWISE_RATE
 rate change != cut
 ```
 
-CUT_AWARE 只在正式 `cut_timewarp_rebuild` materialization 后成立。
+CUT_AWARE 仍只在正式 materialized cut lineage 后成立。
 
-## 4. Evidence 与 P9
+## 7. Legacy Partial Timeline Repair P1–P5
 
-editor / ASR / forced 都是辅助证据。forced source-ms 必须先经 Source-to-Mix projection 后才能与 mix-time evidence 比较。P9 `LOW / MEDIUM / HIGH / CONFLICT` 全部仍是 shadow diagnostics；禁止从 P9 HIGH 直接推导 trusted cue 或 timing mutation。
-
-## 5. Partial Timeline Repair P1–P4
-
-P1：显式 `trusted / untrusted / unknown`，trusted cue timing hard lock，只允许 untrusted cue 接收 Source-to-Mix candidate。
-
-P2：editor cue 必须唯一绑定 canonical line；candidate 只读 authoritative `source_timeline_boundary_ms`；open-end sentinel 不可修。
-
-P3：正式生产要求：
+旧 Partial chain 继续用于 formal P3/P4/P5 proposal/calibration workflow。其 authority 不因 Smart 上线而改变：
 
 ```text
-run.json + run.artifact.json
-fusion.json + fusion.artifact.json
-```
-
-并从 exact coarse/Fine/cut lineage 派生映射类型，拒绝调用方手填 mapping/cut 标签。
-
-P4：真实 private strict calibration + independent blind 通过后，构建 trust lock；只有 blind policy 明确覆盖并通过的 `language:*` scope 才可生成 calibrated cue-trust decision。正式 decision 还必须有 formal artifact，并绑定 exact lock/candidate/runtime/fusion identity。
-
-## 6. P5 Doctor：局部时间轴修复 readiness
-
-P5 只做只读体检，不生成 proposal，也不修改 SRT。`scripts/v4_doctor.py` 新增：
-
-```text
---partial-trust-lock
---partial-trust-decisions
---partial-trust-decisions-artifact
-```
-
-并支持：
-
-```text
---require partial_repair:lineage
---require partial_repair:trust_lock
---require partial_repair:actionable_scope
---require partial_repair:decisions
---require partial_repair:proposal_inputs
-```
-
-典型完整检查：
-
-```powershell
-python scripts/v4_doctor.py `
-  --run "private/<任务>/run.json" `
-  --run-artifact "private/<任务>/run.artifact.json" `
-  --fusion "private/<任务>/fusion.json" `
-  --fusion-artifact "private/<任务>/fusion.artifact.json" `
-  --partial-trust-lock "private/<任务>/partial_timeline_trust.lock.json" `
-  --partial-trust-decisions "private/<任务>/partial_timeline_trust.decisions.json" `
-  --partial-trust-decisions-artifact "private/<任务>/partial_timeline_trust.decisions.artifact.json" `
-  --require partial_repair:proposal_inputs
-```
-
-P5 会报告：
-
-- P3 effective-run / fusion formal lineage 是否有效；
-- AFFINE / PIECEWISE_RATE / CUT_AWARE occurrence 数、unavailable occurrence、confirmed cut；
-- P9 CONFLICT 数和 language scopes；
-- P4 trust lock 是否有效及是否存在 actionable `language:*` scope；
-- formal calibrated decision artifact 是否有效；
-- trusted / untrusted / unknown 与安全降级计数；
-- 下一步建议动作。
-
-可能状态：
-
-```text
-not_requested
-blocked
-human_review_or_calibration_required
-human_review_required
-calibrated_decisions_required
-proposal_inputs_ready
-```
-
-`proposal_inputs_ready` 只表示可以进入 proposal-only local repair；仍然：
-
-```text
+proposal_only = true
+publish_ready = false
 automatic_timing_change_allowed = false
 release_gate_eligible = false
 ```
 
-错误详情会清理 POSIX/Windows 本地绝对路径；报告不得包含 raw lyric/subtitle text 或 artifact output paths。
+P9 HIGH 仍不能直接生成 trusted/timing mutation；P5 `proposal_inputs_ready` 仍只表示 formal proposal inputs 已就绪。
 
-## 7. 推荐生产顺序
+Smart 不依赖该 chain，也不能反向提升它的 authority。
+
+## 8. 推荐生产顺序
 
 ```text
-1. 确认最新 main + clean worktree
-2. runtime snapshot
-3. 根据任务选择 Text Repair V2.1 或完整 V4
-4. Text Repair V2.1：只修文字；coverage warning 与 cue review 分开处理
-5. 完整 V4：run -> review -> cut/overlap materialization -> effective run
-6. editor/ASR/forced -> P8 -> P9 fusion
-7. 若需局部时间轴修复，先运行 P5 Doctor readiness
-8. 没有真实 P4 private calibration/blind lock 时保持 human review
-9. 有 valid/actionable lock 后生成 formal calibrated decisions
-10. Doctor 达到 proposal_inputs_ready 后才进入 proposal-only repair
-11. 不得因 Doctor/P9/CI 结果自动写回 SRT timing
+1. canonical lyrics + Jianying SRT 到位
+2. timing 完全可信 -> Standard
+3. timing 大部分可信、少量可疑 -> Smart（默认）
+4. 检查 Smart report 的 timing review / model unstable / ambiguity
+5. 少量 unresolved -> Pro selective audio（完成 bridge 后）
+6. broad untrusted / complex structure / Pro 无法收敛 -> Max
+7. 始终保留原始输入，只写独立 outputs/artifacts
 ```
 
-## 8. 公共 CI 边界
+对于大量韩文/日文的 40 分钟节目：先看 canonical 配对与 Smart model coverage，而不是直接按语言选 Max。
 
-公共 CI 能证明 Text Repair timeline immutability、parser fail-closed 行为、layout-boundary insertion guard、coverage/report semantics、anchor scalability、schema/hash/lineage、mapping contract、strict lock mechanics、scope enforcement、decision artifact validation、Doctor fail-closed 行为、privacy 与 Python compatibility。
+## 9. 验证边界
 
-公共 CI 不能证明真实歌曲边界准确率、某 candidate 已通过 private blind、真实 false-positive / false-auto rate，也不能授权 automatic timing write-back。
+公共 CI 可以验证 Standard/Smart 的 deterministic contracts、synthetic outlier、重复歌词保护、word timing 保留、rate-prior edge repair、strict JSON、旧 P3/P4/P5 formal contract 与 Python compatibility。
+
+公共 CI 不能证明真实歌曲 false-auto rate。当前 Smart 350/900/8000ms 等边界需要在 private real-song calibration + independent blind 上继续验证，之后才能决定是否扩大 B-anchor auto repair、piecewise repair 或更激进 write-back。
