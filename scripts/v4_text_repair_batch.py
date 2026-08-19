@@ -16,7 +16,42 @@ from lyric_aligner.text_repair import write_repair_outputs
 
 def _resolve(base: Path, value: str) -> Path:
     path = Path(value)
-    return path if path.is_absolute() else (base / path).resolve()
+    return path.resolve() if path.is_absolute() else (base / path).resolve()
+
+
+def _manifest_paths(
+    jobs: list[object],
+    base: Path,
+    summary_path: Path | None,
+) -> None:
+    """Fail before writing if batch outputs can collide with any batch input/output."""
+    ids: set[str] = set()
+    read_paths: set[Path] = set()
+    write_paths: list[Path] = []
+    for index, raw_job in enumerate(jobs):
+        if not isinstance(raw_job, dict):
+            continue
+        job_id = str(raw_job.get("id") or f"job-{index + 1}")
+        if job_id in ids:
+            raise ValueError(f"duplicate batch job id: {job_id}")
+        ids.add(job_id)
+        if "source_srt" in raw_job:
+            read_paths.add(_resolve(base, str(raw_job["source_srt"])))
+        canonical_values = raw_job.get("canonical_lyrics")
+        if isinstance(canonical_values, list):
+            read_paths.update(_resolve(base, str(value)) for value in canonical_values)
+        if "out" in raw_job:
+            write_paths.append(_resolve(base, str(raw_job["out"])))
+        report_value = raw_job.get("report")
+        if report_value:
+            write_paths.append(_resolve(base, str(report_value)))
+    if summary_path is not None:
+        write_paths.append(summary_path.resolve())
+    if len(set(write_paths)) != len(write_paths):
+        raise ValueError("batch output/report/summary paths must be unique")
+    collision = next((path for path in write_paths if path in read_paths), None)
+    if collision is not None:
+        raise ValueError("batch output/report/summary must not overwrite any batch input")
 
 
 def main() -> int:
@@ -27,12 +62,20 @@ def main() -> int:
     args = parser.parse_args()
 
     manifest_path = args.manifest.resolve()
-    payload = json.loads(manifest_path.read_text(encoding="utf-8-sig"))
+    try:
+        payload = json.loads(manifest_path.read_text(encoding="utf-8-sig"))
+    except (OSError, json.JSONDecodeError) as exc:
+        parser.error(f"cannot read batch manifest: {exc}")
     jobs = payload.get("jobs") if isinstance(payload, dict) else None
     if not isinstance(jobs, list) or not jobs:
         parser.error("manifest must contain a non-empty jobs array")
 
     base = manifest_path.parent
+    try:
+        _manifest_paths(jobs, base, args.summary)
+    except ValueError as exc:
+        parser.error(str(exc))
+
     results: list[dict[str, object]] = []
     ready_count = review_count = error_count = 0
     for index, job in enumerate(jobs):
@@ -48,8 +91,6 @@ def main() -> int:
             output = _resolve(base, str(job["out"]))
             report_value = job.get("report")
             report_path = _resolve(base, str(report_value)) if report_value else None
-            if source.resolve() == output.resolve():
-                raise ValueError("output must not overwrite source_srt")
             if not source.is_file():
                 raise ValueError("source_srt does not exist")
             if any(not path.is_file() for path in canonical):
@@ -76,7 +117,7 @@ def main() -> int:
                 "cue_count_unchanged": report["cue_count_unchanged"],
                 "output_srt_sha256": report["output_srt_sha256"],
             })
-        except (KeyError, OSError, ValueError, AssertionError, json.JSONDecodeError) as exc:
+        except (KeyError, OSError, ValueError, AssertionError) as exc:
             error_count += 1
             results.append({"id": job_id, "status": "error", "error": str(exc)})
 
