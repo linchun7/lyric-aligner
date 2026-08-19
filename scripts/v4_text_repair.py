@@ -23,7 +23,7 @@ def main() -> int:
         required=True,
         action="append",
         type=Path,
-        help="Canonical LRC/TXT file; repeat in song order for multi-song subtitles.",
+        help="Canonical LRC/TXT/QRC file; repeat in song order for multi-song subtitles.",
     )
     parser.add_argument("--out", required=True, type=Path)
     parser.add_argument("--report", type=Path)
@@ -48,24 +48,25 @@ def main() -> int:
     except (OSError, ValueError, AssertionError) as exc:
         parser.error(str(exc))
 
-    summary = {
-        key: report[key]
-        for key in (
-            "mode",
-            "status",
-            "cue_count",
-            "canonical_line_count",
-            "replacement_count",
-            "unchanged_count",
-            "cue_review_count",
-            "unmatched_canonical_count",
-            "review_count",
-            "timeline_unchanged",
-            "formatting_policy",
-            "output_srt_sha256",
-        )
-    }
-    print(json.dumps(summary, ensure_ascii=False))
+    summary_keys = (
+        "mode",
+        "status",
+        "cue_count",
+        "canonical_line_count",
+        "replacement_count",
+        "unchanged_count",
+        "cue_review_count",
+        "unmatched_canonical_count",
+        "review_count",
+        "timeline_unchanged",
+        "cue_count_unchanged",
+        "span_match_count",
+        "segmentation_span_count",
+        "edit_counts",
+        "formatting_policy",
+        "output_srt_sha256",
+    )
+    print(json.dumps({key: report[key] for key in summary_keys}, ensure_ascii=False))
     return 0 if report["status"] == "ready" else 2
 
 
