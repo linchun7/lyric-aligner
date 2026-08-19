@@ -5,7 +5,7 @@ description: Reconstruct, review, materialize, diagnose and render multilingual 
 
 # Lyric Aligner
 
-当前算法版本为 **v4.0.0a8 production-first**。当前开发链已经实现到 P9，并补齐真实数据生产前的只读 doctor、runtime snapshot 与逐 family calibration evaluator：生产重建、cut/overlap materialization、editor evidence、local ASR first/second pass、external source forced alignment、forced source→mix projection、editor/ASR/forced 三 family shadow fusion。**main/PR 的最新合并状态以 `references/v4-status.md` 为准。**
+当前算法版本为 **v4.0.0a8 production-first**。当前开发链已经实现到 P9，并补齐真实数据生产前的只读 doctor、runtime snapshot、逐 family calibration evaluator，以及高频 **Text Repair V2**：生产重建、cut/overlap materialization、editor evidence、local ASR first/second pass、external source forced alignment、forced source→mix projection、editor/ASR/forced 三 family shadow fusion。**main/PR 的最新合并状态以 `references/v4-status.md` 为准。**
 
 这个项目的生产原则不是“让 ASR 重写歌词”，而是：canonical lyric 决定最终文字与顺序，Source-to-Mix 决定主要时间；其他信号只提供可审计 evidence。任何无法由现有证据安全证明的情况继续 review/BLOCK，**不得静默回退 v3.9，不得手工拼/改 artifact 绕过 lineage。**
 
@@ -62,6 +62,7 @@ references/v4-change-record.md
 18. 所有 stage 都绑定 task fingerprint、algorithm version、upstream IDs、materialized SHA-256；涉及模型的 evidence 还必须绑定 backend/model revision。
 19. 所有实质性更新必须同步 owning docs；CI 不通过不得合并。
 20. Runtime snapshot / doctor / family evaluator 都是可复现与诊断层，不改变 Source-to-Mix authority；没有独立 blind-test 结果不得把 auxiliary family 提升为自动 timing/release authority。
+21. **Text Repair V2 只在时间轴明确冻结时使用。** 它可处理错字、漏字、多字以及 bounded 1↔N / N↔1 / N↔N 断句差异；普通 span 保守处理，3–4 段只在近乎完全一致的高置信文本证据下使用。任何情况下都不得改变 cue 数、编号或 timing；部分时间轴修复必须走后续声学/Source-to-Mix 路径。
 
 ## 权威文档
 
@@ -83,6 +84,31 @@ python scripts/v4_doctor.py ... --require lineage
 ```
 
 新任务没有任何 formal artifact 时，doctor 的 lineage requirement 可等第一个 run artifact 生成后再启用；中断恢复或已有产物时必须优先验证现有 payload/artifact lineage。具体配对参数见 `references/v4-runtime-guide.md`。
+
+### 0A. Text Repair V2（时间轴冻结时优先）
+
+如果规范歌词可信，而且任务明确要求保留剪映现有 cue 数量、编号及全部起止时间，只修文字，直接运行：
+
+```powershell
+python scripts/v4_text_repair.py `
+  --source-srt "private/<任务>/input/source.srt" `
+  --canonical-lrc "private/<任务>/input/lyrics/01.lrc" `
+  --canonical-lrc "private/<任务>/input/lyrics/02.lrc" `
+  --out "output/<任务>/TEXT_REPAIRED.srt" `
+  --report "output/<任务>/TEXT_REPAIR.json"
+```
+
+批量高频生产使用：
+
+```powershell
+python scripts/v4_text_repair_batch.py `
+  --manifest "private/<任务>/text-repair.batch.json" `
+  --summary "output/<任务>/text-repair.batch.summary.json"
+```
+
+V2 先用唯一 exact 文本锚点把长字幕切成局部区间，再在区间内运行 bounded monotonic span DP。常见 1↔1 / 1↔2 / 2↔1 / 2↔2 可在高置信下自动处理；3–4 个 cue/lyric 的更极端断句差异只在拼接后几乎完全一致时放行。因此剪映多断一句、少断一句或断句点不同不再天然需要 review，同时不会因为扩大 span 把真正漏掉的歌词轻易吞掉。高置信 span 内允许字符 replace/insert/delete，以修复普通错字、漏字和多字；源 SRT 的标点、空白、换行和常见音乐装饰符继续保留。真实 canonical gap、额外 subtitle cue、近似重复歌词歧义、gap 邻域弱匹配、会把现有 cue 清空的重分配或结构差异过大继续 `review_required`。
+
+这个入口完全不读取音频，也不依据 LRC timestamp 修改 SRT timing，因此 **BPM 加速/减速不会改变 Text Repair V2 的文字修复规则**。下一轮“部分时间轴可信”的局部修复必须把 BPM/rate change 当常态，复用 Source-to-Mix 的 `AFFINE/PIECEWISE_RATE/CUT_AWARE` 映射；不能把原曲 LRC/source absolute time 直接覆盖到 edited mix。
 
 ### 1. Reconstruction
 
@@ -326,5 +352,6 @@ git diff --check
 
 1. 用用户真实私有数据做 multi-language calibration / blind-test；
 2. 根据真实误差选择/锁定 forced-aligner backend、checkpoint、G2P 与运行环境；
-3. 只有 blind 数据证明收益后，才设计 calibrated boundary refinement / release-gate integration；
-4. 如真实任务证明有必要，再研究 local vocal refinement 与 cut boundary + overlap 同一区域的 joint acoustic composition。
+3. 设计 Partial Timeline Repair：锁死可信 cue，只修不可信局部；BPM 加速/减速作为默认场景，复用 Source-to-Mix `AFFINE/PIECEWISE_RATE/CUT_AWARE`，不得把 rate change 当 cut；
+4. 只有 blind 数据证明收益后，才设计 calibrated boundary refinement / release-gate integration；
+5. 如真实任务证明有必要，再研究 local vocal refinement 与 cut boundary + overlap 同一区域的 joint acoustic composition。

@@ -15,6 +15,22 @@ if str(REPOSITORY_ROOT) not in sys.path:
 from lyric_aligner.text_repair import write_repair_outputs
 
 
+def _validate_path_ownership(args: argparse.Namespace) -> None:
+    input_paths = {
+        args.source_srt.resolve(),
+        *(path.resolve() for path in args.canonical_lrc),
+    }
+    output_paths = [args.out.resolve()]
+    if args.report is not None:
+        output_paths.append(args.report.resolve())
+    if len(set(output_paths)) != len(output_paths):
+        raise ValueError("text-only repair output and report paths must be different")
+    if any(path in input_paths for path in output_paths):
+        raise ValueError(
+            "text-only repair output/report must not overwrite source SRT or canonical lyrics"
+        )
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--source-srt", required=True, type=Path)
@@ -23,7 +39,7 @@ def main() -> int:
         required=True,
         action="append",
         type=Path,
-        help="Canonical LRC/TXT file; repeat in song order for multi-song subtitles.",
+        help="Canonical LRC/TXT/QRC file; repeat in song order for multi-song subtitles.",
     )
     parser.add_argument("--out", required=True, type=Path)
     parser.add_argument("--report", type=Path)
@@ -31,8 +47,7 @@ def main() -> int:
     args = parser.parse_args()
 
     try:
-        if args.out.resolve() == args.source_srt.resolve():
-            raise ValueError("text-only repair refuses to overwrite the source SRT")
+        _validate_path_ownership(args)
         if not args.source_srt.is_file():
             raise ValueError(f"source SRT does not exist: {args.source_srt}")
         missing = [path for path in args.canonical_lrc if not path.is_file()]
@@ -48,24 +63,25 @@ def main() -> int:
     except (OSError, ValueError, AssertionError) as exc:
         parser.error(str(exc))
 
-    summary = {
-        key: report[key]
-        for key in (
-            "mode",
-            "status",
-            "cue_count",
-            "canonical_line_count",
-            "replacement_count",
-            "unchanged_count",
-            "cue_review_count",
-            "unmatched_canonical_count",
-            "review_count",
-            "timeline_unchanged",
-            "formatting_policy",
-            "output_srt_sha256",
-        )
-    }
-    print(json.dumps(summary, ensure_ascii=False))
+    summary_keys = (
+        "mode",
+        "status",
+        "cue_count",
+        "canonical_line_count",
+        "replacement_count",
+        "unchanged_count",
+        "cue_review_count",
+        "unmatched_canonical_count",
+        "review_count",
+        "timeline_unchanged",
+        "cue_count_unchanged",
+        "span_match_count",
+        "segmentation_span_count",
+        "edit_counts",
+        "formatting_policy",
+        "output_srt_sha256",
+    )
+    print(json.dumps({key: report[key] for key in summary_keys}, ensure_ascii=False))
     return 0 if report["status"] == "ready" else 2
 
 
