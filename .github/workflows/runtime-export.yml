@@ -1,0 +1,23 @@
+name: runtime-export
+
+on:
+  push:
+    branches:
+      - agent/runtime-export-20260820
+
+permissions:
+  contents: read
+
+jobs:
+  export:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Pack repository source
+        run: |
+          tar --exclude=.git -czf /tmp/lyric-aligner-runtime.tar.gz .
+      - uses: actions/upload-artifact@v4
+        with:
+          name: lyric-aligner-runtime
+          path: /tmp/lyric-aligner-runtime.tar.gz
+          retention-days: 1
