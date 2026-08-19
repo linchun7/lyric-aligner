@@ -547,15 +547,21 @@ def _edit_script(
 def _assign_targets(
     cue_texts: Sequence[str],
     canonical_text: str,
-) -> list[str]:
+) -> tuple[list[str], bool]:
     source: list[str] = []
     owners: list[int] = []
     for owner, text in enumerate(cue_texts):
         for char in _content_characters(text):
             source.append(char)
             owners.append(owner)
+    boundaries = {
+        index
+        for index in range(1, len(owners))
+        if owners[index - 1] != owners[index]
+    }
     assigned: list[list[str]] = [[] for _ in cue_texts]
     source_index = 0
+    ambiguous_boundary_insertion = False
     for kind, _, target_char in _edit_script(
         source,
         _content_characters(canonical_text),
@@ -567,6 +573,8 @@ def _assign_targets(
         elif kind == "delete":
             source_index += 1
         elif kind == "insert":
+            if source_index in boundaries:
+                ambiguous_boundary_insertion = True
             owner = (
                 owners[source_index]
                 if source_index < len(owners)
@@ -574,7 +582,7 @@ def _assign_targets(
             )
             if target_char is not None:
                 assigned[owner].append(target_char)
-    return ["".join(chars) for chars in assigned]
+    return ["".join(chars) for chars in assigned], ambiguous_boundary_insertion
 
 
 def _render_preserving_layout(
@@ -736,11 +744,13 @@ def build_repair_plan_v2(
 
         targets: list[str] = []
         if not reason:
-            targets = _assign_targets(
+            targets, boundary_insertion_ambiguous = _assign_targets(
                 [cue.text for cue in cue_group],
                 target_text,
             )
-            if len(cue_group) > 1 and any(not target for target in targets):
+            if boundary_insertion_ambiguous:
+                reason = "segmentation_boundary_insertion_requires_review"
+            elif len(cue_group) > 1 and any(not target for target in targets):
                 reason = "segmentation_would_empty_existing_cue"
 
         if reason:
