@@ -1,6 +1,6 @@
 # Lyric Aligner v4 生产运行手册
 
-更新：2026-08-18  
+更新：2026-08-19  
 主线算法版本：`4.0.0a8`  
 Calibration profile：`production-bootstrap-2026-08-17-a7`
 
@@ -279,7 +279,7 @@ python scripts/v4_runtime_snapshot.py `
   --out "output/<任务>/v4/runtime.snapshot.json"
 ```
 
-Snapshot 记录 Git commit/dirty、Python、OS/arch、ffmpeg/ffprobe、关键 package versions、logical model IDs、device request 与 forced command hash/basename，并生成 `runtime_identity_sha256`。读取时会重新计算 identity，修改 snapshot 内容但保留旧 hash 会 fail closed。Absolute model path 会 redaction，只保留 basename+hash；hostname/username/absolute repo path/full command 不进入输出。
+Snapshot 记录 Git commit/dirty、Python、OS/arch、ffmpeg/ffprobe、关键 package versions、logical model IDs、device request 与 forced command hash/basename，并生成稳定 `runtime_identity_sha256`。读取时会重新计算 identity，修改 snapshot 内容但保留旧 hash 会 fail closed。Absolute model path 会 redaction，只保留 basename+hash；hostname/username/absolute repo path/full command 不进入输出。
 
 Calibration/blind 对比时，候选如果 runtime identity 不同，应把它当成不同运行候选，不要把差异偷偷归因给某一个 threshold。
 
@@ -369,3 +369,34 @@ forced_alignment
 ```
 
 这段指令的核心是让 Codex **续跑当前 production state**，而不是把仓库当成新项目重新发明一遍。
+
+## 15. Partial Timeline Repair V1 Preview（PR #31 draft）
+
+当 Text Repair V2 不适用，因为只有少数剪映 cue 的时间边界可疑、其余 cue 必须锁死时，可以使用新的局部 timing preview。这个入口**不是 release path**，只消费已有的 Source-to-Mix 结果，不会自己重跑音频对齐：
+
+```powershell
+python scripts/v4_partial_timeline_repair.py `
+  --source-srt "private/<任务>/input/source.srt" `
+  --canonical-lrc "private/<任务>/input/lyrics/<当前 occurrence>.lrc" `
+  --mapping-json "output/<任务>/v4/primary/<occurrence>.fine.json" `
+  --occurrence-id "<occurrence-id>" `
+  --cue 128 `
+  --cue 129 `
+  --report "output/<任务>/partial/partial_timing.preview.json" `
+  --preview-out "output/<任务>/partial/partial_timing.PREVIEW.srt"
+```
+
+`--mapping-json` 必须是 occurrence-bound 的 V4 coarse/fine/cut Source-to-Mix payload，且 `--occurrence-id` 必须与 payload 精确一致。Blocked mapping、未 applied fine mapping 或不支持的 mapping kind 会直接失败。若当前 occurrence 已 confirmed cut，应使用对应 CUT_AWARE rebuild payload，而不是回退到旧 continuous mapping 绕过 cut。
+
+V1 只对显式 `--cue` 生成建议，并要求唯一 1 cue ↔ 1 canonical line 文本身份；重复副歌、1↔N/N↔1 分段、低相似度、最后一行没有可信 end、CUT_AWARE 跨 confirmed cut/gap、或建议时间与任一相邻 cue 重叠都进入 `review_required`。未选 cue 的 timing、所有 cue 的文字/编号/数量不变。
+
+输出 report 固定：
+
+```text
+mode = partial_timeline_repair_preview
+releaseable = false
+automatic_timing_change_allowed = false
+timing_authority = source_to_mix_only
+```
+
+即使 `status=preview_ready`，也只表示所选 cue 有可供人工检查的 Source-to-Mix 建议，不得直接当正式终稿或绕过 renderer/release contract。真实自动局部写回必须先建立 private calibration + blind-test，证明错误建议率和边界误差满足单独 promotion gate 后再改 authority contract。
