@@ -10,7 +10,7 @@
 ```text
 Standard -> Text Repair V2.1
 Smart    -> Anchor Timeline Repair（no-audio）
-Pro      -> Selective Audio Repair（局部 audio，下一阶段）
+Pro      -> Selective Audio Repair（局部 audio evidence）
 Max      -> Full V4 Alignment
 ```
 
@@ -32,7 +32,7 @@ Max      -> Full V4 Alignment
 
 ## 3. Smart — Anchor Timeline Repair v1
 
-本轮新增：
+已实现：
 
 ```text
 lyric_aligner/timeline/anchor_repair.py
@@ -108,11 +108,80 @@ Smart 输出独立 SRT + strict JSON report，禁止覆盖 source SRT。report �
 - evidence reasons；
 - `audio_read=false`。
 
-## 4. Pro — Selective Audio Repair
+## 4. Pro — Selective Audio Repair v1
 
-产品定义已经固定，但本轮尚未实现新的 Smart→Pro production bridge。目标是只处理 Smart unresolved 的 bounded windows，复用现有 source↔mix local acoustic、forced alignment、ASR evidence，不重扫已可信区域。
+Smart→Pro production bridge 已实现到 **bounded evidence execution**，当前仍不自动 timing write-back。
 
-混合语言时必须按局部 canonical span/job 决定 ASR language hint；不能把整首中文 profile 强塞给英文 rap。该项仍是后续 P1。
+新增：
+
+```text
+lyric_aligner/alignment/selective_repair.py
+lyric_aligner/alignment/local_acoustic_match.py
+scripts/v4_pro_selective.py
+scripts/test_v4_selective_repair.py
+```
+
+### 4.1 Smart unresolved -> local jobs
+
+Pro planner 只选择 Smart 中 `timing review` 或 `text review` cue。Smart 已 preserve/repair 的 cue 不进入 audio path。
+
+每个 mapped job 带：
+
+- cue/canonical/source identity + canonical SHA；
+- bounded mix window；
+- canonical line/token timing 派生的 bounded source window；
+- Smart affine rate（若有效）；
+- per-line ASR language hint；
+- `source_local_acoustic_match`、`source_forced_alignment`、`mix_asr`、`word_timestamps` capability request。
+
+plan 不保存 raw canonical text。没有单一 canonical identity 的 review cue 仍可请求 bounded mix ASR，但不能伪造 source-side evidence，并计入 `unmapped_review_count`。
+
+### 4.2 Local source↔mix acoustic evidence
+
+`local_acoustic_match.py` 复用 Full V4 已有 HPSS + Chroma CENS + MFCC retrieval，但只 decode 每个 Smart-selected job 的局部 mix/source 窗口。
+
+有 Smart rate 时 slope search 收窄到约 `rate ± 0.06`；无 prior 时才使用较宽 local range。结果输出：
+
+- estimated slope；
+- Chroma/MFCC/fused score；
+- candidate margin / ambiguity；
+- matched source start；
+- canonical onset 对应的 predicted mix start；
+- 相对 editor cue start 的 residual。
+
+`timing_mutation_performed=false`：当前只建立第二个独立 timing evidence family，不直接改 SRT。
+
+### 4.3 Mixed-language ASR routing
+
+ASR 不再只用 occurrence/track `language_profile`。
+
+优先级：
+
+```text
+explicit job asr_language_hint
+-> current canonical line language spans
+-> whole-track profile only when canonical text unavailable
+```
+
+因此：
+
+- 中文歌纯英文 rap line -> `en`；
+- 中文+英文同一行 -> `None/auto`；
+- 韩文纯行 -> `ko`；
+- 日文纯行 -> `ja`；
+- 不再因全曲标记 `zh` 把英文 rap 强制识别成中文。
+
+### 4.4 Pro CLI
+
+`scripts/v4_pro_selective.py`：
+
+- Smart report + Smart SRT + timed canonical -> Pro plan；
+- 不传 audio 时只 plan，0 audio execution；
+- `--mix-audio + --source-audio + --acoustic-out` -> bounded source↔mix evidence；
+- `--asr-model-id + --asr-out` -> 仅 plan windows 的 faster-whisper evidence；
+- source language 可按 canonical filename/ordinal传入。
+
+当前 source forced-alignment capability 已进入 plan，但 standalone Pro CLI 尚未直接编排 external forced-aligner；旧 executor 仍可复用，后续在真实任务需要时再完成统一 evidence fusion。
 
 ## 5. Max — Full V4 Alignment
 
@@ -122,7 +191,7 @@ Max 不再是“只要需要改 timing 就先跑”的默认路径。
 
 ## 6. Legacy Partial Timeline Repair P1–P5
 
-P1–P5 的 formal calibration/P9 proposal chain 继续存在且不被 Smart 替换。它仍固定：
+P1–P5 的 formal calibration/P9 proposal chain 继续存在且不被 Smart/Pro 替换。它仍固定：
 
 ```text
 proposal_only = true
@@ -133,26 +202,25 @@ release_gate_eligible = false
 
 P3 formal effective-run/fusion lineage、P4 strict calibration + independent blind trust lock、P5 Doctor/readiness 的原安全契约不变。
 
-Smart 不借用 P9 HIGH 或 P4 trust lock 来获得自动修复权限，也不会把 Smart 的 deterministic A-anchor policy 反向提升旧 Partial chain 的 authority。
+Smart/Pro 不借用 P9 HIGH 或 P4 trust lock 获得新的自动修复权限，也不会反向提升旧 Partial chain 的 authority。
 
 ## 7. 当前验证边界与下一步
 
-Public synthetic CI 本轮用于证明：
+Public synthetic CI 需要证明：
 
-- isolated interior outlier 可在 no-audio 条件下由 independent anchors 修复；
-- repeated lyric 不会成为 A anchor；
-- song-start one-sided repair 必须有 rate prior；
-- Enhanced LRC word timing 被保留并用于 onset evidence；
-- 日文 exact canonical 可走 Smart，不因语言强制 Max；
-- strict JSON、production threshold、source-overwrite guard 与 Python compatibility。
+- Smart isolated outlier / repeated lyric / edge prior / word timing 合同继续成立；
+- Pro 只计划 Smart unresolved cue，而不是重扫正常 cue；
+- raw canonical text 不写进 Pro plan；
+- 中文 track 中纯英文 line route 到 `en`，真实 code-switch 留 auto；
+- bounded source↔mix evidence 能生成独立 timing prediction 且不自动 mutation；
+- Python / ASR environment / legacy V4 tests 全部保持通过。
 
-Public CI 仍不能证明 private real-song false-auto rate。下一阶段应优先：
+Private real-song calibration/blind 仍是下一关键 gate：
 
 ```text
-Smart real-song calibration/blind evaluation
--> 检查 false timing repair / false ready
--> 校准 thresholds
--> 再实现 Smart -> Pro bounded acoustic escalation
--> mixed-language per-span ASR routing
--> 仅在真实证据需要时增加 piecewise Smart/Pro 能力
+Smart + Pro real-song calibration/blind
+-> false timing repair / false ready / acoustic false-match
+-> 设定 Pro evidence fusion 与自动 write-back threshold
+-> 需要时接 source forced alignment 到 standalone Pro orchestration
+-> 再决定 evidence-triggered piecewise Smart/Pro
 ```
