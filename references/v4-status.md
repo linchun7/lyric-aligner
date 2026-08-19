@@ -210,7 +210,7 @@ PR22 只处理真实 Windows 本地验收暴露的跨平台问题，不扩大 ti
 
 - external forced-aligner command parsing 由 backend readiness、P7 executor、runtime snapshot 共用同一 helper；
 - Windows 双引号 executable path / quoted arguments 在 `shell=False` 下保持一致 argv 语义，malformed quoting fail closed；
-- CLI bootstrap tests 保留 Windows CreateProcess 必需环境，同时删除 `PYTHONPATH/PYHOME` 并禁用 user-site，继续验证 repository-root bootstrap；
+- CLI bootstrap tests 保留 Windows CreateProcess 必需环境，同时删除 `PYTHONPATH/PYTHONHOME` 并禁用 user-site，继续验证 repository-root bootstrap；
 - privacy scanner 恢复严格本地路径规则，测试 fixture 改为运行时拼接敏感示例，不再通过 allowlist 削弱 scanner。
 
 该修复不改变 canonical lyric、Source-to-Mix、P7/P8/P9 authority、threshold、release gate 或 automatic timing behavior。
