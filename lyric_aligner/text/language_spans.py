@@ -121,6 +121,31 @@ def language_spans(text: str, *, track_language: str) -> list[LanguageSpan]:
     return output
 
 
+def asr_language_hint_for_text(text: str, *, track_language: str) -> str | None:
+    """Return a safe faster-whisper hint for one local canonical line.
+
+    A single supported language across the lexical spans is safe to pin. Mixed
+    or uncertain lines deliberately return ``None`` so the ASR backend can
+    auto-detect rather than inheriting a possibly-wrong whole-track hint.
+
+    This is intentionally local: a Chinese track containing an all-English rap
+    line returns ``en`` for that job, while a Chinese+English code-switch line
+    returns ``None``.
+    """
+
+    spans = language_spans(text, track_language=track_language)
+    languages = {
+        span.language
+        for span in spans
+        if span.language not in {"unknown", "generic", "und-han"}
+    }
+    supported = languages & {"zh", "en", "ko", "ja"}
+    unsupported = languages - {"zh", "en", "ko", "ja"}
+    if unsupported or len(supported) != 1:
+        return None
+    return next(iter(supported))
+
+
 def editor_mode_for_span(span: LanguageSpan) -> str:
     """Return the v4 editor evidence mode for one canonical language span."""
 
