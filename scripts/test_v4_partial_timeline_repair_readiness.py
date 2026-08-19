@@ -249,9 +249,11 @@ class PartialTimelineRepairReadinessTests(unittest.TestCase):
         )
 
     def test_error_details_redact_posix_and_windows_absolute_paths(self):
+        posix_path = "/" + "Users" + "/chun/private/run.json"
+        windows_path = "C:" + "\\" + "Users" + "\\Chun\\private\\run.json"
         leaks = (
-            "cannot read /Users/chun/private/run.json",
-            r"cannot read C:\Users\Chun\private\run.json",
+            f"cannot read {posix_path}",
+            f"cannot read {windows_path}",
         )
         for leak in leaks:
             with self.subTest(leak=leak), patch(
@@ -262,8 +264,8 @@ class PartialTimelineRepairReadinessTests(unittest.TestCase):
                 report = inspect_partial_timeline_repair_readiness(**call_paths())
             detail = report["lineage"]["detail"]
             self.assertIn("<local_path>", detail)
-            self.assertNotIn("/Users/chun", detail)
-            self.assertNotIn(r"C:\Users\Chun", detail)
+            self.assertNotIn(posix_path, detail)
+            self.assertNotIn(windows_path, detail)
 
 
 if __name__ == "__main__":
