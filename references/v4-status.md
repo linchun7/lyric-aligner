@@ -1,7 +1,7 @@
 # Lyric Aligner v4 当前实施状态
 
 更新日期：2026-08-19  
-当前 main：P9 + Production Readiness Tooling + Windows validation hardening + bounded mix decode + source feature cache + PR25 execution optimizer + PR26 text-only/run-lock hardening 已合入；真实私有任务可从 V4 production path 开始  
+当前生产代码基线：P9 + Production Readiness Tooling + Windows validation hardening + bounded mix decode + source feature cache + PR25 execution optimizer + PR26 text-only/run-lock hardening + optional forced-alignment batch protocol 1.1  
 P8 merge：`00585a07b658ffea93509c4ed1a4b129deafd0a3`  
 P9 merge：`efbdbb926b03efdf1d91622d5c23cabef1f9850c`  
 PR21 merge：`04e0802156f62006c6b6af5b4ef59b1acc81ce86`  
@@ -13,7 +13,7 @@ PR26 merge：`004d2558f646993a44f51d855305f6ba285d04cd`
 主线算法版本：`4.0.0a8`  
 Calibration profile：`production-bootstrap-2026-08-17-a7`
 
-## 1. 已进入 main
+## 1. 已进入生产代码基线
 
 生产主链与 evidence 链当前包含：
 
@@ -35,6 +35,7 @@ PR23  bounded mix decode for coarse/fine production alignment
 PR24  source harmonic feature cache for repeated coarse jobs
 PR25  text-only repair + verified-input session + safe resume + bounded workers
 PR26  canonical-gap/timed-order/format-preserving repair + same-out-dir lock
+Batch  external forced-alignment protocol 1.1 (optional; single remains default)
 ```
 
 P3 validate #493、P4 #517、P5 #530、P6 #545、P7 #560 均在各自 merge 前全绿。P8 latest result tree 的 fast-core #1 完成 compile、documentation contract、完整 unit/E2E、Skill、privacy、diff-check 全绿后合入。P9 result tree 的 fast-core #2 同样全绿，日志显示 **Ran 324 tests / OK**；随后 P9 branch 与已经合入的 P8 main 同步 ancestry，再以 PR #19 合入。PR21 以 merge `04e0802156f62006c6b6af5b4ef59b1acc81ce86` 进入 main，补齐 Doctor、runtime snapshot 与 family calibration tooling。PR22 exact-head fast-core 与 Python 3.10/3.12/3.14 + ASR validate 全绿后，以 merge `2b4a13132e95a551392811407f48573b36edab95` 进入 main。PR23 exact-head fast-core #43 与 validate #675 全绿后，以 merge `4d7e086aedd2b56210368302d9a17df29fef6a0c` 进入 main。PR24 将同一 source track 的 harmonic features 做 SHA/config/runtime-bound disposable cache，合入 merge `0b1f38c98542eed9ec80034677cef4bf8e7f9791`。PR25 exact-head fast-core #77 与 validate #711 在 Python 3.10/3.12/3.14 + ASR 环境全绿后，以 merge `3bd5e388d8d68bf88233eee60e0d85dcd7816a3e` 进入 main；它保留原 authoritative `v4_run` core 不变，只在外围增加 text-only 路径与 execution optimizer。PR26 exact head `8539c1cd913918ea42468296a0a6d2005e822190` 的 fast-core #87 与 validate #722 全绿，392 项 unit/E2E 在 Python 3.10/3.12/3.14 均通过，随后以 merge `004d2558f646993a44f51d855305f6ba285d04cd` 进入 main；merge tree 与已验证 head tree 同为 `d87484280f80a22a7d7229233e68a93b39c49de9`。
@@ -159,7 +160,7 @@ scripts/v4_text_repair.py
 2. v4_run / review / cut-overlap materialization -> authoritative effective run
 3. editor evidence
 4. ASR first-pass + bounded second-pass
-5. external source forced alignment（需要时）
+5. external source forced alignment（需要时；single 默认，batch 仅显式启用）
 6. P8 forced source->mix projection
 7. P9 shadow fusion：先看 CONFLICT / unprojectable / missing family
 8. 人工核查高风险行
@@ -209,7 +210,7 @@ PR22 只处理真实 Windows 本地验收暴露的跨平台问题，不扩大 ti
 
 - external forced-aligner command parsing 由 backend readiness、P7 executor、runtime snapshot 共用同一 helper；
 - Windows 双引号 executable path / quoted arguments 在 `shell=False` 下保持一致 argv 语义，malformed quoting fail closed；
-- CLI bootstrap tests 保留 Windows CreateProcess 必需环境，同时删除 `PYTHONPATH/PYTHONHOME` 并禁用 user-site，继续验证 repository-root bootstrap；
+- CLI bootstrap tests 保留 Windows CreateProcess 必需环境，同时删除 `PYTHONPATH/PYHOME` 并禁用 user-site，继续验证 repository-root bootstrap；
 - privacy scanner 恢复严格本地路径规则，测试 fixture 改为运行时拼接敏感示例，不再通过 allowlist 削弱 scanner。
 
 该修复不改变 canonical lyric、Source-to-Mix、P7/P8/P9 authority、threshold、release gate 或 automatic timing behavior。
@@ -280,3 +281,26 @@ PR25 在保持原 `scripts/v4_run.py` authoritative orchestration 字节级实�
 PR26 merge `004d2558f646993a44f51d855305f6ba285d04cd` 增加 `--out-dir/.v4-run.lock`：同一个 output tree 同时只允许一个 public `v4_run.py` orchestrator。第二个进程 fail closed；lock 带 owner token，退出时只删除自己的 lock。异常终止留下 stale lock 时，必须先确认没有真实 V4 run 仍在运行，再人工删除，禁止自动猜测 stale。
 
 这些 execution hardening 均不改变 Source-to-Mix slope grid、score/margin threshold、timewarp selection、cut/overlap decision、review policy 或 release semantics。
+
+## 13. External forced-alignment batch protocol 1.1
+
+P7 protocol 1.0 仍是默认兼容路径，每个 selected job 一个 external subprocess。Optional protocol 1.1 通过：
+
+```text
+scripts/v4_execute_forced_alignment.py --execution-mode batch
+```
+
+把全部 selected source-forced jobs 放入一个 ephemeral batch request，并只启动一次 external process。Batch response 必须 echo exact backend/version/model/revision，top-level status 必须为 `aligned_batch`，response job IDs 必须与 request 精确相等；每个 job 再复用 P7 protocol 1.0 的 boundary/span/canonical identity validator。
+
+Formal evidence/artifact 新增/明确：
+
+```text
+protocol_version
+requested_execution_mode
+execution_mode
+command_invocation_count
+```
+
+`single` 默认行为不变；`batch` 只改变 external model process lifecycle，不改变 P7 evidence family、P8 projection、P9 shadow fusion 或 authority。显式 empty selected jobs 是 zero-work，不解析/启动 external command。`--timeout-seconds` 在 batch 模式覆盖整个 batch subprocess，大任务需要显式给足 timeout。
+
+旧 `agent/v4-whisperx-reference-adapter` 没有进入生产代码基线：收口 review 时确认其外部 WhisperX/NLTK runtime 假设已经与当前 upstream 发生漂移。保留 stale branch 不再被视为安全策略；未来实际 adapter 必须从当时的最新 main/最新 upstream 重新实现或校验，并经过真实 private calibration/blind。
