@@ -29,15 +29,16 @@ Max      -> Full V4 Alignment
 - production `auto-threshold >= 0.72`；
 - report schema `2.1`。
 
-## 3. Smart — Anchor Timeline Repair v1.1.1
+## 3. Smart — Anchor Timeline Repair v1.1.2
 
-Smart 是日常主力 no-audio 模式：**大部分信剪映，只推翻少量能被多重独立证据证明错误的 timing。**
+Smart 是日常主力 no-audio 模式：**大部分信剪映 timing，但 canonical lyric 始终是最终文字/顺序 truth。**
 
 实现：
 
 ```text
 lyric_aligner/timeline/anchor_repair.py
 lyric_aligner/timeline/smart_policy.py
+lyric_aligner/timeline/text_recovery.py
 scripts/v4_smart_repair.py
 ```
 
@@ -51,7 +52,7 @@ Smart 保留 line-level LRC timestamp、Enhanced LRC/QRC word/token timestamp。
 source_time = offset + rate * mix_time
 ```
 
-单倍率优先。v1.1.1 明确区分 rate authority：
+单倍率优先。v1.1.2 继续明确区分 rate authority：
 
 ```text
 exact_daw     -> hard prior，可固定 rate
@@ -61,7 +62,33 @@ anchor_estimated -> 无 hard prior 时由 A anchors robust estimate
 
 BPM-derived 与稳定 A-anchor rate 冲突时，不用软先验重建模型；但该冲突会阻止自动 timing mutation。少量同歌多 rate / cut 仍升级而不是强迫普通任务进入重链路。
 
-### 3.2 Validation / overlap safety
+### 3.2 Canonical text recovery for severe ASR errors
+
+v1.1.2 修正一个真实生产缺口：当 Jianying 把整句识别成完全不同的文字时，Text Repair V2 的相似度保护会正确进入 review，但旧 Smart 会把**已知错误的 editor text 原样留在输出 SRT**。这会把“timing/identity 仍需验证”错误地等同于“文字也不能修”。
+
+现在 Smart 保留 Text Repair V2 原阈值，不通过降阈值解决。它先用原有高可信 A anchors 建立 ready affine model，然后只对满足以下全部条件的 interior text-review block 做第二阶段恢复：
+
+- review block 两侧都有 `score >= 0.92` 的 single-line canonical text anchors；
+- 两侧 anchors 属于同一首歌；
+- 该歌曲 affine model 已由独立 A anchors 达到 `ready`；
+- 两侧 anchor 自身 onset 与 affine model 在 750ms 内一致；
+- 两侧 canonical anchors 之间的连续规范歌词可以完整、单调地分配到 review cue starts；
+- 每个 review cue 的第一条 canonical onset 与 editor cue start 在 750ms 内一致；
+- 每 cue 最多吸收 4 条连续 canonical lines，单个 recovery block 最多 8 cues；
+- 不处理歌曲首尾单侧 block、不跨歌曲、不处理 canonical gap 为 0 的 unmatched ad-lib，也不处理 timing/model 不一致的 block。
+
+满足条件时，Smart 用 canonical text 替换 editor ASR 乱码；**这只解决文字，不把低相似度 cue 升级为 A timing anchor，也不因此获得 timing 自动写回权限。** 多行 cue 的 timing identity 仍可继续 review / Pro escalation。
+
+新增 report 字段：
+
+```text
+text_review_count_before_timing_recovery
+text_timing_recovery_count
+text_timing_recovery_block_count
+text_review_count
+```
+
+### 3.3 Validation / overlap safety
 
 v1.1 修正“没验证成功却看起来 ready”的缺口：
 
@@ -69,7 +96,7 @@ v1.1 修正“没验证成功却看起来 ready”的缺口：
 - 无唯一 timed canonical mapping -> review / Pro escalation；
 - C-grade identity -> review / Pro escalation；
 - B-grade 只能由已经 ready 的 A-anchor model 做二次确认，不能反向参与建模；
-- report schema 保持 `smart-1.1`，policy id 更新到当前 v1.1.1 修复策略。
+- report schema 保持 `smart-1.1`，policy id 更新到当前 v1.1.2 修复策略。
 
 自动 repair 仍要求 leave-one-out independent model、足够左右 A anchors / rate-supported edge extrapolation、最大 shift guard。v1.1.1 在单条 no-new-overlap 之外增加**最终组合时间轴复检**：
 
@@ -77,7 +104,7 @@ v1.1 修正“没验证成功却看起来 ready”的缺口：
 - 不得扩大编辑器原本已有的 overlap；
 - 两条分别看似安全、组合后发生冲突时，相关 repair 全部降级 review。
 
-### 3.3 Output safety
+### 3.4 Output safety
 
 Smart CLI 现在统一检查 `source SRT + canonical lyrics` 与 `output SRT + report` 的真实解析路径：任何 output-input 或 output-output 碰撞都在写文件前 fail closed，落实“原始输入永不覆盖”。
 
@@ -105,10 +132,10 @@ Pro v1.1.1 只接受当前：
 
 ```text
 schema_version = smart-1.1
-policy_id      = current Smart v1.1.1 policy
+policy_id      = current Smart production policy
 ```
 
-旧 Smart artifact 必须重跑 Smart；不能让旧版本中“model not ready 但 preserve”的语义漏过 Pro escalation。
+旧 Smart artifact 必须重跑 Smart；不能让旧版本中“model not ready 但 preserve”的语义漏过 Pro escalation。Smart policy id 更新后 Pro 仍通过共享常量要求 exact-current artifact。
 
 ### 4.2 Reason-aware routing
 
@@ -194,6 +221,8 @@ Smart/Pro 不借用 P9 HIGH 或 P4 trust lock 获得新的自动修复权限，�
 Public CI 需要证明：
 
 - Smart escalation + final overlap safety；
+- severe-ASR text review 只有在 bilateral canonical anchors + ready timing model 同时成立时才可恢复 canonical text；
+- recovery 不降低 Text Repair threshold、不把 recovered text 变成 A timing anchor；
 - exact DAW hard prior / BPM-derived soft prior 语义；
 - Enhanced LRC open-ended token 可进入 Pro；
 - Pro 拒绝 stale Smart artifact；
