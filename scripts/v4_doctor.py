@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Inspect v4 task/data/evidence/backend readiness without changing artifacts."""
+"""Inspect v4 task/data/evidence/backend/partial-repair readiness read-only."""
 
 from __future__ import annotations
 
@@ -12,7 +12,8 @@ REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 if str(REPOSITORY_ROOT) not in sys.path:
     sys.path.insert(0, str(REPOSITORY_ROOT))
 
-from lyric_aligner.doctor import DoctorError, build_doctor_report
+from lyric_aligner.doctor import DoctorError
+from lyric_aligner.doctor_partial import build_doctor_report_with_partial_repair
 
 
 _REQUIRE_CHOICES = (
@@ -41,6 +42,11 @@ _REQUIRE_CHOICES = (
     "backend:word_timestamps",
     "backend:ctc_alignment",
     "backend:source_forced_alignment",
+    "partial_repair:lineage",
+    "partial_repair:trust_lock",
+    "partial_repair:actionable_scope",
+    "partial_repair:decisions",
+    "partial_repair:proposal_inputs",
 )
 
 
@@ -63,6 +69,9 @@ def main() -> int:
     parser.add_argument("--forced-mix-evidence-artifact", type=Path)
     parser.add_argument("--fusion", type=Path)
     parser.add_argument("--fusion-artifact", type=Path)
+    parser.add_argument("--partial-trust-lock", type=Path)
+    parser.add_argument("--partial-trust-decisions", type=Path)
+    parser.add_argument("--partial-trust-decisions-artifact", type=Path)
     parser.add_argument("--runtime-snapshot", type=Path)
     parser.add_argument("--no-backend-check", action="store_true")
     parser.add_argument("--faster-whisper-model-id")
@@ -74,7 +83,7 @@ def main() -> int:
     args = parser.parse_args()
 
     try:
-        report = build_doctor_report(
+        report = build_doctor_report_with_partial_repair(
             task_manifest=args.task_manifest,
             dataset=args.dataset,
             dataset_split=args.dataset_split,
@@ -92,6 +101,9 @@ def main() -> int:
             forced_mix_evidence_artifact=args.forced_mix_evidence_artifact,
             fusion=args.fusion,
             fusion_artifact=args.fusion_artifact,
+            partial_trust_lock=args.partial_trust_lock,
+            partial_trust_decisions=args.partial_trust_decisions,
+            partial_trust_decisions_artifact=args.partial_trust_decisions_artifact,
             runtime_snapshot=args.runtime_snapshot,
             inspect_backend_status=not args.no_backend_check,
             faster_whisper_model_id=args.faster_whisper_model_id,
