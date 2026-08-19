@@ -137,7 +137,7 @@ def _model_index(smart_report: Mapping[str, Any]) -> dict[int, Mapping[str, Any]
 
 
 def _safe_rate(model: Mapping[str, Any] | None) -> float | None:
-    if model is None:
+    if model is None or str(model.get("status") or "") != "ready":
         return None
     try:
         rate = float(model.get("rate"))
@@ -168,6 +168,13 @@ def build_selective_repair_plan(
         raise SelectiveRepairPlanningError("input is not a Smart no-audio report")
     if smart_report.get("audio_read") is not False:
         raise SelectiveRepairPlanningError("Smart report unexpectedly reports audio reads")
+    if smart_report.get("cue_count") is not None and int(smart_report["cue_count"]) != len(cues):
+        raise SelectiveRepairPlanningError("Smart report/SRT cue count mismatch")
+    if (
+        smart_report.get("canonical_line_count") is not None
+        and int(smart_report["canonical_line_count"]) != len(canonical)
+    ):
+        raise SelectiveRepairPlanningError("Smart report/canonical line count mismatch")
 
     timing_rows = smart_report.get("timing_decisions")
     text_rows = smart_report.get("text_decisions")
