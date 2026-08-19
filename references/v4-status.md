@@ -67,7 +67,7 @@ BPM-derived 与稳定 A-anchor rate 冲突时，不用软先验重建模型；�
 
 ### 3.2 Segmentation authority / lower-mode monotonicity
 
-v1.1.3 把真实 190 回归暴露出的 segmentation 责任固定为生产合同：
+v1.1.3 把真实生产回归暴露出的 segmentation 责任固定为生产合同：
 
 ```text
 canonical lyric text/order -> authority
@@ -76,7 +76,7 @@ trusted Jianying cue       -> display segmentation strong prior
 word/token/audio evidence  -> may rebut editor boundary when independently strong
 ```
 
-因此，像连续歌词内容完全一致、只是 LRC 写成两行而剪映显示成三条 cue 的情况，Smart 必须继承 Standard 的 cue ownership；不能仅因为 canonical 行换行不同，把“他早忘了”一类文字从正确的 editor cue 搬到前一个 cue。
+因此，连续歌词内容完全一致、只是 LRC 写成两行而剪映显示成三条 cue 时，Smart 必须继承 Standard 的 cue ownership；不能仅因为 canonical 行换行不同，把一段文字从正确的 editor cue 搬到前一个或后一个 cue。
 
 ### 3.3 Severe-ASR canonical text recovery
 
@@ -151,7 +151,7 @@ schema_version = smart-1.1
 policy_id      = current Smart production policy
 ```
 
-因此 Smart policy 从 v1.1.2 升到 v1.1.3 后，旧 Smart artifact 自动 stale，必须重跑当前 Smart。
+因此 Smart policy 升到 v1.1.3 后，旧 Smart artifact 自动 stale，必须重跑当前 Smart。
 
 reason-aware routing：
 
@@ -197,4 +197,4 @@ Public CI 必须证明：
 - Enhanced LRC open-ended token、stale Smart rejection、adaptive source window、ASR-only region、max-jobs、path collision、source-I/O 继续不回归；
 - Python/ASR environment 与 legacy tests 全部继续通过。
 
-Private real-song calibration + independent blind 仍是 Pro 自动写回前的关键 gate。当前最直接的真实验收样本是 190：重点复核《在梅边》song-edge severe-ASR 与 11:24 segmentation preservation，再把新发现继续转成通用 regression，而不是任务级 hard-code。
+Private real-song calibration + independent blind 仍是 Pro 自动写回前的关键 gate。真实任务发现的新 failure pattern 应继续转换成**通用、合成、无任务数据硬编码**的 regression，再决定是否升级生产算法。
