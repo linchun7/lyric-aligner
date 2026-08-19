@@ -194,6 +194,22 @@ class PartialTimelineRepairEvidenceBridgeTests(unittest.TestCase):
             "missing_or_unsupported_occurrence_mapping_kind",
         )
 
+    def test_open_end_one_ms_fusion_boundary_is_never_repair_candidate(self):
+        _, candidates, report = bridge_fusion_to_partial_repair(
+            cues=self.cues,
+            fusion=fusion_payload(
+                [fusion_line(occurrence="occ-1", line_index=1, cue_number=2, boundary=(5000, 5001))]
+            ),
+            mapping_kind_by_occurrence={"occ-1": "AFFINE"},
+            explicit_trust=[ExplicitCueTrust(2, "untrusted", "bad")],
+        )
+        self.assertEqual(candidates, [])
+        self.assertEqual(report["bindings"][1]["candidate_status"], "unavailable")
+        self.assertEqual(
+            report["bindings"][1]["candidate_reason"],
+            "open_end_source_timeline_boundary_is_not_repairable",
+        )
+
     def test_calibrated_policy_is_allowed_as_explicit_source_but_not_p9_high(self):
         trust, candidates, _ = bridge_fusion_to_partial_repair(
             cues=self.cues,
