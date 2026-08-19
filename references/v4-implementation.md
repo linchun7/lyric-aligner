@@ -24,6 +24,7 @@ rate change -> implicit cut
 review confirmed_cut flag -> CUT_AWARE without materialization
 P9 HIGH -> automatic timing mutation
 P9 CONFLICT -> automatic declaration that editor is wrong
+mutable fusion JSON without artifact validation -> production timing candidate
 synthetic CI -> claim real singing accuracy
 ```
 
@@ -43,12 +44,15 @@ P2  partial_repair_evidence.py
     P9 editor/canonical identity bridge
     no shadow-level -> trust promotion
 
-P3  partial_repair_context.py
+P3a partial_repair_context.py
     effective-run/artifact lineage -> mapping/cut context
-    production-facing bridge no longer accepts caller mapping/cut labels
+
+P3b partial_repair_production.py
+    formal fusion payload/artifact verification
+    production entry -> P3a + P2 + P1
 ```
 
-三层当前都不直接写 authoritative SRT。
+P1/P2/P3a 的 payload API 保留给单元测试与受控组合；正式生产使用 P3b artifact bridge。当前所有层都不直接写 authoritative SRT。
 
 ## 4. P1 `timeline/partial_repair.py`
 
@@ -95,7 +99,7 @@ P2 规则：
 - open-end 1ms sentinel 不可修；
 - P2 的 mapping/cut 参数仅作为低层兼容 API，生产调用从 P3 起不直接提供它们。
 
-## 6. P3 `timeline/partial_repair_context.py`
+## 6. P3a `timeline/partial_repair_context.py`
 
 ### 6.1 Effective run contract
 
@@ -120,7 +124,8 @@ combined_recomposition     -> v4_combined_run
 3. 要求 mapping artifact ID 是 effective run artifact 的 upstream；
 4. coarse/fine payload 的 occurrence identity 必须与 effective occurrence 一致；
 5. Fine 路径额外要求 `fine_applied=true`、payload `applied=true`、Fine artifact upstream 包含 exact coarse artifact；
-6. 直接读取 `TimeWarp.mapping.mode`。
+6. Fine `track_id` 与 `canonical_selection_sha256` 必须与 coarse 完全相同；
+7. 直接读取 `TimeWarp.mapping.mode`。
 
 合法 continuous mode：
 
@@ -151,6 +156,7 @@ payload.result.kind = CUT_AWARE
 并验证：
 
 - cut mapping artifact 在 effective-run upstream；
+- cut payload 有非空 track/canonical selection identity；
 - result 有 retained segments 与 cuts；
 - occurrence cut_count == payload cuts == artifact evidence.cut_count；
 - artifact evidence occurrence_id 一致；
@@ -166,32 +172,55 @@ payload.result.kind = CUT_AWARE
 
 `v4_compose_materializations.py` 在 cut+overlap 同时存在时复制 cut occurrence，并保留 `cut_rebuilt=true`、cut mapping provenance；因此 P3 对 combined run 继续从 formal cut mapping 派生 CUT_AWARE，而不是从 combined timeline 名称猜测。
 
-### 6.5 P9 exact-run binding
+## 7. P3b `timeline/partial_repair_production.py`
 
-生产入口：
+正式生产入口：
 
 ```python
-bridge_effective_run_to_partial_repair(
+bridge_effective_artifacts_to_partial_repair(
     cues=...,
-    fusion=...,
     run_path=...,
     run_artifact_path=...,
+    fusion_path=...,
+    fusion_artifact_path=...,
     explicit_trust=...,
 )
 ```
 
-它要求：
+### 7.1 Fusion formal artifact validation
+
+Production bridge 先通过 P3a 得到 effective-run mapping context，再验证 exact P9 fusion pair：
 
 ```text
-fusion.task_fingerprint_sha256 == effective run
-fusion.algorithm_version == effective run
-fusion.source_run_stage == effective run stage
-fusion.source_run_artifact_id == exact effective run artifact_id
+artifact stage = evidence_fusion_shadow
+artifact output role = evidence_fusion
+artifact task fingerprint = effective run task
+artifact algorithm version = effective run algorithm
+artifact self-signature valid
+fusion payload size/SHA == formal artifact output record
 ```
 
-然后才把 `mapping_kind_by_occurrence` 与 confirmed CUT_AWARE occurrence set 作为内部派生结果交给 P2。生产调用方不再能通过手填 mapping/cut label 改变语义。
+随后要求三重 source-run binding 一致：
 
-### 6.6 Report / privacy
+```text
+fusion.source_run_stage == effective run stage
+fusion.source_run_artifact_id == effective run artifact ID
+fusion artifact normalized_config.source_run_artifact_id == effective run artifact ID
+effective run artifact ID in fusion artifact upstream_artifact_ids
+```
+
+Fusion artifact evidence 还必须继续声明：
+
+```text
+mode = shadow_only
+policy_calibrated = false
+release_gate_eligible = false
+automatic_timing_change_allowed = false
+```
+
+因此即使有人手工修改 fusion JSON 中的 `source_timeline_boundary_ms`，旧 fusion artifact 的 output SHA/size 也会立即失配，不能进入 Partial Timeline Repair。
+
+### 7.2 Report / privacy
 
 `EffectiveRunMappingContext.to_report()` 只输出：
 
@@ -206,11 +235,11 @@ cut_count
 reason
 ```
 
-不输出 coarse/fine/cut 本地路径。
+不输出 coarse/fine/cut 本地路径。Production report 只额外加入 formal fusion artifact ID 与 `production_inputs_artifact_verified=true`。
 
-## 7. Validation boundary
+## 8. Validation boundary
 
-P3 tests 证明 lineage contract 与 fail-closed 行为，包括 AFFINE、Fine PIECEWISE_RATE、review-only cut、materialized CUT_AWARE、combined cut+overlap、overlap-only、missing/upstream-tampered artifact、exact P9 run binding。
+P3 tests 证明 lineage contract 与 fail-closed 行为，包括 AFFINE、Fine PIEWISE_RATE、Fine/coarse track/canonical identity、review-only cut、materialized CUT_AWARE、combined cut+overlap、overlap-only、missing/upstream-tampered mapping artifact、tampered fusion output、fusion effective-run upstream/config binding。
 
 这些测试不证明真实歌曲 timing accuracy。Partial Timeline Repair 当前继续固定：
 
