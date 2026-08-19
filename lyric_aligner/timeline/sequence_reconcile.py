@@ -9,8 +9,9 @@ or text evidence stops agreeing.
 
 Sequence-projected text is final-text evidence only. Its decision score is
 capped below B grade, so it can never become an A/B timing anchor or bootstrap
-its own timing authority. Results already recovered by the stronger, independently
-ready four-A timing path are immutable to this lower-authority layer.
+its own timing authority. Results already recovered by the stronger,
+independently-ready four-A timing path are immutable to this lower-authority
+layer.
 """
 
 from __future__ import annotations
@@ -36,6 +37,9 @@ _PROTECTED_STRONGER_RECOVERY_REASONS = frozenset(
         "timing_model_confirms_song_edge_canonical",
     }
 )
+_FRONTIER_SINGLE_LINE_MIN_SIMILARITY = 0.30
+_FRONTIER_MULTI_LINE_MIN_SIMILARITY = 0.42
+_FRONTIER_SHORT_CUE_MIN_SIMILARITY = 0.80
 
 
 @dataclass(frozen=True)
@@ -452,6 +456,15 @@ def _frontier_choice(
     max_lines_per_cue: int = 4,
     reverse: bool = False,
 ) -> tuple[list[TimedCanonicalOccurrence], int | None] | None:
+    """Choose a one-sided frontier assignment with lexical anti-ad-lib guards.
+
+    Frontier evidence is weaker than a two-anchor bounded gap. Timing proximity
+    alone is therefore never sufficient to turn a short/generic editor cue into
+    a full canonical lyric. Single-line assignments need at least modest lexical
+    support; multi-line assignments keep the stronger existing floor, and very
+    short cues require near-identity before they may be consumed.
+    """
+
     if not rows:
         return None
     candidates: list[tuple[float, list[TimedCanonicalOccurrence], int | None]] = []
@@ -468,7 +481,17 @@ def _frontier_choice(
             continue
         target_normalized = "".join(item.normalized for item in assigned)
         similarity = _pair_score(cue.normalized, target_normalized)
-        if count > 1 and similarity < 0.42:
+        minimum_similarity = (
+            _FRONTIER_MULTI_LINE_MIN_SIMILARITY
+            if count > 1
+            else _FRONTIER_SINGLE_LINE_MIN_SIMILARITY
+        )
+        if similarity < minimum_similarity:
+            continue
+        if (
+            len(cue.normalized) <= 2
+            and similarity < _FRONTIER_SHORT_CUE_MIN_SIMILARITY
+        ):
             continue
         boundary_delta: int | None = None
         if next_cue_start_ms is not None:
@@ -571,7 +594,9 @@ def reconcile_text_from_sequence_projection(
         block_decisions = [decision_by_cue.get(cue.ordinal) for cue in block]
         if any(_protected(item) for item in block_decisions):
             continue
-        if not any(item is not None and item.action == "review" for item in block_decisions):
+        if not any(
+            item is not None and item.action == "review" for item in block_decisions
+        ):
             continue
 
         positions = source_position[left.source_ordinal]
