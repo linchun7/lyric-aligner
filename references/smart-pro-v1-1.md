@@ -1,28 +1,32 @@
-# Smart / Pro v1.1 production policy
+# Smart / Pro production policy
 
 Date: 2026-08-19
 
 Normative workload baseline remains `references/production-requirements.md`.
-This change keeps Smart and Pro as the daily primary modes and does not expand
+Smart and Pro remain the daily primary modes; this change does not expand
 Max/Full V4 as the default path.
 
-## Smart v1.1.3
+## Smart v1.2.0
 
-Smart still reads no audio. The v1 A-anchor affine engine remains the timing
-model, with these production hardenings:
+Smart still reads no audio. The primary v1 A-anchor affine timing engine remains
+unchanged, but v1.2.0 adds a separate canonical-sequence text layer so severe
+editor ASR cannot permanently block text recovery merely because lexical
+similarity is low.
+
+Primary timing hardenings remain:
 
 - `preserve` means timing was actually validated strongly enough to keep;
 - `timing_model_not_ready`, missing unique timed-canonical identity, and C-grade
   identities are unresolved and must escalate to Pro instead of making the
   whole Smart task look `ready`;
-- B-grade identity cannot build the timing model, but may be secondarily
+- B-grade identity cannot build the primary timing model, but may be secondarily
   confirmed by an already-ready A-anchor model;
 - automatic timing repair may not create a new subtitle overlap or increase an
   existing overlap in the combined proposal;
-- rate prior provenance is explicit: `exact_daw`, `bpm_derived`, or
+- rate prior provenance remains explicit: `exact_daw`, `bpm_derived`, or
   `anchor_estimated`; exact DAW stretch remains stronger than BPM-derived prior;
-- Smart report schema remains `smart-1.1`; current policy id identifies v1.1.3
-  behavior and stale Smart artifacts must be rerun before Pro.
+- Smart report schema remains `smart-1.1`; current policy id is
+  `smart-validation-policy-2026-08-19-v1.2.0`.
 
 ### Segmentation authority and mode monotonicity
 
@@ -38,86 +42,123 @@ word/token/audio evidence  -> may rebut editor boundary when independently stron
 
 Therefore a higher mode must not regress a lower-mode safe result merely because
 canonical lines are grouped differently. When editor cues concatenate to the
-same canonical text/order, Smart keeps the editor cue ownership. Moving words
+same canonical text/order, Smart keeps editor cue ownership. Moving words
 between otherwise-correct cues requires stronger boundary evidence than a line
 LRC break.
 
-Public regression uses synthetic but structurally equivalent text:
+### Why v1.2.0 adds Sequence Projection
+
+v1.1.x still had a severe-ASR bootstrap deadlock:
 
 ```text
-editor:
-  第一段歌词到这里
-  下一小句仍在同一画面
-  最后几个字继续播放
-
-canonical LRC:
-  第一段歌词到这里下一小句
-  仍在同一画面最后几个字继续播放
+bad editor ASR
+-> lexical matcher cannot form the correct canonical span
+-> fewer than four A timing anchors
+-> primary timing model is not ready
+-> ready-model text recovery cannot start
+-> wrong editor text remains in output
 ```
 
-The continuous lyric text/order is the same; only grouping differs. Standard and
-Smart must retain editor cue ownership.
+Lowering Text Repair thresholds or the four-A primary timing gate would increase
+false-auto risk. v1.2.0 instead introduces a **text-only Sequence Projection**
+with lower authority than the primary timing model.
 
-### Severe-ASR text recovery
+Without an exact hard rate prior, Sequence Projection requires:
 
-A timing/identity review is not permission to keep editor ASR garbage when the
-canonical sequence can already be independently proven. Text Repair V2
-thresholds remain unchanged; Smart first builds its affine model from original
-high-confidence A anchors.
+- at least three unique/exact/unchanged 1:1 A text anchors;
+- at least one additional `score >= 0.92` A/B strong text anchor;
+- at least 8 seconds useful span in both source and mix time;
+- a robust affine rate in `[0.5, 2.0]`;
+- median absolute strong-anchor residual `<= 450ms`;
+- `750ms` inlier fraction `>= 0.75`.
 
-#### Interior bilateral recovery
+With an exact DAW hard rate prior, a narrower two-A text projection may be used.
+BPM-derived rate remains soft and is not allowed to become a hard text-projection
+rate merely to make a job pass.
 
-After a model is ready, Smart may revisit a low-similarity text-review block only
-when all of these hold:
+### Strongly bounded canonical sequence recovery
 
-- validated single-line text anchors on both sides (`score >= 0.92`);
-- both anchors belong to the same source song and each agrees with the ready
-  affine model within 750ms;
-- the canonical occurrences strictly between those anchors are consecutive and
-  same-source;
-- the entire canonical gap can be partitioned monotonically onto review cue
-  starts, with the first onset for every cue within 750ms of editor start;
-- each cue absorbs at most four canonical lines and a block contains at most
-  eight cues.
+When two model-consistent strong anchors of the same song bound a weak/review
+region, Smart may use the complete canonical gap plus timed-LRC projection to
+recover text even when the middle editor strings are nearly unrelated.
+
+The recovery preserves existing editor cue count/start/end. It may assign
+multiple canonical LRC rows to one editor cue when projected onsets show that
+those rows belong inside that display interval. The partition is chosen from:
+
+- current cue first-onset agreement;
+- next canonical onset versus next editor cue start;
+- a small text-length ownership penalty.
+
+The LRC line count never becomes the subtitle cue count. A four-cue editor block
+may therefore consume eight canonical lines without creating eight subtitle
+cues or moving cue boundaries.
 
 Successful reason:
 
 ```text
-timing_model_confirms_canonical_sequence
+sequence_projection_confirms_bounded_canonical
 ```
 
-#### Song-edge one-sided recovery — v1.1.3
+### Cautious song frontier recovery
 
-A real production song-edge failure showed that an editor-only ad-lib can remove
-the left/right anchor even though the first/last canonical lyric cue is timing-
-consistent and the rest of the song supplies a stable affine model. v1.1.3 adds
-a narrower one-sided path instead of lowering lexical thresholds.
+Outside a song's first/last model-consistent strong anchor, Sequence Projection
+may walk one cue at a time only while projected canonical onset stays close to
+editor timing. It stops at the first timing discontinuity, non-monotonic cue,
+other strong anchor, or lack of a defensible candidate; it does not jump across
+a cut/editor-only region to chase later LRC.
 
-It requires all of the following:
+Multi-line frontier assignment keeps an extra lexical guard because one-sided
+context is weaker than a bounded two-anchor region.
 
-- the affine model was already `ready` from independent A anchors;
-- the candidate is within the first/last four canonical rows of that song;
-- the available side contains at least two immediately adjacent, consecutive
-  canonical, `score >= 0.92` text anchors;
-- those anchors each agree with the model within 750ms;
-- the candidate canonical onset agrees with editor cue start within a tighter
-  500ms tolerance;
-- a skipped review cue may be treated as transparent only when it has no
-  canonical claim at all (`canonical_ordinal=None` and `canonical_span=None`),
-  i.e. an editor-only ad-lib; at most three such cues may be skipped;
-- a weak mapped cue is never transparent and blocks one-sided recovery.
-
-Editor-only ad-libs remain untouched and stay review. Successful reason:
+Successful reason:
 
 ```text
+sequence_projection_confirms_frontier_canonical
+```
+
+### Anti-circularity and authority ordering
+
+v1.1.x ready-model recovery remains stronger and runs first:
+
+```text
+timing_model_confirms_canonical_sequence
 timing_model_confirms_song_edge_canonical
 ```
 
-Both recovery paths are **text authority only**. Recovered cues do not become A
-timing anchors, do not participate in the model that validated them, and do not
-receive new automatic timing-write authority.
+Sequence Projection must not overwrite either result. If a stronger ready-model
+recovery is present inside a candidate bounded region or frontier, the lower-
+authority sequence layer stops/fails closed instead of relabelling it.
 
-Smart report records:
+All sequence-projected decisions have score capped below `0.92`. Therefore they
+remain C-grade for the primary timing engine even after their output text exactly
+matches canonical lyrics. A typical valid state is deliberately:
+
+```text
+3 original A anchors + 1 strong B
+-> text-only Sequence Projection ready
+-> severe-ASR canonical text recovered
+-> primary timing model still has only 3 A anchors
+-> timing remains review / Pro escalation
+```
+
+Text certainty and timing certainty are separate axes.
+
+### Existing v1.1 ready-model recovery
+
+The independently-ready four-A timing paths remain:
+
+- bilateral interior recovery: same-song strong anchors on both sides, complete
+  canonical gap, model-consistent onsets;
+- narrow song-edge recovery: independently-ready model, strict edge scope,
+  consecutive one-sided strong anchors, tighter candidate onset guard, and only
+  truly unmapped editor-only ad-libs may be transparent.
+
+These results are text authority only and do not become primary timing anchors.
+
+### Smart report
+
+Existing fields remain, including:
 
 - `text_review_count_before_timing_recovery`;
 - `text_timing_recovery_count`;
@@ -125,6 +166,18 @@ Smart report records:
 - `text_edge_timing_recovery_count`;
 - `text_edge_timing_recovery_block_count`;
 - final `text_review_count`.
+
+v1.2.0 adds:
+
+- `text_sequence_reconciled_cue_count`;
+- `text_sequence_reconciled_region_count`;
+- `text_sequence_resolved_review_count`;
+- `text_sequence_frontier_cue_count`;
+- `text_sequence_frontier_run_count`;
+- `text_sequence_projection_models`.
+
+`text_sequence_projection_models` are text-only diagnostics and must not be
+confused with `models`, which remain the primary timing models.
 
 ## Pro v1.1
 
@@ -141,10 +194,10 @@ Evidence is routed by the reason Smart escalated the cue:
 - unmapped review cues remain ASR-only instead of pretending source identity is
   known.
 
-Pro requires the exact current Smart schema + policy. After v1.1.3, old Smart
-reports are stale and must be rerun. Pro only handles Smart-unresolved cues; it
-does not automatically catch Smart false-ready results, which is why
-segmentation/lower-mode-monotonicity regressions are release tests at Smart itself.
+Pro requires the exact current Smart schema + policy. After Smart v1.2.0, all
+v1.1.3 and earlier Smart reports are stale and must be rerun. Pro only handles
+Smart-unresolved cues; it does not automatically catch Smart false-ready results,
+which is why segmentation/sequence/authority regressions are Smart release tests.
 
 Nearby acoustic review cues are assigned to merged mix regions. ASR-only jobs do
 not widen an acoustic region. Source windows use token timing / next canonical
