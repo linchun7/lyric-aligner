@@ -1,6 +1,6 @@
 # Lyric Aligner v4 实施记录与关键代码说明
 
-> P3 前的完整实施/架构记录保存在 `references/archive/2026-08-19-pre-p3-v4-implementation.md`。本文件聚焦当前 responsibility graph 与 Partial Timeline Repair P1–P5。
+> P3 前的完整实施/架构记录保存在 `references/archive/2026-08-19-pre-p3-v4-implementation.md`。本文件聚焦当前 responsibility graph、Text Repair V2.1 与 Partial Timeline Repair P1–P5。
 
 ## 1. Authority graph
 
@@ -29,9 +29,81 @@ synthetic CI -> claim real calibration/accuracy
 P5 proposal_inputs_ready -> automatic timing write-back
 ```
 
-## 2. Text Repair V2
+## 2. Text Repair V2.1
 
 冻结 timeline 的文字修复层，不读取 audio、不改变 cue count/number/start/end。需要 timing 判断的任务进入 Source-to-Mix/Partial Timeline Repair。
+
+### 2.1 Canonical parser hardening
+
+`parse_canonical_files()` 先识别 LRC/QRC occurrence，再清理 enhanced/token timing；清理后重新执行 metadata filter，避免 `[00:00.00]作词：...` 等 timestamped metadata 进入 canonical text。
+
+同一 canonical 文件允许：
+
+```text
+all timed occurrences
+or
+all untimed lyric lines
+```
+
+但不允许 timed/untimed 正文混合。混合输入直接 `ValueError` fail closed，避免单条 untimed 文本让原本可按 occurrence timestamp 排序的文件退化为书写顺序。
+
+### 2.2 Frozen-layout insertion guard
+
+Text Repair 仍只在 content-character 序列上计算 deterministic edit script，并保留原 cue 的 punctuation / whitespace / line break / decorative marks。
+
+V2.1 在字符插入时额外识别：
+
+```text
+existing cue boundary
+whitespace boundary inside a cue
+line-break boundary inside a cue
+```
+
+若 insert 正好落在这些边界，字符属于哪一侧无法由 frozen timeline/layout 唯一确定，因此不自动移动空格或换行，也不猜 cue ownership；整段保持原文并进入 review。
+
+### 2.3 Coverage 与 cue safety 分离
+
+`unmatched_canonical` 继续完整报告，但不再自动计入 `review_count`。V2.1 report schema `2.1`：
+
+```text
+status / review_count / cue_review_count
+    -> 只表达当前 SRT cue 是否存在需要人工复核的文字修复
+
+coverage_status / coverage_warning_count / unmatched_canonical_count
+    -> 表达 canonical lyric 是否有未覆盖 occurrence
+```
+
+因此剪辑导致 canonical 有额外歌词但现有 SRT cue 全部安全时，任务可 `ready + coverage warning`。这不放松 `_gap_guarded()`：低于 0.96 的匹配如果邻接 alignment gap，仍进入 `adjacent_alignment_gap_requires_review`。
+
+### 2.4 Exact-anchor scalability
+
+`_unique_exact_anchors()` 保留原规则：只选择 cue/canonical 两侧都唯一、normalized length >= 4 的 exact anchors，并取最长严格单调 canonical-index 链。
+
+旧实现对 candidate 做 O(n²) LIS DP。V2.1 改为 Fenwick prefix-best：
+
+```text
+query canonical indices < current
+-> choose greatest chain length
+-> tie 时选更早 candidate index
+-> update current canonical index
+```
+
+复杂度降为 O(n log n)，且 tie-break 与原 DP 的“最早 predecessor / 最早 max end”保持一致。公共测试加入 2000-cue unique-exact 规模回归，不使用脆弱 wall-clock assertion。
+
+### 2.5 Production threshold boundary
+
+core `build_repair_plan_v2()` 仍接受 0.5–1.0 以支持实验/校准代码；正式 `v4_text_repair.py` 与 `v4_text_repair_batch.py` 以 `PRODUCTION_MIN_AUTO_THRESHOLD=0.72` 锁住生产下限。batch 对 global 和 job-level threshold 在任何输出写入前统一预检。
+
+### 2.6 Immutable output assertion
+
+修复后必须重新 `parse_srt_text(rendered)`，并验证：
+
+```text
+len(input cues) == len(output cues)
+timeline_signature(input) == timeline_signature(output)
+```
+
+其中 signature = `(cue.number, cue.timing)`。任何 cue count / number / timing 变化都立即 `AssertionError`。
 
 ## 3. Partial Timeline Repair 分层
 
@@ -160,6 +232,6 @@ partial_repair:proposal_inputs
 
 ## 8. Validation boundary
 
-Public synthetic tests可证明：P3/P4 validator 复用、Doctor requirement wiring、readiness state machine、mapping/conflict/scope 摘要、formal decision pair validation、path redaction、proposal-only authority flags、Python compatibility。
+Public synthetic tests可证明：Text Repair frozen-timeline assertion、parser metadata/mixed-timing guard、layout-boundary insertion fail-closed、coverage/report semantics、exact-anchor 2000-cue scale behavior、production threshold preflight、P3/P4 validator 复用、Doctor requirement wiring、readiness state machine、mapping/conflict/scope 摘要、formal decision pair validation、path redaction、proposal-only authority flags、Python compatibility。
 
-Public CI 不能证明真实 private candidate 已通过 blind gate、真实歌曲准确率、false-auto rate 或 automatic timing write-back safety。因此 P5 只完成 readiness infrastructure，不提升 release authority。
+Public CI 不能证明真实 private candidate 已通过 blind gate、真实歌曲准确率、false-auto rate 或 automatic timing write-back safety。因此 Text Repair V2.1 仍只负责文字，P5 只完成 readiness infrastructure，不提升 release authority。
