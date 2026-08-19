@@ -99,7 +99,11 @@ class SmartTextRecoveryV114Tests(unittest.TestCase):
         )
 
         self.assertEqual(replacements[1], "第一段")
-        self.assertEqual(replacements[2], "第二段")
+        # Cue 2 already contains its canonical-owned characters, so it should
+        # be resolved without manufacturing a no-op replacement artifact.
+        self.assertNotIn(2, replacements)
+        self.assertEqual(output[2].output_text, "第二段")
+        self.assertEqual(output[2].action, "unchanged")
         self.assertEqual(summary.local_bilateral_block_count, 1)
         self.assertEqual(summary.local_segmentation_preserve_count, 2)
         for ordinal in (1, 2):
@@ -167,10 +171,18 @@ class SmartTextRecoveryV114Tests(unittest.TestCase):
             _cue(index, start, ("完全错误的识别" if index == 3 else text))
             for index, (start, text) in enumerate(zip(starts, canonical_texts))
         ]
-        decisions = [
-            (_review(cues[index], (index, index + 1), score=0.0) if index == 3 else _unchanged(cues[index], index))
-            for index in range(len(cues))
-        ]
+        decisions = []
+        for index, cue in enumerate(cues):
+            if index == 3:
+                decisions.append(_review(cue, (index, index + 1), score=0.0))
+            elif index == 2:
+                # Still an original exact unchanged observation and therefore
+                # eligible for the consensus model, but intentionally below the
+                # local-bilateral boundary threshold so this test isolates the
+                # direct consensus stage.
+                decisions.append(_unchanged(cue, index, score=0.75))
+            else:
+                decisions.append(_unchanged(cue, index))
 
         replacements, output, models, summary = recover_text_reviews_from_consensus(
             cues,
@@ -179,6 +191,7 @@ class SmartTextRecoveryV114Tests(unittest.TestCase):
         )
 
         self.assertEqual(replacements[3], "目标规范歌词")
+        self.assertEqual(summary.local_bilateral_cue_count, 0)
         self.assertEqual(summary.consensus_timing_cue_count, 1)
         self.assertEqual(summary.consensus_model_count, 1)
         self.assertGreaterEqual(models[0].anchor_count, 6)
@@ -209,11 +222,12 @@ class SmartTextRecoveryV114Tests(unittest.TestCase):
             cue_start = 45_000 if index == 3 else start
             cue = _cue(index, cue_start, "完全错误的识别" if index == 3 else text)
             cues.append(cue)
-            decisions.append(
-                _review(cue, (index, index + 1), score=0.0)
-                if index == 3
-                else _unchanged(cue, index)
-            )
+            if index == 3:
+                decisions.append(_review(cue, (index, index + 1), score=0.0))
+            elif index == 2:
+                decisions.append(_unchanged(cue, index, score=0.75))
+            else:
+                decisions.append(_unchanged(cue, index))
 
         replacements, output, _, summary = recover_text_reviews_from_consensus(
             cues,
@@ -222,6 +236,7 @@ class SmartTextRecoveryV114Tests(unittest.TestCase):
         )
 
         self.assertNotIn(3, replacements)
+        self.assertEqual(summary.local_bilateral_cue_count, 0)
         self.assertEqual(summary.consensus_timing_cue_count, 0)
         self.assertEqual(output[3].action, "review")
 
@@ -245,16 +260,22 @@ class SmartTextRecoveryV114Tests(unittest.TestCase):
             _cue(index, (39_500 if index == 3 else start), ("哟乱码" if index == 3 else text))
             for index, (start, text) in enumerate(zip(starts, canonical_texts))
         ]
-        decisions = [
-            (_review(cues[index], (index, index + 1), score=0.0) if index == 3 else _unchanged(cues[index], index))
-            for index in range(len(cues))
-        ]
+        decisions = []
+        for index, cue in enumerate(cues):
+            if index == 3:
+                decisions.append(_review(cue, (index, index + 1), score=0.0))
+            elif index == 2:
+                decisions.append(_unchanged(cue, index, score=0.75))
+            else:
+                decisions.append(_unchanged(cue, index))
 
-        replacements, _, _, _ = recover_text_reviews_from_consensus(
+        replacements, _, _, summary = recover_text_reviews_from_consensus(
             cues,
             canonical,
             decisions,
         )
+        self.assertEqual(summary.local_bilateral_cue_count, 0)
+        self.assertEqual(summary.consensus_timing_cue_count, 1)
         self.assertEqual(replacements[3], "哟 规范歌词")
 
     def test_recovery_reason_is_capped_out_of_primary_timing_grade(self) -> None:
