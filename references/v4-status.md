@@ -1,7 +1,7 @@
 # Lyric Aligner v4 当前实施状态
 
 更新日期：2026-08-19  
-当前生产代码基线：P9 + Production Readiness Tooling + Windows validation hardening + bounded mix decode + source feature cache + PR25 execution optimizer + PR26 text-only/run-lock hardening + optional forced-alignment batch protocol 1.1  
+当前生产代码基线：P9 + Production Readiness Tooling + Windows validation hardening + bounded mix decode + source feature cache + PR25 execution optimizer + PR26 run-lock hardening + Text Repair V2 + optional forced-alignment batch protocol 1.1  
 P8 merge：`00585a07b658ffea93509c4ed1a4b129deafd0a3`  
 P9 merge：`efbdbb926b03efdf1d91622d5c23cabef1f9850c`  
 PR21 merge：`04e0802156f62006c6b6af5b4ef59b1acc81ce86`  
@@ -35,6 +35,7 @@ PR23  bounded mix decode for coarse/fine production alignment
 PR24  source harmonic feature cache for repeated coarse jobs
 PR25  text-only repair + verified-input session + safe resume + bounded workers
 PR26  canonical-gap/timed-order/format-preserving repair + same-out-dir lock
+Text V2 deterministic typo/missing/extra-char + segmentation-span repair, immutable timing
 Batch  external forced-alignment protocol 1.1 (optional; single remains default)
 ```
 
@@ -147,13 +148,16 @@ references/v4-implementation.md
 references/dataset-protocol.md
 ```
 
-如果任务明确要求“仅按规范歌词修正字词，剪映 SRT 的 cue 数量、编号和全部起止时间保持不变”，优先使用 text-only repair fast path；它不读取音频，也不运行 Source-to-Mix / coarse / fine / transition / ASR / forced alignment：
+如果任务明确要求“规范歌词可信，剪映 SRT cue 数量/编号/全部起止时间冻结，只修文字”，优先使用 **Text Repair V2**；它不读取音频，也不运行 Source-to-Mix / coarse / fine / transition / ASR / forced alignment：
 
 ```text
 scripts/v4_text_repair.py
+scripts/v4_text_repair_batch.py   # 多任务批处理
 ```
 
-只有需要重新判断时间轴、cut、overlap、缺失 cue 或声学边界时才进入下面完整 V4：
+Text Repair V2 允许剪映与规范歌词的分句方式不同，但不允许因此修改 cue/time：支持 1↔1、1↔2、2↔1、2↔2 的受限 span matching，并在高置信 span 内执行字符 replace/insert/delete。因此普通错字、漏字、多字、剪映多断一句/少断一句、两边断句位置不同，都可在证据充分时自动修复；真实缺失 canonical occurrence、额外 subtitle cue、低相似度、gap 邻域不稳定或近似重复歌词歧义继续 `review_required`。
+
+只有需要重新判断时间轴、cut、overlap、缺失 cue 或声学边界时才进入完整 V4：
 
 ```text
 1. task + canonical LRC + source audio + edited mix/editor SRT
@@ -245,29 +249,33 @@ PR24 增加可删除的本地 source feature cache：
 
 该性能层不修改 slope grid、score/margin threshold、cut/review 或 Source-to-Mix 选择逻辑。
 
-## 11. Text-only subtitle repair fast path（已合入 PR25；PR26 hardening 已合入）
+## 11. Text Repair V2：高频冻结时间轴文字修复
 
-针对“规范歌词已经可靠、剪映时间轴已经可用、只需要修正字词”的真实生产场景，PR25 已合入独立 text-only path，PR26 已完成 post-merge hardening：
+针对“规范歌词可信、剪映时间轴总体可信并明确要求冻结”的高频生产场景，Text Repair V2 将旧 1:1 等长 fast path 升级为独立、确定性的文字修复能力：
 
 ```text
 lyric_aligner/text_repair.py
 scripts/v4_text_repair.py
+scripts/v4_text_repair_batch.py
 scripts/test_v4_text_repair.py
 scripts/test_v4_text_repair_hardening.py
+scripts/test_v4_text_repair_v2.py
 ```
 
-核心边界：
+硬边界：
 
-- 不读取 audio，不调用 librosa，不运行 coarse/fine/transition/ASR/forced alignment；
-- 支持按参数顺序串联多个 canonical LRC/TXT/QRC；完全 timed 的单个歌词文件会按真实 LRC/QRC timestamp stable-sort occurrence，多文件仍保持调用方传入的歌曲顺序；
-- 文本匹配使用 Unicode NFKC + punctuation/whitespace-insensitive normalization，再进行有序 fuzzy sequence alignment；
-- 只有高置信且长度结构安全的 1:1 cue/lyric pair 才进入自动修复；自动写回只替换 lexical/content 字符，并保留剪映原有 punctuation、whitespace 与 line breaks；无法一一映射的长度/布局变化保持原文并标记 `review_required`；
-- 单调 alignment 跳过任何 canonical occurrence 时，不会新增 cue 或猜 timing，而是写入 `unmatched_canonical` 并把状态提升为 `review_required`；
-- 输出前后强制比较每个 cue 的原始编号和 timing line，任何变化都立即失败；
-- CLI 拒绝 `--out` 覆盖 `--source-srt`，因此原字幕不会被原地修改；
-- report 记录 source/canonical/output SHA-256、替换/未变/review 数、`unmatched_canonical_count`、格式保留策略和逐 cue decision，但不读取或生成音频 artifact。
+- **永不读取 audio，永不修改 cue 数量、编号、开始时间、结束时间**；输出后重新解析并逐 cue 比较 timeline signature，任何变化 fail closed；
+- canonical LRC/TXT/QRC 仍是唯一 final text/order truth；多个 canonical 文件按调用顺序保持歌曲顺序，单个 fully-timed 文件内部按 timestamp stable-sort；
+- matching 使用 Unicode NFKC + casefold，并忽略标点/空白/control/format 与常见音乐装饰符进行比较，但输出保留源 SRT 的标点、空白、换行和装饰符；
+- 全局 DP 支持受限 `1 cue↔1 line`、`1↔2`、`2↔1`、`2↔2` span，最多只跨两个 cue/两行 canonical，且 canonical span 不跨不同歌词文件；
+- span 内以最小字符 edit script 执行 `replace / insert / delete`，因此可自动处理普通错字、漏字、多字；对于断句不同，canonical 内容按已有 cue 字符归属重新投影，**不会为了匹配 LRC 行界而移动/合并/拆分 cue 时间边界**；
+- span 低相似度不允许吞掉缺失歌词；真正的 canonical gap 仍进入 `unmatched_canonical`；subtitle gap、gap 邻域弱匹配、近似重复歌词竞争、结构差异过大继续 `review_required`；
+- report schema 2.0 增加 cue/canonical span、source/canonical/output text、字符 edit operations/count、`segmentation_span_count`、`cue_count_unchanged`，用于人工快速复核；
+- batch runner 接收多个彼此独立 job，单个 job error/review 不会把其他 job 输出误标为 ready，summary 分别统计 ready/review/error。
 
-这个入口只适用于 **preserve timeline** 的文字纠错，不是 V4 Source-to-Mix 的低精度替代。当 cue 缺失、分段改变、cut/overlap 或时间边界本身可疑时，必须回到完整 V4。
+`--auto-threshold` 仍是匹配自动门槛，不应为了提高 coverage 随意降低；下一步应使用真实“剪映原始 SRT + canonical + 人工终稿”私有 benchmark 重点统计 false auto correction、auto coverage 与 review rate。首要 promotion gate 仍是 **timeline change = 0 且真实 benchmark false auto correction = 0**。
+
+Text Repair V2 **不负责“部分时间轴不可信”**。下一轮 Partial Timeline Repair 会把可信 cue 作为锁定锚点，只在不可信局部做声学重对齐；由于用户实际素材中 BPM 加减速是常态，该能力必须默认复用 Source-to-Mix 的 `AFFINE/PIECEWISE_RATE/CUT_AWARE` 语义，`rate change != cut`，绝不能用原曲绝对时间直接覆盖 mix-time cue。
 
 ## 12. PR25 execution optimizer 与已合入 PR26 同 out-dir 保护
 
