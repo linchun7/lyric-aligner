@@ -194,6 +194,38 @@ class PartialTimelineRepairEvidenceBridgeTests(unittest.TestCase):
             "missing_or_unsupported_occurrence_mapping_kind",
         )
 
+    def test_cut_aware_without_confirmed_cut_identity_is_unavailable(self):
+        _, candidates, report = bridge_fusion_to_partial_repair(
+            cues=self.cues,
+            fusion=fusion_payload(
+                [fusion_line(occurrence="occ-1", line_index=1, cue_number=2, boundary=(2300, 3200))]
+            ),
+            mapping_kind_by_occurrence={"occ-1": "CUT_AWARE"},
+            explicit_trust=[ExplicitCueTrust(2, "untrusted", "bad")],
+        )
+        self.assertEqual(candidates, [])
+        self.assertEqual(report["bindings"][1]["candidate_status"], "unavailable")
+        self.assertEqual(
+            report["bindings"][1]["candidate_reason"],
+            "cut_aware_mapping_requires_confirmed_cut_identity",
+        )
+        self.assertEqual(report["confirmed_cut_occurrence_count"], 0)
+
+    def test_cut_aware_with_confirmed_cut_identity_can_emit_candidate(self):
+        _, candidates, report = bridge_fusion_to_partial_repair(
+            cues=self.cues,
+            fusion=fusion_payload(
+                [fusion_line(occurrence="occ-1", line_index=1, cue_number=2, boundary=(2300, 3200))]
+            ),
+            mapping_kind_by_occurrence={"occ-1": "CUT_AWARE"},
+            explicit_trust=[ExplicitCueTrust(2, "untrusted", "bad")],
+            confirmed_cut_occurrence_ids=["occ-1"],
+        )
+        self.assertEqual(len(candidates), 1)
+        self.assertEqual(candidates[0].mapping_kind, "CUT_AWARE")
+        self.assertEqual(report["bindings"][1]["candidate_status"], "projected")
+        self.assertEqual(report["confirmed_cut_occurrence_count"], 1)
+
     def test_open_end_one_ms_fusion_boundary_is_never_repair_candidate(self):
         _, candidates, report = bridge_fusion_to_partial_repair(
             cues=self.cues,
