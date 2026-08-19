@@ -3,7 +3,7 @@
 更新：2026-08-19  
 主线算法版本：`4.0.0a8`
 
-> P4 前的完整长版手册保存在 `references/archive/2026-08-19-pre-p4-v4-runtime-guide.md`。本文件描述 Text Repair V2、Partial Timeline Repair P1–P5 与当前生产边界。
+> P4 前的完整长版手册保存在 `references/archive/2026-08-19-pre-p4-v4-runtime-guide.md`。本文件描述 Text Repair V2.1、Partial Timeline Repair P1–P5 与当前生产边界。
 
 ## 1. 不变的 authority
 
@@ -27,7 +27,7 @@ release_gate_eligible = false
 
 ## 2. 冻结剪映时间轴，只修文字
 
-使用 Text Repair V2：
+使用 Text Repair V2.1：
 
 ```powershell
 python scripts/v4_text_repair.py `
@@ -37,7 +37,27 @@ python scripts/v4_text_repair.py `
   --report "output/<任务>/<任务>_TEXT_REPAIR.json"
 ```
 
-它不读取 audio，不改变 cue count / number / start / end。
+它不读取 audio，不改变 cue count / number / start / end。输出写回后会重新解析 SRT，并再次比较 cue count、number 与 timing signature；任何变化都会直接失败。
+
+V2.1 的生产规则：
+
+- timestamped metadata（作词、作曲、制作等）会在移除时间标签后再次过滤；
+- 同一 canonical 文件不能混合 timed lyric occurrence 与未标时正文；出现这种情况直接 fail closed。纯 timed LRC/QRC 与纯 untimed TXT 仍可使用；
+- 缺字如果恰落 cue 边界、空格边界或换行边界，不猜字符应该属于哪一侧，保持原字幕并 `review_required`；
+- canonical 中有歌词而当前 SRT 没有对应 cue 时，记录 `coverage_status=warning` / `coverage_warning_count`，但它本身不再把文字修复任务判成失败；可疑 cue 本身仍按 gap guard / ambiguity guard 进入人工复核；
+- report schema 为 `2.1`。
+
+正式 CLI 默认 `--auto-threshold 0.72`，允许提高但**不允许降低到 0.72 以下**。core Python API 仍保留实验阈值能力；正式单任务和 batch runner 都会拒绝生产阈值降级。
+
+批处理：
+
+```powershell
+python scripts/v4_text_repair_batch.py `
+  --manifest "private/<任务>/text-repair-batch.json" `
+  --summary "output/<任务>/text-repair-summary.json"
+```
+
+batch 会在任何输出写入前统一预检 path ownership 和所有 job-level `auto_threshold`。`coverage_warning_job_count` 与 `review_required_count` 分开统计；仅有 coverage warning 的任务仍返回 ready/exit 0。
 
 ## 3. 时间轴任务先完成 Source-to-Mix 主链
 
@@ -148,18 +168,19 @@ release_gate_eligible = false
 ```text
 1. 确认最新 main + clean worktree
 2. runtime snapshot
-3. 根据任务选择 Text Repair V2 或完整 V4
-4. 完整 V4：run -> review -> cut/overlap materialization -> effective run
-5. editor/ASR/forced -> P8 -> P9 fusion
-6. 若需局部时间轴修复，先运行 P5 Doctor readiness
-7. 没有真实 P4 private calibration/blind lock 时保持 human review
-8. 有 valid/actionable lock 后生成 formal calibrated decisions
-9. Doctor 达到 proposal_inputs_ready 后才进入 proposal-only repair
-10. 不得因 Doctor/P9/CI 结果自动写回 SRT timing
+3. 根据任务选择 Text Repair V2.1 或完整 V4
+4. Text Repair V2.1：只修文字；coverage warning 与 cue review 分开处理
+5. 完整 V4：run -> review -> cut/overlap materialization -> effective run
+6. editor/ASR/forced -> P8 -> P9 fusion
+7. 若需局部时间轴修复，先运行 P5 Doctor readiness
+8. 没有真实 P4 private calibration/blind lock 时保持 human review
+9. 有 valid/actionable lock 后生成 formal calibrated decisions
+10. Doctor 达到 proposal_inputs_ready 后才进入 proposal-only repair
+11. 不得因 Doctor/P9/CI 结果自动写回 SRT timing
 ```
 
 ## 8. 公共 CI 边界
 
-公共 CI 能证明 schema/hash/lineage、mapping contract、strict lock mechanics、scope enforcement、decision artifact validation、Doctor fail-closed 行为、privacy 与 Python compatibility。
+公共 CI 能证明 Text Repair timeline immutability、parser fail-closed 行为、layout-boundary insertion guard、coverage/report semantics、anchor scalability、schema/hash/lineage、mapping contract、strict lock mechanics、scope enforcement、decision artifact validation、Doctor fail-closed 行为、privacy 与 Python compatibility。
 
 公共 CI 不能证明真实歌曲边界准确率、某 candidate 已通过 private blind、真实 false-positive / false-auto rate，也不能授权 automatic timing write-back。
