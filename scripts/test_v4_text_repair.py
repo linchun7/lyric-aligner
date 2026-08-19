@@ -94,7 +94,9 @@ class V4TextRepairTests(unittest.TestCase):
 
         self.assertEqual(output, source)
         self.assertEqual(report["replacement_count"], 0)
-        self.assertEqual(report["review_count"], 1)
+        self.assertEqual(report["cue_review_count"], 1)
+        self.assertEqual(report["unmatched_canonical_count"], 1)
+        self.assertEqual(report["review_count"], 2)
         self.assertEqual(
             report["decisions"][0]["reason"],
             "ambiguous_nearby_canonical_match",
@@ -162,6 +164,8 @@ class V4TextRepairTests(unittest.TestCase):
         self.assertEqual(before, after)
         self.assertEqual(output, source)
         self.assertEqual(report["replacement_count"], 0)
+        self.assertEqual(report["status"], "review_required")
+        self.assertEqual(report["unmatched_canonical_count"], 1)
 
 
 if __name__ == "__main__":
