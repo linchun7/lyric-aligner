@@ -382,3 +382,19 @@ Batching 只减少重复模型进程启动，不改变 canonical text authority�
 6. **No promotion yet**：`propose_repair` 只代表结构上可进入后续 calibrated policy；P1 formal result 固定 `proposal_only=true`、`publish_ready=false`，不改变 `automatic_timing_change_allowed=false`。
 
 P1 的 synthetic tests 只能证明上述 contract，不证明真实歌曲边界精度。后续要把 P9/private truth 结果接入 planner 并建立 calibration/blind promotion gate 后，才能讨论自动局部写回。
+
+## 14. Partial Timeline Repair P2 evidence bridge responsibility（开发中）
+
+`lyric_aligner/timeline/partial_repair_evidence.py` 负责把 P9 的 canonical/editor line binding 与 authoritative Source-to-Mix boundary 转成 P1 可消费的 trust/candidate inputs，但它本身不推导 accuracy confidence。
+
+责任边界：
+
+1. **P9 contract validation**：只接受当前 `shadow_only`、`policy_calibrated=false`、不可 release/不可自动改 timing 的 fusion payload；canonical text 与 primary timing authority 必须分别保持 `canonical_lyrics_only` / `source_to_mix_only`。
+2. **No shadow-to-trust promotion**：`LOW/MEDIUM/HIGH/CONFLICT` 全是 diagnostics。未校准 `HIGH` 不能变 trusted，`CONFLICT` 也不能自动断言 editor cue 错；trust 只来自显式 `human_review` 或独立 blind-lock 的 `calibrated_policy`。
+3. **Unique editor binding**：只有显式 untrusted cue 才请求候选。P9 editor family 必须把该 cue 唯一绑定一个 canonical line；一 cue 对多 canonical line 时标记 ambiguous，避免分段猜测。
+4. **Candidate authority**：candidate start/end 只取 P9 `source_timeline_boundary_ms`；auxiliary editor/ASR/forced boundaries 只保留 diagnostics，不进入 `TimingCandidate`。
+5. **Exact mapping identity**：调用方必须按 occurrence 显式提供 `AFFINE / PIECEWISE_RATE / CUT_AWARE` kind；缺失/未知时 unavailable，绝不根据 BPM 猜 slope/mode。
+6. **Open-end sentinel guard**：P9 为缺失 canonical end 创建的 `start+1ms` comparison sentinel 不是真实边界；P2 对 `duration<=1ms` 的 source-timeline line拒绝生成 repair candidate。
+7. **Still shadow-only**：bridge report 固定 `proposal_only=true`、`publish_ready=false`、`automatic_timing_change_allowed=false`。输出 candidate 还必须继续经过 P1 的 trusted-neighbor 与 candidate-overlap structural guards。
+
+P2 解决的是 evidence/identity 接线，而不是阈值或自动写回。真实 auto-repair promotion 必须在后续把 private calibration + independent blind-test 的锁定 policy identity 接进来之后另行设计。

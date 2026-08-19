@@ -216,10 +216,10 @@ PR22 只处理真实 Windows 本地验收暴露的跨平台问题，不扩大 ti
 
 - external forced-aligner command parsing 由 backend readiness、P7 executor、runtime snapshot 共用同一 helper；
 - Windows 双引号 executable path / quoted arguments 在 `shell=False` 下保持一致 argv 语义，malformed quoting fail closed；
-- CLI bootstrap tests 保留 Windows CreateProcess 必需环境，同时删除 `PYTHONPATH/PYTHONHOME` 并禁用 user-site，继续验证 repository-root bootstrap；
-- privacy scanner 恢复严格本地路径规则，测试 fixture 改为运行时拼接敏感示例，不再通过 allowlist 削弱 scanner。
+- bootstrap tests 保留 OS 创建进程所需环境，同时移除 `PYTHONPATH/PYTHONHOME` 并设置 `PYTHONNOUSERSITE=1`，继续验证 repository-root bootstrap；
+- privacy scanner 恢复严格的本地用户目录根路径扫描（覆盖常见 Unix/macOS/Windows 形式），敏感示例由测试在 runtime 拼接，不引入 allowlist/排除规则。
 
-该修复不改变 canonical lyric、Source-to-Mix、P7/P8/P9 authority、threshold、release gate 或 automatic timing behavior。
+Authority 与 release boundary 完全不变：canonical lyric、Source-to-Mix、P7/P8/P9 shadow semantics、threshold、release gate、automatic timing behavior 均未调整。该变更属于跨平台执行/验证可靠性修复，不是 accuracy promotion。
 
 ## 9. Bounded mix decode（已合入 PR23）
 
@@ -339,3 +339,27 @@ scripts/test_v4_partial_timeline_repair.py
 - `propose_repair` 仅表示结构上可供后续 calibrated policy 使用，当前仍 `proposal_only=true`、`publish_ready=false`，不会自动修改 authoritative timeline。
 
 P1 promotion gate 是：旧测试全绿 + 新结构回归全绿 + trusted timing 零变化 + rate-change/cut/overlap guard 全部 fail-closed。真正自动写回局部时间轴仍必须等待真实 private calibration/blind 证明阈值安全。
+
+## 15. Partial Timeline Repair P2（开发中，P9 evidence bridge）
+
+P2 把 P1 planner 接到真实 P9 fusion line identity，但仍不从未校准的 shadow level 自动推导 cue trust。
+
+新增：
+
+```text
+lyric_aligner/timeline/partial_repair_evidence.py
+scripts/test_v4_partial_timeline_repair_evidence.py
+```
+
+规则：
+
+- P9 payload 必须仍是 `shadow_only`、`policy_calibrated=false`、`release_gate_eligible=false`、`automatic_timing_change_allowed=false`，且 authority 明确保持 canonical lyrics / Source-to-Mix；任何 authority 漂移 fail closed；
+- `LOW / MEDIUM / HIGH / CONFLICT` 全部只作为 diagnostics。`HIGH` 不会自动把 cue 提升为 trusted；`CONFLICT` 也不会自动断言某个 editor cue 一定错误；
+- cue trust 只接受显式 `human_review`，或未来已经通过 calibration + independent blind-test 锁定的 `calibrated_policy`；
+- 对显式 untrusted cue，只有当 P9 editor family 能唯一绑定到一个 canonical line 时才生成候选；多个 canonical line 指向同一 editor cue 时标记 ambiguous，不猜断句；
+- 候选边界只读取该 P9 line 的 authoritative `source_timeline_boundary_ms`，绝不把 editor/ASR/forced auxiliary boundary 当写回 authority；
+- occurrence mapping kind 必须显式提供并且是 `AFFINE / PIECEWISE_RATE / CUT_AWARE`，缺失时不从 BPM 猜 AFFINE；
+- P9 为 open-ended canonical line 使用的 `start+1ms` 比较 sentinel 不得成为真实 repair candidate；1ms sentinel 直接 unavailable；
+- bridge 输出仍固定 `proposal_only=true`、`publish_ready=false`、`automatic_timing_change_allowed=false`，随后继续交给 P1 的 trusted-neighbor / candidate-overlap guards。
+
+P2 的目标只是把真实 evidence/identity 安全接线。自动 trust 分类、自动时间写回仍必须等真实 private calibration/blind promotion gate。

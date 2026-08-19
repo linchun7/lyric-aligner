@@ -492,3 +492,28 @@ scripts/test_v4_partial_timeline_repair.py
 - `propose_repair` 只是结构候选，输出固定 `proposal_only=true`、`publish_ready=false`，等待真实 calibration/blind 后续决定是否存在安全自动写回门槛。
 
 这一步只建立 Partial Timeline Repair 的安全骨架，不改变 main 当前 `automatic_timing_change_allowed=false`。
+
+---
+
+## 2026-08-19 — Partial Timeline Repair P2 evidence bridge
+
+P2 开始把已经存在的真实 P9 fusion identity 接入 P1 planner，但继续保持 proposal-only。
+
+新增：
+
+```text
+lyric_aligner/timeline/partial_repair_evidence.py
+scripts/test_v4_partial_timeline_repair_evidence.py
+```
+
+关键安全边界：
+
+- P9 必须保持 `shadow_only`、uncalibrated、不可 release、不可自动改 timing，authority 仍是 canonical lyrics + Source-to-Mix；
+- P9 `LOW/MEDIUM/HIGH/CONFLICT` 全部只是风险 diagnostics，不能直接推导 cue `trusted/untrusted`；只有 `human_review` 或已经独立 blind-lock 的 `calibrated_policy` 能提供显式 trust；
+- 只有显式 untrusted cue 才请求 repair candidate；P9 editor family 必须把它唯一绑定到一个 canonical line，多行→单 cue 绑定为 ambiguous，不自动选择；
+- repair candidate 只使用 P9 的 `source_timeline_boundary_ms`，不使用 editor/ASR/forced auxiliary boundary；
+- mapping kind 必须由 occurrence 上游显式传入，并限于 `AFFINE / PIECEWISE_RATE / CUT_AWARE`；缺失时不从 BPM 猜测；
+- P9 对 open-ended canonical line 的 `start+1ms` 比较 sentinel 被显式拒绝，不能产生 1ms repair cue；
+- bridge 输出继续 `proposal_only=true`、`publish_ready=false`，最终还要经过 P1 trusted-neighbor 与 repair-candidate overlap guards。
+
+因此 P2 只完成 lineage/evidence 接线，不构成 timing authority promotion，也不改变当前 `automatic_timing_change_allowed=false`。
