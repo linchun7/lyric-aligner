@@ -16,8 +16,10 @@ from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Any, Callable, Iterable
 
+from lyric_aligner.text.language_spans import asr_language_hint_for_text
 
-ASR_EVIDENCE_SCHEMA_VERSION = "1.0"
+
+ASR_EVIDENCE_SCHEMA_VERSION = "1.1"
 
 
 class AsrExecutionError(RuntimeError):
@@ -69,6 +71,26 @@ def _text_support(canonical: str, observed: str) -> float | None:
 def _language_hint(profile: str) -> str | None:
     value = str(profile or "").strip().lower()
     return value if value in {"en", "zh", "ko", "ja"} else None
+
+
+def _job_language_hint(job: dict[str, Any], canonical_text: str | None) -> str | None:
+    """Prefer explicit/local canonical evidence over whole-track language.
+
+    ``asr_language_hint`` is a planner-level override and may intentionally be
+    ``auto``/empty.  When canonical text is available we derive the hint from
+    that local line.  A mixed-language result intentionally returns ``None``
+    and must not fall back to the track profile, otherwise a Chinese track could
+    force an English rap/code-switch job through ``language='zh'``.
+    """
+
+    if "asr_language_hint" in job:
+        return _language_hint(str(job.get("asr_language_hint") or ""))
+    if canonical_text is not None and str(canonical_text).strip():
+        return asr_language_hint_for_text(
+            canonical_text,
+            track_language=str(job.get("language_profile") or "auto"),
+        )
+    return _language_hint(str(job.get("language_profile") or ""))
 
 
 def _model_factory_default(model_id: str, *, device: str, compute_type: str):
@@ -196,7 +218,8 @@ def execute_faster_whisper_jobs(
         end_ms = _finite_ms(window[1], label="ASR clip end")
         if start_ms < 0 or end_ms <= start_ms:
             raise AsrExecutionError(f"ASR job {job_id} has invalid mix window")
-        language = _language_hint(str(job.get("language_profile") or ""))
+        canonical = canonical_text_by_job_id.get(job_id)
+        language = _job_language_hint(job, canonical)
         kwargs = {
             "language": language,
             "beam_size": config.beam_size,
@@ -221,7 +244,6 @@ def execute_faster_whisper_jobs(
             segment_rows.append(row)
             observed_parts.append(text)
         observed = " ".join(observed_parts)
-        canonical = canonical_text_by_job_id.get(job_id)
         support = None if canonical is None else _text_support(canonical, observed)
         result: dict[str, Any] = {
             "job_id": job_id,
