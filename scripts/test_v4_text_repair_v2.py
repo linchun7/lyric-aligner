@@ -179,6 +179,31 @@ class TextRepairV2Tests(unittest.TestCase):
         self.assertEqual(report["unmatched_canonical"][0]["text"], "第二句")
         self.assert_timeline_unchanged(source, output)
 
+    def test_duplicate_basenames_do_not_merge_canonical_song_boundaries(self):
+        source = (
+            "1\n00:00:01,000 --> 00:00:03,000\n"
+            "第一首最后一句第二首第一句\n"
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            first_dir = root / "first"
+            second_dir = root / "second"
+            first_dir.mkdir()
+            second_dir.mkdir()
+            first = first_dir / "song.lrc"
+            second = second_dir / "song.lrc"
+            first.write_text("第一首最后一句\n", encoding="utf-8")
+            second.write_text("第二首第一句\n", encoding="utf-8")
+            parsed = parse_canonical_files([first, second])
+            output, report = repair_srt_text(source, parsed)
+
+        self.assertEqual([line.source for line in parsed], ["song.lrc", "song.lrc"])
+        self.assertEqual([line.source_ordinal for line in parsed], [0, 1])
+        self.assertEqual(output, source)
+        self.assertEqual(report["status"], "review_required")
+        self.assertEqual(report["segmentation_span_count"], 0)
+        self.assert_timeline_unchanged(source, output)
+
     def test_lrc_timestamp_spacing_does_not_affect_text_repair(self):
         source = (
             "1\n00:00:10,000 --> 00:00:11,000\n这是第一巨歌词\n\n"
