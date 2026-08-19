@@ -185,12 +185,16 @@ def bridge_fusion_to_partial_repair(
     fusion: dict[str, Any],
     mapping_kind_by_occurrence: dict[str, str],
     explicit_trust: Iterable[ExplicitCueTrust],
+    confirmed_cut_occurrence_ids: Iterable[str] = (),
 ) -> tuple[list[CueTrust], list[TimingCandidate], dict[str, Any]]:
     """Create P1 trust/candidate inputs without deriving trust from P9 levels."""
 
     lines = _validate_fusion(fusion)
     positions = _cue_positions(cues)
     trust_rows, trust_by_number = _explicit_trust_index(cues, explicit_trust)
+    confirmed_cuts = {
+        str(value).strip() for value in confirmed_cut_occurrence_ids if str(value).strip()
+    }
 
     lines_by_cue: dict[int, list[dict[str, Any]]] = {}
     ignored_line_count = 0
@@ -237,6 +241,9 @@ def bridge_fusion_to_partial_repair(
                 if mapping_kind not in _SUPPORTED_MAPPING_KINDS:
                     candidate_status = "unavailable"
                     candidate_reason = "missing_or_unsupported_occurrence_mapping_kind"
+                elif mapping_kind == "CUT_AWARE" and occurrence_id not in confirmed_cuts:
+                    candidate_status = "unavailable"
+                    candidate_reason = "cut_aware_mapping_requires_confirmed_cut_identity"
                 else:
                     boundary = row["source_timeline_boundary_ms"]
                     if int(boundary[1]) - int(boundary[0]) <= 1:
@@ -285,9 +292,14 @@ def bridge_fusion_to_partial_repair(
             "human_review or separately calibrated_policy input can set cue trust"
         ),
         "candidate_authority": "source_to_mix_only",
+        "cut_policy": (
+            "CUT_AWARE candidates require occurrence identity in the independently "
+            "confirmed-cut set; mapping labels alone never prove a cut"
+        ),
         "fusion_line_count": len(lines),
         "ignored_unbound_fusion_line_count": ignored_line_count,
         "candidate_count": len(candidates),
+        "confirmed_cut_occurrence_count": len(confirmed_cuts),
         "bindings": [row.to_dict() for row in bindings],
     }
     return trust_rows, candidates, report
