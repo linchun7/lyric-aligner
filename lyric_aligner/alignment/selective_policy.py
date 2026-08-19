@@ -1,28 +1,33 @@
 """Reason-aware Smart -> Pro v1.1 planning policy.
 
-The base selective planner remains the privacy-safe identity bridge.  This
-policy makes Pro cheaper and more targeted: choose evidence by failure reason,
-merge nearby mix windows into decode regions, adapt source windows from timed
-canonical structure, and add shadow neighbour-source competitors at song
-boundaries without granting them timing mutation authority.
+The base selective planner remains the privacy-safe identity bridge. This
+policy keeps Pro cheap and targeted while hardening v1.1 production behavior:
+validate the exact Smart policy, tolerate open-ended Enhanced LRC tokens,
+ensure acoustic source windows are long enough for the planned slope search,
+and merge only jobs that actually request acoustic evidence.
 """
 
 from __future__ import annotations
 
 import hashlib
 import json
+import math
 from copy import deepcopy
+from dataclasses import replace
 from typing import Any, Mapping, Sequence
 
+from lyric_aligner.alignment.local_acoustic_match import LocalAcousticMatchConfig
 from lyric_aligner.alignment.selective_repair import (
     SelectiveRepairConfig,
+    SelectiveRepairPlanningError,
     build_selective_repair_plan,
 )
 from lyric_aligner.text.language_spans import asr_language_hint_for_text
 from lyric_aligner.text_repair import SubtitleCue
 from lyric_aligner.timeline.anchor_repair import TimedCanonicalOccurrence
+from lyric_aligner.timeline.smart_policy import SMART_POLICY_ID, SMART_SCHEMA_VERSION
 
-PRO_V11_POLICY_ID = "smart-to-pro-reason-aware-2026-08-19-v1"
+PRO_V11_POLICY_ID = "smart-to-pro-reason-aware-2026-08-19-v1.1.1"
 
 
 def _sha(value: Any) -> str:
@@ -47,7 +52,7 @@ def _ready_rate(models: Mapping[int, Mapping[str, Any]], source_ordinal: int) ->
         rate = float(row.get("rate"))
     except (TypeError, ValueError):
         return None
-    return rate if 0.5 <= rate <= 2.0 else None
+    return rate if math.isfinite(rate) and 0.5 <= rate <= 2.0 else None
 
 
 def _model_index(smart_report: Mapping[str, Any]) -> dict[int, Mapping[str, Any]]:
@@ -74,11 +79,55 @@ def _canonical_by_source(
     return output
 
 
+def _safe_canonical_for_base_planner(
+    canonical: Sequence[TimedCanonicalOccurrence],
+) -> list[TimedCanonicalOccurrence]:
+    """Normalize open-ended Enhanced-LRC tokens for the legacy v1 window helper.
+
+    Enhanced LRC legitimately leaves the final token end unknown. The v1.1
+    adaptive window uses the real token structure later; this compatibility
+    view only prevents the base planner from attempting max(..., None).
+    """
+
+    safe: list[TimedCanonicalOccurrence] = []
+    for occurrence in canonical:
+        if not occurrence.tokens or all(token.end_ms is not None for token in occurrence.tokens):
+            safe.append(occurrence)
+            continue
+        tokens = tuple(
+            token if token.end_ms is not None else replace(token, end_ms=token.start_ms)
+            for token in occurrence.tokens
+        )
+        safe.append(replace(occurrence, tokens=tokens))
+    return safe
+
+
+def _minimum_acoustic_source_span_ms(
+    mix_window_ms: Sequence[int],
+    *,
+    rate_prior: float | None,
+    acoustic_config: LocalAcousticMatchConfig,
+) -> int:
+    mix_duration_ms = max(1, int(mix_window_ms[1]) - int(mix_window_ms[0]))
+    if rate_prior is None:
+        max_slope = acoustic_config.no_prior_max_slope
+    else:
+        max_slope = min(2.2, rate_prior + acoustic_config.slope_radius)
+    # Retrieval needs at least query_frames * slope source frames. Keep a small
+    # guard margin for rounding/frame boundaries instead of letting short local
+    # windows fail with "coarse retrieval produced no candidates".
+    return int(math.ceil(mix_duration_ms * max_slope)) + 750
+
+
 def _adaptive_source_window(
     occurrence: TimedCanonicalOccurrence,
     source_rows: Sequence[TimedCanonicalOccurrence],
+    *,
+    mix_window_ms: Sequence[int],
+    rate_prior: float | None,
+    acoustic_config: LocalAcousticMatchConfig,
 ) -> list[int]:
-    """Use token timing or the next lyric onset before falling back to a fixed window."""
+    """Use lyric timing while guaranteeing enough span for local retrieval."""
 
     left = max(0, occurrence.anchor_time_ms - 2500)
     position = next(
@@ -100,7 +149,20 @@ def _adaptive_source_window(
         right = occurrence.anchor_time_ms + min(max(lyric_span + 750, 4500), 15000)
     else:
         right = occurrence.anchor_time_ms + 6000
-    return [left, max(left + 2500, right)]
+
+    right = max(left + 2500, right)
+    minimum = _minimum_acoustic_source_span_ms(
+        mix_window_ms,
+        rate_prior=rate_prior,
+        acoustic_config=acoustic_config,
+    )
+    current = right - left
+    if current < minimum:
+        deficit = minimum - current
+        grow_left = min(left, deficit // 2)
+        left -= grow_left
+        right += deficit - grow_left
+    return [left, right]
 
 
 def _reason_flags(job: Mapping[str, Any]) -> tuple[bool, bool]:
@@ -132,10 +194,24 @@ def _needs_forced_alignment(
 
 
 def _assign_regions(jobs: list[dict[str, Any]], *, merge_gap_ms: int) -> None:
-    if not jobs:
+    """Merge only acoustic jobs; ASR-only jobs must not widen acoustic decode."""
+
+    acoustic = [
+        job
+        for job in jobs
+        if "source_local_acoustic_match" in (job.get("requested_capabilities") or [])
+    ]
+    non_acoustic = [job for job in jobs if job not in acoustic]
+
+    for job in non_acoustic:
+        window = [int(value) for value in job["mix_window_ms"]]
+        job["region_id"] = f"pro-local-{str(job['job_id'])[:12]}"
+        job["region_mix_window_ms"] = window
+
+    if not acoustic:
         return
     ordered = sorted(
-        jobs,
+        acoustic,
         key=lambda row: (
             int(row["mix_window_ms"][0]),
             int(row["mix_window_ms"][1]),
@@ -174,6 +250,7 @@ def _boundary_competitor(
     by_source: Mapping[int, Sequence[TimedCanonicalOccurrence]],
     models: Mapping[int, Mapping[str, Any]],
     language_by_source: Mapping[int, str],
+    acoustic_config: LocalAcousticMatchConfig,
 ) -> dict[str, Any] | None:
     source_rows = list(by_source.get(occurrence.source_ordinal, ()))
     if not source_rows:
@@ -204,6 +281,7 @@ def _boundary_competitor(
     language_profile = str(
         language_by_source.get(alternative.source_ordinal, "auto") or "auto"
     )
+    rate = _ready_rate(models, alternative.source_ordinal)
     identity = {
         "boundary_competitor_for": primary["job_id"],
         "source_ordinal": alternative.source_ordinal,
@@ -227,11 +305,17 @@ def _boundary_competitor(
         )
         or "auto",
         "mix_window_ms": list(primary["mix_window_ms"]),
-        "source_window_ms": _adaptive_source_window(alternative, alternative_rows),
+        "source_window_ms": _adaptive_source_window(
+            alternative,
+            alternative_rows,
+            mix_window_ms=primary["mix_window_ms"],
+            rate_prior=rate,
+            acoustic_config=acoustic_config,
+        ),
         "editor_cue_start_ms": primary.get("editor_cue_start_ms"),
         "editor_cue_end_ms": primary.get("editor_cue_end_ms"),
         "expected_source_time_ms": alternative.anchor_time_ms,
-        "rate_prior": _ready_rate(models, alternative.source_ordinal),
+        "rate_prior": rate,
         "requested_capabilities": ["source_local_acoustic_match"],
         "reasons": ["song_boundary_dual_source_competitor"],
         "priority": "high",
@@ -251,17 +335,28 @@ def build_selective_repair_plan_v11(
     config: SelectiveRepairConfig | None = None,
     region_merge_gap_ms: int = 750,
 ) -> dict[str, Any]:
-    """Build the reason-aware Pro v1.1 plan."""
+    """Build the reason-aware Pro v1.1 plan from the current Smart policy only."""
 
     language_by_source = language_by_source or {}
     config = config or SelectiveRepairConfig()
+    config.validate()
+    acoustic_config = LocalAcousticMatchConfig()
+    acoustic_config.validate()
     if region_merge_gap_ms < 0:
         raise ValueError("region_merge_gap_ms must be >= 0")
+    if smart_report.get("schema_version") != SMART_SCHEMA_VERSION:
+        raise SelectiveRepairPlanningError(
+            f"Pro v1.1 requires Smart schema {SMART_SCHEMA_VERSION}; rerun Smart"
+        )
+    if smart_report.get("policy_id") != SMART_POLICY_ID:
+        raise SelectiveRepairPlanningError(
+            "Pro v1.1 requires the current Smart production policy; rerun Smart"
+        )
 
     base = build_selective_repair_plan(
         smart_report=smart_report,
         cues=cues,
-        canonical=canonical,
+        canonical=_safe_canonical_for_base_planner(canonical),
         language_by_source=language_by_source,
         config=config,
     )
@@ -271,7 +366,7 @@ def build_selective_repair_plan_v11(
     models = _model_index(smart_report)
 
     primary_jobs: list[dict[str, Any]] = []
-    competitors: list[dict[str, Any]] = []
+    candidate_competitors: list[dict[str, Any]] = []
     for job in plan.get("jobs", []):
         if not isinstance(job, dict):
             continue
@@ -288,9 +383,14 @@ def build_selective_repair_plan_v11(
             primary_jobs.append(job)
             continue
 
+        rate = _ready_rate(models, occurrence.source_ordinal)
+        job["rate_prior"] = rate
         job["source_window_ms"] = _adaptive_source_window(
             occurrence,
             by_source[occurrence.source_ordinal],
+            mix_window_ms=job["mix_window_ms"],
+            rate_prior=rate,
+            acoustic_config=acoustic_config,
         )
         capabilities: list[str] = []
         if timing_review:
@@ -323,23 +423,43 @@ def build_selective_repair_plan_v11(
                 by_source=by_source,
                 models=models,
                 language_by_source=language_by_source,
+                acoustic_config=acoustic_config,
             )
             if competitor is not None:
-                competitors.append(competitor)
+                candidate_competitors.append(competitor)
 
+    competitor_slots = max(0, config.max_jobs - len(primary_jobs))
+    competitors = candidate_competitors[:competitor_slots]
+    omitted_competitors = len(candidate_competitors) - len(competitors)
     jobs = [*primary_jobs, *competitors]
     _assign_regions(jobs, merge_gap_ms=region_merge_gap_ms)
 
-    regions: dict[str, list[int]] = {}
+    all_regions: dict[str, list[int]] = {}
+    acoustic_regions: dict[str, list[int]] = {}
     for job in jobs:
         region_id = str(job["region_id"])
         region = [int(value) for value in job["region_mix_window_ms"]]
-        regions[region_id] = region
-    merged_ms = sum(end - start for start, end in regions.values())
+        all_regions[region_id] = region
+        if "source_local_acoustic_match" in (job.get("requested_capabilities") or []):
+            acoustic_regions[region_id] = region
+
     unmerged_ms = sum(
         int(job["mix_window_ms"][1]) - int(job["mix_window_ms"][0])
         for job in primary_jobs
     )
+    acoustic_unmerged_ms = sum(
+        int(job["mix_window_ms"][1]) - int(job["mix_window_ms"][0])
+        for job in jobs
+        if "source_local_acoustic_match" in (job.get("requested_capabilities") or [])
+    )
+    acoustic_merged_ms = sum(end - start for start, end in acoustic_regions.values())
+    non_acoustic_primary_ms = sum(
+        int(job["mix_window_ms"][1]) - int(job["mix_window_ms"][0])
+        for job in primary_jobs
+        if "source_local_acoustic_match" not in (job.get("requested_capabilities") or [])
+    )
+    effective_merged_ms = acoustic_merged_ms + non_acoustic_primary_ms
+
     capability_counts: dict[str, int] = {}
     route_counts: dict[str, int] = {}
     for job in primary_jobs:
@@ -348,17 +468,27 @@ def build_selective_repair_plan_v11(
         for capability in job.get("requested_capabilities") or []:
             capability_counts[capability] = capability_counts.get(capability, 0) + 1
 
+    inherited_summary = dict(plan.get("summary") or {})
+    inherited_truncated = bool(inherited_summary.get("plan_truncated"))
     plan["schema_version"] = "1.1"
     plan["policy_id"] = PRO_V11_POLICY_ID
     plan["jobs"] = jobs
     plan["summary"] = {
-        **dict(plan.get("summary") or {}),
+        **inherited_summary,
+        "job_count": len(jobs),
         "primary_job_count": len(primary_jobs),
         "boundary_competitor_job_count": len(competitors),
-        "region_count": len(regions),
+        "boundary_competitor_omitted_due_to_max_jobs": omitted_competitors,
+        "max_jobs_applies_to": "total_jobs_including_shadow_competitors",
+        "plan_truncated": bool(inherited_truncated or omitted_competitors),
+        "region_count": len(all_regions),
+        "acoustic_region_count": len(acoustic_regions),
         "planned_mix_audio_ms_unmerged": unmerged_ms,
-        "planned_mix_audio_ms_merged": merged_ms,
-        "region_merge_saved_ms": max(0, unmerged_ms - merged_ms),
+        "planned_mix_audio_ms_merged": effective_merged_ms,
+        "region_merge_saved_ms": max(0, unmerged_ms - effective_merged_ms),
+        "planned_acoustic_mix_audio_ms_unmerged": acoustic_unmerged_ms,
+        "planned_acoustic_mix_audio_ms_merged": acoustic_merged_ms,
+        "acoustic_region_merge_saved_ms": max(0, acoustic_unmerged_ms - acoustic_merged_ms),
         "evidence_route_counts": dict(sorted(route_counts.items())),
         "capability_counts": dict(sorted(capability_counts.items())),
     }
