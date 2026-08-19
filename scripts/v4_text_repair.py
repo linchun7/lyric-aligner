@@ -12,7 +12,11 @@ REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 if str(REPOSITORY_ROOT) not in sys.path:
     sys.path.insert(0, str(REPOSITORY_ROOT))
 
-from lyric_aligner.text_repair import write_repair_outputs
+from lyric_aligner.text_repair import (
+    DEFAULT_AUTO_THRESHOLD,
+    PRODUCTION_MIN_AUTO_THRESHOLD,
+    write_repair_outputs,
+)
 
 
 def _validate_path_ownership(args: argparse.Namespace) -> None:
@@ -31,6 +35,14 @@ def _validate_path_ownership(args: argparse.Namespace) -> None:
         )
 
 
+def _validate_production_threshold(value: float) -> None:
+    if value < PRODUCTION_MIN_AUTO_THRESHOLD:
+        raise ValueError(
+            "production auto-threshold must be at least "
+            f"{PRODUCTION_MIN_AUTO_THRESHOLD:.2f}"
+        )
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--source-srt", required=True, type=Path)
@@ -43,11 +55,20 @@ def main() -> int:
     )
     parser.add_argument("--out", required=True, type=Path)
     parser.add_argument("--report", type=Path)
-    parser.add_argument("--auto-threshold", type=float, default=0.72)
+    parser.add_argument(
+        "--auto-threshold",
+        type=float,
+        default=DEFAULT_AUTO_THRESHOLD,
+        help=(
+            "Automatic text-repair similarity threshold; production values below "
+            f"{PRODUCTION_MIN_AUTO_THRESHOLD:.2f} are rejected."
+        ),
+    )
     args = parser.parse_args()
 
     try:
         _validate_path_ownership(args)
+        _validate_production_threshold(args.auto_threshold)
         if not args.source_srt.is_file():
             raise ValueError(f"source SRT does not exist: {args.source_srt}")
         missing = [path for path in args.canonical_lrc if not path.is_file()]
@@ -66,12 +87,14 @@ def main() -> int:
     summary_keys = (
         "mode",
         "status",
+        "coverage_status",
         "cue_count",
         "canonical_line_count",
         "replacement_count",
         "unchanged_count",
         "cue_review_count",
         "unmatched_canonical_count",
+        "coverage_warning_count",
         "review_count",
         "timeline_unchanged",
         "cue_count_unchanged",
