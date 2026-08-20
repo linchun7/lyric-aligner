@@ -314,3 +314,18 @@ Smart final text materialization 增加 editor cue ownership guard。canonical �
 ### Smart v1.2.2 BPM text closeout
 
 BPM-derived rate 在 timing 层仍是 soft prior；只有被多条 baseline-safe text identities 独立验证后，才可建立**文字专用** projection。该 projection 只减少可证明的 mapped review，不做全块重分、不填 pure vocalization、不改变 cue timeline，且任何恢复结果都不能成为 A/B timing anchor。BPM 单行 recovery 还必须保留 editor 已识别出的相邻 canonical 前缀/后缀 ownership；命中该 guard 时继续 review。当前 policy 为 `smart-validation-policy-2026-08-20-v1.2.2`。
+
+### Smart v1.2.2 report semantics closeout
+
+当前 v1.2.2 自动修复 authority 不变，但 report 现在明确区分：
+
+```text
+text_decision_replacement_count  = MatchDecision.action == replace
+text_materialized_change_count   = 最终 text-only SRT 与 editor 原文逐 cue 的显示字符串变化
+text_semantic_change_count       = normalized lyric 语义变化
+```
+
+同时输出 `text_mapped_review_count / text_unmapped_review_count / text_review_reason_counts`，以及 `timing_review_with_proposal_count / timing_review_without_proposal_count / timing_review_reason_counts`。`text_status` 与 `timing_status` 分轴报告；legacy strict `status` 仍只有两轴都 ready 才为 ready。
+
+BPM compatibility 只对有真实 rate evidence 的 timing model 评估；`insufficient_anchors` + `rate_source=none` 的 placeholder rate 现在显示 `bpm_prior_compatible=null`，不再伪装成 BPM 冲突。
+

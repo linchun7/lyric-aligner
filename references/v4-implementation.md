@@ -441,3 +441,14 @@ Public tests必须证明：
 - Enhanced LRC / stale Smart / acoustic source-window / ASR-only region / max-jobs / path collision / forced protocol / multilingual routing继续不回归。
 
 Public CI 不能证明真实歌曲 false-auto。每次 private real-song failure 应抽象成同构 synthetic regression，禁止歌曲、cue、timestamp、BPM 或真实歌词 hard-code 到 production algorithm/public test。
+
+### 3.15 v1.2.2 report / diagnostic semantics hardening
+
+`smart_policy.py` 的 report 层增加只读诊断，不改变 text/timing mutation gate：
+
+- `_bpm_prior_compatibility()` 跳过 `rate_source=none/invalid` 的 placeholder model，只比较真正有 timing-rate evidence 的 source；
+- `_text_materialization_counts()` 从实际 materialized text-only SRT 计算 exact display change 与 normalized semantic change，避免把 `MatchDecision.action` 误当成最终文件 diff；
+- review reason counts 与 mapped/unmapped text review 直接由最终 decisions 汇总；
+- timing review 按 `proposed_start_ms/proposed_end_ms` 是否存在拆成 concrete proposal 与 no-proposal 两类；后者表示当前 no-audio 证据不足，不能被解释为已知 timing 错误；
+- `text_status/timing_status` 与 `pro_text_escalation_required/pro_timing_escalation_required` 是 strict overall status 的可解释分解，旧字段继续兼容。
+
