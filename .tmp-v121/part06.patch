@@ -1,0 +1,50 @@
++            "唯一锚点乙乙乙",
++            "唯一锚点丙丙丙",
++            "右侧强锚点丁丁丁",
++            "断点处规范歌词",
++            "重新锁定规范甲",
++            "重新锁定规范乙",
++            "重新锁定规范丙",
++        ]
++        canonical_starts = [10_000, 20_000, 30_000, 40_000, 50_000, 55_000, 60_000, 65_000]
++        srt_texts = [
++            "唯一锚点甲甲甲",
++            "唯一锚点乙乙乙",
++            "唯一锚点丙丙丙",
++            "右侧强锚点丁丁叮",
++            "无法可靠归属的断点文本",
++            "完全错误内容一一一",
++            "完全错误内容二二二",
++            "完全错误内容三三三",
++        ]
++        srt_starts = [10_000, 20_000, 30_000, 40_000, 47_500, 55_100, 60_100, 65_100]
++        durations = [1000, 1000, 1000, 1000, 3000, 4500, 4500, 1000]
++        with tempfile.TemporaryDirectory() as tmp:
++            path = _canonical(Path(tmp), canonical_texts, canonical_starts)
++            timed, _ = parse_timed_canonical_files([path])
++            _, cues = parse_srt_text(_srt(srt_texts, srt_starts, durations))
++            decisions = [
++                _decision(0, 0, srt_texts[0], canonical_texts[0], score=1.0, action="unchanged", reason="baseline_exact"),
++                _decision(1, 1, srt_texts[1], canonical_texts[1], score=1.0, action="unchanged", reason="baseline_exact"),
++                _decision(2, 2, srt_texts[2], canonical_texts[2], score=1.0, action="unchanged", reason="baseline_exact"),
++                _decision(3, 3, srt_texts[3], canonical_texts[3], score=0.94, action="replace", reason="baseline_strong_B"),
++                _decision(4, 4, srt_texts[4], canonical_texts[4], score=0.1, action="review", reason="baseline_break"),
++                _decision(5, 5, srt_texts[5], canonical_texts[5], score=0.1, action="review", reason="baseline_severe_asr"),
++                _decision(6, 6, srt_texts[6], canonical_texts[6], score=0.1, action="review", reason="baseline_severe_asr"),
++                _decision(7, 7, srt_texts[7], canonical_texts[7], score=0.1, action="review", reason="baseline_severe_asr"),
++            ]
++            replacements, reconciled, summary, models = reconcile_text_from_sequence_projection(
++                cues, timed, decisions
++            )
++
++        self.assertEqual(models[0].status, "ready")
++        self.assertNotIn(4, replacements)
++        self.assertEqual(reconciled[4].action, "review")
++        self.assertEqual(replacements[5], "重新锁定规范甲")
++        self.assertEqual(replacements[6], "重新锁定规范乙")
++        self.assertEqual(replacements[7], "重新锁定规范丙")
++        self.assertEqual(summary.frontier_resync_count, 1)
++
+ 
+ def _cue_start(cue) -> int:
+     timing = cue.timing.split(" --> ", 1)[0]
