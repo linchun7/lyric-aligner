@@ -1,6 +1,6 @@
 # Lyric Aligner v4 当前实施状态
 
-更新日期：2026-08-19  
+更新日期：2026-08-20  
 主线算法版本：`4.0.0a9`
 
 > P3 前完整历史状态见 `references/archive/2026-08-19-pre-p3-v4-status.md`。真实生产设计基线见 `references/production-requirements.md`。Smart / Pro 细节见 `references/smart-pro-v1-1.md`。
@@ -9,7 +9,7 @@
 
 ```text
 Standard -> Text Repair V2.1
-Smart    -> Canonical Sequence Reconciliation + Anchor Timeline Repair（no-audio）
+Smart    -> Canonical Sequence Reconciliation + Anchor Timeline Repair v1.2.2（no-audio）
 Pro      -> Selective Audio Repair（局部 audio evidence）
 Max      -> Full V4 Alignment
 ```
@@ -32,7 +32,7 @@ Max      -> Full V4 Alignment
 - production `auto-threshold >= 0.72`；
 - report schema `2.1`。
 
-## 3. Smart — Sequence Reconciliation + Anchor Timeline Repair v1.2.0
+## 3. Smart — Sequence Reconciliation + Anchor Timeline Repair v1.2.2
 
 Smart 是日常主力 no-audio 模式：**大部分信剪映 timing，但 canonical lyric 始终是最终文字/顺序 truth。**
 
@@ -43,6 +43,8 @@ lyric_aligner/timeline/anchor_repair.py
 lyric_aligner/timeline/smart_policy.py
 lyric_aligner/timeline/text_recovery.py
 lyric_aligner/timeline/sequence_reconcile.py
+lyric_aligner/timeline/bpm_sequence_reconcile.py
+lyric_aligner/timeline/ownership_guard.py
 scripts/v4_smart_repair.py
 ```
 
@@ -164,13 +166,7 @@ Sequence Projection 只在 weak/review severe-ASR region 或明确的 outer fron
 
 ### 3.8 Report / validation / overlap safety
 
-report schema 保持 `smart-1.1`，policy id 升到：
-
-```text
-smart-validation-policy-2026-08-19-v1.2.0
-```
-
-新增 report：
+report schema 保持 `smart-1.1`。v1.2.0 的 sequence report 字段继续保留：
 
 ```text
 text_sequence_reconciled_cue_count
@@ -198,12 +194,44 @@ text_review_count
 - 无唯一 timed canonical mapping -> review / Pro escalation；
 - C-grade identity -> review / Pro escalation；
 - B-grade 只能由已经 ready 的 A-anchor model 做二次确认，不能反向参与主 timing 建模；
-- sequence/timing recovered text 不倒灌成 A/B timing anchor；
+- sequence/timing/BPM recovered text 不倒灌成 A/B timing anchor；
 - 自动 timing repair 必须满足 leave-one-out、最大 shift、no-new-overlap 与 combined-overlap guard。
 
 ### 3.9 Output safety
 
 Smart CLI 在任何 artifact write 前检查 source SRT、canonical lyrics、output SRT、report 的解析路径；任何 output-input 或 output-output 碰撞 fail closed。
+
+### 3.10 Smart v1.2.2 — BPM-validated text-only recovery
+
+v1.2.2 解决一种真实生产里很常见、但 v1.2.0 Sequence Projection 会因 unique A 不足而保守 review 的情况：**歌曲存在大量重复歌词，但生产明确提供“原 BPM -> 目标 BPM”的固定匀速信息，而且多个 Standard-safe editor/canonical identity 已独立验证该倍率。**
+
+BPM 仍然不是 timing authority。新增 `timeline/bpm_sequence_reconcile.py` 只建立 text-only projection，并要求：
+
+- `provenance == bpm_derived`；
+- anchor 只能来自 Text Repair 已安全成立的 1:1 baseline decision，不消费 timing/sequence/BPM 自己恢复的文字，避免循环自证；
+- 至少 3 个安全 anchor，`750ms` inlier fraction `>=0.75`，source/mix span 均 `>=8s`，inlier median residual `<=300ms`；
+- safe-anchor pairwise affine rate 与 BPM-derived rate 相对误差 `<=2.5%`，且 cue/canonical 顺序单调；否则整个 BPM text projection fail closed；
+- 只恢复**已经映射到单条 canonical 的 review cue**，不靠 BPM 猜 unmapped cue，也不做整段 LRC repartition；
+- candidate onset 默认需在 projection `450ms` 内；极低 lexical score `<0.20` 时收紧到 `220ms`；
+- 相邻 cue 共同 claim 同一 canonical、明显 split continuation、下一条 lexical canonical 已在当前 cue 内开始等场景继续 review，避免把一整行/下一行强塞进当前格；
+- interior candidate 必须由同源 inlier anchors 夹住；song-start 只开放最多 2 条紧邻 first inlier 的 lexical leading edge，不开放泛化 trailing chase；
+- pure editor vocalization 不被 BPM 投影替换成 lexical lyric；pure canonical vocalization 也不用于该层 lexical recovery；
+- 仅当删除受限的 `Oh/Ah/Yeah/哦/啊/耶/...` 边缘 vocalization 后，剩余 editor text 与 canonical lexical text **精确相等**时，才允许裁掉边缘 vocalization；`try/you/go/check it` 等普通词不属于该自动裁剪集合；
+- recovered score cap `<=0.90`，永远低于 B-grade timing authority；final timing engine 继续完全忽略 BPM text recovery 作为 A/B anchor。
+
+新增 report：
+
+```text
+text_bpm_projection_recovery_count
+text_bpm_projection_vocalization_trim_count
+text_bpm_projection_models
+```
+
+当前 Smart policy id：
+
+```text
+smart-validation-policy-2026-08-20-v1.2.2
+```
 
 ## 4. Pro — Selective Audio Repair v1.1.1
 
@@ -220,7 +248,7 @@ schema_version = smart-1.1
 policy_id      = current Smart production policy
 ```
 
-因此 Smart policy 升到 v1.2.0 后，旧 Smart artifact 自动 stale，必须重跑当前 Smart。
+因此任何旧 Smart policy artifact 在 v1.2.2 后都自动 stale，必须重跑当前 Smart。
 
 reason-aware routing：
 
@@ -262,15 +290,20 @@ Public CI 必须证明：
 - bounded sequence 能把多条 canonical LRC rows 稳定分配到较少的现有 editor cues，而不改变 cue timeline；
 - Sequence Projection 不足证据（<=3 strong / 不足 A / span 不足 / unstable residual）必须 fail closed；
 - frontier 遇到 timing discontinuity 必须停止，不能越过 cut/ad-lib 追 LRC；
+- BPM-derived text projection 必须由独立 baseline-safe anchors 验证；BPM 不一致、anchor 不足、split continuation、pure vocalization 等必须 fail closed；
+- BPM-recovered text 不增加主 timing anchor_count，不获得 timing mutation authority；
 - existing ready-model interior/song-edge recovery 不回归；
 - recovery 不降低 Text Repair threshold、不把 recovered text 变成 A timing anchor；
-- exact DAW hard prior / BPM-derived soft prior；
+- exact DAW hard prior / BPM-derived soft prior 的 timing authority 语义不变；
 - Enhanced LRC open-ended token、stale Smart rejection、adaptive source window、ASR-only region、max-jobs、path collision、source-I/O 继续不回归；
 - Python/ASR environment 与 legacy tests 全部继续通过。
 
-Private real-song calibration 仍是新的 Sequence Projection false-auto 风险的重要验收。真实任务发现的新 failure pattern 应继续转换成**通用、合成、无任务数据硬编码**的 regression；不得为了提高覆盖率把歌曲名、cue 编号、真实时间戳或真实歌词写进 production algorithm/public test。
+Private real-song calibration 仍是 text recovery false-auto 风险的重要验收。真实任务发现的新 failure pattern 应继续转换成**通用、合成、无任务数据硬编码**的 regression；不得为了提高覆盖率把歌曲名、cue 编号、真实时间戳或真实歌词写进 production algorithm/public test。
 
 ### Smart v1.2.1 ownership closeout
 
-Smart final text materialization 现在增加 editor cue ownership guard。canonical 继续拥有文字/顺序权威，但 line-LRC 行边界不能单独把原 editor 已识别的短语跨 cue 搬移。该 guard 只修复 sequence/text-repair 已产生的局部边界搬移或短重复，不扩大 canonical recovery 范围，不改变时间轴，不提升 timing authority。当前 Smart policy id 为 `smart-validation-policy-2026-08-20-v1.2.1`。
+Smart final text materialization 增加 editor cue ownership guard。canonical 继续拥有文字/顺序权威，但 line-LRC 行边界不能单独把原 editor 已识别的短语跨 cue 搬移。该 guard 只修复 sequence/text-repair 已产生的局部边界搬移或短重复，不扩大 canonical recovery 范围，不改变时间轴，不提升 timing authority。
 
+### Smart v1.2.2 BPM text closeout
+
+BPM-derived rate 在 timing 层仍是 soft prior；只有被多条 baseline-safe text identities 独立验证后，才可建立**文字专用** projection。该 projection 只减少可证明的 mapped review，不做全块重分、不填 pure vocalization、不改变 cue timeline，且任何恢复结果都不能成为 A/B timing anchor。当前 policy 为 `smart-validation-policy-2026-08-20-v1.2.2`。
