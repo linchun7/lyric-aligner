@@ -168,3 +168,14 @@ v1.2.2 新增 `timeline/bpm_sequence_reconcile.py`，只处理已经存在 canon
 生产级重跑发现，单条 LRC 的 1:1 BPM recovery 仍可能遇到合法的 editor/LRC 分句差异：当前 editor cue 已经清楚识别到上一条 canonical 的尾部或下一条 canonical 的开头。如果仅为了让该 cue 等于单条 LRC 而自动替换，会删除 editor 已经提供的真实相邻歌词 ownership。
 
 本轮在 `timeline/bpm_sequence_reconcile.py` 增加低权限 fail-closed guard：当当前 cue 的 normalized 开头与上一 lexical canonical 的尾部存在至少 2 字连续重合，或 normalized 结尾与下一 lexical canonical 的开头存在至少 2 字连续重合时，BPM 单行 recovery 不再自动替换该 cue，继续保留 review。该 guard 不新增 canonical claim、不改变 cue/timing、不提升 timing authority；真实歌曲 failure 只转写为 synthetic regression。
+
+## 2026-08-20 — Smart v1.2.2 report / diagnostic semantics hardening
+
+本轮不扩大 Smart 自动修复范围、不改变 cue/timing，也不改变 v1.2.2 policy authority；只修正生产 report 的可解释性与诊断语义：
+
+- BPM compatibility 只在 primary timing model 确实拥有 anchor-derived / explicit rate evidence 时评估；`rate_source=none` 的 `1.0` placeholder 不再产生假 `bpm_prior_compatible=false`；
+- 保留 legacy `text_replacement_count`，同时新增 `text_decision_replacement_count`、`text_materialized_change_count`、`text_semantic_change_count`，区分 decision 级替换、最终 SRT 显示文本变化和 normalized 语义变化；
+- 新增 mapped/unmapped text review、text/timing review reason counts、text/timing 独立 status 与独立 Pro escalation flags；
+- timing review 新增 with/without concrete proposal 计数，避免把“证据不足、原 timing 未被独立验证”误读为“存在 542 个已知错误 timing”；
+- public regression 覆盖 placeholder BPM conflict、统计口径与 review 分类；不写真实歌曲/cue/timestamp/歌词 hard-code。
+
