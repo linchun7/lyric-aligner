@@ -1,0 +1,116 @@
++SMART_POLICY_ID = "smart-validation-policy-2026-08-20-v1.2.1"
+ _BPM_COMPATIBILITY_TOLERANCE = 0.03
+ 
+ 
+@@ -356,6 +356,9 @@
+         "text_sequence_resolved_review_count": sequence_recovery.resolved_review_cue_count,
+         "text_sequence_frontier_cue_count": sequence_recovery.frontier_cue_count,
+         "text_sequence_frontier_run_count": sequence_recovery.frontier_run_count,
++        "text_sequence_frontier_resync_count": sequence_recovery.frontier_resync_count,
++        "text_sequence_stream_cue_count": sequence_recovery.stream_cue_count,
++        "text_sequence_stream_region_count": sequence_recovery.stream_region_count,
+         "text_sequence_projection_models": [asdict(item) for item in sequence_models],
+         "text_review_count": text_review_count,
+         "timing_repair_count": sum(item.action == "repair" for item in timing),
+--- a/scripts/test_v4_smart_sequence_frontier_guard.py
++++ b/scripts/test_v4_smart_sequence_frontier_guard.py
+@@ -77,6 +77,80 @@
+         assert choice is not None
+         self.assertEqual([item.text for item in choice[0]], ["这厢是梦梅恋上画中的仙"])
+ 
++    def test_tight_timing_can_pack_multiple_destroyed_lines_without_lexical_support(self) -> None:
++        cue = SubtitleCue(
++            ordinal=0,
++            number="1",
++            timing="00:00:10,000 --> 00:00:18,000",
++            text="完全错误内容完全错误内容",
++            normalized=_normalize_for_match("完全错误内容完全错误内容"),
++            raw_block_index=0,
++        )
++        rows = [
++            self._line("规范第一行", 10_100),
++            TimedCanonicalOccurrence(
++                ordinal=1,
++                source="song.lrc",
++                source_ordinal=0,
++                time_ms=14_000,
++                text="规范第二行",
++                normalized=_normalize_for_match("规范第二行"),
++            ),
++            TimedCanonicalOccurrence(
++                ordinal=2,
++                source="song.lrc",
++                source_ordinal=0,
++                time_ms=18_200,
++                text="下一条规范歌词",
++                normalized=_normalize_for_match("下一条规范歌词"),
++            ),
++        ]
++        choice = _frontier_choice(
++            cue,
++            rows,
++            self._model(),
++            next_cue_start_ms=18_100,
++        )
++        self.assertIsNotNone(choice)
++        assert choice is not None
++        self.assertEqual([item.text for item in choice[0]], ["规范第一行", "规范第二行"])
++
++    def test_low_similarity_multiline_still_rejects_loose_boundary(self) -> None:
++        cue = SubtitleCue(
++            ordinal=0,
++            number="1",
++            timing="00:00:10,000 --> 00:00:18,000",
++            text="完全错误内容完全错误内容",
++            normalized=_normalize_for_match("完全错误内容完全错误内容"),
++            raw_block_index=0,
++        )
++        rows = [
++            self._line("规范第一行", 10_100),
++            TimedCanonicalOccurrence(
++                ordinal=1,
++                source="song.lrc",
++                source_ordinal=0,
++                time_ms=14_000,
++                text="规范第二行",
++                normalized=_normalize_for_match("规范第二行"),
++            ),
++            TimedCanonicalOccurrence(
++                ordinal=2,
++                source="song.lrc",
++                source_ordinal=0,
++                time_ms=18_200,
++                text="下一条规范歌词",
++                normalized=_normalize_for_match("下一条规范歌词"),
++            ),
++        ]
++        choice = _frontier_choice(
++            cue,
++            rows,
++            self._model(),
++            next_cue_start_ms=20_500,
++        )
++        self.assertIsNone(choice)
++
+ 
+ if __name__ == "__main__":
+     unittest.main()
+--- a/scripts/test_v4_smart_sequence_reconcile.py
++++ b/scripts/test_v4_smart_sequence_reconcile.py
+@@ -168,7 +168,8 @@
+         sequence_rows = [
+             row
+             for row in reconciled
+-            if row.reason == "sequence_projection_confirms_bounded_canonical"
++            if row.reason.startswith("sequence_projection_confirms_")
++            and row.cue_ordinal in {3, 4, 5, 6}
+         ]
+         self.assertEqual(len(sequence_rows), 4)
+         self.assertTrue(all(row.score <= 0.91 for row in sequence_rows))
+@@ -275,6 +276,56 @@
+         self.assertIn("00:00:04,200 --> 00:00:05,200\n最后几个字", rendered)
+         self.assertEqual(report["text_sequence_reconciled_cue_count"], 0)
+ 
++    def test_frontier_can_resync_after_one_unresolved_break_without_mutating_break(self) -> None:
++        canonical_texts = [
++            "唯一锚点甲甲甲",
