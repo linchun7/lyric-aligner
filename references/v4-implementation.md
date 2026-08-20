@@ -303,6 +303,8 @@ BPM recovery 只考虑当前仍为 `review` 且已经有**单一 canonical occur
 - 下一 lexical canonical 不得已经明显落入当前 cue；
 - pure vocalization cue 不得被填成 lexical lyric。
 
+此外，单条 BPM recovery 不能把 LRC line break 当成 editor ownership 真源。`_adjacent_lexical_overlap_risk()` 在 materialize 前检查当前 editor cue 的 normalized 文本：若 cue 开头已经包含上一 lexical canonical 的至少 2 字连续尾部，或 cue 结尾已经包含下一 lexical canonical 的至少 2 字连续前缀，则说明 editor 已经识别到跨 LRC 行的真实片段，该 cue 必须继续 review，禁止用单条 canonical 覆盖并删除相邻歌词。该 guard 只收紧 auto-recovery，不新增 mapping，也不改变 timing authority。
+
 可选 vocalization trim 仅允许：editor 文字去掉边缘 `哦/啊/耶/oh/yeah/...` 后，normalized text **精确等于** canonical。此时只去掉多余 vocalization，不改变 canonical ownership。纯 vocalization 继续保留 review/供生产策略处理。
 
 BPM-recovered decision 继续保持低权限：score cap 在 B-grade 以下，不得成为 primary timing anchor，也不得反向使自身 projection ready。
@@ -428,6 +430,7 @@ Public tests必须证明：
 - projection 证据不足/不稳必须 fail closed；
 - BPM-derived rate 只有被多个 baseline-safe anchors 验证后才可提供 text-only recovery，不能成为 timing hard prior；
 - pure vocalization、split continuation、重复 occurrence/邻 cue 冲突等必须 fail closed；
+- editor cue 已识别上一 canonical 尾部或下一 canonical 前缀时，BPM 单行 recovery 必须 fail closed，不得删除该相邻歌词 ownership；
 - optional vocalization trim 只能在剩余文字精确等于 canonical 时执行；
 - BPM/sequence recovered text 不能增加 A/B primary timing anchor；
 - frontier 遇到 timing break/cut/ad-lib 必须停止；
