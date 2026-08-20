@@ -1,0 +1,114 @@
++            if time_ms < right:
++                duration = max(1, right - left)
++                fraction = min(1.0, max(0.0, (time_ms - left) / duration))
++                raw = cumulative[index] + round(fraction * len(row_texts[index]))
++                return _snap_stream_split(full, raw)
++        return len(full)
++
++    boundaries = [
++        text_position_at(_cue_times(cue)[0])
++        for cue in block_cues[1:]
++    ] + [len(full)]
++    if any(right <= left for left, right in zip([0, *boundaries[:-1]], boundaries)):
++        return None
++    output: list[str] = []
++    left = 0
++    for right in boundaries:
++        segment = full[left:right].strip()
++        if not segment:
++            return None
++        output.append(segment)
++        left = right
++    return output
++
++
++def _stream_locks(
++    cues: Sequence[SubtitleCue],
++    rows: Sequence[TimedCanonicalOccurrence],
++    decisions_by_cue: Mapping[int, MatchDecision],
++    model: SequenceProjectionModel,
++) -> list[_StreamLock]:
++    positions = {row.ordinal: index for index, row in enumerate(rows)}
++    locks: list[_StreamLock] = []
++    for cue in cues:
++        decision = decisions_by_cue.get(cue.ordinal)
++        if decision is None:
++            continue
++        if decision.action != "review" and decision.canonical_span is not None:
++            start, end = decision.canonical_span
++            if start in positions:
++                start_pos = positions[start]
++                end_pos = positions.get(end - 1, start_pos) + 1
++                if end_pos > start_pos:
++                    delta = abs(
++                        model.source_to_mix_ms(rows[start_pos].anchor_time_ms)
++                        - _cue_times(cue)[0]
++                    )
++                    if delta <= 750:
++                        revisable = _stream_revisable(decision)
++                        locks.append(
++                            _StreamLock(
++                                cue.ordinal,
++                                start_pos,
++                                end_pos,
++                                int(delta),
++                                not revisable,
++                            )
++                        )
++            continue
++        if decision.action != "review":
++            continue
++        nearest = _nearest_row_lock(cue, rows, model)
++        if nearest is None:
++            continue
++        position, delta = nearest
++        locks.append(_StreamLock(cue.ordinal, position, position + 1, delta, False))
++
++    # One cue / one canonical onset only. Prefer protected identities, then the
++    # smaller timing residual. Greedy monotonic filtering rejects repeated-line
++    # ambiguity from becoming a stream boundary.
++    by_cue: dict[int, _StreamLock] = {}
++    for item in locks:
++        previous = by_cue.get(item.cue_ordinal)
++        if previous is None or (item.protected, -item.delta_ms) > (
++            previous.protected,
++            -previous.delta_ms,
++        ):
++            by_cue[item.cue_ordinal] = item
++    # A row onset can fall very near an editor boundary, so two adjacent review
++    # cues may both look like locks for the same canonical row. Keep the cue
++    # with the strongest identity/tightest timing residual instead of the first
++    # cue in file order.
++    by_row: dict[int, _StreamLock] = {}
++    for item in by_cue.values():
++        previous = by_row.get(item.row_position)
++        if previous is None or (item.protected, -item.delta_ms) > (
++            previous.protected,
++            -previous.delta_ms,
++        ):
++            by_row[item.row_position] = item
++    ordered = sorted(by_row.values(), key=lambda item: item.cue_ordinal)
++    output: list[_StreamLock] = []
++    last_row = -1
++    for item in ordered:
++        if item.row_position <= last_row:
++            continue
++        output.append(item)
++        last_row = item.row_position
++    return output
++
++
++def _reconcile_review_streams(
++    cues: Sequence[SubtitleCue],
++    rows_by_source: Mapping[int, Sequence[TimedCanonicalOccurrence]],
++    ready_models: Mapping[int, SequenceProjectionModel],
++    output_by_cue: dict[int, MatchDecision],
++    replacements: dict[int, str],
++    *,
++    max_stream_cues: int = 16,
++) -> tuple[set[int], set[int], int]:
++    reconciled: set[int] = set()
++    resolved_reviews: set[int] = set()
++    claimed_cues: set[int] = set()
++    region_count = 0
++    for source_ordinal, model in ready_models.items():
