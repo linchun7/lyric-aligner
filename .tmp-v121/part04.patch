@@ -1,0 +1,114 @@
++                if delta <= 500 and (best_end is None or delta < best_end[0]):
++                    best_end = (delta, cue_index)
++            if best_end is None:
++                continue
++            end_cue = best_end[1]
++            block = list(cues[lock.cue_ordinal : end_cue + 1])
++            current = [output_by_cue.get(cue.ordinal) for cue in block]
++            if any(
++                item is None
++                or _protected(item)
++                or (item.action != "review" and not _stream_revisable(item))
++                for item in current
++            ):
++                continue
++            if not any(item is not None and item.action == "review" for item in current):
++                continue
++            if any(cue.ordinal in claimed_cues for cue in block):
++                continue
++            targets = _partition_canonical_stream(
++                block,
++                [rows[lock.row_position]],
++                next_start,
++                model,
++            )
++            if targets is None:
++                continue
++            for cue, original, target in zip(block, current, targets):
++                assert original is not None
++                decision = replace(
++                    original,
++                    canonical_ordinal=rows[lock.row_position].ordinal,
++                    score=min(float(original.score), 0.90),
++                    action="unchanged" if cue.normalized == _normalize_for_match(target) else "replace",
++                    reason="sequence_projection_confirms_stream_terminal",
++                    cue_span=(cue.ordinal, cue.ordinal + 1),
++                    canonical_span=(rows[lock.row_position].ordinal, rows[lock.row_position].ordinal + 1),
++                    canonical_text=rows[lock.row_position].text,
++                    output_text=target,
++                    edit_operations=(),
++                )
++                output_by_cue[cue.ordinal] = decision
++                replacements[cue.ordinal] = target
++                reconciled.add(cue.ordinal)
++                if original.action == "review":
++                    resolved_reviews.add(cue.ordinal)
++            claimed_cues.update(cue.ordinal for cue in block)
++            region_count += 1
++    return reconciled, resolved_reviews, region_count
+ 
+ 
+ def reconcile_text_from_sequence_projection(
+@@ -565,6 +1007,7 @@
+     region_count = 0
+     frontier_count = 0
+     frontier_runs = 0
++    frontier_resyncs = 0
+ 
+     consistent: list[_TextAnchor] = []
+     for anchor in baseline_anchors:
+@@ -667,7 +1110,19 @@
+                     next_start = candidate_next
+             choice = _frontier_choice(cue, rows[pos:], model, next_start)
+             if choice is None:
+-                break
++                relock = _forward_resync(
++                    cues,
++                    cue_index,
++                    rows,
++                    pos,
++                    model,
++                    set(global_strong),
++                )
++                if relock is None:
++                    break
++                cue_index, pos = relock
++                frontier_resyncs += 1
++                continue
+             assigned, boundary_delta = choice
+             decision = _projected_decision(
+                 cue,
+@@ -733,6 +1188,16 @@
+         if run_changed:
+             frontier_runs += 1
+ 
++    stream_reconciled, stream_resolved_reviews, stream_regions = _reconcile_review_streams(
++        cues,
++        rows_by_source,
++        ready_models,
++        output_by_cue,
++        replacements,
++    )
++    reconciled.update(stream_reconciled)
++    resolved_reviews.update(stream_resolved_reviews)
++
+     ordered = [output_by_cue.get(item.cue_ordinal, item) for item in decisions]
+     return (
+         replacements,
+@@ -743,6 +1208,9 @@
+             resolved_review_cue_count=len(resolved_reviews),
+             frontier_cue_count=frontier_count,
+             frontier_run_count=frontier_runs,
++            frontier_resync_count=frontier_resyncs,
++            stream_cue_count=len(stream_reconciled),
++            stream_region_count=stream_regions,
+         ),
+         models,
+     )
+--- a/lyric_aligner/timeline/smart_policy.py
++++ b/lyric_aligner/timeline/smart_policy.py
+@@ -34,7 +34,7 @@
+ from lyric_aligner.timeline.text_recovery import recover_text_reviews_from_timing
+ 
+ SMART_SCHEMA_VERSION = "smart-1.1"
+-SMART_POLICY_ID = "smart-validation-policy-2026-08-19-v1.2.0"
