@@ -118,12 +118,12 @@ def _strip_cjk_edges(value: str) -> str:
 def _strip_latin_edge_tokens(value: str) -> str:
     result = value.strip()
     while True:
-        match = re.match(r"^\s*([A-Za-z]+)(?:\s+|[,，。.!！?？、-—]+\s*)", result)
+        match = re.match(r"^\s*([A-Za-z]+)(?:\s+|[,，。.!！?？、—-]+\s*)", result)
         if match is None or match.group(1).casefold() not in _LATIN_VOCALIZATION:
             break
         result = result[match.end() :].lstrip()
     while True:
-        match = re.search(r"(?:\s+|\s*[,，。.!！?？、-—]+\s*)([A-Za-z]+)\s*$", result)
+        match = re.search(r"(?:\s+|\s*[,，。.!！?？、—-]+\s*)([A-Za-z]+)\s*$", result)
         if match is None or match.group(1).casefold() not in _LATIN_VOCALIZATION:
             break
         result = result[: match.start()].rstrip()
@@ -223,7 +223,7 @@ def _build_models(
             if abs(item.source_time_ms - (initial_offset + rate * item.mix_start_ms)) <= 750
         ]
         if len(first_inliers) < 3:
-            models.append(BpmTextProjectionModel(source_ordinal, source, rate, initial_offset, len(rows), len(first_inliers), float("inf"), len(first_inliers) / len(rows), None, "insufficient_bpm_inliers"))
+            models.append(BpmTextProjectionModel(source_ordinal, source, rate, initial_offset, len(rows), len(first_inliers), float("inf"), len(first_inliers) / len(rows), None, "bpm_projection_unstable"))
             continue
 
         offset = float(median(item.source_time_ms - rate * item.mix_start_ms for item in first_inliers))
