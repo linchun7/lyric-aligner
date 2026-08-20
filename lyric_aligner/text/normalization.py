@@ -23,6 +23,23 @@ META_RE = re.compile(
 # sentences ending in a colon are not broadly classified as metadata.
 ROLE_LABEL_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 ._&+/\-]{0,40}\s*[:：]$")
 
+# Timestamped distribution/licensing notices are often wrapped in decorative
+# brackets and are not sung lyric truth. Keep the vocabulary narrow so ordinary
+# bracketed lyric prose is not silently discarded.
+LICENSE_NOTICE_RE = re.compile(
+    r"^[【\[].*(?:未经授权|不得翻唱|禁止翻唱|禁止使用|版权.*所有).*[】\]]$",
+    re.IGNORECASE,
+)
+
+# Some providers prepend their brand to a normal metadata role, e.g.
+# ``平台音乐人商务合作：name@example.com``. Anchoring META_RE at the beginning
+# intentionally misses those; requiring both the role and a contact marker keeps
+# this broader check specific to metadata instead of lyric prose.
+BUSINESS_CONTACT_RE = re.compile(
+    r"^.{0,40}商务合作\s*[:：].*(?:@|邮箱|email|微信|wx)",
+    re.IGNORECASE,
+)
+
 
 def clean_text(value: str) -> str:
     return re.sub(r"\s+", " ", value).strip()
@@ -30,4 +47,9 @@ def clean_text(value: str) -> str:
 
 def is_metadata_text(value: str) -> bool:
     normalized = clean_text(value)
-    return bool(META_RE.match(normalized) or ROLE_LABEL_RE.match(normalized))
+    return bool(
+        META_RE.match(normalized)
+        or ROLE_LABEL_RE.match(normalized)
+        or LICENSE_NOTICE_RE.match(normalized)
+        or BUSINESS_CONTACT_RE.match(normalized)
+    )
