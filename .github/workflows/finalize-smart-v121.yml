@@ -40,6 +40,12 @@ Smart final text materialization 现在增加 editor cue ownership guard。canon
 
 `timeline/ownership_guard.py` 位于 Sequence Projection 之后、SRT text materialization 之前。输入是原 editor cues、当前 text decisions 与 replacements。它只检查相邻 cue 边界：若原 editor 可识别文本能证明 2–6 字短语属于另一侧，而当前 sequence 结果把该短语搬错，则可在相邻 cue 之间搬回；若同一短语被重复到边界两侧，则只允许删除一份已证明的短重复副本。普通搬移必须保持 pair-combined normalized lyric stream 完全不变。输出 decision 固定低于 B-grade，并清除 canonical span 以阻止其成为 timing anchor。
 """,
+              "SKILL.md": """
+
+### Smart v1.2.1 editor cue ownership guard
+
+当前 Smart policy 为 `smart-validation-policy-2026-08-20-v1.2.1`。Canonical 继续拥有最终歌词文字与顺序，但可识别的 Jianying 原始文本同时提供 cue ownership 证据：line-LRC 分句不能单独把已识别的 2–6 字边界短语跨 cue 搬移，也不能把同一短语重复到相邻两个 cue。最终 ownership guard 只修复这种局部边界搬移/短重复，不改变 cue 数、编号、start/end，不扩大 canonical recovery，也不能产生 A/B timing anchor。
+""",
           }
           for name, addition in additions.items():
               path = Path(name)
