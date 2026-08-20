@@ -162,3 +162,9 @@ v1.2.2 新增 `timeline/bpm_sequence_reconcile.py`，只处理已经存在 canon
 - 真实歌曲/BPM/cue/timestamp/歌词只作 private calibration，public regression 使用同构 synthetic 数据，不写真实内容 hard-code。
 
 目标不是“有 BPM 就自动改”，而是在**BPM 已被现有安全文本证据验证**时，为 repeated lyric / severe-ASR review 增加一层低权限、可审计的文字恢复证据，同时保持 v1.2.1 ownership guard 与现有 timing gate 不变。
+
+## 2026-08-20 — Smart v1.2.2 adjacent lexical ownership hardening
+
+生产级重跑发现，单条 LRC 的 1:1 BPM recovery 仍可能遇到合法的 editor/LRC 分句差异：当前 editor cue 已经清楚识别到上一条 canonical 的尾部或下一条 canonical 的开头。如果仅为了让该 cue 等于单条 LRC 而自动替换，会删除 editor 已经提供的真实相邻歌词 ownership。
+
+本轮在 `timeline/bpm_sequence_reconcile.py` 增加低权限 fail-closed guard：当当前 cue 的 normalized 开头与上一 lexical canonical 的尾部存在至少 2 字连续重合，或 normalized 结尾与下一 lexical canonical 的开头存在至少 2 字连续重合时，BPM 单行 recovery 不再自动替换该 cue，继续保留 review。该 guard 不新增 canonical claim、不改变 cue/timing、不提升 timing authority；真实歌曲 failure 只转写为 synthetic regression。
