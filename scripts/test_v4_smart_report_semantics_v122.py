@@ -1,3 +1,5 @@
+"""Synthetic regressions for Smart v1.2.2 report-only diagnostics."""
+
 from __future__ import annotations
 
 import unittest
