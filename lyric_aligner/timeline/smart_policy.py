@@ -30,11 +30,12 @@ from lyric_aligner.timeline.anchor_repair import (
     apply_timing_decisions,
     build_anchor_timing_plan,
 )
+from lyric_aligner.timeline.ownership_guard import restore_editor_cue_ownership
 from lyric_aligner.timeline.sequence_reconcile import reconcile_text_from_sequence_projection
 from lyric_aligner.timeline.text_recovery import recover_text_reviews_from_timing
 
 SMART_SCHEMA_VERSION = "smart-1.1"
-SMART_POLICY_ID = "smart-validation-policy-2026-08-19-v1.2.0"
+SMART_POLICY_ID = "smart-validation-policy-2026-08-20-v1.2.1"
 _BPM_COMPATIBILITY_TOLERANCE = 0.03
 
 
@@ -289,8 +290,6 @@ def smart_repair_srt_text_v11(
 
     hard_priors = _hard_rate_priors(rate_prior_by_source, rate_prior_metadata_by_source)
 
-    # Preserve v1.1 behavior first: a genuinely ready four-A timing model may
-    # recover reviews.  This remains the strongest no-audio text evidence.
     initial_timing, initial_models = build_anchor_timing_plan(
         cues,
         timed_canonical,
@@ -306,10 +305,6 @@ def smart_repair_srt_text_v11(
     )
     replacements.update(recovery_replacements)
 
-    # Break the severe-ASR bootstrap deadlock without changing timing gates.
-    # The projection uses baseline strong text identities (A plus robust B),
-    # reconciles canonical sequence into existing editor cues, and caps all
-    # recovered scores below B grade so it cannot manufacture timing anchors.
     sequence_replacements, text_decisions, sequence_recovery, sequence_models = (
         reconcile_text_from_sequence_projection(
             cues,
@@ -319,6 +314,15 @@ def smart_repair_srt_text_v11(
         )
     )
     replacements.update(sequence_replacements)
+
+    ownership_replacements, text_decisions, ownership_repartition_count = (
+        restore_editor_cue_ownership(
+            cues,
+            text_decisions,
+            replacements,
+        )
+    )
+    replacements.update(ownership_replacements)
 
     text_repaired = render_repaired_srt(parts, cues, replacements)
     text_payload = _text_payload(text_decisions)
@@ -356,6 +360,7 @@ def smart_repair_srt_text_v11(
         "text_sequence_resolved_review_count": sequence_recovery.resolved_review_cue_count,
         "text_sequence_frontier_cue_count": sequence_recovery.frontier_cue_count,
         "text_sequence_frontier_run_count": sequence_recovery.frontier_run_count,
+        "text_editor_ownership_repartition_count": ownership_repartition_count,
         "text_sequence_projection_models": [asdict(item) for item in sequence_models],
         "text_review_count": text_review_count,
         "timing_repair_count": sum(item.action == "repair" for item in timing),

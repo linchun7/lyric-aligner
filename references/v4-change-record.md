@@ -130,7 +130,7 @@ Pro 新增 reason-aware routing、merged-region mix feature reuse、adaptive sou
 
 ## 2026-08-19 — Text Repair V2.1 hardening
 
-Text Repair 继续 frozen-timeline text-only：不读 audio，不改变 SRT cue count/number/start/end。parser/metadata、mixed timed/untimed、layout-boundary review、unmatched canonical、O(n log n) unique exact anchors、production threshold floor 0.72、schema 2.1 与 timeline signature assertion 全部收口。
+Text Repair 继续 frozen-timeline text-only：不读 audio，不改变 SRT cue count/number/start/end。parser/metadata、mixed timed/untimed、layout-boundary review、unmatched canonical、O(n log n) unique exact anchors、production threshold floor 0.72、schema 2.1 与 timeline signature assertion全部收口。
 
 ## 2026-08-19 — Partial Timeline Repair P1–P5
 
@@ -142,3 +142,8 @@ publish_ready = false
 automatic_timing_change_allowed = false
 release_gate_eligible = false
 ```
+
+## 2026-08-20 — Smart v1.2.1 editor cue ownership guard
+
+真实剪映回归发现：canonical 文字已经修正时，line-LRC 分句差异仍可能让 Sequence 层把可识别短语跨相邻 cue 搬移，或把同一边界短语重复到前后两个 cue。v1.2.1 新增 `timeline/ownership_guard.py` 作为最终 text materialization 前的保守 guard：只允许把 2–6 个已由原 editor 识别证明归属的边界字符搬回原 cue；普通边界移动必须保持相邻 cue 合并后的 canonical 文字流完全不变；仅在明确重复副本位于边界两侧时允许删除一份短重复。guard 不改变 cue 数、编号或 timing，也不产生 A/B timing anchor。
+
