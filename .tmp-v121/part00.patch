@@ -1,0 +1,131 @@
+--- a/lyric_aligner/timeline/sequence_reconcile.py
++++ b/lyric_aligner/timeline/sequence_reconcile.py
+@@ -39,6 +39,11 @@
+ )
+ _FRONTIER_MULTI_LINE_MIN_SIMILARITY = 0.42
+ _FRONTIER_SHORT_CUE_MIN_SIMILARITY = 0.80
++_FRONTIER_TIGHT_PACK_START_MS = 450
++_FRONTIER_TIGHT_PACK_BOUNDARY_MS = 700
++_FRONTIER_RESYNC_MAX_CUE_SKIP = 2
++_FRONTIER_RESYNC_MAX_ROW_SKIP = 3
++_FRONTIER_SEVERE_ASR_BOUNDARY_MS = 1600
+ 
+ 
+ @dataclass(frozen=True)
+@@ -66,6 +71,9 @@
+     resolved_review_cue_count: int = 0
+     frontier_cue_count: int = 0
+     frontier_run_count: int = 0
++    frontier_resync_count: int = 0
++    stream_cue_count: int = 0
++    stream_region_count: int = 0
+ 
+ 
+ @dataclass(frozen=True)
+@@ -80,8 +88,25 @@
+     grade: str
+ 
+ 
++@dataclass(frozen=True)
++class _StreamLock:
++    cue_ordinal: int
++    row_position: int
++    row_end_position: int
++    delta_ms: int
++    protected: bool
++
++
+ def _protected(decision: MatchDecision | None) -> bool:
+     return decision is not None and decision.reason in _PROTECTED_STRONGER_RECOVERY_REASONS
++
++
++def _stream_revisable(decision: MatchDecision | None) -> bool:
++    return (
++        decision is not None
++        and decision.reason.startswith("sequence_projection_confirms_")
++        and decision.reason not in _PROTECTED_STRONGER_RECOVERY_REASONS
++    )
+ 
+ 
+ def _single_span(decision: MatchDecision | None) -> tuple[int, int] | None:
+@@ -480,13 +505,6 @@
+             continue
+         target_normalized = "".join(item.normalized for item in assigned)
+         similarity = _pair_score(cue.normalized, target_normalized)
+-        if count > 1 and similarity < _FRONTIER_MULTI_LINE_MIN_SIMILARITY:
+-            continue
+-        if (
+-            len(cue.normalized) <= 2
+-            and similarity < _FRONTIER_SHORT_CUE_MIN_SIMILARITY
+-        ):
+-            continue
+         boundary_delta: int | None = None
+         if next_cue_start_ms is not None:
+             next_row = (
+@@ -500,6 +518,31 @@
+                 boundary_delta = abs(
+                     model.source_to_mix_ms(next_row.anchor_time_ms) - next_cue_start_ms
+                 )
++        timing_locked_multi_line = (
++            count > 1
++            and start_delta <= _FRONTIER_TIGHT_PACK_START_MS
++            and boundary_delta is not None
++            and boundary_delta <= _FRONTIER_TIGHT_PACK_BOUNDARY_MS
++            and last_predicted <= cue_end + 500
++        )
++        if (
++            count > 1
++            and similarity < _FRONTIER_MULTI_LINE_MIN_SIMILARITY
++            and not timing_locked_multi_line
++        ):
++            continue
++        if (
++            count == 1
++            and similarity < _FRONTIER_MULTI_LINE_MIN_SIMILARITY
++            and boundary_delta is not None
++            and boundary_delta > _FRONTIER_SEVERE_ASR_BOUNDARY_MS
++        ):
++            continue
++        if (
++            len(cue.normalized) <= 2
++            and similarity < _FRONTIER_SHORT_CUE_MIN_SIMILARITY
++        ):
++            continue
+         source_length = max(1, len(cue.normalized))
+         target_length = max(1, len(target_normalized))
+         length_penalty = abs(math.log(target_length / source_length))
+@@ -515,6 +558,405 @@
+         return None
+     _, assigned, boundary_delta = min(candidates, key=lambda item: item[0])
+     return assigned, boundary_delta
++
++
++def _forward_resync(
++    cues: Sequence[SubtitleCue],
++    cue_index: int,
++    rows: Sequence[TimedCanonicalOccurrence],
++    row_index: int,
++    model: SequenceProjectionModel,
++    strong_cues: set[int],
++) -> tuple[int, int] | None:
++    """Find a narrow timing-only re-lock after one local frontier break.
++
++    The skipped cue(s) and canonical row(s) remain unresolved.  Re-entry is
++    allowed only when the future cue start and the following canonical boundary
++    both lock tightly to the independent sequence projection.  This prevents a
++    single straddling/garbled cue from poisoning the rest of a song while still
++    refusing to chase canonical order blindly across a cut.
++    """
++
++    for cue_skip in range(1, _FRONTIER_RESYNC_MAX_CUE_SKIP + 1):
++        candidate_cue_index = cue_index + cue_skip
++        if candidate_cue_index >= len(cues):
++            break
++        if any(
++            index in strong_cues
++            for index in range(cue_index, candidate_cue_index + 1)
++        ):
++            break
++        cue = cues[candidate_cue_index]
++        cue_start, _ = _cue_times(cue)
++        next_start: int | None = None
