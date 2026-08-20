@@ -1,0 +1,49 @@
+name: temporary Smart v1.2.2 report docs sync
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  sync-docs:
+    if: github.event.pull_request.head.ref == 'agent/smart-v122-report-hardening-20260820'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.ref }}
+          fetch-depth: 0
+      - name: Append owning docs and remove temporary workflow
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          updates = {
+              Path('references/v4-change-record.md'): '''\n\n## 2026-08-20 — Smart v1.2.2 report / diagnostic semantics hardening\n\n本轮不扩大 Smart 自动修复范围、不改变 cue/timing，也不改变 v1.2.2 policy authority；只修正生产 report 的可解释性与诊断语义：\n\n- BPM compatibility 只在 primary timing model 确实拥有 anchor-derived / explicit rate evidence 时评估；`rate_source=none` 的 `1.0` placeholder 不再产生假 `bpm_prior_compatible=false`；\n- 保留 legacy `text_replacement_count`，同时新增 `text_decision_replacement_count`、`text_materialized_change_count`、`text_semantic_change_count`，区分 decision 级替换、最终 SRT 显示文本变化和 normalized 语义变化；\n- 新增 mapped/unmapped text review、text/timing review reason counts、text/timing 独立 status 与独立 Pro escalation flags；\n- timing review 新增 with/without concrete proposal 计数，避免把“证据不足、原 timing 未被独立验证”误读为“存在 542 个已知错误 timing”；\n- public regression 覆盖 placeholder BPM conflict、统计口径与 review 分类；不写真实歌曲/cue/timestamp/歌词 hard-code。\n''',
+              Path('references/v4-status.md'): '''\n\n### Smart v1.2.2 report semantics closeout\n\n当前 v1.2.2 自动修复 authority 不变，但 report 现在明确区分：\n\n```text\ntext_decision_replacement_count  = MatchDecision.action == replace\ntext_materialized_change_count   = 最终 text-only SRT 与 editor 原文逐 cue 的显示字符串变化\ntext_semantic_change_count       = normalized lyric 语义变化\n```\n\n同时输出 `text_mapped_review_count / text_unmapped_review_count / text_review_reason_counts`，以及 `timing_review_with_proposal_count / timing_review_without_proposal_count / timing_review_reason_counts`。`text_status` 与 `timing_status` 分轴报告；legacy strict `status` 仍只有两轴都 ready 才为 ready。\n\nBPM compatibility 只对有真实 rate evidence 的 timing model 评估；`insufficient_anchors` + `rate_source=none` 的 placeholder rate 现在显示 `bpm_prior_compatible=null`，不再伪装成 BPM 冲突。\n''',
+              Path('references/v4-implementation.md'): '''\n\n### 3.15 v1.2.2 report / diagnostic semantics hardening\n\n`smart_policy.py` 的 report 层增加只读诊断，不改变 text/timing mutation gate：\n\n- `_bpm_prior_compatibility()` 跳过 `rate_source=none/invalid` 的 placeholder model，只比较真正有 timing-rate evidence 的 source；\n- `_text_materialization_counts()` 从实际 materialized text-only SRT 计算 exact display change 与 normalized semantic change，避免把 `MatchDecision.action` 误当成最终文件 diff；\n- review reason counts 与 mapped/unmapped text review 直接由最终 decisions 汇总；\n- timing review 按 `proposed_start_ms/proposed_end_ms` 是否存在拆成 concrete proposal 与 no-proposal 两类；后者表示当前 no-audio 证据不足，不能被解释为已知 timing 错误；\n- `text_status/timing_status` 与 `pro_text_escalation_required/pro_timing_escalation_required` 是 strict overall status 的可解释分解，旧字段继续兼容。\n''',
+          }
+
+          for path, text in updates.items():
+              current = path.read_text(encoding='utf-8')
+              marker = text.strip().splitlines()[0]
+              if marker not in current:
+                  path.write_text(current.rstrip() + text + '\n', encoding='utf-8')
+
+          Path('.github/workflows/temp-smart-v122-report-docsync.yml').unlink()
+          PY
+      - name: Commit docs sync
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -- references/v4-change-record.md references/v4-status.md references/v4-implementation.md .github/workflows/temp-smart-v122-report-docsync.yml
+          if git diff --cached --quiet; then
+            exit 0
+          fi
+          git commit -m "docs: sync Smart v1.2.2 report semantics"
+          git push origin HEAD:${{ github.event.pull_request.head.ref }}
