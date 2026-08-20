@@ -38,7 +38,7 @@ ASR/forced text -> final canonical lyric
 LRC line break -> silently resegment trusted editor cues
 higher mode -> regress lower-mode safe result without stronger evidence
 one cue -> prove its own timing model
-sequence/timing recovered text -> become a primary timing anchor
+sequence/timing/BPM-recovered text -> become a primary timing anchor
 unvalidated preserve -> task ready
 BPM-derived prior -> silently become exact DAW rate
 combined repair -> worsen editor overlap
@@ -57,9 +57,9 @@ Text Repair V2 负责 lexical-first 主文本匹配，包括 bounded 1↔N / N�
 
 `text_repair._assign_targets()` 以 editor 原字符 ownership 为主做 canonical edit script。连续 editor/canonical 文本已经一致而仅 LRC 换行不同的 span，必须保持 editor cue segmentation；LRC 行边界本身不拥有跨 cue 搬字权限。
 
-严重 ASR 乱码如果 lexical evidence 不够，会进入 review；Smart 可以用独立 sequence/timing evidence继续处理，但不得通过降低 Text Repair threshold 来制造更多 false auto。
+严重 ASR 乱码如果 lexical evidence 不够，会进入 review；Smart 可以用独立 sequence/timing/BPM-validated text evidence继续处理，但不得通过降低 Text Repair threshold 来制造更多 false auto。
 
-## 3. Smart / Sequence Reconciliation + Anchor Timeline Repair v1.2.0
+## 3. Smart / Sequence Reconciliation + Anchor Timeline Repair v1.2.2
 
 核心文件：
 
@@ -68,6 +68,8 @@ lyric_aligner/timeline/anchor_repair.py
 lyric_aligner/timeline/smart_policy.py
 lyric_aligner/timeline/text_recovery.py
 lyric_aligner/timeline/sequence_reconcile.py
+lyric_aligner/timeline/bpm_sequence_reconcile.py
+lyric_aligner/timeline/ownership_guard.py
 scripts/v4_smart_repair.py
 lyric_aligner/io/path_safety.py
 ```
@@ -75,7 +77,7 @@ lyric_aligner/io/path_safety.py
 Smart report schema 继续 `smart-1.1`；当前 policy id：
 
 ```text
-smart-validation-policy-2026-08-19-v1.2.0
+smart-validation-policy-2026-08-20-v1.2.2
 ```
 
 ### 3.1 Canonical representation
@@ -99,7 +101,7 @@ RepairCanonicalLine text view
 ```text
 A: exact + unique + 1:1 + unchanged
 B: 1:1 + high similarity + safe text repair
-C: merge/split/gap/repeated/ambiguous/sequence-recovered/other
+C: merge/split/gap/repeated/ambiguous/sequence/BPM-recovered/other
 ```
 
 只有 A 可建立 `SongTimingModel`。普通单曲仍优先：
@@ -260,7 +262,7 @@ Sequence Projection 不处理纯 Standard-safe、无 review 的 region。因此�
 
 ### 3.10 Final timing / overlap safety
 
-Sequence reconciliation 后重新调用 `build_anchor_timing_plan()`。sequence decisions 是 C grade，不增加 A model anchors。
+Sequence reconciliation 后重新调用 `build_anchor_timing_plan()`。sequence/BPM decisions 是 C grade，不增加 A model anchors。
 
 `smart_policy.py` 的 timing hardening继续：
 
@@ -269,7 +271,57 @@ Sequence reconciliation 后重新调用 `build_anchor_timing_plan()`。sequence 
 - 单 cue repair不得制造新 overlap；
 - 所有 repairs 合成后逐相邻 pair 检查：`new_overlap_ms <= original_overlap_ms`；否则相关 repair全部降 review。
 
-### 3.11 Report
+### 3.11 BPM-validated text-only recovery（v1.2.2）
+
+`bpm_sequence_reconcile.py` 解决的是：已知每首歌通常以固定 BPM 变速到成片，但 repeated lyric / severe-ASR 导致 unique A anchor 不足时，怎样安全利用该信息帮助**文字**而不提升 timing 权限。
+
+`bpm_derived` 仍不是 hard rate。每个 source 的 BPM text projection 要进入 `ready`，至少要求：
+
+```text
+>= 3 baseline-safe 1:1 text anchors
+750ms 固定-rate inlier >= 3
+inlier fraction >= 0.75
+median abs residual <= 300ms
+mix/source span >= 8000ms
+anchor canonical order strictly monotonic
+pairwise anchor-estimated rate 与 BPM rate relative error <= 2.5%
+```
+
+baseline-safe anchor 只接受原 Text Repair 已安全成立的：
+
+```text
+canonical_content_matches_source_segmentation
+high_confidence_span_preserving_match
+```
+
+BPM recovery 只考虑当前仍为 `review` 且已经有**单一 canonical occurrence claim** 的 cue。候选还必须通过：
+
+- projected onset 与 editor cue start 的紧阈值；
+- interior 前后 inlier bracketing，或极窄 strict leading-edge 条件；
+- adjacent cue 不得同时 claim 同一 canonical occurrence；
+- split-continuation 风险阻断；
+- 下一 lexical canonical 不得已经明显落入当前 cue；
+- pure vocalization cue 不得被填成 lexical lyric。
+
+可选 vocalization trim 仅允许：editor 文字去掉边缘 `哦/啊/耶/oh/yeah/...` 后，normalized text **精确等于** canonical。此时只去掉多余 vocalization，不改变 canonical ownership。纯 vocalization 继续保留 review/供生产策略处理。
+
+BPM-recovered decision 继续保持低权限：score cap 在 B-grade 以下，不得成为 primary timing anchor，也不得反向使自身 projection ready。
+
+成功 report 字段：
+
+```text
+text_bpm_projection_recovery_count
+text_bpm_projection_vocalization_trim_count
+text_bpm_projection_models
+```
+
+`text_bpm_projection_models` 与 `text_sequence_projection_models` 都是 text-only diagnostics，不能与 primary timing `models` 混用。
+
+### 3.12 v1.2.1 editor cue ownership guard
+
+`timeline/ownership_guard.py` 位于全部 text recovery 之后、SRT text materialization 之前。输入是原 editor cues、当前 text decisions 与 replacements。它只检查相邻 cue 边界：若原 editor 可识别文本能证明 2–6 字短语属于另一侧，而当前 sequence/BPM 结果把该短语搬错，则可在相邻 cue 之间搬回；若同一短语被重复到边界两侧，则只允许删除一份已证明的短重复副本。普通搬移必须保持 pair-combined normalized lyric stream 完全不变。输出 decision 固定低于 B-grade，并清除 canonical span 以阻止其成为 timing anchor。
+
+### 3.13 Report
 
 既有字段：
 
@@ -293,9 +345,15 @@ text_sequence_frontier_run_count
 text_sequence_projection_models
 ```
 
-`text_sequence_projection_models` 是 text-only diagnostic，不得与 `models`（primary timing models）混为一谈。
+v1.2.2 新增：
 
-### 3.12 Artifact path safety
+```text
+text_bpm_projection_recovery_count
+text_bpm_projection_vocalization_trim_count
+text_bpm_projection_models
+```
+
+### 3.14 Artifact path safety
 
 `io/path_safety.py::validate_separate_artifact_paths()` 继续在任何 artifact write 前拒绝 output-input / output-output 路径碰撞。
 
@@ -321,7 +379,7 @@ smart_report.schema_version == SMART_SCHEMA_VERSION
 smart_report.policy_id      == SMART_POLICY_ID
 ```
 
-Smart policy 升到 v1.2.0 后，所有 v1.1.3 及更早 report 自动 stale，必须重跑 Smart。
+Smart policy 升到 v1.2.2 后，所有 v1.2.1 及更早 report 自动 stale，必须重跑 Smart。
 
 ### 4.2 Reason-aware routing
 
@@ -366,8 +424,12 @@ Public tests必须证明：
 - Standard/Smart 不因 LRC 行换行不同跨可信 editor cue 搬字；
 - Smart primary timing four-A/leave-one-out contracts不变；
 - 3A+1B 只能建立 text-only Sequence Projection，不能提升 primary timing anchor count；
-- severe-ASR bounded 4-cue/8-line 等 canonical sequence 可在 projection 稳定时恢复；
+- severe-ASR bounded canonical sequence 可在 projection 稳定时恢复；
 - projection 证据不足/不稳必须 fail closed；
+- BPM-derived rate 只有被多个 baseline-safe anchors 验证后才可提供 text-only recovery，不能成为 timing hard prior；
+- pure vocalization、split continuation、重复 occurrence/邻 cue 冲突等必须 fail closed；
+- optional vocalization trim 只能在剩余文字精确等于 canonical 时执行；
+- BPM/sequence recovered text 不能增加 A/B primary timing anchor；
 - frontier 遇到 timing break/cut/ad-lib 必须停止；
 - existing ready-model bilateral/song-edge recovery继续成立；
 - insufficient/unvalidated timing 必须 Pro escalation；
@@ -375,9 +437,4 @@ Public tests必须证明：
 - exact DAW hard prior 与 BPM-derived soft prior；
 - Enhanced LRC / stale Smart / acoustic source-window / ASR-only region / max-jobs / path collision / forced protocol / multilingual routing继续不回归。
 
-Public CI 不能证明真实歌曲 false-auto。每次 private real-song failure 应抽象成同构 synthetic regression，禁止歌曲、cue、timestamp 或真实歌词 hard-code 到 production algorithm/public test。
-
-### Smart v1.2.1 — final editor ownership guard
-
-`timeline/ownership_guard.py` 位于 Sequence Projection 之后、SRT text materialization 之前。输入是原 editor cues、当前 text decisions 与 replacements。它只检查相邻 cue 边界：若原 editor 可识别文本能证明 2–6 字短语属于另一侧，而当前 sequence 结果把该短语搬错，则可在相邻 cue 之间搬回；若同一短语被重复到边界两侧，则只允许删除一份已证明的短重复副本。普通搬移必须保持 pair-combined normalized lyric stream 完全不变。输出 decision 固定低于 B-grade，并清除 canonical span 以阻止其成为 timing anchor。
-
+Public CI 不能证明真实歌曲 false-auto。每次 private real-song failure 应抽象成同构 synthetic regression，禁止歌曲、cue、timestamp、BPM 或真实歌词 hard-code 到 production algorithm/public test。

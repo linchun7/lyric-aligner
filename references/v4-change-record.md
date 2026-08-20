@@ -147,3 +147,18 @@ release_gate_eligible = false
 
 真实剪映回归发现：canonical 文字已经修正时，line-LRC 分句差异仍可能让 Sequence 层把可识别短语跨相邻 cue 搬移，或把同一边界短语重复到前后两个 cue。v1.2.1 新增 `timeline/ownership_guard.py` 作为最终 text materialization 前的保守 guard：只允许把 2–6 个已由原 editor 识别证明归属的边界字符搬回原 cue；普通边界移动必须保持相邻 cue 合并后的 canonical 文字流完全不变；仅在明确重复副本位于边界两侧时允许删除一份短重复。guard 不改变 cue 数、编号或 timing，也不产生 A/B timing anchor。
 
+## 2026-08-20 — Smart v1.2.2 BPM-validated text recovery
+
+真实 0-audio 生产复核进一步暴露：重复歌词或 severe-ASR 区域即使有准确的“原 BPM → 成片 BPM”信息，也不能把 `bpm_derived` 直接升级成 timing hard prior；但如果多个**独立安全 baseline text anchors**已经证明固定 BPM rate 与 editor/canonical onset 投影一致，这个 rate 可以作为额外的**文字 identity 证据**，帮助减少 false-review。
+
+v1.2.2 新增 `timeline/bpm_sequence_reconcile.py`，只处理已经存在 canonical claim 的 1:1 `review` cue，不改变 Text Repair 阈值、cue count/number/start/end，也不增加 timing mutation authority：
+
+- `bpm_derived` 仍是 soft prior；至少 3 个 baseline-safe text anchors、有效 source/mix 跨度、稳定 offset/residual、inlier fraction、pairwise rate 与 BPM rate 一致后，BPM text projection 才可 `ready`；
+- recovery 必须保持 source/canonical occurrence 单调，并要求 candidate onset 与 BPM projection 高度一致；内部 cue 要有前后 inlier bracketing，歌曲前缘只允许极窄 one-sided recovery；
+- 已有邻 cue 对同一 canonical occurrence 的 claim、明显 split-continuation 风险、下一条 lexical canonical 已落入当前 cue、pure vocalization 等情况一律 fail closed；
+- optional `哦/啊/耶/oh/yeah` 等只允许在**去掉边缘 vocalization 后剩余 editor 文字精确等于 canonical**时裁掉；纯 vocalization cue 不能凭 BPM 被填成歌词；
+- BPM-recovered decision score 继续 cap 在 B-grade 以下，不能反向成为 A/B timing anchor；
+- report 新增 `text_bpm_projection_recovery_count`、`text_bpm_projection_vocalization_trim_count`、`text_bpm_projection_models`；schema 仍为 `smart-1.1`，policy id 升到 `smart-validation-policy-2026-08-20-v1.2.2`；
+- 真实歌曲/BPM/cue/timestamp/歌词只作 private calibration，public regression 使用同构 synthetic 数据，不写真实内容 hard-code。
+
+目标不是“有 BPM 就自动改”，而是在**BPM 已被现有安全文本证据验证**时，为 repeated lyric / severe-ASR review 增加一层低权限、可审计的文字恢复证据，同时保持 v1.2.1 ownership guard 与现有 timing gate 不变。
