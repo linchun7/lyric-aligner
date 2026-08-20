@@ -1,12 +1,13 @@
 """Smart production policy layered on no-audio Anchor Timeline Repair.
 
 Smart keeps Text Repair V2 as the conservative baseline, then separates text
-identity from timing authority.  Ready A-anchor timing evidence may recover
-reviews first; an independent song-local sequence projection may then reconcile
-severe-ASR text that the similarity matcher cannot bootstrap.  Sequence-
-projected text is deliberately capped below B grade and can never create timing
-anchors.  Canonical lyrics own text/order, while trusted Jianying cue boundaries
-remain the display-segmentation prior.
+identity from timing authority. Ready A-anchor timing evidence may recover
+reviews first; independent song-local sequence projections may then reconcile
+severe-ASR text that the similarity matcher cannot bootstrap. BPM-derived rates
+remain soft evidence: v1.2.2 may use a dense BPM/offset consensus to restore
+canonical text, but that layer never gains timing-mutation authority. Canonical
+lyrics own text/order, while trusted Jianying cue boundaries remain the display-
+segmentation prior.
 """
 
 from __future__ import annotations
@@ -30,12 +31,15 @@ from lyric_aligner.timeline.anchor_repair import (
     apply_timing_decisions,
     build_anchor_timing_plan,
 )
+from lyric_aligner.timeline.bpm_consensus_recovery import (
+    recover_text_reviews_from_bpm_consensus,
+)
 from lyric_aligner.timeline.ownership_guard import restore_editor_cue_ownership
 from lyric_aligner.timeline.sequence_reconcile import reconcile_text_from_sequence_projection
 from lyric_aligner.timeline.text_recovery import recover_text_reviews_from_timing
 
 SMART_SCHEMA_VERSION = "smart-1.1"
-SMART_POLICY_ID = "smart-validation-policy-2026-08-20-v1.2.1"
+SMART_POLICY_ID = "smart-validation-policy-2026-08-20-v1.2.2"
 _BPM_COMPATIBILITY_TOLERANCE = 0.03
 
 
@@ -305,6 +309,11 @@ def smart_repair_srt_text_v11(
     )
     replacements.update(recovery_replacements)
 
+    # Freeze the pre-sequence identities used by BPM consensus. The new layer
+    # must be corroborated by evidence that existed before its own recovery and
+    # cannot bootstrap itself from sequence-projected text.
+    bpm_evidence_decisions = list(text_decisions)
+
     sequence_replacements, text_decisions, sequence_recovery, sequence_models = (
         reconcile_text_from_sequence_projection(
             cues,
@@ -314,6 +323,19 @@ def smart_repair_srt_text_v11(
         )
     )
     replacements.update(sequence_replacements)
+
+    bpm_replacements, text_decisions, bpm_recovery, bpm_models = (
+        recover_text_reviews_from_bpm_consensus(
+            cues,
+            timed_canonical,
+            text_decisions,
+            evidence_decisions=bpm_evidence_decisions,
+            replacements=replacements,
+            rate_prior_by_source=rate_prior_by_source,
+            rate_prior_metadata_by_source=rate_prior_metadata_by_source,
+        )
+    )
+    replacements.update(bpm_replacements)
 
     ownership_replacements, text_decisions, ownership_repartition_count = (
         restore_editor_cue_ownership(
@@ -327,6 +349,8 @@ def smart_repair_srt_text_v11(
     text_repaired = render_repaired_srt(parts, cues, replacements)
     text_payload = _text_payload(text_decisions)
 
+    # Final timing still receives only hard priors. BPM consensus is deliberately
+    # text-only and cannot create a timing repair by being present.
     raw_timing, models = build_anchor_timing_plan(
         cues,
         timed_canonical,
@@ -360,6 +384,11 @@ def smart_repair_srt_text_v11(
         "text_sequence_resolved_review_count": sequence_recovery.resolved_review_cue_count,
         "text_sequence_frontier_cue_count": sequence_recovery.frontier_cue_count,
         "text_sequence_frontier_run_count": sequence_recovery.frontier_run_count,
+        "text_bpm_consensus_reconciled_cue_count": bpm_recovery.reconciled_cue_count,
+        "text_bpm_consensus_region_count": bpm_recovery.reconciled_region_count,
+        "text_bpm_consensus_resolved_review_count": bpm_recovery.resolved_review_cue_count,
+        "text_bpm_consensus_single_cue_count": bpm_recovery.single_cue_count,
+        "text_bpm_consensus_models": [asdict(item) for item in bpm_models],
         "text_editor_ownership_repartition_count": ownership_repartition_count,
         "text_sequence_projection_models": [asdict(item) for item in sequence_models],
         "text_review_count": text_review_count,
