@@ -1,0 +1,89 @@
++        rows = list(rows_by_source.get(source_ordinal, ()))
++        if len(rows) < 2:
++            continue
++        locks = _stream_locks(cues, rows, output_by_cue, model)
++        if len(locks) < 2:
++            continue
++        for left, right in zip(locks, locks[1:]):
++            if right.cue_ordinal <= left.cue_ordinal:
++                continue
++            start_cue = left.cue_ordinal + (1 if left.protected else 0)
++            start_row = left.row_end_position if left.protected else left.row_position
++            end_cue = right.cue_ordinal
++            end_row = right.row_position
++            if start_cue >= end_cue or start_row >= end_row:
++                continue
++            block = list(cues[start_cue:end_cue])
++            gap = rows[start_row:end_row]
++            if not block or len(block) > max_stream_cues:
++                continue
++            current = [output_by_cue.get(cue.ordinal) for cue in block]
++            if any(
++                item is None
++                or (item.action != "review" and not _stream_revisable(item))
++                for item in current
++            ):
++                continue
++            if not any(item is not None and item.action == "review" for item in current):
++                continue
++            if any(cue.ordinal in claimed_cues for cue in block):
++                continue
++            right_boundary = model.source_to_mix_ms(rows[end_row].anchor_time_ms)
++            targets = _partition_canonical_stream(block, gap, right_boundary, model)
++            if targets is None or len(targets) != len(block):
++                continue
++            pending: list[tuple[SubtitleCue, MatchDecision, str]] = []
++            for cue, original, target in zip(block, current, targets):
++                assert original is not None
++                if _protected(original):
++                    pending = []
++                    break
++                pending.append((cue, original, target))
++            if not pending:
++                continue
++            for cue, original, target in pending:
++                decision = replace(
++                    original,
++                    canonical_ordinal=gap[0].ordinal,
++                    score=min(float(original.score), 0.90),
++                    action="unchanged" if cue.normalized == _normalize_for_match(target) else "replace",
++                    reason="sequence_projection_confirms_stream_partition",
++                    cue_span=(cue.ordinal, cue.ordinal + 1),
++                    canonical_span=(gap[0].ordinal, gap[-1].ordinal + 1),
++                    canonical_text=" ".join(item.text for item in gap),
++                    output_text=target,
++                    edit_operations=(),
++                )
++                output_by_cue[cue.ordinal] = decision
++                replacements[cue.ordinal] = target
++                reconciled.add(cue.ordinal)
++                if original.action == "review":
++                    resolved_reviews.add(cue.ordinal)
++            claimed_cues.update(cue.ordinal for cue in block)
++            region_count += 1
++
++        # A review lock may own one canonical line across several short editor
++        # cues. If a later cue end independently lands on the next canonical
++        # onset, use that end as a virtual right boundary and split the line
++        # across the existing cue starts. The next lyric itself remains
++        # untouched until another lock proves it.
++        for lock_index, lock in enumerate(locks):
++            if lock.protected or lock.row_position + 1 >= len(rows):
++                continue
++            next_lock_cue = (
++                locks[lock_index + 1].cue_ordinal
++                if lock_index + 1 < len(locks)
++                else min(len(cues), lock.cue_ordinal + max_stream_cues)
++            )
++            next_start = model.source_to_mix_ms(rows[lock.row_position + 1].anchor_time_ms)
++            best_end: tuple[int, int] | None = None
++            for cue_index in range(lock.cue_ordinal, min(len(cues), next_lock_cue)):
++                decision = output_by_cue.get(cue_index)
++                if (
++                    decision is None
++                    or _protected(decision)
++                    or (decision.action != "review" and not _stream_revisable(decision))
++                ):
++                    break
++                _, cue_end = _cue_times(cues[cue_index])
++                delta = abs(next_start - cue_end)
