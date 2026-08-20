@@ -1,9 +1,9 @@
 """Conservative editor cue-ownership preservation for Smart text output.
 
 Canonical lyrics own text and order, but line-LRC boundaries do not own SRT
-segmentation.  When Smart sequence reconciliation has moved a short, clearly
+segmentation. When Smart sequence reconciliation has moved a short, clearly
 recognized boundary phrase from one Jianying cue into its neighbour, this guard
-may move only that same text back across the existing cue boundary.  It never
+may move only that same text back across the existing cue boundary. It never
 changes cue count or timing and never invents text.
 """
 
@@ -177,12 +177,26 @@ def _guarded_decision(
     decision: MatchDecision,
     text: str,
 ) -> MatchDecision:
+    """Apply ownership restoration without manufacturing readiness.
+
+    Boundary evidence can say where an already-selected fragment belongs, but it
+    cannot turn a previously unresolved lyric identity into a validated one.
+    Therefore review remains review even when the restored text happens to equal
+    the editor cue after repartitioning.
+    """
+
+    if decision.action == "review":
+        action = "review"
+        reason = "editor_boundary_ownership_restored_review_required"
+    else:
+        action = "unchanged" if cue.normalized == _normalize_for_match(text) else "replace"
+        reason = "editor_boundary_ownership_restored"
     return replace(
         decision,
         canonical_ordinal=None,
         score=min(float(decision.score), 0.90),
-        action="unchanged" if cue.normalized == _normalize_for_match(text) else "replace",
-        reason="editor_boundary_ownership_restored",
+        action=action,
+        reason=reason,
         cue_span=(cue.ordinal, cue.ordinal + 1),
         canonical_span=None,
         canonical_text=text,
