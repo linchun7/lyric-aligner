@@ -1,0 +1,84 @@
+name: apply-smart-v121
+
+on:
+  push:
+    branches:
+      - agent/smart-v121-ownership-closeout
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    if: ${{ github.actor != 'github-actions[bot]' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Apply staged patch
+        run: |
+          cat .tmp-v121/part*.patch > /tmp/v121.patch
+          git apply --check /tmp/v121.patch
+          git apply /tmp/v121.patch
+      - name: Update production docs
+        shell: python
+        run: |
+          from pathlib import Path
+
+          marker = "Smart v1.2.1 ownership closeout (2026-08-20)"
+          notes = {
+              "references/v4-implementation.md": """
+
+## Smart v1.2.1 ownership closeout (2026-08-20)
+
+Smart sequence recovery now treats trusted Jianying cue ownership as a display-segmentation constraint. Line-LRC boundaries remain coarse canonical timing evidence and may not, by themselves, move recognizable lyric text across existing cue boundaries. A narrow frontier re-lock may resume after one unresolved local break only when projected start and following boundary agree tightly. Stream partitioning is text-only evidence: it preserves cue count/timing and its decisions stay below B-grade timing-anchor authority.
+""",
+              "references/v4-change-record.md": """
+
+## Smart v1.2.1 ownership closeout (2026-08-20)
+
+- Added conservative frontier re-lock after a local unresolved cue.
+- Added text-only stream partitioning across existing editor cue boundaries so line-LRC segmentation does not own SRT segmentation.
+- Added diagnostics for frontier resync and stream reconciliation.
+- Sequence-projected results remain non-authoritative for timing anchors.
+""",
+              "references/v4-status.md": """
+
+## Smart v1.2.1 ownership closeout (2026-08-20)
+
+Smart preserves trusted editor cue ownership while reconciling severe-ASR text from canonical sequence. LRC line breaks are not subtitle segmentation authority. Frontier re-lock and stream partitioning are conservative text-only recovery layers and do not gain timing-mutation authority.
+""",
+          }
+          for name, addition in notes.items():
+              path = Path(name)
+              text = path.read_text(encoding="utf-8")
+              if marker not in text:
+                  path.write_text(text.rstrip() + addition + "\n", encoding="utf-8")
+
+          skill = Path("SKILL.md")
+          text = skill.read_text(encoding="utf-8")
+          if marker not in text:
+              text = text.rstrip() + """
+
+### Smart v1.2.1 ownership closeout (2026-08-20)
+
+Canonical lyrics own lyric text and order; trusted Jianying cue boundaries own display segmentation unless stronger word-level/audio evidence proves otherwise. Smart may re-lock after a local sequence break and may partition canonical text across existing cues, but these text-only recoveries cannot become timing anchors or move cue timestamps.
+""" + "\n"
+              skill.write_text(text, encoding="utf-8")
+      - name: Remove staging files and workflow
+        run: |
+          rm -rf .tmp-v121
+          rm -f .github/workflows/apply-v121.yml
+      - name: Targeted regression tests
+        run: |
+          PYTHONPATH=. python scripts/test_v4_smart_sequence_frontier_guard.py
+          PYTHONPATH=. python scripts/test_v4_smart_sequence_reconcile.py
+          PYTHONPATH=. python scripts/test_v4_smart_pro_v111_regressions.py
+      - name: Commit production change
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "smart: preserve editor cue ownership during sequence recovery"
+          git push origin HEAD:agent/smart-v121-ownership-closeout
