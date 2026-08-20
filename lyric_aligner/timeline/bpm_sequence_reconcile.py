@@ -328,6 +328,45 @@ def _lexical_rows_by_source(
     return dict(result)
 
 
+def _adjacent_lexical_overlap_risk(
+    occurrence: TimedCanonicalOccurrence,
+    cue: SubtitleCue,
+    lexical_rows: Mapping[int, Sequence[TimedCanonicalOccurrence]],
+) -> bool:
+    """Block 1:1 recovery when editor text already owns an adjacent lyric fragment.
+
+    A mapped review cue may contain the end of the previous canonical row or the
+    beginning of the next one because editor cue boundaries and LRC line breaks
+    legitimately differ.  A single-row BPM recovery must not delete that
+    recognized adjacent fragment merely to make the cue equal one LRC row.
+    """
+
+    rows = list(lexical_rows.get(occurrence.source_ordinal, ()))
+    positions = {item.ordinal: index for index, item in enumerate(rows)}
+    pos = positions.get(occurrence.ordinal)
+    if pos is None:
+        return False
+    current = cue.normalized
+    if not current:
+        return False
+
+    if pos > 0:
+        previous = rows[pos - 1].normalized
+        limit = min(8, len(previous), len(current))
+        for count in range(limit, 1, -1):
+            if current.startswith(previous[-count:]):
+                return True
+
+    if pos + 1 < len(rows):
+        following = rows[pos + 1].normalized
+        limit = min(8, len(following), len(current))
+        for count in range(limit, 1, -1):
+            if current.endswith(following[:count]):
+                return True
+
+    return False
+
+
 def _bracketed_or_strict_leading_edge(
     cue_ordinal: int,
     canonical_ordinal: int,
@@ -455,6 +494,8 @@ def recover_text_reviews_from_bpm_projection(
         if _adjacent_claims_same(cue.ordinal, canonical_ordinal, output):
             continue
         if _split_continuation_risk(cue, occurrence, cues):
+            continue
+        if _adjacent_lexical_overlap_risk(occurrence, cue, lexical_rows):
             continue
         if _next_lexical_starts_inside_cue(occurrence, cue, model, lexical_rows):
             continue
