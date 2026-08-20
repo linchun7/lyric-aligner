@@ -233,6 +233,12 @@ text_bpm_projection_models
 smart-validation-policy-2026-08-20-v1.2.2
 ```
 
+### 3.11 v1.2.2 adjacent lexical ownership guard
+
+BPM 单行 recovery 还必须尊重 editor 已经识别出的跨 LRC 行 ownership：如果当前 review cue 的 normalized 开头与上一 lexical canonical 的尾部有至少 2 字连续重合，或 normalized 结尾与下一 lexical canonical 的开头有至少 2 字连续重合，则该 cue 不允许被单条 canonical 自动覆盖。此类情况继续 review，避免为了模仿 LRC 行边界而删除 editor 已存在的相邻歌词片段。
+
+该 guard 只减少自动 recovery 范围，不产生新的 canonical mapping，不改变 cue count/number/timing，也不获得 A/B timing authority。
+
 ## 4. Pro — Selective Audio Repair v1.1.1
 
 Pro 是 Smart unresolved 的局部声学层，仍保持：
@@ -291,6 +297,7 @@ Public CI 必须证明：
 - Sequence Projection 不足证据（<=3 strong / 不足 A / span 不足 / unstable residual）必须 fail closed；
 - frontier 遇到 timing discontinuity 必须停止，不能越过 cut/ad-lib 追 LRC；
 - BPM-derived text projection 必须由独立 baseline-safe anchors 验证；BPM 不一致、anchor 不足、split continuation、pure vocalization 等必须 fail closed；
+- BPM 单行 recovery 遇到 editor 已识别的上一行尾部/下一行开头 ownership 时必须 fail closed，不得删除相邻歌词片段；
 - BPM-recovered text 不增加主 timing anchor_count，不获得 timing mutation authority；
 - existing ready-model interior/song-edge recovery 不回归；
 - recovery 不降低 Text Repair threshold、不把 recovered text 变成 A timing anchor；
@@ -306,4 +313,4 @@ Smart final text materialization 增加 editor cue ownership guard。canonical �
 
 ### Smart v1.2.2 BPM text closeout
 
-BPM-derived rate 在 timing 层仍是 soft prior；只有被多条 baseline-safe text identities 独立验证后，才可建立**文字专用** projection。该 projection 只减少可证明的 mapped review，不做全块重分、不填 pure vocalization、不改变 cue timeline，且任何恢复结果都不能成为 A/B timing anchor。当前 policy 为 `smart-validation-policy-2026-08-20-v1.2.2`。
+BPM-derived rate 在 timing 层仍是 soft prior；只有被多条 baseline-safe text identities 独立验证后，才可建立**文字专用** projection。该 projection 只减少可证明的 mapped review，不做全块重分、不填 pure vocalization、不改变 cue timeline，且任何恢复结果都不能成为 A/B timing anchor。BPM 单行 recovery 还必须保留 editor 已识别出的相邻 canonical 前缀/后缀 ownership；命中该 guard 时继续 review。当前 policy 为 `smart-validation-policy-2026-08-20-v1.2.2`。
