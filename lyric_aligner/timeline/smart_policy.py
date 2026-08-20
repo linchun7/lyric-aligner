@@ -13,6 +13,7 @@ while trusted Jianying cue boundaries remain the display-segmentation prior.
 from __future__ import annotations
 
 import math
+from collections import Counter
 from dataclasses import asdict, replace
 from typing import Mapping, Sequence
 
@@ -187,11 +188,24 @@ def _bpm_prior_compatibility(
     models,
     metadata: Mapping[int, Mapping[str, object]] | None,
 ) -> dict[int, tuple[float, bool]]:
+    """Compare BPM only with a timing rate that was actually evidenced.
+
+    An ``insufficient_anchors`` model carries the structural placeholder rate
+    ``1.0`` with ``rate_source='none'``. Comparing that placeholder with BPM
+    creates a false diagnostic conflict, so compatibility remains not-evaluated
+    until the timing model has a real anchor-derived or explicit rate source.
+    """
+
     meta = metadata or {}
     result: dict[int, tuple[float, bool]] = {}
     for model in models:
         prior = meta.get(model.source_ordinal)
         if not prior or str(prior.get("provenance") or "") != "bpm_derived":
+            continue
+        if str(getattr(model, "rate_source", "none")) not in {
+            "robust_anchor_estimate",
+            "rate_prior",
+        }:
             continue
         try:
             value = float(prior.get("value"))
@@ -272,6 +286,63 @@ def _text_payload(text_decisions) -> list[dict[str, object]]:
     ]
 
 
+def _review_reason_counts(decisions) -> dict[str, int]:
+    counts = Counter(
+        str(item.reason)
+        for item in decisions
+        if str(item.action) == "review"
+    )
+    return dict(sorted(counts.items()))
+
+
+def _text_review_mapping_counts(text_decisions) -> tuple[int, int]:
+    mapped = 0
+    unmapped = 0
+    for item in text_decisions:
+        if item.action != "review":
+            continue
+        if item.canonical_span is None:
+            unmapped += 1
+        else:
+            mapped += 1
+    return mapped, unmapped
+
+
+def _timing_review_proposal_counts(
+    timing: Sequence[TimingDecision],
+) -> tuple[int, int]:
+    with_proposal = 0
+    without_proposal = 0
+    for item in timing:
+        if item.action != "review":
+            continue
+        if item.proposed_start_ms is not None or item.proposed_end_ms is not None:
+            with_proposal += 1
+        else:
+            without_proposal += 1
+    return with_proposal, without_proposal
+
+
+def _text_materialization_counts(
+    source_cues: Sequence[SubtitleCue],
+    text_repaired: str,
+) -> tuple[int, int]:
+    """Return exact-display and normalized-semantic text change counts."""
+
+    _, repaired_cues = parse_srt_text(text_repaired)
+    if len(repaired_cues) != len(source_cues):
+        raise AssertionError("Smart text materialization changed cue count")
+    exact = sum(
+        original.text != repaired.text
+        for original, repaired in zip(source_cues, repaired_cues)
+    )
+    semantic = sum(
+        original.normalized != repaired.normalized
+        for original, repaired in zip(source_cues, repaired_cues)
+    )
+    return exact, semantic
+
+
 def smart_repair_srt_text_v11(
     source_text: str,
     timed_canonical: Sequence[TimedCanonicalOccurrence],
@@ -340,6 +411,9 @@ def smart_repair_srt_text_v11(
     replacements.update(ownership_replacements)
 
     text_repaired = render_repaired_srt(parts, cues, replacements)
+    materialized_text_change_count, semantic_text_change_count = (
+        _text_materialization_counts(cues, text_repaired)
+    )
     text_payload = _text_payload(text_decisions)
 
     raw_timing, models = build_anchor_timing_plan(
@@ -356,6 +430,13 @@ def smart_repair_srt_text_v11(
 
     unresolved_count = sum(item.action == "review" for item in timing)
     text_review_count = sum(item.action == "review" for item in text_decisions)
+    mapped_text_reviews, unmapped_text_reviews = _text_review_mapping_counts(text_decisions)
+    timing_review_with_proposal, timing_review_without_proposal = (
+        _timing_review_proposal_counts(timing)
+    )
+    text_decision_replacement_count = sum(
+        item.action == "replace" for item in text_decisions
+    )
     report: dict[str, object] = {
         "schema_version": SMART_SCHEMA_VERSION,
         "policy_id": SMART_POLICY_ID,
@@ -364,7 +445,12 @@ def smart_repair_srt_text_v11(
         "cue_count": len(cues),
         "canonical_line_count": len(timed_canonical),
         "word_timed_canonical_count": sum(item.has_word_timing for item in timed_canonical),
-        "text_replacement_count": sum(item.action == "replace" for item in text_decisions),
+        # Backward-compatible legacy name: this is a decision count, not an
+        # exact rendered-SRT diff count.
+        "text_replacement_count": text_decision_replacement_count,
+        "text_decision_replacement_count": text_decision_replacement_count,
+        "text_materialized_change_count": materialized_text_change_count,
+        "text_semantic_change_count": semantic_text_change_count,
         "text_review_count_before_timing_recovery": text_review_count_before_recovery,
         "text_timing_recovery_count": recovery.resolved_cue_count,
         "text_timing_recovery_block_count": recovery.resolved_block_count,
@@ -381,9 +467,19 @@ def smart_repair_srt_text_v11(
         "text_editor_ownership_repartition_count": ownership_repartition_count,
         "text_sequence_projection_models": [asdict(item) for item in sequence_models],
         "text_review_count": text_review_count,
+        "text_mapped_review_count": mapped_text_reviews,
+        "text_unmapped_review_count": unmapped_text_reviews,
+        "text_review_reason_counts": _review_reason_counts(text_decisions),
+        "text_status": "review_required" if text_review_count else "ready",
         "timing_repair_count": sum(item.action == "repair" for item in timing),
         "timing_review_count": unresolved_count,
+        "timing_review_with_proposal_count": timing_review_with_proposal,
+        "timing_review_without_proposal_count": timing_review_without_proposal,
+        "timing_review_reason_counts": _review_reason_counts(timing),
         "timing_validated_preserve_count": sum(item.action == "preserve" for item in timing),
+        "timing_status": "review_required" if unresolved_count else "ready",
+        "pro_text_escalation_required": bool(text_review_count),
+        "pro_timing_escalation_required": bool(unresolved_count),
         "pro_escalation_required": bool(unresolved_count or text_review_count),
         "status": "review_required" if (unresolved_count or text_review_count) else "ready",
         "models": _model_payload(models, rate_prior_metadata_by_source, bpm_compatibility),
