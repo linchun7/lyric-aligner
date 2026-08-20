@@ -269,3 +269,8 @@ Public CI 必须证明：
 - Python/ASR environment 与 legacy tests 全部继续通过。
 
 Private real-song calibration 仍是新的 Sequence Projection false-auto 风险的重要验收。真实任务发现的新 failure pattern 应继续转换成**通用、合成、无任务数据硬编码**的 regression；不得为了提高覆盖率把歌曲名、cue 编号、真实时间戳或真实歌词写进 production algorithm/public test。
+
+### Smart v1.2.1 ownership closeout
+
+Smart final text materialization 现在增加 editor cue ownership guard。canonical 继续拥有文字/顺序权威，但 line-LRC 行边界不能单独把原 editor 已识别的短语跨 cue 搬移。该 guard 只修复 sequence/text-repair 已产生的局部边界搬移或短重复，不扩大 canonical recovery 范围，不改变时间轴，不提升 timing authority。当前 Smart policy id 为 `smart-validation-policy-2026-08-20-v1.2.1`。
+
