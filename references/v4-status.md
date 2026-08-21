@@ -1,6 +1,6 @@
 # Lyric Aligner v4 当前实施状态
 
-更新日期：2026-08-21  
+更新日期：2026-08-22  
 主线算法版本：`4.0.0a9`
 
 > P3 前完整历史状态见 `references/archive/2026-08-19-pre-p3-v4-status.md`。真实生产设计基线见 `references/production-requirements.md`。Smart / Pro 细节见 `references/smart-pro-v1-1.md`。
@@ -132,7 +132,7 @@ sequence_projection_confirms_bounded_canonical
 - 当前 cue 第一 projected canonical onset 必须在 `900ms` 内；
 - multi-line frontier assignment 还要求 editor/canonical text similarity `>= 0.42`，避免仅凭时间把多条歌词塞进一个弱 cue；
 - 一旦下一 canonical onset 与下一 editor cue start 的 boundary delta `>1600ms`，当前已证明 cue 可完成后立即停止；
-- 遇到另一个 strong anchor、非单调 editor time、或没有合格候选时立即停止；
+- 遇到另一 strong anchor、非单调 editor time、或没有合格候选时立即停止；
 - 不跳过 break 去寻找更远 canonical match。
 
 成功 reason：
@@ -314,6 +314,12 @@ Full V4 继续作为 heavy fallback：coarse/Fine/cut/transition/overlap/ASR/for
 
 Max 也必须遵守 segmentation authority：**更重的 evidence 不等于 LRC 行换行天然拥有最终 subtitle segmentation authority。** line-LRC 只能提供 line onset/grouping；要推翻可信 editor cue boundary，需要 word/token/audio 等独立证据。
 
+### 5.1 Canonical preflight / TrackAsset compatibility
+
+Max asset resolution 与 `text/canonical_lyrics.py` 共享 consumer-LRC 的 non-lyric classification：timestamped credits、role labels、首秒 title-like `artist - title` 行、以及清洗后为空的 timing-only group 不进入 canonical selection。metadata-only/blank group 本身不再导致 `canonical original` ambiguity；如果同一 timestamp 仍存在两个或更多真正 lexical alternatives 且无法由 language-native identity 或 explicit override 唯一确定 original，则继续 fail closed。explicit override 仍不得选择 metadata。
+
+这只是让 Max 的 TrackAsset preflight 与已经在 Smart/canonical parser 使用的真源过滤语义一致，不新增 source/occurrence/timing authority，也不证明 Max 已能解决任何 Smart hard-tail。真实任务必须在该 preflight 修复合并后重新跑完整 Max 才能评估 reconstruction 上限。
+
 ## 6. Legacy Partial Timeline Repair P1–P5
 
 旧 formal calibration/P9 proposal chain 不被 Smart/Pro 替换，继续固定：
@@ -349,6 +355,7 @@ Public CI 必须证明：
 - exact DAW hard prior / BPM-derived soft prior 的 timing authority 语义不变；
 - Pro 必须接受当前 Smart v1.2.5 policy，并拒绝 v1.2.4 literal stale policy；
 - Enhanced LRC open-ended token、adaptive source window、ASR-only region、max-jobs、path collision、source-I/O 继续不回归；
+- Max TrackAsset preflight 必须忽略 metadata/title/role-label/blank-only timestamp groups，同时真正的 same-timestamp lexical ambiguity 继续 fail closed；
 - Python/ASR environment 与 legacy tests 全部继续通过。
 
 Private real-song calibration 仍是 text recovery false-auto 风险的重要验收。真实任务发现的新 failure pattern 应继续转换成**通用、合成、无任务数据硬编码**的 regression；不得为了提高覆盖率把歌曲名、cue 编号、真实时间戳或真实歌词写进 production algorithm/public test。
