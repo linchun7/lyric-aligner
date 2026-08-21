@@ -264,3 +264,19 @@ This maintenance patch does not change evidence routing, acoustic/ASR/forced thr
 - public synthetic regression explicitly proves a current v1.2.5 report is accepted and a literal v1.2.4 policy report is rejected as stale.
 
 Future Smart promotions now update one `smart_current.py` binding instead of separately updating the CLI, Pro gate and tests, eliminating the self-consistent stale-version failure mode that triggered this maintenance review.
+
+## 2026-08-22 — Max canonical preflight metadata-only compatibility
+
+The frozen 190 Max capability experiment stopped before reconstruction because `assets/lyric_roles.py` treated timestamp groups containing only non-lyric metadata as if they were ambiguous canonical-original groups. `text/canonical_lyrics.py` already ignored the same consumer-LRC decoration, so the Max TrackAsset preflight and the canonical parser had diverged.
+
+This maintenance fix aligns those two contracts without expanding alignment authority:
+
+- role preflight now reuses `is_metadata_text()` and `is_title_like_intro()` from the shared canonical normalization layer;
+- timing-only/blank and metadata/title/role-label-only timestamp groups are excluded from canonical selection rather than forcing a missing-original BLOCK;
+- a timestamp containing genuine lexical alternatives still requires exactly one safe original (language-native disambiguation or explicit override) and otherwise fails closed;
+- explicit overrides still cannot select metadata;
+- TrackAsset schema remains `1.1`; canonical-selection hashing continues to cover only selected lexical originals;
+- role diagnostics add `ignored_blank_group_count` and `ignored_metadata_group_count` for auditability;
+- Smart, Pro, text/timing thresholds, evidence routing, timing mutation authority, and forced-alignment configuration are unchanged.
+
+Public regression uses generic synthetic LRC only and covers metadata-only groups, early title rows, role labels, blank Enhanced-LRC timing groups, same-timestamp metadata+lyric selection, and asset-resolver integration. The immutable production tag `prod-smart-v1.2.5-pro-v1.1.4-20260821` remains on `56841c40d6a90101efe1da568e2d5c2e5e67a0a2`; the private 190 Max experiment must be rerun after merge before any claim that Max can now resolve the Smart hard tail or reorder region.
