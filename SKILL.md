@@ -91,6 +91,8 @@ Text Repair V2.1 safe baseline
     -> 不重新建立 timing model / 不重新计算 timing decisions
 ```
 
+生产代码中的“当前 Smart”必须通过 `lyric_aligner.timeline.smart_current` 这个稳定 facade 消费。`smart_policy.py` / `smart_policy_v125.py` 是版本化 base/implementation，不允许 Smart CLI、Pro gate 或测试各自从版本化模块猜 current policy。
+
 #### Smart timing authority
 
 Smart 使用 canonical timing、A-anchor majority、可用的逐字 timing 和可选 rate prior：
@@ -232,7 +234,7 @@ python scripts/v4_pro_selective.py ...
 
 Pro v1.1.4 必须绑定**当前 Smart schema + current Smart policy + exact Smart SRT/canonical hashes**。当前只接受 `schema_version=smart-1.1` 且 `policy_id=smart-validation-policy-2026-08-21-v1.2.5`；v1.2.4 及更早 Smart artifact 不能直接复用，版本/policy/hash 不匹配时先重新跑当前 Smart。
 
-实现上，Smart schema 仍由冻结 base contract 提供；“current production Smart policy id”必须来自 `smart_policy_v125.py`。不要从旧 `smart_policy.py` 的 v1.2.4 常量推断当前生产 policy。
+实现上，`smart_policy.py` 是 frozen v1.2.4 base contract，`smart_policy_v125.py` 是版本化 v1.2.5 wrapper；**`smart_current.py` 才是唯一 current-production Smart facade**。Smart CLI 与 Pro compatibility gate 都必须从它取得当前 schema/policy/function binding，不能从旧版本模块的常量推断 current policy。
 
 Pro 按失败原因选择局部 evidence：
 
@@ -376,6 +378,7 @@ references/v4-change-record.md
 28. **Editor ownership restoration 不是新的 canonical/timing authority。** 它只允许在已有 canonical text stream 内修正相邻 cue 的边界归属；普通移动保持 pair-combined text invariant，窄 duplicate drop 也不得扩张为一般删除规则。
 29. **`review_required` 不是 final-ready。** unresolved editor ASR 可以保留用于诊断，但不能被描述成“规范歌词已全部校正”。
 30. **BPM-derived text evidence 仍必须 fail closed。** 没有足够 baseline-safe anchors、occurrence 不唯一、split/邻 cue 冲突或 pure vocalization 时，不得为了降低 review 数量强行自动修复。
+31. **Current Smart binding 只有一个真源：`smart_current.py`。** Smart CLI、Pro compatibility gate 和 current-policy tests 都不得直接绑定某个历史版本模块。
 
 ## 权威文档
 
