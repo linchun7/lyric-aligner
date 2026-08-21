@@ -172,6 +172,14 @@ class SelectivePolicyV11Tests(unittest.TestCase):
             [job["selection_tier"] for job in primary],
             ["text_review", "timing_review_with_proposal"],
         )
+        # Text identity review and concrete timing proposals share the same
+        # high-value budget tier; only timing review without a proposal is
+        # deliberately deferred behind them.
+        self.assertEqual([job["priority"] for job in primary], ["high", "high"])
+        self.assertEqual(
+            plan["summary"]["selection_policy"],
+            "text_or_concrete_timing_before_unproposed_timing",
+        )
         self.assertEqual(plan["summary"]["primary_candidate_job_count"], 4)
         self.assertEqual(plan["summary"]["primary_deferred_due_to_max_jobs"], 2)
         self.assertTrue(plan["summary"]["plan_truncated"])
