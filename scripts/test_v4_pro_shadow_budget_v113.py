@@ -9,7 +9,7 @@ from lyric_aligner.alignment.selective_policy import (
 from lyric_aligner.alignment.selective_repair import SelectiveRepairConfig
 from lyric_aligner.text_repair import SubtitleCue
 from lyric_aligner.timeline.anchor_repair import TimedCanonicalOccurrence
-from lyric_aligner.timeline.smart_policy import SMART_POLICY_ID, SMART_SCHEMA_VERSION
+from lyric_aligner.timeline.smart_current import SMART_POLICY_ID, SMART_SCHEMA_VERSION
 
 
 def _cue(ordinal: int, start_ms: int, end_ms: int, text: str) -> SubtitleCue:
@@ -83,7 +83,7 @@ class ProShadowBudgetV113Tests(unittest.TestCase):
 
         primary = [job for job in plan["jobs"] if not job.get("shadow_evidence_only")]
         shadow = [job for job in plan["jobs"] if job.get("shadow_evidence_only")]
-        self.assertEqual(PRO_V11_POLICY_ID, "smart-to-pro-reason-aware-2026-08-21-v1.1.3")
+        self.assertEqual(PRO_V11_POLICY_ID, "smart-to-pro-reason-aware-2026-08-21-v1.1.4")
         self.assertEqual(len(primary), 1)
         self.assertEqual(len(shadow), 1)
         self.assertEqual(plan["summary"]["job_count"], 2)
