@@ -4,6 +4,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from lyric_aligner.text.canonical_lyrics import parse_canonical_lyrics
 from lyric_aligner.text_repair import parse_canonical_files, repair_srt_text
 
 
@@ -31,6 +32,24 @@ class V4TextRepairHardeningTests(unittest.TestCase):
         self.assertEqual(report["coverage_warning_count"], 1)
         self.assertEqual(report["review_count"], 0)
         self.assertEqual(report["unmatched_canonical"][0]["text"], "第二句")
+
+    def test_timed_metadata_contract_matches_smart_canonical_parser(self):
+        with tempfile.TemporaryDirectory() as directory:
+            lyric = Path(directory) / "metadata.lrc"
+            lyric.write_text(
+                "[00:00.10]Demo Artist - Demo Title\n"
+                "[00:00.20]监制：某甲\n"
+                "[00:00.30]Voice 1:\n"
+                "[00:01.20]第一句歌词\n"
+                "[00:02.20]出品以后仍然前行\n",
+                encoding="utf-8",
+            )
+            standard = parse_canonical_files([lyric])
+            smart = parse_canonical_lyrics(lyric)
+
+        expected = ["第一句歌词", "出品以后仍然前行"]
+        self.assertEqual([line.text for line in standard], expected)
+        self.assertEqual([line.text for line in smart], expected)
 
     def test_multiple_lrc_timestamps_are_sorted_by_occurrence_time(self):
         with tempfile.TemporaryDirectory() as directory:
