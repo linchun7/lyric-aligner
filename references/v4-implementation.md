@@ -499,3 +499,15 @@ Public CI 不能证明真实歌曲 false-auto。每次 private real-song failure
 
 `ownership_guard` has two distinct permissions. `boundary_move` remains Sequence-reconciliation-only. `duplicate_drop` may run for a Sequence pair **or** when at least one adjacent cue has a materialized upstream `replace` whose normalized `output_text` exactly equals the current working text and differs from the original editor cue. The duplicate must still be 2-6 normalized characters, be present on both sides, be assigned to only one side by the original editor recognition, improve pair similarity, and leave both cues non-empty. This keeps the guard from acting as a free-standing baseline editor while preserving Text Repair duplicates that the guard historically removed.
 
+### Pro v1.1.2 reason-aware selection budget fix
+
+`build_selective_repair_plan_v11()` 不再把 legacy base planner 的 pre-routing `max_jobs` 截断当成最终 candidate 集。它先用扩大到本任务 cue 数的内部 planning config 建完整 unresolved pool，再读取 Smart `timing_decisions[].proposed_start_ms/proposed_end_ms` 与 text-review 状态，对 primary jobs 赋 selection tier：
+
+```text
+0 text_review_with_timing_proposal
+1 text_review / timing_review_with_proposal
+2 timing_review_without_proposal
+```
+
+按 tier、cue ordinal、job id 稳定排序后才应用用户原始 `max_jobs`。只有被选中的 primary job 才能占用 shadow boundary competitor slot。Plan summary 记录 candidate/deferred/tier counts；后端路由、局部 acoustic/ASR/forced 算法和证据阈值完全不变。
+
