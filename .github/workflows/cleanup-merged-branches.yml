@@ -36,6 +36,21 @@ jobs:
             "agent/v4-whisperx-reference-adapter"
             "agent/v4-windows-validation-fix"
             "agent/final-branch-cleanup"
+            "agent/partial-timeline-repair-v1"
+            "agent/runtime-export-20260820"
+            "agent/smart-canonical-metadata-parser-fix"
+            "agent/smart-v121-ownership-closeout"
+            "agent/smart-v122-calibration"
+            "agent/smart-v122-calibration-impl"
+            "agent/smart-v122-calibration-work"
+            "agent/smart-v122-final"
+            "agent/smart-v122-final2"
+            "agent/smart-v122-final3"
+            "agent/smart-v122-final4"
+            "agent/smart-v122-final5"
+            "agent/smart-v124-acceptance-fix-20260821"
+            "agent/sync-skill-smart-v121-20260820"
+            "tmp/export-final-main-20260821"
           )
           for branch in "${branches[@]}"; do
             if git ls-remote --exit-code --heads origin "refs/heads/${branch}" >/dev/null 2>&1; then
