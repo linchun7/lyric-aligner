@@ -1,0 +1,30 @@
+name: tmp-export-final-main
+
+on:
+  push:
+    branches:
+      - tmp/export-final-main-20260821
+
+permissions:
+  contents: read
+
+jobs:
+  export:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: 2fcdc40a7a013d5e8c6ca449b01a95334a122948
+      - name: Record commit
+        run: git rev-parse HEAD > FINAL_MAIN_SHA.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: lyric-aligner-final-main-2fcdc40
+          path: |
+            lyric_aligner
+            scripts
+            requirements.txt
+            requirements-dev.txt
+            FINAL_MAIN_SHA.txt
+          if-no-files-found: error
+          retention-days: 1
