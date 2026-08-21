@@ -1,6 +1,6 @@
 # Lyric Aligner v4 当前实施状态
 
-更新日期：2026-08-20  
+更新日期：2026-08-21  
 主线算法版本：`4.0.0a9`
 
 > P3 前完整历史状态见 `references/archive/2026-08-19-pre-p3-v4-status.md`。真实生产设计基线见 `references/production-requirements.md`。Smart / Pro 细节见 `references/smart-pro-v1-1.md`。
@@ -9,7 +9,7 @@
 
 ```text
 Standard -> Text Repair V2.1
-Smart    -> Canonical Sequence Reconciliation + Anchor Timeline Repair v1.2.2（no-audio）
+Smart    -> Canonical Sequence Reconciliation + Anchor Timeline Repair v1.2.4（no-audio）
 Pro      -> Selective Audio Repair（局部 audio evidence）
 Max      -> Full V4 Alignment
 ```
@@ -32,7 +32,7 @@ Max      -> Full V4 Alignment
 - production `auto-threshold >= 0.72`；
 - report schema `2.1`。
 
-## 3. Smart — Sequence Reconciliation + Anchor Timeline Repair v1.2.2
+## 3. Smart — Sequence Reconciliation + Anchor Timeline Repair v1.2.4
 
 Smart 是日常主力 no-audio 模式：**大部分信剪映 timing，但 canonical lyric 始终是最终文字/顺序 truth。**
 
@@ -197,6 +197,8 @@ text_review_count
 - sequence/timing/BPM recovered text 不倒灌成 A/B timing anchor；
 - 自动 timing repair 必须满足 leave-one-out、最大 shift、no-new-overlap 与 combined-overlap guard。
 
+Primary timing `models[].status=ready` 的含义仅为 model 可用于 prediction；它不是自动 timing mutation 的独立授权。report 同时输出 `prediction_ready` 和 `status_semantics=prediction_readiness_not_auto_repair_authority`，最终 mutation 仍必须通过 cue 级 identity、residual、shift、BPM conflict 和 overlap 等 gate。
+
 ### 3.9 Output safety
 
 Smart CLI 在任何 artifact write 前检查 source SRT、canonical lyrics、output SRT、report 的解析路径；任何 output-input 或 output-output 碰撞 fail closed。
@@ -211,7 +213,7 @@ BPM 仍然不是 timing authority。新增 `timeline/bpm_sequence_reconcile.py` 
 - anchor 只能来自 Text Repair 已安全成立的 1:1 baseline decision，不消费 timing/sequence/BPM 自己恢复的文字，避免循环自证；
 - 至少 3 个安全 anchor，`750ms` inlier fraction `>=0.75`，source/mix span 均 `>=8s`，inlier median residual `<=300ms`；
 - safe-anchor pairwise affine rate 与 BPM-derived rate 相对误差 `<=2.5%`，且 cue/canonical 顺序单调；否则整个 BPM text projection fail closed；
-- 只恢复**已经映射到单条 canonical 的 review cue**，不靠 BPM 猜 unmapped cue，也不做整段 LRC repartition；
+- v1.2.2 mapped 1:1 tier 只恢复已经映射到单条 canonical 的 review cue；v1.2.3 起另有更严格 bilateral bounded-stream tier，可在同源双侧 safe anchors 内处理满足安全条件的 unmatched interior cue；
 - candidate onset 默认需在 projection `450ms` 内；极低 lexical score `<0.20` 时收紧到 `220ms`；
 - 相邻 cue 共同 claim 同一 canonical、明显 split continuation、下一条 lexical canonical 已在当前 cue 内开始等场景继续 review，避免把一整行/下一行强塞进当前格；
 - interior candidate 必须由同源 inlier anchors 夹住；song-start 只开放最多 2 条紧邻 first inlier 的 lexical leading edge，不开放泛化 trailing chase；
@@ -230,7 +232,7 @@ text_bpm_projection_models
 当前 Smart policy id：
 
 ```text
-smart-validation-policy-2026-08-20-v1.2.2
+smart-validation-policy-2026-08-21-v1.2.4
 ```
 
 ### 3.11 v1.2.2 adjacent lexical ownership guard
@@ -238,6 +240,14 @@ smart-validation-policy-2026-08-20-v1.2.2
 BPM 单行 recovery 还必须尊重 editor 已经识别出的跨 LRC 行 ownership：如果当前 review cue 的 normalized 开头与上一 lexical canonical 的尾部有至少 2 字连续重合，或 normalized 结尾与下一 lexical canonical 的开头有至少 2 字连续重合，则该 cue 不允许被单条 canonical 自动覆盖。此类情况继续 review，避免为了模仿 LRC 行边界而删除 editor 已存在的相邻歌词片段。
 
 该 guard 只减少自动 recovery 范围，不产生新的 canonical mapping，不改变 cue count/number/timing，也不获得 A/B timing authority。
+
+### 3.12 v1.2.4 maintenance review hardening
+
+- report mapped/unmapped review 统计与 BPM bounded-stream 的 unmatched 语义统一：`None` 与 zero-width canonical span 都是 unmapped；
+- ownership final guard 只有在相邻 pair 至少一侧来自 Sequence reconciliation 时才有 boundary move / duplicate-drop 权限；普通 baseline pair 即使出现短重复也 fail closed；
+- `_eligible_pair()` 删除不可达旧分支，只保留实际权限条件；
+- bounded-stream rejected candidate 不计入 unmapped recovery counter；当前 production 实现已满足该语义，本轮用 regression 锁定而不改算法；
+- 所有变更均为既有 v1.2.4 权限收紧/报告修正，不新增 recovery tier、不降低阈值、不改变 cue/timing。
 
 ## 4. Pro — Selective Audio Repair v1.1.1
 
@@ -254,7 +264,7 @@ schema_version = smart-1.1
 policy_id      = current Smart production policy
 ```
 
-因此任何旧 Smart policy artifact 在 v1.2.2 后都自动 stale，必须重跑当前 Smart。
+因此任何旧 Smart policy artifact 在当前 v1.2.4 前都必须按当前 policy 重跑 Smart 后再进入 Pro。
 
 reason-aware routing：
 
@@ -299,6 +309,8 @@ Public CI 必须证明：
 - BPM-derived text projection 必须由独立 baseline-safe anchors 验证；BPM 不一致、anchor 不足、split continuation、pure vocalization 等必须 fail closed；
 - BPM 单行 recovery 遇到 editor 已识别的上一行尾部/下一行开头 ownership 时必须 fail closed，不得删除相邻歌词片段；
 - BPM-recovered text 不增加主 timing anchor_count，不获得 timing mutation authority；
+- ownership duplicate-drop 不得作用于非 Sequence reconciliation pair；
+- zero-width review span 必须按 unmapped 统计；rejected bounded candidate 不得增加 unmapped recovery counter；
 - existing ready-model interior/song-edge recovery 不回归；
 - recovery 不降低 Text Repair threshold、不把 recovered text 变成 A timing anchor；
 - exact DAW hard prior / BPM-derived soft prior 的 timing authority 语义不变；
@@ -313,11 +325,11 @@ Smart final text materialization 增加 editor cue ownership guard。canonical �
 
 ### Smart v1.2.2 BPM text closeout
 
-BPM-derived rate 在 timing 层仍是 soft prior；只有被多条 baseline-safe text identities 独立验证后，才可建立**文字专用** projection。该 projection 只减少可证明的 mapped review，不做全块重分、不填 pure vocalization、不改变 cue timeline，且任何恢复结果都不能成为 A/B timing anchor。BPM 单行 recovery 还必须保留 editor 已识别出的相邻 canonical 前缀/后缀 ownership；命中该 guard 时继续 review。当前 policy 为 `smart-validation-policy-2026-08-20-v1.2.2`。
+BPM-derived rate 在 timing 层仍是 soft prior；只有被多条 baseline-safe text identities 独立验证后，才可建立**文字专用** projection。该 projection 只减少可证明的 mapped review；v1.2.3 另有严格 bilateral bounded-stream 处理满足证据门槛的 interior unmatched cue。两条路径都不填 pure vocalization、不改变 cue timeline，且任何恢复结果都不能成为 A/B timing anchor。BPM 单行 recovery 还必须保留 editor 已识别出的相邻 canonical 前缀/后缀 ownership；命中该 guard 时继续 review。当前 policy 为 `smart-validation-policy-2026-08-21-v1.2.4`。
 
-### Smart v1.2.2 report semantics closeout
+### Smart report semantics closeout
 
-当前 v1.2.2 自动修复 authority 不变，但 report 现在明确区分：
+当前 v1.2.4 自动修复 authority 不变，但 report 明确区分：
 
 ```text
 text_decision_replacement_count  = MatchDecision.action == replace
@@ -325,9 +337,9 @@ text_materialized_change_count   = 最终 text-only SRT 与 editor 原文逐 cue
 text_semantic_change_count       = normalized lyric 语义变化
 ```
 
-同时输出 `text_mapped_review_count / text_unmapped_review_count / text_review_reason_counts`，以及 `timing_review_with_proposal_count / timing_review_without_proposal_count / timing_review_reason_counts`。`text_status` 与 `timing_status` 分轴报告；legacy strict `status` 仍只有两轴都 ready 才为 ready。
+同时输出 `text_mapped_review_count / text_unmapped_review_count / text_review_reason_counts`，其中 `None` 与 zero-width canonical span 都属于 unmapped；并输出 `timing_review_with_proposal_count / timing_review_without_proposal_count / timing_review_reason_counts`。`text_status` 与 `timing_status` 分轴报告；legacy strict `status` 仍只有两轴都 ready 才为 ready。
 
-BPM compatibility 只对有真实 rate evidence 的 timing model 评估；`insufficient_anchors` + `rate_source=none` 的 placeholder rate 现在显示 `bpm_prior_compatible=null`，不再伪装成 BPM 冲突。
+BPM compatibility 只对有真实 rate evidence 的 timing model 评估；`insufficient_anchors` + `rate_source=none` 的 placeholder rate 显示 `bpm_prior_compatible=null`。Primary timing model 另外输出 `prediction_ready` 与 `status_semantics`，避免把 model-level `ready` 误解为自动 timing repair 已授权。
 
 ## Smart v1.2.3 bounded-stream closeout
 
@@ -335,4 +347,4 @@ Smart now has two BPM-derived text-only recovery tiers: conservative mapped 1:1 
 
 ## Smart v1.2.4 production-acceptance closeout
 
-Smart v1.2.4 hardens the bounded-stream tier after a private 578-cue acceptance rerun: production zero-width unmatched spans are recognized, mapped reviews cannot absorb adjacent canonical rows, and Latin/mixed bounded repartition fails closed until token-aware display layout is implemented. These changes do not increase timing authority, do not alter cue count/timing, and do not lower the v1.2.2 mapped 1:1 recovery thresholds.
+Smart v1.2.4 hardens the bounded-stream tier after a private 578-cue acceptance rerun: production zero-width unmatched spans are recognized, mapped reviews cannot absorb adjacent canonical rows, and Latin/mixed bounded repartition fails closed until token-aware display layout is implemented. The maintenance review additionally keeps zero-width report semantics consistent and restricts ownership duplicate-drop to the reconciliation scope that originally justified the guard. These changes do not increase timing authority, do not alter cue count/timing, and do not lower the v1.2.2 mapped 1:1 recovery thresholds.
