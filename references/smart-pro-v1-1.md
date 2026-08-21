@@ -227,13 +227,18 @@ schema_version = smart-1.1
 policy_id      = smart-validation-policy-2026-08-21-v1.2.5
 ```
 
-The frozen `smart_policy.py` remains the base implementation/schema contract and
-still contains the v1.2.4 base policy id; it is not the current production-policy
-source. Pro v1.1.4 obtains current `SMART_POLICY_ID` from `smart_policy_v125.py`.
-Therefore v1.2.4 and earlier Smart reports are stale and must be rerun. Pro only
-handles Smart-unresolved cues; it does not automatically catch Smart false-ready
-results, which is why segmentation/sequence/authority regressions are Smart
-release tests.
+Versioned Smart modules remain historical implementations: `smart_policy.py`
+is the frozen v1.2.4 base contract and `smart_policy_v125.py` is the v1.2.5
+wrapper implementation. `smart_current.py` is the **only current-production
+facade**; it currently binds schema `smart-1.1`, policy v1.2.5 and the v1.2.5
+repair function. Both the Smart CLI and Pro v1.1.4 import through this facade.
+Therefore a future Smart promotion changes one current binding instead of
+independently changing multiple consumers. v1.2.4 and earlier Smart reports are
+stale and must be rerun.
+
+Pro only handles Smart-unresolved cues; it does not automatically catch Smart
+false-ready results, which is why segmentation/sequence/authority regressions
+are Smart release tests.
 
 Nearby acoustic review cues are assigned to merged mix regions. ASR-only jobs do
 not widen an acoustic region. Source windows use token timing / next canonical
