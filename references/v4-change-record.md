@@ -206,3 +206,8 @@ v1.2.2 新增 `timeline/bpm_sequence_reconcile.py`，只处理已经存在 canon
 - primary timing `models[].status` 保持兼容，但 report 增加 `prediction_ready` 与 `status_semantics=prediction_readiness_not_auto_repair_authority`，明确 `ready` 只表示模型可用于 prediction，不等于单独授权 timing mutation；
 - bounded-stream 的 unmapped recovery counter 经复核现有实现已经只在候选通过全部 gate 后累计，因此不改 production logic，只增加 fail-closed regression，锁定 rejected candidate 不计数；
 - policy id、schema、cue/timing authority 与所有现有恢复阈值保持 v1.2.4 不变。
+
+## 2026-08-21 - Smart v1.2.4 final-acceptance ownership regression fix
+
+Final 578-cue acceptance of the maintenance-only #56 change exposed an over-tight ownership scope. Boundary movement remains Sequence-only, but duplicate-drop must also repair a short boundary duplicate when an existing upstream `replace` decision itself materialized the changed text and the original editor recognition proves ownership on the other side. The guard now requires the current changed text to normalized-match that decision's own `output_text`; arbitrary baseline text cannot activate the path. This restores the established Text Repair duplicate cleanup without adding a new recovery tier, changing timing authority, or relaxing any text/BPM threshold. Public regression uses synthetic text only.
+
