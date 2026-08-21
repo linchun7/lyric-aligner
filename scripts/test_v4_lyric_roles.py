@@ -61,6 +61,60 @@ class V4LyricRoleTests(unittest.TestCase):
             result = inspect_lyric_roles(path, language="en", original_index_overrides={1000: 1})
             self.assertEqual([row["role"] for row in result["groups"][0]["alternatives"]], ["unknown", "original"])
 
+    def test_metadata_only_timestamp_groups_are_ignored_not_ambiguous(self):
+        result = self.inspect(
+            "[00:01.00]作词：匿名作者\n"
+            "[00:02.00]编曲：匿名制作\n"
+            "[00:10.00]第一句歌词\n",
+            "zh",
+        )
+        self.assertEqual(result["canonical_original_count"], 1)
+        self.assertEqual(result["timestamp_group_count"], 3)
+        self.assertEqual(result["lexical_timestamp_group_count"], 1)
+        self.assertEqual(result["ignored_metadata_group_count"], 2)
+        self.assertEqual(result["groups"][0]["timestamp_ms"], 10_000)
+
+    def test_title_role_label_and_blank_groups_follow_canonical_filtering(self):
+        result = self.inspect(
+            "[00:00.10]匿名歌手 - 匿名歌名\n"
+            "[00:02.00]Singer Name:\n"
+            "[00:03.00]<00:03.00>\n"
+            "[00:10.00]真实歌词\n",
+            "zh",
+        )
+        self.assertEqual(result["canonical_original_count"], 1)
+        self.assertEqual(result["timestamp_group_count"], 3)
+        self.assertEqual(result["lexical_timestamp_group_count"], 1)
+        self.assertEqual(result["ignored_metadata_group_count"], 2)
+        self.assertEqual(result["ignored_blank_group_count"], 1)
+        self.assertEqual([group["timestamp_ms"] for group in result["groups"]], [10_000])
+
+    def test_metadata_and_lexical_same_timestamp_keeps_lexical_index(self):
+        result = self.inspect(
+            "[00:10.00]制作人：匿名\n"
+            "[00:10.00]真实歌词\n",
+            "zh",
+        )
+        alternatives = result["groups"][0]["alternatives"]
+        self.assertEqual([row["role"] for row in alternatives], ["metadata", "original"])
+        self.assertEqual(result["timestamp_group_count"], 1)
+        self.assertEqual(result["lexical_timestamp_group_count"], 1)
+        self.assertEqual(result["ignored_metadata_group_count"], 0)
+
+    def test_metadata_only_group_cannot_be_forced_back_by_override(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "song.lrc"
+            path.write_text(
+                "[00:01.00]制作人：匿名\n[00:10.00]真实歌词\n",
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(LyricRoleError, "selects metadata"):
+                inspect_lyric_roles(
+                    path,
+                    language="zh",
+                    original_index_overrides={1000: 0},
+                )
+
 
 if __name__ == "__main__":
     unittest.main()

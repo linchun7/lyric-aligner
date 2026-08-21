@@ -96,6 +96,42 @@ class V4AssetResolverTests(unittest.TestCase):
             with self.assertRaises(AssetResolutionError):
                 resolve_assets(song_list=songs, lyrics_dir=lyrics, source_audio_dir=audio)
 
+    def test_consumer_lrc_metadata_groups_do_not_block_asset_resolution(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            lyrics, audio = self.make_dirs(root)
+            songs = root / "songs.txt"
+            songs.write_text("00:00 Artist - Signal\n", encoding="utf-8")
+            (lyrics / "Artist - Signal.lrc").write_text(
+                "[00:00.10]Artist - Signal\n"
+                "[00:01.00]作词：匿名作者\n"
+                "[00:02.00]Singer Name:\n"
+                "[00:03.00]<00:03.00>\n"
+                "[00:10.00]第一句歌词\n"
+                "[00:20.00]第二句歌词\n",
+                encoding="utf-8",
+            )
+            (audio / "Artist - Signal.wav").write_bytes(b"source-version")
+
+            payload = resolve_assets(
+                song_list=songs,
+                lyrics_dir=lyrics,
+                source_audio_dir=audio,
+                language_by_track={"Artist - Signal": "zh"},
+            )
+
+            resolution = payload["resolution"][0]
+            self.assertEqual(
+                [item["timestamp_ms"] for item in resolution["canonical_selection"]],
+                [10_000, 20_000],
+            )
+            self.assertEqual(
+                resolution["lyric_roles"]["ignored_metadata_group_count"], 3
+            )
+            self.assertEqual(
+                resolution["lyric_roles"]["ignored_blank_group_count"], 1
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

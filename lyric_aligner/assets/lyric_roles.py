@@ -8,7 +8,11 @@ from pathlib import Path
 from typing import Iterable
 
 from lyric_aligner.io.text import read_task_text
-from lyric_aligner.text.normalization import META_RE, clean_text
+from lyric_aligner.text.normalization import (
+    clean_text,
+    is_metadata_text,
+    is_title_like_intro,
+)
 
 LRC_LINE_RE = re.compile(r"\[(\d{1,3}):(\d{2})(?:[.:](\d{1,3}))?\](.*)")
 QRC_LINE_RE = re.compile(r"^\[(\d+),(\d+)\](.*)$")
@@ -107,7 +111,16 @@ def classify_alternatives(
     if not cleaned:
         return []
 
-    roles = ["metadata" if META_RE.match(text) else "unknown" for text in cleaned]
+    # Keep role preflight aligned with the canonical parser. Consumer lyric
+    # files commonly timestamp credits, role labels and an early artist-title
+    # row. Those rows are not canonical lyric alternatives and must not force
+    # Max to invent an "original" merely because they have timestamps.
+    roles = [
+        "metadata"
+        if is_metadata_text(text) or is_title_like_intro(timestamp_ms, text)
+        else "unknown"
+        for text in cleaned
+    ]
     lyric_indexes = [index for index, role in enumerate(roles) if role != "metadata"]
 
     if len(lyric_indexes) == 1:
@@ -167,9 +180,12 @@ def inspect_lyric_roles(
     inspected: list[dict] = []
     ambiguous: list[int] = []
     original_count = 0
+    ignored_blank_group_count = 0
+    ignored_metadata_group_count = 0
     for timestamp, texts in sorted(groups.items()):
         alternatives = classify_alternatives(timestamp, texts, language=language)
         if not alternatives:
+            ignored_blank_group_count += 1
             continue
         override_index = original_index_overrides.get(timestamp)
         if override_index is not None:
@@ -192,6 +208,15 @@ def inspect_lyric_roles(
                 )
                 for index, row in enumerate(alternatives)
             ]
+
+        # Metadata-only timestamp groups are valid consumer-LRC decoration, not
+        # an ambiguous lyric occurrence. Ignore them exactly as the canonical
+        # parser does. A group with two or more genuine lexical alternatives
+        # still fails closed below.
+        if all(row.role == "metadata" for row in alternatives):
+            ignored_metadata_group_count += 1
+            continue
+
         originals = [row for row in alternatives if row.role == "original"]
         if len(originals) != 1:
             ambiguous.append(timestamp)
@@ -215,9 +240,14 @@ def inspect_lyric_roles(
             f"{preview}; supply a cleaned canonical LRC or explicit role mapping"
         )
 
+    # Preserve the legacy timestamp_group_count meaning (all nonblank parsed
+    # groups) while exposing the narrower lexical count explicitly.
     return {
         "language": language,
-        "timestamp_group_count": len(inspected),
+        "timestamp_group_count": len(inspected) + ignored_metadata_group_count,
+        "lexical_timestamp_group_count": len(inspected),
         "canonical_original_count": original_count,
+        "ignored_blank_group_count": ignored_blank_group_count,
+        "ignored_metadata_group_count": ignored_metadata_group_count,
         "groups": inspected,
     }
