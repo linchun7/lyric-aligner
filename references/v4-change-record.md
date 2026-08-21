@@ -257,7 +257,10 @@ Incremental review after Smart v1.2.5 promotion found a deterministic Smart→Pr
 
 This maintenance patch does not change evidence routing, acoustic/ASR/forced thresholds, region selection, `max_jobs`, or timing-write authority. It changes the compatibility contract only:
 
-- Smart schema remains imported from the frozen base contract (`smart-1.1`);
-- the accepted current Smart policy id now comes from `smart_policy_v125.py`;
+- `smart_current.py` is now the single current-production facade for Smart schema, policy id and repair function;
+- Smart CLI, Pro compatibility gate and current-policy regression tests all import through that facade;
+- versioned `smart_policy.py` / `smart_policy_v125.py` remain frozen/historical implementations and are no longer independent current selectors;
 - Pro policy id advances to `smart-to-pro-reason-aware-2026-08-21-v1.1.4` because the accepted-upstream artifact contract changed;
-- public synthetic regression explicitly proves a current v1.2.5 report is accepted and a literal v1.2.4 policy report is rejected as stale, avoiding the previous self-consistent stale import in both production code and tests.
+- public synthetic regression explicitly proves a current v1.2.5 report is accepted and a literal v1.2.4 policy report is rejected as stale.
+
+Future Smart promotions now update one `smart_current.py` binding instead of separately updating the CLI, Pro gate and tests, eliminating the self-consistent stale-version failure mode that triggered this maintenance review.
