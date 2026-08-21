@@ -1,0 +1,103 @@
+name: agent-pro-v112-selection-patch
+
+on:
+  push:
+    branches:
+      - agent/pro-v112-selection-priority-20260821
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/pro-v112-selection-priority-20260821
+          fetch-depth: 0
+      - name: Patch planner, regressions and docs
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          policy = Path('lyric_aligner/alignment/selective_policy.py')
+          text = policy.read_text(encoding='utf-8')
+          text = text.replace(
+              'PRO_V11_POLICY_ID = "smart-to-pro-reason-aware-2026-08-19-v1.1.1"',
+              'PRO_V11_POLICY_ID = "smart-to-pro-reason-aware-2026-08-21-v1.1.2"',
+          )
+
+          anchor = '''def _reason_flags(job: Mapping[str, Any]) -> tuple[bool, bool]:\n    reasons = [str(value) for value in job.get("reasons") or []]\n    timing = any(value.startswith("smart_timing_review:") for value in reasons)\n    text = any(value.startswith("smart_text_review:") for value in reasons)\n    return timing, text\n'''
+          helpers = anchor + '''\n\ndef _timing_review_index(smart_report: Mapping[str, Any]) -> dict[int, Mapping[str, Any]]:\n    rows = smart_report.get("timing_decisions")\n    if not isinstance(rows, list):\n        return {}\n    output: dict[int, Mapping[str, Any]] = {}\n    for row in rows:\n        if not isinstance(row, Mapping) or row.get("cue_ordinal") is None:\n            continue\n        try:\n            output[int(row["cue_ordinal"])] = row\n        except (TypeError, ValueError):\n            continue\n    return output\n\n\ndef _has_concrete_timing_proposal(row: Mapping[str, Any] | None) -> bool:\n    return bool(\n        row is not None\n        and row.get("action") == "review"\n        and (\n            row.get("proposed_start_ms") is not None\n            or row.get("proposed_end_ms") is not None\n        )\n    )\n\n\ndef _selection_tier(\n    *,\n    timing_review: bool,\n    text_review: bool,\n    timing_has_proposal: bool,\n) -> tuple[int, str]:\n    if text_review and timing_has_proposal:\n        return 0, "text_review_with_timing_proposal"\n    if text_review:\n        return 1, "text_review"\n    if timing_review and timing_has_proposal:\n        return 2, "timing_review_with_proposal"\n    return 3, "timing_review_without_proposal"\n'''
+          if '_timing_review_index(' not in text:
+              text = text.replace(anchor, helpers)
+
+          old_base = '''    base = build_selective_repair_plan(\n        smart_report=smart_report,\n        cues=cues,\n        canonical=_safe_canonical_for_base_planner(canonical),\n        language_by_source=language_by_source,\n        config=config,\n    )\n    plan = deepcopy(base)\n    by_ordinal = {item.ordinal: item for item in canonical}\n    by_source = _canonical_by_source(canonical)\n    models = _model_index(smart_report)\n'''
+          new_base = '''    # The legacy bridge sorts timing review ahead of text review and applies\n    # max_jobs before v1.1 reason-aware routing. Build the complete unresolved\n    # candidate pool first; v1.1.2 applies the production budget only after the\n    # richer Smart evidence has been classified.\n    planning_config = replace(config, max_jobs=max(config.max_jobs, len(cues)))\n    base = build_selective_repair_plan(\n        smart_report=smart_report,\n        cues=cues,\n        canonical=_safe_canonical_for_base_planner(canonical),\n        language_by_source=language_by_source,\n        config=planning_config,\n    )\n    plan = deepcopy(base)\n    by_ordinal = {item.ordinal: item for item in canonical}\n    by_source = _canonical_by_source(canonical)\n    models = _model_index(smart_report)\n    timing_by_cue = _timing_review_index(smart_report)\n'''
+          if old_base not in text:
+              raise SystemExit('base planner block not found')
+          text = text.replace(old_base, new_base)
+
+          old_flags = '''        timing_review, text_review = _reason_flags(job)\n        canonical_ordinal = job.get("canonical_line_index")\n'''
+          new_flags = '''        timing_review, text_review = _reason_flags(job)\n        cue_ordinal = int(job["cue_ordinal"])\n        timing_has_proposal = _has_concrete_timing_proposal(\n            timing_by_cue.get(cue_ordinal)\n        )\n        selection_rank, selection_tier = _selection_tier(\n            timing_review=timing_review,\n            text_review=text_review,\n            timing_has_proposal=timing_has_proposal,\n        )\n        job["selection_tier"] = selection_tier\n        job["timing_has_concrete_proposal"] = timing_has_proposal\n        job["priority"] = "high" if selection_rank <= 2 else "medium"\n        job["_selection_rank"] = selection_rank\n        canonical_ordinal = job.get("canonical_line_index")\n'''
+          if old_flags not in text:
+              raise SystemExit('reason flags block not found')
+          text = text.replace(old_flags, new_flags)
+
+          old_select = '''    competitor_slots = max(0, config.max_jobs - len(primary_jobs))\n    competitors = candidate_competitors[:competitor_slots]\n    omitted_competitors = len(candidate_competitors) - len(competitors)\n    jobs = [*primary_jobs, *competitors]\n    _assign_regions(jobs, merge_gap_ms=region_merge_gap_ms)\n'''
+          new_select = '''    primary_candidate_count = len(primary_jobs)\n    primary_jobs.sort(\n        key=lambda row: (\n            int(row.get("_selection_rank", 9)),\n            int(row["cue_ordinal"]),\n            str(row["job_id"]),\n        )\n    )\n    primary_truncated = primary_candidate_count > config.max_jobs\n    primary_jobs = primary_jobs[: config.max_jobs]\n    selected_primary_ids = {str(job["job_id"]) for job in primary_jobs}\n    for job in primary_jobs:\n        job.pop("_selection_rank", None)\n\n    eligible_competitors = [\n        job\n        for job in candidate_competitors\n        if str(job.get("boundary_competitor_for_job_id") or "") in selected_primary_ids\n    ]\n    competitor_slots = max(0, config.max_jobs - len(primary_jobs))\n    competitors = eligible_competitors[:competitor_slots]\n    omitted_competitors = len(eligible_competitors) - len(competitors)\n    jobs = [*primary_jobs, *competitors]\n    _assign_regions(jobs, merge_gap_ms=region_merge_gap_ms)\n'''
+          if old_select not in text:
+              raise SystemExit('selection block not found')
+          text = text.replace(old_select, new_select)
+
+          old_counts = '''    capability_counts: dict[str, int] = {}\n    route_counts: dict[str, int] = {}\n    for job in primary_jobs:\n        route = str(job.get("evidence_route") or "unknown")\n        route_counts[route] = route_counts.get(route, 0) + 1\n        for capability in job.get("requested_capabilities") or []:\n            capability_counts[capability] = capability_counts.get(capability, 0) + 1\n\n    inherited_summary = dict(plan.get("summary") or {})\n    inherited_truncated = bool(inherited_summary.get("plan_truncated"))\n    plan["schema_version"] = "1.1"\n'''
+          new_counts = '''    capability_counts: dict[str, int] = {}\n    route_counts: dict[str, int] = {}\n    reason_counts: dict[str, int] = {}\n    language_hint_counts: dict[str, int] = {}\n    selection_tier_counts: dict[str, int] = {}\n    for job in primary_jobs:\n        route = str(job.get("evidence_route") or "unknown")\n        route_counts[route] = route_counts.get(route, 0) + 1\n        tier = str(job.get("selection_tier") or "unknown")\n        selection_tier_counts[tier] = selection_tier_counts.get(tier, 0) + 1\n        language = str(job.get("asr_language_hint") or "auto")\n        language_hint_counts[language] = language_hint_counts.get(language, 0) + 1\n        for capability in job.get("requested_capabilities") or []:\n            capability_counts[capability] = capability_counts.get(capability, 0) + 1\n        for reason in job.get("reasons") or []:\n            value = str(reason)\n            reason_counts[value] = reason_counts.get(value, 0) + 1\n\n    inherited_summary = dict(plan.get("summary") or {})\n    plan["schema_version"] = "1.1"\n'''
+          if old_counts not in text:
+              raise SystemExit('summary counts block not found')
+          text = text.replace(old_counts, new_counts)
+
+          old_summary = '''        **inherited_summary,\n        "job_count": len(jobs),\n        "primary_job_count": len(primary_jobs),\n        "boundary_competitor_job_count": len(competitors),\n        "boundary_competitor_omitted_due_to_max_jobs": omitted_competitors,\n        "max_jobs_applies_to": "total_jobs_including_shadow_competitors",\n        "plan_truncated": bool(inherited_truncated or omitted_competitors),\n'''
+          new_summary = '''        **inherited_summary,\n        "job_count": len(jobs),\n        "primary_job_count": len(primary_jobs),\n        "primary_candidate_job_count": primary_candidate_count,\n        "primary_deferred_due_to_max_jobs": max(0, primary_candidate_count - len(primary_jobs)),\n        "boundary_competitor_job_count": len(competitors),\n        "boundary_competitor_omitted_due_to_max_jobs": omitted_competitors,\n        "max_jobs_applies_to": "reason_aware_selected_jobs_including_shadow_competitors",\n        "selection_policy": "text_then_concrete_timing_then_unproposed_timing",\n        "selection_tier_counts": dict(sorted(selection_tier_counts.items())),\n        "plan_truncated": bool(primary_truncated or omitted_competitors),\n        "reason_counts": dict(sorted(reason_counts.items())),\n        "asr_language_hint_counts": dict(sorted(language_hint_counts.items())),\n'''
+          if old_summary not in text:
+              raise SystemExit('summary block not found')
+          text = text.replace(old_summary, new_summary)
+          text = text.replace(
+              '"""Build the reason-aware Pro v1.1 plan from the current Smart policy only."""',
+              '"""Build the reason-aware Pro v1.1.2 plan from the current Smart policy only."""',
+          )
+          policy.write_text(text, encoding='utf-8')
+
+          test_path = Path('scripts/test_v4_selective_policy_v11.py')
+          tests = test_path.read_text(encoding='utf-8')
+          tests = tests.replace(
+              'from lyric_aligner.alignment.selective_policy import build_selective_repair_plan_v11\n',
+              'from lyric_aligner.alignment.selective_policy import build_selective_repair_plan_v11\nfrom lyric_aligner.alignment.selective_repair import SelectiveRepairConfig\n',
+          )
+          insert_before = '''    def test_acoustic_executor_extracts_mix_features_once_per_region(self) -> None:\n'''
+          new_test = '''    def test_max_jobs_is_applied_after_reason_aware_value_ranking(self) -> None:\n        cues = [\n            _cue(0, 0, 900, "甲"),\n            _cue(1, 1_000, 1_900, "乙"),\n            _cue(2, 2_000, 2_900, "丙"),\n            _cue(3, 3_000, 3_900, "丁"),\n        ]\n        canonical = [\n            _canonical(0, 0, 0, "甲"),\n            _canonical(1, 0, 1_000, "乙"),\n            _canonical(2, 0, 2_000, "丙"),\n            _canonical(3, 0, 3_000, "丁"),\n        ]\n        report = {\n            "schema_version": SMART_SCHEMA_VERSION,\n            "policy_id": SMART_POLICY_ID,\n            "mode": "smart_anchor_timeline_repair_no_audio",\n            "audio_read": False,\n            "models": [\n                {"source_ordinal": 0, "source": "01.lrc", "rate": 1.0, "status": "ready"}\n            ],\n            "timing_decisions": [\n                {"cue_ordinal": 0, "canonical_ordinal": 0, "action": "review", "reason": "unresolved_timing_model_not_ready", "proposed_start_ms": None, "proposed_end_ms": None},\n                {"cue_ordinal": 1, "canonical_ordinal": 1, "action": "review", "reason": "unresolved_timing_model_not_ready", "proposed_start_ms": None, "proposed_end_ms": None},\n                {"cue_ordinal": 2, "canonical_ordinal": 2, "action": "preserve", "reason": "timing_matches_anchor_model", "proposed_start_ms": None, "proposed_end_ms": None},\n                {"cue_ordinal": 3, "canonical_ordinal": 3, "action": "review", "reason": "bpm_prior_conflict", "proposed_start_ms": 3_100, "proposed_end_ms": 4_000},\n            ],\n            "text_decisions": [\n                {"cue_ordinal": 0, "canonical_ordinal": 0, "action": "unchanged"},\n                {"cue_ordinal": 1, "canonical_ordinal": 1, "action": "unchanged"},\n                {"cue_ordinal": 2, "canonical_ordinal": 2, "action": "review", "reason": "low_or_structurally_unsafe_similarity"},\n                {"cue_ordinal": 3, "canonical_ordinal": 3, "action": "unchanged"},\n            ],\n        }\n\n        plan = build_selective_repair_plan_v11(\n            smart_report=report,\n            cues=cues,\n            canonical=canonical,\n            config=SelectiveRepairConfig(max_jobs=2),\n        )\n\n        primary = [job for job in plan["jobs"] if not job.get("shadow_evidence_only")]\n        self.assertEqual([job["cue_ordinal"] for job in primary], [2, 3])\n        self.assertEqual(\n            [job["selection_tier"] for job in primary],\n            ["text_review", "timing_review_with_proposal"],\n        )\n        self.assertEqual(plan["summary"]["primary_candidate_job_count"], 4)\n        self.assertEqual(plan["summary"]["primary_deferred_due_to_max_jobs"], 2)\n        self.assertTrue(plan["summary"]["plan_truncated"])\n\n'''
+          if 'test_max_jobs_is_applied_after_reason_aware_value_ranking' not in tests:
+              tests = tests.replace(insert_before, new_test + insert_before)
+          test_path.write_text(tests, encoding='utf-8')
+
+          marker = 'Pro v1.1.2 reason-aware selection budget fix'
+          docs = {
+              'references/v4-change-record.md': f'''\n\n## 2026-08-21 - {marker}\n\n最终 Smart v1.2.4 生产验收后复核现有 Pro planner 发现：legacy selective bridge 会先把所有 timing review 设为 high 并应用 `max_jobs`，之后 v1.1 reason-aware policy 才分类 evidence route。大量“无 concrete timing proposal、只是 Smart 无音频证据不足”的 timing-only review 因此可能抢占预算，挤掉真正 text review 或已有具体 timing proposal 的 cue。\n\n本轮只修规划/排序，不新增声学能力：先建立完整 unresolved candidate pool，再按 `text review + timing proposal -> text review -> timing proposal only -> timing-only/no-proposal` 排序，最后应用 `max_jobs`；所有 acoustic/ASR/forced evidence route、窗口、阈值和 Smart authority 不变。Pro policy id 升到 `smart-to-pro-reason-aware-2026-08-21-v1.1.2`，schema 继续 1.1。\n''',
+              'references/v4-status.md': f'''\n\n### {marker}\n\nPro selective planner 现在在 reason-aware 分类后才应用 `max_jobs`。文字 identity review 和具有 concrete timing proposal 的 cue 优先；只有 timing review 且没有 proposal 的 cue 仍可进入 Pro，但排在预算队列后部。该变化只修正计算预算选择顺序，不改变 Smart、不增加后端 evidence capability，也不授权 Pro 自动 timing write-back。\n''',
+              'references/v4-implementation.md': f'''\n\n### {marker}\n\n`build_selective_repair_plan_v11()` 不再把 legacy base planner 的 pre-routing `max_jobs` 截断当成最终 candidate 集。它先用扩大到本任务 cue 数的内部 planning config 建完整 unresolved pool，再读取 Smart `timing_decisions[].proposed_start_ms/proposed_end_ms` 与 text-review 状态，对 primary jobs 赋 selection tier：\n\n```text\n0 text_review_with_timing_proposal\n1 text_review\n2 timing_review_with_proposal\n3 timing_review_without_proposal\n```\n\n按 tier、cue ordinal、job id 稳定排序后才应用用户原始 `max_jobs`。只有被选中的 primary job 才能占用 shadow boundary competitor slot。Plan summary 记录 candidate/deferred/tier counts；后端路由、局部 acoustic/ASR/forced 算法和证据阈值完全不变。\n''',
+          }
+          for name, addition in docs.items():
+              path = Path(name)
+              body = path.read_text(encoding='utf-8')
+              if marker not in body:
+                  path.write_text(body.rstrip() + addition + '\n', encoding='utf-8')
+          PY
+      - name: Remove temporary workflow and push
+        run: |
+          rm .github/workflows/agent-pro-v112-selection-patch.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add lyric_aligner/alignment/selective_policy.py scripts/test_v4_selective_policy_v11.py references/v4-change-record.md references/v4-status.md references/v4-implementation.md .github/workflows/agent-pro-v112-selection-patch.yml
+          git commit -m "fix: prioritize high-value Pro selective jobs"
+          git push origin HEAD:agent/pro-v112-selection-priority-20260821
