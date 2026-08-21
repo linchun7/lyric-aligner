@@ -59,7 +59,7 @@ Text Repair V2 负责 lexical-first 主文本匹配，包括 bounded 1↔N / N�
 
 严重 ASR 乱码如果 lexical evidence 不够，会进入 review；Smart 可以用独立 sequence/timing/BPM-validated text evidence继续处理，但不得通过降低 Text Repair threshold 来制造更多 false auto。
 
-## 3. Smart / Sequence Reconciliation + Anchor Timeline Repair v1.2.2
+## 3. Smart / Sequence Reconciliation + Anchor Timeline Repair v1.2.4
 
 核心文件：
 
@@ -77,7 +77,7 @@ lyric_aligner/io/path_safety.py
 Smart report schema 继续 `smart-1.1`；当前 policy id：
 
 ```text
-smart-validation-policy-2026-08-20-v1.2.2
+smart-validation-policy-2026-08-21-v1.2.4
 ```
 
 ### 3.1 Canonical representation
@@ -116,6 +116,13 @@ source_time = offset + rate * mix_time
 - candidate 自动 timing repair 使用 leave-one-out / independent support，不能用自身证明自身；
 - B 只能被 already-ready A model 二次确认，不得建立 primary model；
 - C 永不建立 primary model。
+
+`SongTimingModel.status == "ready"` 只说明这个 affine model 的证据已足以用于 prediction。它本身不授予某个 cue 自动 timing write-back 权限；cue 仍必须逐项通过 identity、residual、shift、BPM conflict、overlap 等 gate。为避免 report 误读，primary timing model payload 保留 legacy `status`，同时增加：
+
+```text
+prediction_ready = (status == "ready")
+status_semantics = prediction_readiness_not_auto_repair_authority
+```
 
 ### 3.3 v1.1.x ready-model text recovery
 
@@ -271,7 +278,7 @@ Sequence reconciliation 后重新调用 `build_anchor_timing_plan()`。sequence/
 - 单 cue repair不得制造新 overlap；
 - 所有 repairs 合成后逐相邻 pair 检查：`new_overlap_ms <= original_overlap_ms`；否则相关 repair全部降 review。
 
-### 3.11 BPM-validated text-only recovery（v1.2.2）
+### 3.11 BPM-validated text-only recovery（v1.2.2 + v1.2.3/v1.2.4 hardening）
 
 `bpm_sequence_reconcile.py` 解决的是：已知每首歌通常以固定 BPM 变速到成片，但 repeated lyric / severe-ASR 导致 unique A anchor 不足时，怎样安全利用该信息帮助**文字**而不提升 timing 权限。
 
@@ -294,7 +301,7 @@ canonical_content_matches_source_segmentation
 high_confidence_span_preserving_match
 ```
 
-BPM recovery 只考虑当前仍为 `review` 且已经有**单一 canonical occurrence claim** 的 cue。候选还必须通过：
+BPM mapped 1:1 recovery 只考虑当前仍为 `review` 且已经有**单一 canonical occurrence claim** 的 cue。候选还必须通过：
 
 - projected onset 与 editor cue start 的紧阈值；
 - interior 前后 inlier bracketing，或极窄 strict leading-edge 条件；
@@ -305,6 +312,18 @@ BPM recovery 只考虑当前仍为 `review` 且已经有**单一 canonical occur
 
 此外，单条 BPM recovery 不能把 LRC line break 当成 editor ownership 真源。`_adjacent_lexical_overlap_risk()` 在 materialize 前检查当前 editor cue 的 normalized 文本：若 cue 开头已经包含上一 lexical canonical 的至少 2 字连续尾部，或 cue 结尾已经包含下一 lexical canonical 的至少 2 字连续前缀，则说明 editor 已经识别到跨 LRC 行的真实片段，该 cue 必须继续 review，禁止用单条 canonical 覆盖并删除相邻歌词。该 guard 只收紧 auto-recovery，不新增 mapping，也不改变 timing authority。
 
+v1.2.3 bilateral bounded-stream tier 可在同源、双侧 baseline-safe BPM inlier anchors 之间处理 bounded review region；它必须保持所有 lower-mode resolved cue 不变，unmapped cue 需要最低 lexical 支持，mapped review 不得扩大现有 canonical span。v1.2.4 还规定 multi-cue bounded tier 遇到 Latin/mixed target gap fail closed，直到 display renderer 具备 token-boundary-aware repartition。
+
+生产 unmatched 语义统一为：
+
+```text
+canonical_span is None -> unmapped
+canonical_span == (x, x) -> unmapped
+positive-width canonical span -> mapped
+```
+
+bounded-stream 的 `bounded_stream_unmapped_cue_count` 只统计最终真正 materialize 的 unmatched recovery；candidate 在 vocalization、lexical floor、span ownership、Latin layout 或 inherited ownership guard 等任一环节被拒绝时，不得计数。
+
 可选 vocalization trim 仅允许：editor 文字去掉边缘 `哦/啊/耶/oh/yeah/...` 后，normalized text **精确等于** canonical。此时只去掉多余 vocalization，不改变 canonical ownership。纯 vocalization 继续保留 review/供生产策略处理。
 
 BPM-recovered decision 继续保持低权限：score cap 在 B-grade 以下，不得成为 primary timing anchor，也不得反向使自身 projection ready。
@@ -314,14 +333,19 @@ BPM-recovered decision 继续保持低权限：score cap 在 B-grade 以下，�
 ```text
 text_bpm_projection_recovery_count
 text_bpm_projection_vocalization_trim_count
+text_bpm_bounded_stream_cue_count
+text_bpm_bounded_stream_region_count
+text_bpm_bounded_stream_unmapped_recovery_count
 text_bpm_projection_models
 ```
 
 `text_bpm_projection_models` 与 `text_sequence_projection_models` 都是 text-only diagnostics，不能与 primary timing `models` 混用。
 
-### 3.12 v1.2.1 editor cue ownership guard
+### 3.12 v1.2.1 editor cue ownership guard + v1.2.4 maintenance scope
 
-`timeline/ownership_guard.py` 位于全部 text recovery 之后、SRT text materialization 之前。输入是原 editor cues、当前 text decisions 与 replacements。它只检查相邻 cue 边界：若原 editor 可识别文本能证明 2–6 字短语属于另一侧，而当前 sequence/BPM 结果把该短语搬错，则可在相邻 cue 之间搬回；若同一短语被重复到边界两侧，则只允许删除一份已证明的短重复副本。普通搬移必须保持 pair-combined normalized lyric stream 完全不变。输出 decision 固定低于 B-grade，并清除 canonical span 以阻止其成为 timing anchor。
+`timeline/ownership_guard.py` 位于全部 text recovery 之后、SRT text materialization 之前。输入是原 editor cues、当前 text decisions 与 replacements。它只检查相邻 cue 边界：若原 editor 可识别文本能证明 2–6 字短语属于另一侧，而当前 Sequence reconciliation 结果把该短语搬错，则可在相邻 cue 之间搬回；若同一短语被重复到边界两侧，则只允许删除一份已证明的短重复副本。普通搬移必须保持 pair-combined normalized lyric stream 完全不变。输出 decision 固定低于 B-grade，并清除 canonical span 以阻止其成为 timing anchor。
+
+v1.2.4 maintenance 明确 guard 的修改权限：**boundary move 和 duplicate-drop 都只在 `_eligible_pair()` 成立时运行，而 `_eligible_pair()` 要求相邻 pair 至少一侧 reason 以 `sequence_projection_confirms_` 开头。** 普通 Standard/baseline pair 不因为碰巧出现 2–6 字边界重复就获得删字路径。旧 `_eligible_pair()` 中在前置 return 后永远不可达的条件已删除，不改变实际允许集合。
 
 ### 3.13 Report
 
@@ -347,13 +371,20 @@ text_sequence_frontier_run_count
 text_sequence_projection_models
 ```
 
-v1.2.2 新增：
+v1.2.2+ 新增/保持：
 
 ```text
 text_bpm_projection_recovery_count
 text_bpm_projection_vocalization_trim_count
+text_bpm_bounded_stream_cue_count
+text_bpm_bounded_stream_region_count
+text_bpm_bounded_stream_unmapped_recovery_count
 text_bpm_projection_models
+text_mapped_review_count
+text_unmapped_review_count
 ```
+
+`text_mapped_review_count / text_unmapped_review_count` 必须使用与 production BPM layer 相同的 zero-width unmatched 语义。Primary timing `models[]` 保留 legacy `status`，并额外暴露 `prediction_ready/status_semantics`，避免把 model readiness 误读为 cue mutation authority。
 
 ### 3.14 Artifact path safety
 
@@ -381,7 +412,7 @@ smart_report.schema_version == SMART_SCHEMA_VERSION
 smart_report.policy_id      == SMART_POLICY_ID
 ```
 
-Smart policy 升到 v1.2.2 后，所有 v1.2.1 及更早 report 自动 stale，必须重跑 Smart。
+当前 policy 为 v1.2.4；旧 policy report 自动 stale，必须重跑 Smart。
 
 ### 4.2 Reason-aware routing
 
@@ -434,6 +465,9 @@ Public tests必须证明：
 - optional vocalization trim 只能在剩余文字精确等于 canonical 时执行；
 - BPM/sequence recovered text 不能增加 A/B primary timing anchor；
 - frontier 遇到 timing break/cut/ad-lib 必须停止；
+- ownership guard 不得修改非 Sequence reconciliation pair；
+- zero-width canonical review span 必须按 unmapped 报告，rejected bounded candidate 不得计入 unmapped recovery；
+- primary timing model `ready` 必须在 report 中明确为 prediction readiness，而非自动 mutation authority；
 - existing ready-model bilateral/song-edge recovery继续成立；
 - insufficient/unvalidated timing 必须 Pro escalation；
 - final combined overlap 不新增/扩大；
@@ -448,14 +482,15 @@ Public CI 不能证明真实歌曲 false-auto。每次 private real-song failure
 
 - `_bpm_prior_compatibility()` 跳过 `rate_source=none/invalid` 的 placeholder model，只比较真正有 timing-rate evidence 的 source；
 - `_text_materialization_counts()` 从实际 materialized text-only SRT 计算 exact display change 与 normalized semantic change，避免把 `MatchDecision.action` 误当成最终文件 diff；
-- review reason counts 与 mapped/unmapped text review 直接由最终 decisions 汇总；
+- review reason counts 与 mapped/unmapped text review 直接由最终 decisions 汇总；zero-width canonical span 与 `None` 一样属于 unmapped；
 - timing review 按 `proposed_start_ms/proposed_end_ms` 是否存在拆成 concrete proposal 与 no-proposal 两类；后者表示当前 no-audio 证据不足，不能被解释为已知 timing 错误；
-- `text_status/timing_status` 与 `pro_text_escalation_required/pro_timing_escalation_required` 是 strict overall status 的可解释分解，旧字段继续兼容。
+- `text_status/timing_status` 与 `pro_text_escalation_required/pro_timing_escalation_required` 是 strict overall status 的可解释分解，旧字段继续兼容；
+- timing model payload 的 `prediction_ready/status_semantics` 只澄清 legacy `status`，不新增 timing 权限。
 
 ### Smart v1.2.3 BPM bounded canonical stream
 
-`timeline/bpm_sequence_reconcile.py` may now consume a complete lexical canonical gap between adjacent same-source BPM inlier anchors and repartition that stream across the existing editor cues. `_assign_targets` is used only inside a region that has passed BPM projection, bilateral-anchor, source-consistency, length, vocalization/ad-lib, boundary-insertion, short-cue, unmapped lexical-floor, and lower-mode immutability guards. Canonical row boundaries remain non-authoritative: one canonical row may intersect more than one editor cue. The resulting decisions use `sequence_projection_confirms_bpm_bounded_stream`, remain C-grade/below B timing authority, and cannot feed timing model construction.
+`timeline/bpm_sequence_reconcile.py` may consume a complete lexical canonical gap between adjacent same-source BPM inlier anchors and repartition that stream across the existing editor cues. `_assign_targets` is used only inside a region that has passed BPM projection, bilateral-anchor, source-consistency, length, vocalization/ad-lib, boundary-insertion, short-cue, unmapped lexical-floor, and lower-mode immutability guards. Canonical row boundaries remain non-authoritative: one canonical row may intersect more than one editor cue. The resulting decisions use `sequence_projection_confirms_bpm_bounded_stream`, remain C-grade/below B timing authority, and cannot feed timing model construction.
 
 ### Smart v1.2.4 bounded-stream production guards
 
-`timeline/bpm_sequence_reconcile.py` normalizes absent and zero-width canonical claims into one unmapped semantic state. The v1.2.3 bilateral stream path is further constrained so a previously mapped review cannot expand beyond its existing canonical span; this prevents canonical correctness at region level from overriding editor cue ownership. Until token-boundary-aware Latin rendering exists, the new multi-cue bounded tier rejects gaps containing Latin text; the older mapped 1:1 BPM text path remains unchanged.
+`timeline/bpm_sequence_reconcile.py` normalizes absent and zero-width canonical claims into one unmapped semantic state. The v1.2.3 bilateral stream path is further constrained so a previously mapped review cannot expand beyond its existing canonical span; this prevents canonical correctness at region level from overriding editor cue ownership. Until token-boundary-aware Latin rendering exists, the new multi-cue bounded tier rejects gaps containing Latin text; the older mapped 1:1 BPM text path remains unchanged. Maintenance review keeps the corresponding report/counter semantics aligned and narrows final ownership mutation back to the reconciliation pairs that justify it.
