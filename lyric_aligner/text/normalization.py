@@ -31,3 +31,9 @@ def clean_text(value: str) -> str:
 def is_metadata_text(value: str) -> bool:
     normalized = clean_text(value)
     return bool(META_RE.match(normalized) or ROLE_LABEL_RE.match(normalized))
+
+
+def is_title_like_intro(start_ms: int, text: str) -> bool:
+    """Recognize the common early ``artist - title`` consumer-LRC row."""
+
+    return int(start_ms) <= 1000 and " - " in clean_text(text)
