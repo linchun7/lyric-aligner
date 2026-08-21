@@ -1,0 +1,168 @@
+name: tmp-smart-baseline-correctness
+
+on:
+  push:
+    branches:
+      - maintenance/smart-baseline-correctness-20260821
+
+permissions:
+  contents: write
+
+jobs:
+  patch-test-and-self-delete:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: maintenance/smart-baseline-correctness-20260821
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install project dependencies
+        run: python -m pip install -r requirements.txt
+
+      - name: Apply narrow maintenance patch
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          def replace_once(path: str, old: str, new: str) -> None:
+              p = Path(path)
+              text = p.read_text(encoding='utf-8')
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f'{path}: expected exactly one match, found {count}')
+              p.write_text(text.replace(old, new), encoding='utf-8')
+
+          # 1) Share the metadata/title classification contract, not the entire parser.
+          path = 'lyric_aligner/text/normalization.py'
+          p = Path(path)
+          text = p.read_text(encoding='utf-8')
+          old = '''def is_metadata_text(value: str) -> bool:\n    normalized = clean_text(value)\n    return bool(META_RE.match(normalized) or ROLE_LABEL_RE.match(normalized))\n'''
+          new = '''def is_metadata_text(value: str) -> bool:\n    normalized = clean_text(value)\n    return bool(META_RE.match(normalized) or ROLE_LABEL_RE.match(normalized))\n\n\ndef is_title_like_intro(start_ms: int, text: str) -> bool:\n    \"\"\"Recognize the common early ``artist - title`` consumer-LRC row.\"\"\"\n\n    return int(start_ms) <= 1000 and \" - \" in clean_text(text)\n'''
+          if text.count(old) != 1:
+              raise SystemExit(f'{path}: helper insertion anchor mismatch')
+          p.write_text(text.replace(old, new), encoding='utf-8')
+
+          replace_once(
+              'lyric_aligner/text/canonical_lyrics.py',
+              'from lyric_aligner.text.normalization import clean_text, is_metadata_text\n',
+              'from lyric_aligner.text.normalization import (\n    clean_text,\n    is_metadata_text,\n    is_title_like_intro,\n)\n',
+          )
+          replace_once(
+              'lyric_aligner/text/canonical_lyrics.py',
+              '''\ndef _title_like_intro(start_ms: int, text: str) -> bool:\n    \"\"\"Recognize the common ``artist - title`` first timed row in consumer LRC.\"\"\"\n\n    return start_ms <= 1000 and \" - \" in text\n\n\n''',
+              '\n',
+          )
+          p = Path('lyric_aligner/text/canonical_lyrics.py')
+          text = p.read_text(encoding='utf-8').replace('_title_like_intro(', 'is_title_like_intro(')
+          p.write_text(text, encoding='utf-8')
+
+          replace_once(
+              'lyric_aligner/text_repair.py',
+              'from typing import Iterable, Sequence\n\n',
+              'from typing import Iterable, Sequence\n\nfrom lyric_aligner.text.normalization import is_metadata_text, is_title_like_intro\n\n',
+          )
+          replace_once(
+              'lyric_aligner/text_repair.py',
+              '''_META_TEXT = re.compile(\n    r\"^(?:作词|作曲|编曲|词\\s*[:：]|曲\\s*[:：]|制作人|混音|母带|发行|出品|op\\s*[:：]|sp\\s*[:：])\",\n    re.IGNORECASE,\n)\n''',
+              '',
+          )
+          replace_once(
+              'lyric_aligner/text_repair.py',
+              '            if not stripped or _META_TAG.match(stripped) or _META_TEXT.match(stripped):\n',
+              '            if not stripped or _META_TAG.match(stripped) or is_metadata_text(stripped):\n',
+          )
+          replace_once(
+              'lyric_aligner/text_repair.py',
+              '            if not cleaned or _META_TAG.match(cleaned) or _META_TEXT.match(cleaned):\n                continue\n            normalized = _normalize_for_match(cleaned)\n',
+              '            if not cleaned or _META_TAG.match(cleaned) or is_metadata_text(cleaned):\n                continue\n            normalized = _normalize_for_match(cleaned)\n',
+          )
+          replace_once(
+              'lyric_aligner/text_repair.py',
+              '''            for timestamp_ms in occurrence_times:\n                entries.append((timestamp_ms, sequence, cleaned, normalized))\n                sequence += 1\n''',
+              '''            for timestamp_ms in occurrence_times:\n                if timestamp_ms is not None and is_title_like_intro(timestamp_ms, cleaned):\n                    continue\n                entries.append((timestamp_ms, sequence, cleaned, normalized))\n                sequence += 1\n''',
+          )
+
+          # 2) Make the documented Smart/Pro CLI entry points self-bootstrap from repo root.
+          for path in ('scripts/v4_smart_repair.py', 'scripts/v4_pro_selective.py'):
+              replace_once(path, 'import math\nfrom pathlib import Path\n', 'import math\nimport sys\nfrom pathlib import Path\n') if path.endswith('smart_repair.py') else replace_once(path, 'import json\nfrom pathlib import Path\n', 'import json\nimport sys\nfrom pathlib import Path\n')
+              replace_once(
+                  path,
+                  'from typing import Any\n\n' if path.endswith('smart_repair.py') else 'from typing import Any, Mapping\n\n',
+                  ('from typing import Any\n\n' if path.endswith('smart_repair.py') else 'from typing import Any, Mapping\n\n')
+                  + 'REPOSITORY_ROOT = Path(__file__).resolve().parents[1]\n'
+                  + 'if str(REPOSITORY_ROOT) not in sys.path:\n'
+                  + '    sys.path.insert(0, str(REPOSITORY_ROOT))\n\n',
+              )
+
+          # 3) Keep the internal full-pool planner, but report the caller-requested primary budget.
+          replace_once(
+              'lyric_aligner/alignment/selective_policy.py',
+              '    plan = deepcopy(base)\n    by_ordinal = {item.ordinal: item for item in canonical}\n',
+              '    plan = deepcopy(base)\n    # The base planner sees an expanded internal pool budget only so v1.1 can\n    # rank every unresolved candidate. Public config must keep the caller\'s\n    # requested primary budget; selection below already uses that real value.\n    plan[\"config\"] = config.to_dict()\n    by_ordinal = {item.ordinal: item for item in canonical}\n',
+          )
+
+          # Regression: Standard and Smart agree on timed metadata/title classification,
+          # while ordinary lyric prose beginning with a metadata word remains lyric text.
+          p = Path('scripts/test_v4_text_repair_hardening.py')
+          text = p.read_text(encoding='utf-8')
+          old = 'from lyric_aligner.text_repair import parse_canonical_files, repair_srt_text\n'
+          new = 'from lyric_aligner.text.canonical_lyrics import parse_canonical_lyrics\nfrom lyric_aligner.text_repair import parse_canonical_files, repair_srt_text\n'
+          if text.count(old) != 1:
+              raise SystemExit('text repair test import anchor mismatch')
+          text = text.replace(old, new)
+          anchor = '''    def test_multiple_lrc_timestamps_are_sorted_by_occurrence_time(self):\n'''
+          test = '''    def test_timed_metadata_contract_matches_smart_canonical_parser(self):\n        with tempfile.TemporaryDirectory() as directory:\n            lyric = Path(directory) / \"metadata.lrc\"\n            lyric.write_text(\n                \"[00:00.10]Demo Artist - Demo Title\\n\"\n                \"[00:00.20]监制：某甲\\n\"\n                \"[00:00.30]Voice 1:\\n\"\n                \"[00:01.20]第一句歌词\\n\"\n                \"[00:02.20]出品以后仍然前行\\n\",\n                encoding=\"utf-8\",\n            )\n            standard = parse_canonical_files([lyric])\n            smart = parse_canonical_lyrics(lyric)\n\n        expected = [\"第一句歌词\", \"出品以后仍然前行\"]\n        self.assertEqual([line.text for line in standard], expected)\n        self.assertEqual([line.text for line in smart], expected)\n\n'''
+          if text.count(anchor) != 1:
+              raise SystemExit('text repair test insertion anchor mismatch')
+          p.write_text(text.replace(anchor, test + anchor), encoding='utf-8')
+
+          # Regression: Smart and Pro join the existing direct-CLI bootstrap contract.
+          replace_once(
+              'scripts/test_v4_cli_bootstrap.py',
+              '            \"scripts/v4_render.py\",\n',
+              '            \"scripts/v4_render.py\",\n            \"scripts/v4_smart_repair.py\",\n            \"scripts/v4_pro_selective.py\",\n',
+          )
+
+          # Regression: external config reports the real primary budget, not internal pool size.
+          replace_once(
+              'scripts/test_v4_selective_policy_v11.py',
+              '        self.assertEqual(plan[\"summary\"][\"primary_candidate_job_count\"], 4)\n',
+              '        self.assertEqual(plan[\"config\"][\"max_jobs\"], 2)\n        self.assertEqual(plan[\"summary\"][\"primary_candidate_job_count\"], 4)\n',
+          )
+          PY
+
+      - name: Run focused regressions
+        run: |
+          python -m unittest scripts.test_v4_text_repair_hardening
+          python -m unittest scripts.test_v4_cli_bootstrap
+          python -m unittest scripts.test_v4_selective_policy_v11
+          python scripts/validate_docs_contract.py
+          python scripts/validate_skill.py
+          python scripts/privacy_scan.py
+          git diff --check
+
+      - name: Remove temporary workflow and publish patch
+        shell: bash
+        run: |
+          rm .github/workflows/tmp-smart-baseline-correctness.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -- \
+            lyric_aligner/text/normalization.py \
+            lyric_aligner/text/canonical_lyrics.py \
+            lyric_aligner/text_repair.py \
+            lyric_aligner/alignment/selective_policy.py \
+            scripts/v4_smart_repair.py \
+            scripts/v4_pro_selective.py \
+            scripts/test_v4_text_repair_hardening.py \
+            scripts/test_v4_cli_bootstrap.py \
+            scripts/test_v4_selective_policy_v11.py \
+            .github/workflows/tmp-smart-baseline-correctness.yml
+          git commit -m "fix: close Smart baseline correctness gaps"
+          git push origin HEAD:maintenance/smart-baseline-correctness-20260821
