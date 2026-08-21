@@ -1,4 +1,4 @@
-"""Synthetic regressions for Smart v1.2.2 report-only diagnostics."""
+"""Synthetic regressions for Smart report-only diagnostics."""
 
 from __future__ import annotations
 
@@ -6,9 +6,10 @@ import unittest
 from types import SimpleNamespace
 
 from lyric_aligner.text_repair import MatchDecision, SubtitleCue, _normalize_for_match
-from lyric_aligner.timeline.anchor_repair import TimingDecision
+from lyric_aligner.timeline.anchor_repair import SongTimingModel, TimingDecision
 from lyric_aligner.timeline.smart_policy import (
     _bpm_prior_compatibility,
+    _model_payload,
     _review_reason_counts,
     _text_materialization_counts,
     _text_review_mapping_counts,
@@ -113,20 +114,49 @@ class SmartReportSemanticsV122Tests(unittest.TestCase):
             ),
             _text_decision(
                 2,
+                action="review",
+                reason="unmatched_subtitle_cue",
+                canonical_span=(2, 2),
+            ),
+            _text_decision(
+                3,
                 action="unchanged",
                 reason="canonical_content_matches_source_segmentation",
-                canonical_span=(2, 3),
+                canonical_span=(3, 4),
             ),
         ]
 
-        self.assertEqual(_text_review_mapping_counts(decisions), (1, 1))
+        self.assertEqual(_text_review_mapping_counts(decisions), (1, 2))
         self.assertEqual(
             _review_reason_counts(decisions),
             {
                 "low_or_structurally_unsafe_similarity": 1,
-                "unmatched_subtitle_cue": 1,
+                "unmatched_subtitle_cue": 2,
             },
         )
+
+    def test_timing_model_ready_is_reported_as_prediction_readiness_only(self) -> None:
+        model = SongTimingModel(
+            source_ordinal=0,
+            source="song.lrc",
+            rate=1.0,
+            offset_ms=0.0,
+            rate_source="robust_anchor_estimate",
+            anchor_count=4,
+            inlier_count=4,
+            median_abs_residual_ms=10.0,
+            inlier_fraction=1.0,
+            status="ready",
+            word_timing_anchor_count=0,
+        )
+
+        payload = _model_payload([model], {}, {})[0]
+        self.assertTrue(payload["prediction_ready"])
+        self.assertEqual(
+            payload["status_semantics"],
+            "prediction_readiness_not_auto_repair_authority",
+        )
+        self.assertEqual(payload["status"], "ready")
 
     def test_timing_reviews_distinguish_concrete_proposal_from_no_proposal(self) -> None:
         base = dict(
