@@ -2,6 +2,8 @@
 
 Status: normative production baseline
 
+Before using this document for architecture, production, review, or delegation decisions, read `references/project-principles.md`. That file defines the long-term ChatGPT/Codex collaboration model and the intended Standard/Smart/Pro/Max product roles.
+
 This document records the real production workload that should drive product and algorithm decisions. When an implementation choice, optimization target, or edge-case architecture conflicts with this workload, use this document as the design baseline unless a later explicit production decision supersedes it.
 
 ## 1. Primary production job
