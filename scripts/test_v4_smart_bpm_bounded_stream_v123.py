@@ -104,7 +104,9 @@ class SmartBpmBoundedStreamV123Tests(unittest.TestCase):
         self.assertEqual(replacements[1], "山河破碎")
         self.assertEqual(replacements[2], "汉字到底懂不懂")
         self.assertEqual(summary.bounded_stream_region_count, 1)
-        self.assertEqual(summary.bounded_stream_cue_count, 2)
+        # The mapped review is intentionally solved first by the unchanged v1.2.2
+        # 1:1 tier; the bounded tier adds only the formerly-unmapped cue.
+        self.assertEqual(summary.bounded_stream_cue_count, 1)
         self.assertEqual(summary.bounded_stream_unmapped_cue_count, 1)
         self.assertEqual(summary.resolved_review_cue_count, 2)
         self.assertTrue(updated[1].reason.startswith("sequence_projection_confirms_bpm_bounded_stream"))

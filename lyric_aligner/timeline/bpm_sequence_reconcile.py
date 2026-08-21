@@ -732,6 +732,34 @@ def recover_text_reviews_from_bpm_projection(
             if left_pos is None or right_pos is None or right_pos <= left_pos + 1:
                 continue
             gap = rows[left_pos + 1 : right_pos]
+
+            # v1.2.3 is additive: a broader bounded stream must never reopen a
+            # cue that v1.2.2 deliberately left review because editor text
+            # already owns an adjacent canonical fragment or a canonical line
+            # is visibly split across existing editor cues. Those ownership
+            # signals remain stronger than LRC row grouping.
+            inherited_guard_blocked = False
+            for guard_cue, guard_decision in zip(block, typed_decisions):
+                if guard_decision.action != "review":
+                    continue
+                guard_ordinal = _single_span(guard_decision)
+                if guard_ordinal is None:
+                    continue
+                guard_occurrence = canonical_by_ordinal.get(guard_ordinal)
+                if guard_occurrence is None:
+                    inherited_guard_blocked = True
+                    break
+                if (
+                    _split_continuation_risk(guard_cue, guard_occurrence, cues)
+                    or _adjacent_lexical_overlap_risk(
+                        guard_occurrence, guard_cue, lexical_rows
+                    )
+                ):
+                    inherited_guard_blocked = True
+                    break
+            if inherited_guard_blocked:
+                continue
+
             candidate = _bounded_stream_candidate(
                 block,
                 typed_decisions,
