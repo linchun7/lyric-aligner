@@ -3,7 +3,7 @@
 Smart keeps Text Repair V2 as the conservative baseline, then separates text
 identity from timing authority. Ready A-anchor timing evidence may recover
 reviews first; an independent song-local sequence projection may then reconcile
-severe-ASR text that the similarity matcher cannot bootstrap. Smart v1.2.2 also
+severe-ASR text that the similarity matcher cannot bootstrap. Smart v1.2.3 also
 allows a BPM-derived rate to support text-only recovery after several safe
 baseline identities independently validate that rate. Neither sequence- nor
 BPM-projected text may create timing authority. Canonical lyrics own text/order,
@@ -41,7 +41,7 @@ from lyric_aligner.timeline.sequence_reconcile import reconcile_text_from_sequen
 from lyric_aligner.timeline.text_recovery import recover_text_reviews_from_timing
 
 SMART_SCHEMA_VERSION = "smart-1.1"
-SMART_POLICY_ID = "smart-validation-policy-2026-08-20-v1.2.2"
+SMART_POLICY_ID = "smart-validation-policy-2026-08-21-v1.2.3"
 _BPM_COMPATIBILITY_TOLERANCE = 0.03
 
 
@@ -463,6 +463,9 @@ def smart_repair_srt_text_v11(
         "text_sequence_frontier_run_count": sequence_recovery.frontier_run_count,
         "text_bpm_projection_recovery_count": bpm_recovery.resolved_review_cue_count,
         "text_bpm_projection_vocalization_trim_count": bpm_recovery.vocalization_trim_count,
+        "text_bpm_bounded_stream_cue_count": bpm_recovery.bounded_stream_cue_count,
+        "text_bpm_bounded_stream_region_count": bpm_recovery.bounded_stream_region_count,
+        "text_bpm_bounded_stream_unmapped_recovery_count": bpm_recovery.bounded_stream_unmapped_cue_count,
         "text_bpm_projection_models": bpm_text_model_payload(bpm_models),
         "text_editor_ownership_repartition_count": ownership_repartition_count,
         "text_sequence_projection_models": [asdict(item) for item in sequence_models],

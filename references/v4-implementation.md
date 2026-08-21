@@ -452,3 +452,7 @@ Public CI 不能证明真实歌曲 false-auto。每次 private real-song failure
 - timing review 按 `proposed_start_ms/proposed_end_ms` 是否存在拆成 concrete proposal 与 no-proposal 两类；后者表示当前 no-audio 证据不足，不能被解释为已知 timing 错误；
 - `text_status/timing_status` 与 `pro_text_escalation_required/pro_timing_escalation_required` 是 strict overall status 的可解释分解，旧字段继续兼容。
 
+### Smart v1.2.3 BPM bounded canonical stream
+
+`timeline/bpm_sequence_reconcile.py` may now consume a complete lexical canonical gap between adjacent same-source BPM inlier anchors and repartition that stream across the existing editor cues. `_assign_targets` is used only inside a region that has passed BPM projection, bilateral-anchor, source-consistency, length, vocalization/ad-lib, boundary-insertion, short-cue, unmapped lexical-floor, and lower-mode immutability guards. Canonical row boundaries remain non-authoritative: one canonical row may intersect more than one editor cue. The resulting decisions use `sequence_projection_confirms_bpm_bounded_stream`, remain C-grade/below B timing authority, and cannot feed timing model construction.
+

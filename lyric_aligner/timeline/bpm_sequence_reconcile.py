@@ -6,10 +6,12 @@ text identities agree with the fixed-rate affine projection.  It may then
 recover already-mapped 1:1 review cues whose projected onset and local structure
 are consistent.  Recovered decisions remain below B-grade timing authority.
 
-The implementation deliberately does not repartition whole review blocks and
-does not fill editor-only vocalization cues with lexical lyrics.  This keeps the
-v1.2.1 ownership/false-auto safety boundary intact while helping repeated-lyric
-songs where unique A anchors are scarce.
+Smart v1.2.3 keeps the conservative mapped 1:1 path and adds a second, bilateral
+text-only bounded-stream path.  A ready BPM projection built only from baseline-
+safe anchors may reconcile consecutive review/unmatched cues between two same-
+source inlier anchors, while preserving every already-resolved cue exactly.  The
+new path has no frontier extrapolation, refuses pure vocalization/ad-lib evidence,
+and keeps all recovered decisions below timing authority.
 """
 
 from __future__ import annotations
@@ -21,7 +23,14 @@ from dataclasses import asdict, dataclass, replace
 from statistics import median
 from typing import Mapping, Sequence
 
-from lyric_aligner.text_repair import MatchDecision, SubtitleCue, _normalize_for_match
+from lyric_aligner.text_repair import (
+    MatchDecision,
+    SubtitleCue,
+    _assign_targets,
+    _normalize_for_match,
+    _pair_score,
+    _render_preserving_layout,
+)
 from lyric_aligner.timeline.anchor_repair import TimedCanonicalOccurrence, _cue_times
 
 _BASELINE_SAFE_REASONS = frozenset(
@@ -58,6 +67,9 @@ class BpmTextProjectionModel:
 class BpmTextRecoverySummary:
     resolved_review_cue_count: int = 0
     vocalization_trim_count: int = 0
+    bounded_stream_cue_count: int = 0
+    bounded_stream_region_count: int = 0
+    bounded_stream_unmapped_cue_count: int = 0
 
 
 @dataclass(frozen=True)
@@ -431,6 +443,177 @@ def _recovered_decision(
     )
 
 
+
+_BOUNDED_STREAM_MAX_CUES = 12
+_BOUNDED_STREAM_MIN_LENGTH_RATIO = 0.45
+_BOUNDED_STREAM_UNMAPPED_MIN_SIMILARITY = 0.25
+_BOUNDED_STREAM_SHORT_MIN_SIMILARITY = 0.80
+
+
+def _decision_working_text(cue: SubtitleCue, decision: MatchDecision | None) -> str:
+    if decision is not None and decision.action != "review" and decision.output_text:
+        return str(decision.output_text)
+    return cue.text
+
+
+def _stream_canonical_spans(
+    output_texts: Sequence[str],
+    rows: Sequence[TimedCanonicalOccurrence],
+) -> list[tuple[int, int]] | None:
+    intervals: list[tuple[int, int, TimedCanonicalOccurrence]] = []
+    cursor = 0
+    for row in rows:
+        length = len(row.normalized)
+        if length <= 0:
+            continue
+        intervals.append((cursor, cursor + length, row))
+        cursor += length
+    total = cursor
+    if total <= 0:
+        return None
+
+    spans: list[tuple[int, int]] = []
+    cursor = 0
+    for value in output_texts:
+        length = len(_normalize_for_match(value))
+        if length <= 0:
+            return None
+        start = cursor
+        end = cursor + length
+        hits = [row for left, right, row in intervals if right > start and left < end]
+        if not hits:
+            return None
+        spans.append((hits[0].ordinal, hits[-1].ordinal + 1))
+        cursor = end
+    if cursor != total:
+        return None
+    return spans
+
+
+def _bounded_stream_candidate(
+    block_cues: Sequence[SubtitleCue],
+    block_decisions: Sequence[MatchDecision],
+    gap: Sequence[TimedCanonicalOccurrence],
+    right_anchor: _Anchor,
+    model: BpmTextProjectionModel,
+    canonical_by_ordinal: Mapping[int, TimedCanonicalOccurrence],
+) -> tuple[list[str], list[tuple[int, int]]] | None:
+    """Return editor-boundary-preserving text for a bilateral BPM-bounded gap."""
+
+    if not block_cues or not gap or len(block_cues) > _BOUNDED_STREAM_MAX_CUES:
+        return None
+    if len(block_cues) != len(block_decisions):
+        return None
+    if any(
+        item.action == "review" and _is_pure_vocalization(cue.text)
+        for cue, item in zip(block_cues, block_decisions)
+    ):
+        return None
+
+    for decision in block_decisions:
+        if decision.canonical_span is None:
+            continue
+        start, end = decision.canonical_span
+        occurrences = [
+            canonical_by_ordinal.get(value)
+            for value in range(int(start), int(end))
+        ]
+        if not occurrences or any(
+            item is None or item.source_ordinal != model.source_ordinal
+            for item in occurrences
+        ):
+            return None
+
+    working = [
+        _decision_working_text(cue, decision)
+        for cue, decision in zip(block_cues, block_decisions)
+    ]
+    source_norm = "".join(_normalize_for_match(value) for value in working)
+    target_text = " ".join(item.text for item in gap)
+    target_norm = "".join(item.normalized for item in gap)
+    if not source_norm or not target_norm:
+        return None
+    length_ratio = min(len(source_norm), len(target_norm)) / max(
+        len(source_norm), len(target_norm)
+    )
+    if length_ratio < _BOUNDED_STREAM_MIN_LENGTH_RATIO:
+        return None
+
+    first_start, _ = _cue_times(block_cues[0])
+    _, last_end = _cue_times(block_cues[-1])
+    first_predicted = model.source_to_mix_ms(gap[0].anchor_time_ms)
+    last_predicted = model.source_to_mix_ms(gap[-1].anchor_time_ms)
+    right_predicted = model.source_to_mix_ms(right_anchor.source_time_ms)
+    if abs(right_predicted - right_anchor.mix_start_ms) > 750:
+        return None
+    if first_predicted < first_start - 1600 or first_predicted > first_start + 900:
+        return None
+    if last_predicted > last_end + 1200 or last_predicted >= right_anchor.mix_start_ms:
+        return None
+
+    assigned_content, insertion_reason = _assign_targets(working, target_text)
+    if insertion_reason is not None or len(assigned_content) != len(block_cues):
+        return None
+
+    rendered: list[str] = []
+    for current, content in zip(working, assigned_content):
+        output, _ = _render_preserving_layout(current, content)
+        if not _normalize_for_match(output):
+            return None
+        if _normalize_for_match(output) != _normalize_for_match(content):
+            return None
+        rendered.append(output)
+    if "".join(_normalize_for_match(value) for value in rendered) != target_norm:
+        return None
+
+    for cue, decision, current, candidate in zip(
+        block_cues, block_decisions, working, rendered
+    ):
+        current_norm = _normalize_for_match(current)
+        candidate_norm = _normalize_for_match(candidate)
+        if decision.action != "review":
+            if current_norm != candidate_norm:
+                return None
+            continue
+        similarity = _pair_score(cue.normalized, candidate_norm)
+        if (
+            len(cue.normalized) <= 2
+            and similarity < _BOUNDED_STREAM_SHORT_MIN_SIMILARITY
+        ):
+            return None
+        if decision.canonical_span is None:
+            if (
+                len(cue.normalized) < 4
+                or len(candidate_norm) < 4
+                or similarity < _BOUNDED_STREAM_UNMAPPED_MIN_SIMILARITY
+            ):
+                return None
+
+    spans = _stream_canonical_spans(rendered, gap)
+    if spans is None:
+        return None
+    return rendered, spans
+
+
+def _bounded_stream_decision(
+    cue: SubtitleCue,
+    original: MatchDecision,
+    text: str,
+    span: tuple[int, int],
+) -> MatchDecision:
+    return replace(
+        original,
+        canonical_ordinal=span[0],
+        score=min(float(original.score), 0.89),
+        action="unchanged" if cue.normalized == _normalize_for_match(text) else "replace",
+        reason="sequence_projection_confirms_bpm_bounded_stream",
+        cue_span=(cue.ordinal, cue.ordinal + 1),
+        canonical_span=span,
+        canonical_text=text,
+        output_text=text,
+        edit_operations=(),
+    )
+
 def recover_text_reviews_from_bpm_projection(
     cues: Sequence[SubtitleCue],
     canonical: Sequence[TimedCanonicalOccurrence],
@@ -454,6 +637,9 @@ def recover_text_reviews_from_bpm_projection(
     replacements: dict[int, str] = {}
     resolved = 0
     trimmed = 0
+    bounded_cues = 0
+    bounded_regions = 0
+    bounded_unmapped = 0
 
     for cue in cues:
         original = output.get(cue.ordinal)
@@ -518,6 +704,69 @@ def recover_text_reviews_from_bpm_projection(
         replacements[cue.ordinal] = decision.output_text
         resolved += 1
 
+    positions_by_source = {
+        source_ordinal: {item.ordinal: index for index, item in enumerate(rows)}
+        for source_ordinal, rows in lexical_rows.items()
+    }
+    for source_ordinal, inliers in inliers_by_source.items():
+        model = ready_models.get(source_ordinal)
+        rows = list(lexical_rows.get(source_ordinal, ()))
+        positions = positions_by_source.get(source_ordinal, {})
+        if model is None or not rows:
+            continue
+        anchors_for_source = sorted(inliers, key=lambda item: item.cue_ordinal)
+        for left, right in zip(anchors_for_source, anchors_for_source[1:]):
+            if right.cue_ordinal - left.cue_ordinal <= 1:
+                continue
+            block = list(cues[left.cue_ordinal + 1 : right.cue_ordinal])
+            if not block or len(block) > _BOUNDED_STREAM_MAX_CUES:
+                continue
+            block_decisions = [output.get(cue.ordinal) for cue in block]
+            if any(item is None for item in block_decisions):
+                continue
+            typed_decisions = [item for item in block_decisions if item is not None]
+            if not any(item.action == "review" for item in typed_decisions):
+                continue
+            left_pos = positions.get(left.canonical_ordinal)
+            right_pos = positions.get(right.canonical_ordinal)
+            if left_pos is None or right_pos is None or right_pos <= left_pos + 1:
+                continue
+            gap = rows[left_pos + 1 : right_pos]
+            candidate = _bounded_stream_candidate(
+                block,
+                typed_decisions,
+                gap,
+                right,
+                model,
+                canonical_by_ordinal,
+            )
+            if candidate is None:
+                continue
+            candidate_texts, candidate_spans = candidate
+            region_changed = False
+            region_unmapped = 0
+            for cue, original, candidate_text, span in zip(
+                block,
+                typed_decisions,
+                candidate_texts,
+                candidate_spans,
+            ):
+                if original.action != "review":
+                    continue
+                if original.canonical_span is None:
+                    region_unmapped += 1
+                decision = _bounded_stream_decision(
+                    cue, original, candidate_text, span
+                )
+                output[cue.ordinal] = decision
+                replacements[cue.ordinal] = candidate_text
+                resolved += 1
+                bounded_cues += 1
+                region_changed = True
+            if region_changed:
+                bounded_regions += 1
+                bounded_unmapped += region_unmapped
+
     ordered = [output.get(item.cue_ordinal, item) for item in decisions]
     return (
         replacements,
@@ -525,6 +774,9 @@ def recover_text_reviews_from_bpm_projection(
         BpmTextRecoverySummary(
             resolved_review_cue_count=resolved,
             vocalization_trim_count=trimmed,
+            bounded_stream_cue_count=bounded_cues,
+            bounded_stream_region_count=bounded_regions,
+            bounded_stream_unmapped_cue_count=bounded_unmapped,
         ),
         models,
     )
