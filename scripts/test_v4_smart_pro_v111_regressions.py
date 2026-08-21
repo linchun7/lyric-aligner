@@ -210,7 +210,7 @@ class SmartProV111RegressionTests(unittest.TestCase):
         self.assertEqual(acoustic["region_mix_window_ms"], acoustic["mix_window_ms"])
         self.assertEqual(asr_only["region_mix_window_ms"], asr_only["mix_window_ms"])
 
-    def test_max_jobs_caps_shadow_competitors_too(self) -> None:
+    def test_max_jobs_caps_primary_while_shadow_competitors_are_additive(self) -> None:
         cues = [
             _cue(0, 10_000, 11_000, "尾句"),
             _cue(1, 20_000, 21_000, "第二条"),
@@ -249,10 +249,19 @@ class SmartProV111RegressionTests(unittest.TestCase):
             config=SelectiveRepairConfig(max_jobs=2),
         )
 
-        self.assertLessEqual(len(plan["jobs"]), 2)
+        primary = [row for row in plan["jobs"] if not row.get("shadow_evidence_only")]
+        shadow = [row for row in plan["jobs"] if row.get("shadow_evidence_only")]
+        primary_ids = {row["job_id"] for row in primary}
+        self.assertEqual(len(primary), 2)
+        self.assertGreaterEqual(len(shadow), 1)
         self.assertEqual(plan["summary"]["job_count"], len(plan["jobs"]))
-        self.assertGreaterEqual(
-            plan["summary"]["boundary_competitor_omitted_due_to_max_jobs"], 1
+        self.assertEqual(plan["summary"]["boundary_competitor_omitted_due_to_max_jobs"], 0)
+        self.assertEqual(
+            plan["summary"]["max_jobs_applies_to"],
+            "primary_jobs_only_shadow_competitors_additive",
+        )
+        self.assertTrue(
+            all(row["boundary_competitor_for_job_id"] in primary_ids for row in shadow)
         )
 
     def test_combined_repairs_may_not_create_overlap(self) -> None:

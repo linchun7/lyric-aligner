@@ -217,3 +217,9 @@ Final 578-cue acceptance of the maintenance-only #56 change exposed an over-tigh
 
 本轮只修规划/排序，不新增声学能力：先建立完整 unresolved candidate pool，再按 `text review + timing proposal -> text review OR timing proposal (same high-value tier) -> timing-only/no-proposal` 排序，最后应用 `max_jobs`；所有 acoustic/ASR/forced evidence route、窗口、阈值和 Smart authority 不变。Pro policy id 升到 `smart-to-pro-reason-aware-2026-08-21-v1.1.2`，schema 继续 1.1。
 
+### 2026-08-21 — Pro v1.1.3 shadow evidence budget semantics
+
+- `max_jobs` now limits selected primary unresolved cues only.
+- A song-boundary dual-source competitor is additive shadow evidence for an already-selected primary cue and cannot displace that primary cue or disappear merely because the primary budget is full.
+- No acoustic, ASR, forced-alignment threshold, Smart behavior, or timing-mutation authority changed.
+

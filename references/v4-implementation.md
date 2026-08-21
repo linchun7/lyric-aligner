@@ -511,3 +511,7 @@ Public CI 不能证明真实歌曲 false-auto。每次 private real-song failure
 
 按 tier、cue ordinal、job id 稳定排序后才应用用户原始 `max_jobs`。只有被选中的 primary job 才能占用 shadow boundary competitor slot。Plan summary 记录 candidate/deferred/tier counts；后端路由、局部 acoustic/ASR/forced 算法和证据阈值完全不变。
 
+### Pro v1.1.3 primary budget vs. shadow evidence
+
+The reason-aware selector first chooses primary unresolved cues under `max_jobs`. Only after that selection, `_boundary_competitor()` may add a dual-source shadow job for a selected primary near a source boundary. Shadow jobs do not consume the primary budget, cannot select new unresolved cues, and retain evidence-only/no-timing-mutation semantics.
+
