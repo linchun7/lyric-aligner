@@ -10,10 +10,14 @@ import numpy as np
 
 from lyric_aligner.alignment.local_acoustic_v11 import execute_region_source_match_jobs
 from lyric_aligner.alignment.selective_policy import build_selective_repair_plan_v11
-from lyric_aligner.alignment.selective_repair import SelectiveRepairConfig
+from lyric_aligner.alignment.selective_repair import (
+    SelectiveRepairConfig,
+    SelectiveRepairPlanningError,
+)
 from lyric_aligner.text_repair import SubtitleCue
 from lyric_aligner.timeline.anchor_repair import TimedCanonicalOccurrence
-from lyric_aligner.timeline.smart_policy import SMART_POLICY_ID, SMART_SCHEMA_VERSION
+from lyric_aligner.timeline.smart_policy import SMART_SCHEMA_VERSION
+from lyric_aligner.timeline.smart_policy_v125 import SMART_POLICY_ID
 
 
 def _cue(ordinal: int, start_ms: int, end_ms: int, text: str) -> SubtitleCue:
@@ -86,6 +90,44 @@ class SelectivePolicyV11Tests(unittest.TestCase):
                 {"cue_ordinal": 2, "canonical_ordinal": 4, "action": "unchanged"},
             ],
         }
+
+    def test_pro_accepts_current_v125_and_rejects_v124_policy(self) -> None:
+        cues = [_cue(0, 10_000, 11_000, "测试行")]
+        canonical = [_canonical(0, 0, 10_000, "测试行")]
+        report = self._smart_report()
+        report["timing_decisions"] = [
+            {
+                "cue_ordinal": 0,
+                "canonical_ordinal": 0,
+                "action": "review",
+                "reason": "unresolved_timing_model_not_ready",
+            }
+        ]
+        report["text_decisions"] = [
+            {"cue_ordinal": 0, "canonical_ordinal": 0, "action": "unchanged"}
+        ]
+        report["models"] = [
+            {"source_ordinal": 0, "source": "01.lrc", "rate": 1.0, "status": "ready"}
+        ]
+
+        plan = build_selective_repair_plan_v11(
+            smart_report=report,
+            cues=cues,
+            canonical=canonical,
+        )
+        self.assertEqual(plan["schema_version"], "1.1")
+
+        stale_report = dict(report)
+        stale_report["policy_id"] = "smart-validation-policy-2026-08-21-v1.2.4"
+        with self.assertRaisesRegex(
+            SelectiveRepairPlanningError,
+            "current Smart production policy",
+        ):
+            build_selective_repair_plan_v11(
+                smart_report=stale_report,
+                cues=cues,
+                canonical=canonical,
+            )
 
     def test_reason_aware_routes_regions_and_boundary_competitor(self) -> None:
         cues = [
