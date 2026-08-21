@@ -51,8 +51,6 @@ lyric_aligner/timeline/smart_current.py
 scripts/v4_smart_repair.py
 ```
 
-`smart_policy_v125.py` 是版本化的 v1.2.5 implementation；`smart_current.py` 是唯一 current-production facade。Smart CLI 和 Pro compatibility gate 都只通过该 facade 消费当前 Smart schema/policy/repair function，避免后续版本 promotion 时多个消费者各自维护“current”常量。
-
 ### 3.1 为什么 v1.2.0 重构文字 identity 层
 
 真实生产回归证明 v1.1.x 存在 text-first bootstrap deadlock：严重 ASR 乱码越离谱，Text Repair 越难形成正确的 1↔N / N↔N canonical span；A anchor 因此可能不足 4 个，主 timing model 无法 ready，随后 timing-based text recovery 又无法启动，最终把已知错误的 editor ASR 原样 materialize 到 SRT。
@@ -349,7 +347,7 @@ Public CI 必须证明：
 - A-bounded recovery 后 timing decisions 必须 byte-for-byte/structure-equivalent 保持 v1.2.4 final evidence，不得重新建模；
 - recovery 不降低 Text Repair threshold、不把 recovered text 变成 A timing anchor；
 - exact DAW hard prior / BPM-derived soft prior 的 timing authority 语义不变；
-- Smart CLI 与 Pro 必须共享 `smart_current.py` 的 current-policy binding；Pro 必须接受当前 Smart v1.2.5 policy，并拒绝 v1.2.4 literal stale policy；
+- Pro 必须接受当前 Smart v1.2.5 policy，并拒绝 v1.2.4 literal stale policy；
 - Enhanced LRC open-ended token、adaptive source window、ASR-only region、max-jobs、path collision、source-I/O 继续不回归；
 - Python/ASR environment 与 legacy tests 全部继续通过。
 
@@ -410,4 +408,4 @@ Smart v1.2.5 A-bounded is now the production Smart path on `main`. The next acce
 
 ### 2026-08-21 Pro v1.1.4 current-Smart binding status
 
-Incremental post-promotion review found that Pro v1.1.3 still imported the frozen v1.2.4 `SMART_POLICY_ID`, so a legitimate v1.2.5 Smart report would be rejected before evidence planning. v1.1.4 introduces `timeline/smart_current.py` as the single current-production Smart facade; both `scripts/v4_smart_repair.py` and Pro `selective_policy.py` consume the schema/policy binding from that facade, which currently points at v1.2.5. Evidence routing, selection budgets, thresholds and `timing_mutation_performed=false` remain unchanged.
+Incremental post-promotion review found that Pro v1.1.3 still imported the frozen v1.2.4 `SMART_POLICY_ID`, so a legitimate v1.2.5 Smart report would be rejected before evidence planning. Pro v1.1.4 routes current Smart schema/policy selection through `timeline/smart_current.py`; Smart CLI and current-policy tests use the same facade. The facade currently binds schema `smart-1.1` plus v1.2.5 policy/function, while versioned Smart modules remain historical implementations. Evidence routing, selection budgets, thresholds and `timing_mutation_performed=false` remain unchanged.
