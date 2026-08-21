@@ -27,7 +27,7 @@ from lyric_aligner.text_repair import SubtitleCue
 from lyric_aligner.timeline.anchor_repair import TimedCanonicalOccurrence
 from lyric_aligner.timeline.smart_policy import SMART_POLICY_ID, SMART_SCHEMA_VERSION
 
-PRO_V11_POLICY_ID = "smart-to-pro-reason-aware-2026-08-21-v1.1.2"
+PRO_V11_POLICY_ID = "smart-to-pro-reason-aware-2026-08-21-v1.1.3"
 
 
 def _sha(value: Any) -> str:
@@ -376,7 +376,7 @@ def build_selective_repair_plan_v11(
     config: SelectiveRepairConfig | None = None,
     region_merge_gap_ms: int = 750,
 ) -> dict[str, Any]:
-    """Build the reason-aware Pro v1.1.2 plan from the current Smart policy only."""
+    """Build the reason-aware Pro v1.1.3 plan from the current Smart policy only."""
 
     language_by_source = language_by_source or {}
     config = config or SelectiveRepairConfig()
@@ -507,9 +507,12 @@ def build_selective_repair_plan_v11(
         for job in candidate_competitors
         if str(job.get("boundary_competitor_for_job_id") or "") in selected_primary_ids
     ]
-    competitor_slots = max(0, config.max_jobs - len(primary_jobs))
-    competitors = eligible_competitors[:competitor_slots]
-    omitted_competitors = len(eligible_competitors) - len(competitors)
+    # Shadow competitors are companion evidence for already-selected primary
+    # boundary cues. They must not consume or displace the primary unresolved
+    # cue budget; otherwise a fully-used max_jobs budget silently drops the
+    # dual-source check exactly where identity is most ambiguous.
+    competitors = eligible_competitors
+    omitted_competitors = 0
     jobs = [*primary_jobs, *competitors]
     _assign_regions(jobs, merge_gap_ms=region_merge_gap_ms)
 
@@ -569,10 +572,10 @@ def build_selective_repair_plan_v11(
         "primary_deferred_due_to_max_jobs": max(0, primary_candidate_count - len(primary_jobs)),
         "boundary_competitor_job_count": len(competitors),
         "boundary_competitor_omitted_due_to_max_jobs": omitted_competitors,
-        "max_jobs_applies_to": "reason_aware_selected_jobs_including_shadow_competitors",
+        "max_jobs_applies_to": "primary_jobs_only_shadow_competitors_additive",
         "selection_policy": "text_or_concrete_timing_before_unproposed_timing",
         "selection_tier_counts": dict(sorted(selection_tier_counts.items())),
-        "plan_truncated": bool(primary_truncated or omitted_competitors),
+        "plan_truncated": bool(primary_truncated),
         "reason_counts": dict(sorted(reason_counts.items())),
         "asr_language_hint_counts": dict(sorted(language_hint_counts.items())),
         "region_count": len(all_regions),

@@ -357,3 +357,7 @@ Final production acceptance refined the #56 ownership scope: ordinary boundary m
 
 Pro selective planner 现在在 reason-aware 分类后才应用 `max_jobs`。文字 identity review 和具有 concrete timing proposal 的 cue 优先；只有 timing review 且没有 proposal 的 cue 仍可进入 Pro，但排在预算队列后部。该变化只修正计算预算选择顺序，不改变 Smart、不增加后端 evidence capability，也不授权 Pro 自动 timing write-back。
 
+### Pro v1.1.3 selective budget status
+
+Pro uses `max_jobs` as a primary unresolved-cue budget. Boundary competitor jobs are companion shadow evidence attached only to selected primary jobs and are additive to that budget; they never introduce additional primary repair candidates.
+
