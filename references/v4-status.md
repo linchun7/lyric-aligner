@@ -9,7 +9,7 @@
 
 ```text
 Standard -> Text Repair V2.1
-Smart    -> Canonical Sequence Reconciliation + Anchor Timeline Repair v1.2.4（no-audio）
+Smart    -> Canonical Sequence Reconciliation + Anchor Timeline Repair v1.2.5（no-audio）
 Pro      -> Selective Audio Repair（局部 audio evidence）
 Max      -> Full V4 Alignment
 ```
@@ -32,7 +32,7 @@ Max      -> Full V4 Alignment
 - production `auto-threshold >= 0.72`；
 - report schema `2.1`。
 
-## 3. Smart — Sequence Reconciliation + Anchor Timeline Repair v1.2.4
+## 3. Smart — Sequence Reconciliation + Anchor Timeline Repair v1.2.5
 
 Smart 是日常主力 no-audio 模式：**大部分信剪映 timing，但 canonical lyric 始终是最终文字/顺序 truth。**
 
@@ -45,6 +45,8 @@ lyric_aligner/timeline/text_recovery.py
 lyric_aligner/timeline/sequence_reconcile.py
 lyric_aligner/timeline/bpm_sequence_reconcile.py
 lyric_aligner/timeline/ownership_guard.py
+lyric_aligner/timeline/a_bounded_reconcile.py
+lyric_aligner/timeline/smart_policy_v125.py
 scripts/v4_smart_repair.py
 ```
 
@@ -232,7 +234,7 @@ text_bpm_projection_models
 当前 Smart policy id：
 
 ```text
-smart-validation-policy-2026-08-21-v1.2.4
+smart-validation-policy-2026-08-21-v1.2.5
 ```
 
 ### 3.11 v1.2.2 adjacent lexical ownership guard
@@ -249,6 +251,34 @@ BPM 单行 recovery 还必须尊重 editor 已经识别出的跨 LRC 行 ownersh
 - bounded-stream rejected candidate 不计入 unmapped recovery counter；当前 production 实现已满足该语义，本轮用 regression 锁定而不改算法；
 - 所有变更均为既有 v1.2.4 权限收紧/报告修正，不新增 recovery tier、不降低阈值、不改变 cue/timing。
 
+### 3.13 Smart v1.2.5 A-bounded mapped-review tier
+
+v1.2.5 在冻结的 v1.2.4 完整结果之后增加一个低权限、post-timing、text-only recovery tier。它不重新建立 timing model，也不重新计算 timing decisions。
+
+授权条件同时成立才自动恢复：
+
+- region 是连续 mapped reviews；unmapped/zero-width 直接 fail closed；
+- immediate resolved neighbours 定义 exact same-source canonical gap；
+- 更远的 same-source A/A timing anchors 双侧夹住 region；两侧均 `model_status=ready` 且 `|residual_ms|<=750`；
+- regional similarity `>=0.80`；length ratio `>=0.85`；normalized region 至少 12 字符；
+- pure vocalization、cross-source、boundary insertion、empty ownership、multi-cue Latin/mixed repartition 全部 fail closed。
+
+A-bounded recovered decision score cap `<=0.89`，因此仍低于 B timing authority。成功 reason：
+
+```text
+a_bounded_region_confirms_canonical_stream
+```
+
+新增 report：
+
+```text
+text_a_bounded_recovery_count
+text_a_bounded_region_count
+text_a_bounded_materialized_change_count
+```
+
+production wrapper `smart_policy_v125.py` 先运行冻结 v1.2.4，再消费该 v1.2.4 final timing evidence，仅 materialize A-bounded 文字；timing decisions 原样保留，防止循环自证。
+
 ## 4. Pro — Selective Audio Repair v1.1.1
 
 Pro 是 Smart unresolved 的局部声学层，仍保持：
@@ -264,7 +294,7 @@ schema_version = smart-1.1
 policy_id      = current Smart production policy
 ```
 
-因此任何旧 Smart policy artifact 在当前 v1.2.4 前都必须按当前 policy 重跑 Smart 后再进入 Pro。
+因此任何旧 Smart policy artifact 在当前 v1.2.5 前都必须按当前 policy 重跑 Smart 后再进入 Pro。
 
 reason-aware routing：
 
@@ -312,6 +342,8 @@ Public CI 必须证明：
 - ownership duplicate-drop 不得作用于非 Sequence reconciliation pair；
 - zero-width review span 必须按 unmapped 统计；rejected bounded candidate 不得增加 unmapped recovery counter；
 - existing ready-model interior/song-edge recovery 不回归；
+- A-bounded 只处理 mapped review，必须由 same-source ready A/A anchors 双侧夹住，并对 unmapped、Latin/mixed multi-cue、vocalization、cross-source、boundary insertion、weak residual、低相似/短区域 fail closed；
+- A-bounded recovery 后 timing decisions 必须 byte-for-byte/structure-equivalent 保持 v1.2.4 final evidence，不得重新建模；
 - recovery 不降低 Text Repair threshold、不把 recovered text 变成 A timing anchor；
 - exact DAW hard prior / BPM-derived soft prior 的 timing authority 语义不变；
 - Enhanced LRC open-ended token、stale Smart rejection、adaptive source window、ASR-only region、max-jobs、path collision、source-I/O 继续不回归；
@@ -325,11 +357,11 @@ Smart final text materialization 增加 editor cue ownership guard。canonical �
 
 ### Smart v1.2.2 BPM text closeout
 
-BPM-derived rate 在 timing 层仍是 soft prior；只有被多条 baseline-safe text identities 独立验证后，才可建立**文字专用** projection。该 projection 只减少可证明的 mapped review；v1.2.3 另有严格 bilateral bounded-stream 处理满足证据门槛的 interior unmatched cue。两条路径都不填 pure vocalization、不改变 cue timeline，且任何恢复结果都不能成为 A/B timing anchor。BPM 单行 recovery 还必须保留 editor 已识别出的相邻 canonical 前缀/后缀 ownership；命中该 guard 时继续 review。当前 policy 为 `smart-validation-policy-2026-08-21-v1.2.4`。
+BPM-derived rate 在 timing 层仍是 soft prior；只有被多条 baseline-safe text identities 独立验证后，才可建立**文字专用** projection。该 projection 只减少可证明的 mapped review；v1.2.3 另有严格 bilateral bounded-stream 处理满足证据门槛的 interior unmatched cue。两条路径都不填 pure vocalization、不改变 cue timeline，且任何恢复结果都不能成为 A/B timing anchor。BPM 单行 recovery 还必须保留 editor 已识别出的相邻 canonical 前缀/后缀 ownership；命中该 guard 时继续 review。当前 policy 为 `smart-validation-policy-2026-08-21-v1.2.5`。
 
 ### Smart report semantics closeout
 
-当前 v1.2.4 自动修复 authority 不变，但 report 明确区分：
+当前 v1.2.5 继续沿用 v1.2.4 timing authority，但 report 明确区分：
 
 ```text
 text_decision_replacement_count  = MatchDecision.action == replace
@@ -347,7 +379,7 @@ Smart now has two BPM-derived text-only recovery tiers: conservative mapped 1:1 
 
 ## Smart v1.2.4 production-acceptance closeout
 
-Smart v1.2.4 hardens the bounded-stream tier after a private 578-cue acceptance rerun: production zero-width unmatched spans are recognized, mapped reviews cannot absorb adjacent canonical rows, and Latin/mixed bounded repartition fails closed until token-aware display layout is implemented. The maintenance review additionally keeps zero-width report semantics consistent and restricts ownership duplicate-drop to the reconciliation scope that originally justified the guard. These changes do not increase timing authority, do not alter cue count/timing, and do not lower the v1.2.2 mapped 1:1 recovery thresholds.
+Smart v1.2.4 hardens the bounded-stream tier after a private 578-cue acceptance rerun: production zero-width unmatched spans are recognized, mapped reviews cannot absorb adjacent canonical rows, and Latin/mixed bounded repartition fails closed until token-aware display layout is implemented. The maintenance review additionally keeps zero-width report semantics consistent and restricts ownership duplicate-drop to the reconciliation scope that originally justified the guard. These changes do not increase timing authority, do not alter cue count/timing, and do not lower the v1.2.2 mapped 1:1 recovery thresholds。
 
 ### Smart v1.2.4 final acceptance ownership correction
 
@@ -366,4 +398,8 @@ Pro uses `max_jobs` as a primary unresolved-cue budget. Boundary competitor jobs
 - Standard and Smart now share the metadata/title classification contract; Standard keeps its broader TXT/untimed input support.
 - `scripts/v4_smart_repair.py` and `scripts/v4_pro_selective.py` self-bootstrap repository root for the documented direct CLI entry points.
 - Pro public `config.max_jobs` reports the requested primary unresolved-cue budget; the expanded full-pool planning budget remains an internal implementation detail and shadow competitors remain additive.
-- No text/timing threshold, Smart authority, Pro timing-write authority, policy id, or schema changes. Smart v1.2.4 remains the production default pending v1.2.5 private blind validation.
+- No text/timing threshold, Smart authority, Pro timing-write authority, policy id, or schema changed in that maintenance step. The corrected v1.2.4 baseline subsequently served as the frozen input to v1.2.5 A-bounded validation.
+
+### 2026-08-21 Smart v1.2.5 promotion status
+
+The A-bounded tier passed public synthetic shadow CI, then a second private clean rerun against the corrected frozen v1.2.4 inputs. The private rerun reproduced only the previously identified narrow candidate regions with no new automatic text changes; independent manual listening accepted the remaining candidates. Promotion remains conditional on the final production-wiring CI for this PR being fully green before merge.

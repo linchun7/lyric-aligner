@@ -357,3 +357,30 @@ python scripts/evaluate_dataset.py `
 ## 源码发布边界
 
 可提交算法、测试、文档、依赖和脱敏合成 fixture。不得提交 `private/`、`output/`、真实音视频、任务歌词、任务 QA、账号、本机绝对路径或凭据。大型授权数据如需版本管理，使用 Git LFS 或独立私有 dataset 仓库，并仍保持 train/calibration/blind_test 隔离。
+
+## Smart v1.2.5 no-audio 生产入口
+
+日常 Smart 继续使用同一个公开 CLI；v1.2.5 没有新增命令行参数：
+
+```powershell
+python scripts/v4_smart_repair.py `
+  --source-srt "private/任务名/input/source.srt" `
+  --canonical-lyrics "private/任务名/input/lyrics/01.lrc" "private/任务名/input/lyrics/02.lrc" `
+  --output-srt "output/任务名/任务名_SMART.srt" `
+  --report "output/任务名/任务名_SMART.json"
+```
+
+CLI 现在进入 `smart_policy_v125.smart_repair_srt_text_v125()`。运行顺序是：先完整执行冻结的 v1.2.4 Smart policy，得到最终文字与最终 timing decisions；然后 A-bounded 仅使用这些已经完成的 same-source A-grade timing 证据，对极窄 mapped-review region 做 text-only recovery。A-bounded 之后**不重新建立 timing model、不重新计算 timing decision**。
+
+v1.2.5 仍保持：
+
+- 0 audio；
+- canonical lyric = final text/order truth；
+- cue count / number 不变；
+- A-bounded 自身绝不改变 start/end；
+- recovered score `< B-grade timing authority`；
+- BPM-derived 仍是 soft prior；
+- pure vocalization、unmapped/zero-width、cross-source、multi-cue Latin/mixed、boundary insertion 等 A-bounded case 继续 review；
+- report schema 仍为 `smart-1.1`，policy id 更新为 `smart-validation-policy-2026-08-21-v1.2.5`。
+
+生产发布仍以 CI + private acceptance 为 gate；任何真实歌曲、cue、时间戳或歌词只留在私有验收，不写入 public regression。

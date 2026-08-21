@@ -17,7 +17,7 @@ if str(REPOSITORY_ROOT) not in sys.path:
 
 from lyric_aligner.io.path_safety import PathCollisionError, validate_separate_artifact_paths
 from lyric_aligner.timeline.anchor_repair import parse_timed_canonical_files
-from lyric_aligner.timeline.smart_policy import smart_repair_srt_text_v11
+from lyric_aligner.timeline.smart_policy_v125 import smart_repair_srt_text_v125
 from lyric_aligner.text_repair import DEFAULT_AUTO_THRESHOLD, PRODUCTION_MIN_AUTO_THRESHOLD
 
 _UTF8_BOM = b"\xef\xbb\xbf"
@@ -178,7 +178,7 @@ def main() -> int:
     except UnicodeDecodeError as exc:
         parser.error(f"source SRT is not valid UTF-8: {exc}")
 
-    rendered, report = smart_repair_srt_text_v11(
+    rendered, report = smart_repair_srt_text_v125(
         source_text,
         timed,
         repair,

@@ -232,3 +232,21 @@ Private production review found three generic maintenance issues without any con
 - Pro v1.1.3 still expands an internal candidate-pool budget before reason-aware ranking, but public `config.max_jobs` now reports the caller-requested primary budget that is actually applied. Primary/shadow selection semantics are unchanged.
 
 Public regressions are synthetic only. Smart v1.2.4 remains the production default; Smart v1.2.5 capability work stays gated on a corrected private baseline rerun and independent blind validation.
+
+## 2026-08-21 — Smart v1.2.5 A-bounded mapped-review recovery
+
+A corrected v1.2.4 production baseline was rerun byte-identically before promotion. The candidate A-bounded tier was then exercised first as public synthetic shadow code and again against the private corrected baseline; the second clean rerun reproduced the same narrowly bounded candidate regions without creating additional automatic text changes. Independent manual listening accepted the remaining shadow candidates. No private song names, cue numbers, timestamps, lyrics, or audio are committed.
+
+v1.2.5 adds `lyric_aligner/timeline/a_bounded_reconcile.py` and a production wrapper `timeline/smart_policy_v125.py` over the frozen v1.2.4 policy. The tier is deliberately post-timing and text-only:
+
+- only consecutive **mapped** review cues are eligible; `None` and zero-width unmapped spans fail closed;
+- immediate resolved neighbours must define the exact same-source canonical gap;
+- a farther same-source A/A timing pair must bracket the region, both anchors must come from `model_status=ready`, and each absolute residual must be `<=750ms`;
+- regional normalized similarity must be `>=0.80`, normalized length ratio `>=0.85`, and the region must contain at least 12 normalized characters;
+- pure vocalization, cross-source gaps, boundary insertions, empty ownership cells, multi-cue Latin/mixed repartition, weak timing brackets, low similarity, short regions, and poor length ratio all fail closed;
+- recovered decision score is capped at `<=0.89`, below B timing authority;
+- cue count, numbering, start/end timing, existing v1.2.4 timing decisions, four-A timing gate, BPM authority, and Pro timing-write authority do not change.
+
+The production wrapper runs v1.2.4 to completion first, freezes its final timing decisions, and only then materializes A-bounded text. Timing is not rebuilt after recovery, preventing circular authority. The CLI `scripts/v4_smart_repair.py` now calls the v1.2.5 wrapper. Report schema remains `smart-1.1`; policy id becomes `smart-validation-policy-2026-08-21-v1.2.5` and adds `text_a_bounded_recovery_count`, `text_a_bounded_region_count`, and `text_a_bounded_materialized_change_count`.
+
+Public regressions remain synthetic and include both positive bounded recovery and fail-closed cases for unmapped/zero-width spans, residual overflow, non-ready timing models, cross-source gaps, Latin/mixed multi-cue text, vocalization, boundary insertion, low similarity, short regions, and poor length ratio.

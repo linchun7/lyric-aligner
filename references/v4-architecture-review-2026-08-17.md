@@ -290,3 +290,25 @@ CLI bootstrap tests 也不再用 `env={}` 伪造“完全空环境”：它们�
 Standard 与 Smart 的 canonical 输入能力并不完全相同，但“什么是 metadata/title、什么才是 lexical lyric”不能存在两套互相漂移的判断。共享的 `lyric_aligner.text.normalization` 负责 metadata/title classification；Standard 的 `text_repair.parse_canonical_files()` 继续保留 TXT/untimed 支持，Smart 的 timed parser 继续负责 same-timestamp alternative selection。这里共享的是 canonical classification contract，而不是强行合并两个 parser。
 
 Pro v1.1.3 的完整 candidate-pool 扩池同样是内部实现细节：对外 `config.max_jobs` 必须保持调用者请求的 primary unresolved-cue budget；shadow boundary competitors 仍只附着于已选 primary 并作为 additive evidence。该维护不改变任何 Smart/Pro authority 或阈值。
+
+## 13. 2026-08-21 Smart v1.2.5 A-bounded authority addendum
+
+A-bounded 被设计成**冻结 timing 之后的最后一层文字证据**，而不是新的 timing model。职责边界固定为：
+
+```text
+v1.2.4 full Smart policy
+        ↓
+final text decisions + final timing decisions
+        ↓
+A-bounded reads mapped review + frozen A-grade timing evidence
+        ↓
+text-only materialization
+        ↓
+timing decisions copied unchanged
+```
+
+`a_bounded_reconcile.py` 只允许 same-source、bilateral、ready A/A bracket 授权已映射 review region；它不接受 unmapped/zero-width cue，不做 frontier chase，不跨 source，不处理 multi-cue Latin/mixed repartition，也不把 pure vocalization 当 lexical lyric。region 还必须通过独立 similarity、length-ratio 与 minimum-information gate。
+
+`smart_policy_v125.py` 作为薄 wrapper 保留 `smart_policy.py` 的 v1.2.4 timing 行为不动。A-bounded recovered score cap `<=0.89`，低于 B timing authority；恢复后不重跑 `build_anchor_timing_plan()`。这个“post-timing + no-rebuild”结构是 anti-circularity 的架构约束，不只是当前实现细节。
+
+因此 v1.2.5 增加的是**更窄的 canonical text recovery capability**，不是新的 timing authority：四-A gate、A/B/C grade 语义、BPM soft-prior 语义、overlap guards、cue count/number/start/end、Pro timing-write 权限全部继承 v1.2.4。
