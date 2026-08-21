@@ -43,6 +43,20 @@ class OwnershipGuardTests(unittest.TestCase):
         self.assertEqual(changed[1], "天窗玻璃打开")
         self.assertEqual(updated[1].reason, "editor_boundary_ownership_restored")
 
+    def test_duplicate_drop_does_not_touch_non_reconciliation_pair(self) -> None:
+        _, cues = parse_srt_text(_srt("前句末尾呼吸", "天窗玻璃打开"))
+        decisions = [
+            _decision(0, cues[0].text, reason="high_confidence_span_preserving_match"),
+            _decision(1, cues[1].text, reason="high_confidence_span_preserving_match"),
+        ]
+        replacements = {0: "前句末尾呼吸", 1: "呼吸天窗玻璃打开"}
+
+        changed, updated, count = restore_editor_cue_ownership(cues, decisions, replacements)
+
+        self.assertEqual(count, 0)
+        self.assertEqual(changed, {})
+        self.assertEqual(updated, decisions)
+
     def test_moves_recognized_prefix_back_to_right_cue(self) -> None:
         _, cues = parse_srt_text(_srt("纷纷绵绵", "谁人怜在柳边"))
         decisions = [

@@ -165,6 +165,7 @@ class SmartBpmBoundedStreamV123Tests(unittest.TestCase):
 
         self.assertNotIn(2, replacements)
         self.assertEqual(summary.bounded_stream_region_count, 0)
+        self.assertEqual(summary.bounded_stream_unmapped_cue_count, 0)
 
     def test_unmapped_low_similarity_adlib_is_not_forced_into_canonical_stream(self) -> None:
         cues, canonical, decisions, metadata = _ready_fixture(
@@ -181,6 +182,7 @@ class SmartBpmBoundedStreamV123Tests(unittest.TestCase):
 
         self.assertNotIn(2, replacements)
         self.assertEqual(summary.bounded_stream_region_count, 0)
+        self.assertEqual(summary.bounded_stream_unmapped_cue_count, 0)
 
     def test_mapped_review_cannot_expand_into_adjacent_canonical_rows(self) -> None:
         from lyric_aligner.timeline.bpm_sequence_reconcile import _is_unmapped_span
@@ -216,6 +218,7 @@ class SmartBpmBoundedStreamV123Tests(unittest.TestCase):
             cues, canonical, decisions, rate_prior_metadata_by_source={0: {"provenance": "bpm_derived", "value": 1.0}}
         )
         self.assertEqual(summary.bounded_stream_region_count, 0)
+        self.assertEqual(summary.bounded_stream_unmapped_cue_count, 0)
         # Existing mapped 1:1 BPM recovery is intentionally unchanged and may
         # still resolve these English lines.  The new v1.2.4 guard only blocks
         # the multi-cue bounded tier.

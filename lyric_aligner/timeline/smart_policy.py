@@ -43,6 +43,7 @@ from lyric_aligner.timeline.text_recovery import recover_text_reviews_from_timin
 SMART_SCHEMA_VERSION = "smart-1.1"
 SMART_POLICY_ID = "smart-validation-policy-2026-08-21-v1.2.4"
 _BPM_COMPATIBILITY_TOLERANCE = 0.03
+_MODEL_STATUS_SEMANTICS = "prediction_readiness_not_auto_repair_authority"
 
 
 def _creates_new_overlap(
@@ -250,6 +251,8 @@ def _model_payload(
     rows: list[dict[str, object]] = []
     for model in models:
         row = asdict(model)
+        row["prediction_ready"] = str(model.status) == "ready"
+        row["status_semantics"] = _MODEL_STATUS_SEMANTICS
         prior = metadata.get(model.source_ordinal)
         prior_provenance = str(prior.get("provenance") or "unknown") if prior else "none"
         row["rate_prior_provenance"] = prior_provenance
@@ -301,7 +304,8 @@ def _text_review_mapping_counts(text_decisions) -> tuple[int, int]:
     for item in text_decisions:
         if item.action != "review":
             continue
-        if item.canonical_span is None:
+        span = item.canonical_span
+        if span is None or int(span[0]) == int(span[1]):
             unmapped += 1
         else:
             mapped += 1

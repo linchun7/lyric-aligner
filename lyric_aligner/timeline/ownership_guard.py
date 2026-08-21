@@ -33,18 +33,11 @@ def _sequence_related(decision: MatchDecision | None) -> bool:
 
 
 def _eligible_pair(left: MatchDecision | None, right: MatchDecision | None) -> bool:
-    if left is None or right is None:
-        return False
-    if not (_sequence_related(left) or _sequence_related(right)):
-        return False
-    if (
-        not _sequence_related(left)
-        and not _sequence_related(right)
-        and left.action != "review"
-        and right.action != "review"
-    ):
-        return False
-    return True
+    return (
+        left is not None
+        and right is not None
+        and (_sequence_related(left) or _sequence_related(right))
+    )
 
 
 def _score(source: str, candidate: str) -> float:
@@ -200,8 +193,9 @@ def restore_editor_cue_ownership(
 
     Ordinary boundary restoration preserves the adjacent pair's combined lyric
     stream exactly. A narrow duplicate-drop path may remove one 2-6 character
-    copy only when the same fragment is present on both sides but the original
-    editor recognition assigns it to one side. Cue count and timing never move.
+    copy only when the same fragment is present on both sides, the original
+    editor recognition assigns it to one side, and at least one decision in the
+    pair came from Smart sequence reconciliation. Cue count and timing never move.
     """
 
     output = {item.cue_ordinal: item for item in decisions}
@@ -217,8 +211,9 @@ def restore_editor_cue_ownership(
         right_cue = cues[index + 1]
         left_decision = output.get(left_cue.ordinal)
         right_decision = output.get(right_cue.ordinal)
-        if left_decision is None or right_decision is None:
+        if not _eligible_pair(left_decision, right_decision):
             continue
+        assert left_decision is not None and right_decision is not None
 
         current_left = working[left_cue.ordinal]
         current_right = working[right_cue.ordinal]
@@ -229,13 +224,12 @@ def restore_editor_cue_ownership(
         ):
             if item is not None:
                 candidates.append((*item, "duplicate_drop"))
-        if _eligible_pair(left_decision, right_decision):
-            for item in (
-                _best_forward_restore(left_cue.text, right_cue.text, current_left, current_right),
-                _best_backward_restore(left_cue.text, right_cue.text, current_left, current_right),
-            ):
-                if item is not None:
-                    candidates.append((*item, "boundary_move"))
+        for item in (
+            _best_forward_restore(left_cue.text, right_cue.text, current_left, current_right),
+            _best_backward_restore(left_cue.text, right_cue.text, current_left, current_right),
+        ):
+            if item is not None:
+                candidates.append((*item, "boundary_move"))
         if not candidates:
             continue
 
