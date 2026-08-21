@@ -240,9 +240,12 @@ def inspect_lyric_roles(
             f"{preview}; supply a cleaned canonical LRC or explicit role mapping"
         )
 
+    # Preserve the legacy timestamp_group_count meaning (all nonblank parsed
+    # groups) while exposing the narrower lexical count explicitly.
     return {
         "language": language,
-        "timestamp_group_count": len(inspected),
+        "timestamp_group_count": len(inspected) + ignored_metadata_group_count,
+        "lexical_timestamp_group_count": len(inspected),
         "canonical_original_count": original_count,
         "ignored_blank_group_count": ignored_blank_group_count,
         "ignored_metadata_group_count": ignored_metadata_group_count,
