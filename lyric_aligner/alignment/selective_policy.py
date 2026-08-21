@@ -25,9 +25,10 @@ from lyric_aligner.alignment.selective_repair import (
 from lyric_aligner.text.language_spans import asr_language_hint_for_text
 from lyric_aligner.text_repair import SubtitleCue
 from lyric_aligner.timeline.anchor_repair import TimedCanonicalOccurrence
-from lyric_aligner.timeline.smart_policy import SMART_POLICY_ID, SMART_SCHEMA_VERSION
+from lyric_aligner.timeline.smart_policy import SMART_SCHEMA_VERSION
+from lyric_aligner.timeline.smart_policy_v125 import SMART_POLICY_ID
 
-PRO_V11_POLICY_ID = "smart-to-pro-reason-aware-2026-08-21-v1.1.3"
+PRO_V11_POLICY_ID = "smart-to-pro-reason-aware-2026-08-21-v1.1.4"
 
 
 def _sha(value: Any) -> str:
@@ -373,7 +374,7 @@ def build_selective_repair_plan_v11(
     config: SelectiveRepairConfig | None = None,
     region_merge_gap_ms: int = 750,
 ) -> dict[str, Any]:
-    """Build the reason-aware Pro v1.1.3 plan from the current Smart policy only."""
+    """Build the reason-aware Pro v1.1.4 plan from the current Smart policy only."""
 
     language_by_source = language_by_source or {}
     config = config or SelectiveRepairConfig()
