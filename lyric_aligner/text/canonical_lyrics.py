@@ -13,7 +13,11 @@ from pathlib import Path
 from typing import Any
 
 from lyric_aligner.io.text import read_task_text
-from lyric_aligner.text.normalization import clean_text, is_metadata_text
+from lyric_aligner.text.normalization import (
+    clean_text,
+    is_metadata_text,
+    is_title_like_intro,
+)
 
 LRC_RE = re.compile(r"\[(\d{1,3}):(\d{2})(?:[.:](\d{1,3}))?\](.*)")
 ENHANCED_TOKEN_RE = re.compile(r"<(\d{1,3}):(\d{2})(?:[.:](\d{1,3}))?>")
@@ -129,12 +133,6 @@ def _qrc(
     return clean_text("".join(pieces)), tuple(tokens)
 
 
-def _title_like_intro(start_ms: int, text: str) -> bool:
-    """Recognize the common ``artist - title`` first timed row in consumer LRC."""
-
-    return start_ms <= 1000 and " - " in text
-
-
 def parse_canonical_lyrics(
     path: Path,
     *,
@@ -186,7 +184,7 @@ def parse_canonical_lyrics(
                 for index, item in enumerate(alternatives)
                 if item.text
                 and not is_metadata_text(item.text)
-                and not _title_like_intro(start, item.text)
+                and not is_title_like_intro(start, item.text)
             ]
             # Timestamped credits/role labels/title rows are common in consumer
             # LRC files and are not canonical lyric alternatives. Metadata-only
@@ -208,7 +206,7 @@ def parse_canonical_lyrics(
         if (
             not selected.text
             or is_metadata_text(selected.text)
-            or _title_like_intro(start, selected.text)
+            or is_title_like_intro(start, selected.text)
         ):
             raise CanonicalLyricError(
                 f"canonical selection points to metadata/blank text at {start}ms"
