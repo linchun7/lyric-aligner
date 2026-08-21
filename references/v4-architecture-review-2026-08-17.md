@@ -315,14 +315,18 @@ timing decisions copied unchanged
 
 ## 14. 2026-08-21 Smart→Pro current-policy ownership addendum
 
-“当前 Smart policy”必须只有一个生产真源。Smart v1.2.5 采用薄 wrapper 冻结 v1.2.4 timing，因此旧 `timeline/smart_policy.py` 仍合法保留 v1.2.4 常量用于 base implementation；它不能再同时承担“current production policy”真源。
+“当前 Smart policy”必须只有一个生产真源。版本化 Smart modules 是 immutable/historical implementations：`smart_policy.py` 仍合法保留 v1.2.4 base 常量，`smart_policy_v125.py` 实现 v1.2.5 wrapper；它们都不应该被下游各自当成“current selector”。
 
-Pro v1.1.4 因此把兼容职责拆开：
+Pro v1.1.4 引入稳定 current-production facade：
 
 ```text
-smart_policy.py      -> stable schema/base implementation contract
-smart_policy_v125.py -> current production Smart policy id
-selective_policy.py  -> exact current-policy gate before Pro planning
+smart_policy.py       -> frozen v1.2.4 schema/base implementation contract
+smart_policy_v125.py  -> versioned v1.2.5 implementation
+smart_current.py      -> only current-production Smart schema/policy/function binding
+v4_smart_repair.py    -> imports smart_current
+selective_policy.py   -> imports smart_current for exact Pro compatibility gate
 ```
 
-这不是新的 Pro authority，而是消除“base version constant 被误当 current version constant”的双真源。回归测试必须使用一个**字面量旧 policy id**验证 stale rejection，不能让生产代码和测试代码都从同一个可能过期的模块导入 policy id，否则 CI 会再次形成自洽但错误的兼容状态。
+以后 Smart v1.2.x promotion 只更新 `smart_current.py` 对新版本化 implementation 的绑定；Smart CLI、Pro gate 与回归测试不再各自猜“current”版本。这不是新的 Smart/Pro authority，而是消除 current-version 双真源。
+
+回归测试仍必须使用一个**字面量旧 policy id**验证 stale rejection，不能从 frozen old module 导入“旧值”作为 expected current；否则生产代码与测试可能再次形成自洽但错误的兼容状态。
