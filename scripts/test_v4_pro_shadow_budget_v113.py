@@ -88,6 +88,7 @@ class ProShadowBudgetV113Tests(unittest.TestCase):
         self.assertEqual(len(shadow), 1)
         self.assertEqual(plan["summary"]["job_count"], 2)
         self.assertEqual(plan["summary"]["primary_job_count"], 1)
+        self.assertFalse(plan["summary"]["plan_truncated"])
         self.assertEqual(plan["summary"]["boundary_competitor_job_count"], 1)
         self.assertEqual(plan["summary"]["boundary_competitor_omitted_due_to_max_jobs"], 0)
         self.assertEqual(
