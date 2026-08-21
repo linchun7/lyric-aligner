@@ -211,3 +211,9 @@ v1.2.2 新增 `timeline/bpm_sequence_reconcile.py`，只处理已经存在 canon
 
 Final 578-cue acceptance of the maintenance-only #56 change exposed an over-tight ownership scope. Boundary movement remains Sequence-only, but duplicate-drop must also repair a short boundary duplicate when an existing upstream `replace` decision itself materialized the changed text and the original editor recognition proves ownership on the other side. The guard now requires the current changed text to normalized-match that decision's own `output_text`; arbitrary baseline text cannot activate the path. This restores the established Text Repair duplicate cleanup without adding a new recovery tier, changing timing authority, or relaxing any text/BPM threshold. Public regression uses synthetic text only.
 
+## 2026-08-21 - Pro v1.1.2 reason-aware selection budget fix
+
+最终 Smart v1.2.4 生产验收后复核现有 Pro planner 发现：legacy selective bridge 会先把所有 timing review 设为 high 并应用 `max_jobs`，之后 v1.1 reason-aware policy 才分类 evidence route。大量“无 concrete timing proposal、只是 Smart 无音频证据不足”的 timing-only review 因此可能抢占预算，挤掉真正 text review 或已有具体 timing proposal 的 cue。
+
+本轮只修规划/排序，不新增声学能力：先建立完整 unresolved candidate pool，再按 `text review + timing proposal -> text review -> timing proposal only -> timing-only/no-proposal` 排序，最后应用 `max_jobs`；所有 acoustic/ASR/forced evidence route、窗口、阈值和 Smart authority 不变。Pro policy id 升到 `smart-to-pro-reason-aware-2026-08-21-v1.1.2`，schema 继续 1.1。
+

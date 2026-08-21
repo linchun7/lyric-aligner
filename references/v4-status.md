@@ -353,3 +353,7 @@ Smart v1.2.4 hardens the bounded-stream tier after a private 578-cue acceptance 
 
 Final production acceptance refined the #56 ownership scope: ordinary boundary moves remain limited to pairs with Sequence reconciliation evidence. Duplicate-drop additionally permits an already-existing upstream `replace` decision (Text Repair or another existing Smart text layer) to justify cleanup only when the working changed text exactly matches that decision's `output_text` and the original editor boundary proves the duplicate belongs to the opposite side. A fabricated/unproven working replacement remains fail-closed. This is a regression fix to preserve established output, not a new Smart capability or authority increase.
 
+### Pro v1.1.2 reason-aware selection budget fix
+
+Pro selective planner 现在在 reason-aware 分类后才应用 `max_jobs`。文字 identity review 和具有 concrete timing proposal 的 cue 优先；只有 timing review 且没有 proposal 的 cue 仍可进入 Pro，但排在预算队列后部。该变化只修正计算预算选择顺序，不改变 Smart、不增加后端 evidence capability，也不授权 Pro 自动 timing write-back。
+

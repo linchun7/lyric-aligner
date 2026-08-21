@@ -27,7 +27,7 @@ from lyric_aligner.text_repair import SubtitleCue
 from lyric_aligner.timeline.anchor_repair import TimedCanonicalOccurrence
 from lyric_aligner.timeline.smart_policy import SMART_POLICY_ID, SMART_SCHEMA_VERSION
 
-PRO_V11_POLICY_ID = "smart-to-pro-reason-aware-2026-08-19-v1.1.1"
+PRO_V11_POLICY_ID = "smart-to-pro-reason-aware-2026-08-21-v1.1.2"
 
 
 def _sha(value: Any) -> str:
@@ -170,6 +170,47 @@ def _reason_flags(job: Mapping[str, Any]) -> tuple[bool, bool]:
     timing = any(value.startswith("smart_timing_review:") for value in reasons)
     text = any(value.startswith("smart_text_review:") for value in reasons)
     return timing, text
+
+
+def _timing_review_index(smart_report: Mapping[str, Any]) -> dict[int, Mapping[str, Any]]:
+    rows = smart_report.get("timing_decisions")
+    if not isinstance(rows, list):
+        return {}
+    output: dict[int, Mapping[str, Any]] = {}
+    for row in rows:
+        if not isinstance(row, Mapping) or row.get("cue_ordinal") is None:
+            continue
+        try:
+            output[int(row["cue_ordinal"])] = row
+        except (TypeError, ValueError):
+            continue
+    return output
+
+
+def _has_concrete_timing_proposal(row: Mapping[str, Any] | None) -> bool:
+    return bool(
+        row is not None
+        and row.get("action") == "review"
+        and (
+            row.get("proposed_start_ms") is not None
+            or row.get("proposed_end_ms") is not None
+        )
+    )
+
+
+def _selection_tier(
+    *,
+    timing_review: bool,
+    text_review: bool,
+    timing_has_proposal: bool,
+) -> tuple[int, str]:
+    if text_review and timing_has_proposal:
+        return 0, "text_review_with_timing_proposal"
+    if text_review:
+        return 1, "text_review"
+    if timing_review and timing_has_proposal:
+        return 2, "timing_review_with_proposal"
+    return 3, "timing_review_without_proposal"
 
 
 def _needs_forced_alignment(
@@ -335,7 +376,7 @@ def build_selective_repair_plan_v11(
     config: SelectiveRepairConfig | None = None,
     region_merge_gap_ms: int = 750,
 ) -> dict[str, Any]:
-    """Build the reason-aware Pro v1.1 plan from the current Smart policy only."""
+    """Build the reason-aware Pro v1.1.2 plan from the current Smart policy only."""
 
     language_by_source = language_by_source or {}
     config = config or SelectiveRepairConfig()
@@ -353,17 +394,23 @@ def build_selective_repair_plan_v11(
             "Pro v1.1 requires the current Smart production policy; rerun Smart"
         )
 
+    # The legacy bridge sorts timing review ahead of text review and applies
+    # max_jobs before v1.1 reason-aware routing. Build the complete unresolved
+    # candidate pool first; v1.1.2 applies the production budget only after the
+    # richer Smart evidence has been classified.
+    planning_config = replace(config, max_jobs=max(config.max_jobs, len(cues)))
     base = build_selective_repair_plan(
         smart_report=smart_report,
         cues=cues,
         canonical=_safe_canonical_for_base_planner(canonical),
         language_by_source=language_by_source,
-        config=config,
+        config=planning_config,
     )
     plan = deepcopy(base)
     by_ordinal = {item.ordinal: item for item in canonical}
     by_source = _canonical_by_source(canonical)
     models = _model_index(smart_report)
+    timing_by_cue = _timing_review_index(smart_report)
 
     primary_jobs: list[dict[str, Any]] = []
     candidate_competitors: list[dict[str, Any]] = []
@@ -371,6 +418,19 @@ def build_selective_repair_plan_v11(
         if not isinstance(job, dict):
             continue
         timing_review, text_review = _reason_flags(job)
+        cue_ordinal = int(job["cue_ordinal"])
+        timing_has_proposal = _has_concrete_timing_proposal(
+            timing_by_cue.get(cue_ordinal)
+        )
+        selection_rank, selection_tier = _selection_tier(
+            timing_review=timing_review,
+            text_review=text_review,
+            timing_has_proposal=timing_has_proposal,
+        )
+        job["selection_tier"] = selection_tier
+        job["timing_has_concrete_proposal"] = timing_has_proposal
+        job["priority"] = "high" if selection_rank <= 2 else "medium"
+        job["_selection_rank"] = selection_rank
         canonical_ordinal = job.get("canonical_line_index")
         occurrence = (
             by_ordinal.get(int(canonical_ordinal))
@@ -428,9 +488,28 @@ def build_selective_repair_plan_v11(
             if competitor is not None:
                 candidate_competitors.append(competitor)
 
+    primary_candidate_count = len(primary_jobs)
+    primary_jobs.sort(
+        key=lambda row: (
+            int(row.get("_selection_rank", 9)),
+            int(row["cue_ordinal"]),
+            str(row["job_id"]),
+        )
+    )
+    primary_truncated = primary_candidate_count > config.max_jobs
+    primary_jobs = primary_jobs[: config.max_jobs]
+    selected_primary_ids = {str(job["job_id"]) for job in primary_jobs}
+    for job in primary_jobs:
+        job.pop("_selection_rank", None)
+
+    eligible_competitors = [
+        job
+        for job in candidate_competitors
+        if str(job.get("boundary_competitor_for_job_id") or "") in selected_primary_ids
+    ]
     competitor_slots = max(0, config.max_jobs - len(primary_jobs))
-    competitors = candidate_competitors[:competitor_slots]
-    omitted_competitors = len(candidate_competitors) - len(competitors)
+    competitors = eligible_competitors[:competitor_slots]
+    omitted_competitors = len(eligible_competitors) - len(competitors)
     jobs = [*primary_jobs, *competitors]
     _assign_regions(jobs, merge_gap_ms=region_merge_gap_ms)
 
@@ -462,14 +541,23 @@ def build_selective_repair_plan_v11(
 
     capability_counts: dict[str, int] = {}
     route_counts: dict[str, int] = {}
+    reason_counts: dict[str, int] = {}
+    language_hint_counts: dict[str, int] = {}
+    selection_tier_counts: dict[str, int] = {}
     for job in primary_jobs:
         route = str(job.get("evidence_route") or "unknown")
         route_counts[route] = route_counts.get(route, 0) + 1
+        tier = str(job.get("selection_tier") or "unknown")
+        selection_tier_counts[tier] = selection_tier_counts.get(tier, 0) + 1
+        language = str(job.get("asr_language_hint") or "auto")
+        language_hint_counts[language] = language_hint_counts.get(language, 0) + 1
         for capability in job.get("requested_capabilities") or []:
             capability_counts[capability] = capability_counts.get(capability, 0) + 1
+        for reason in job.get("reasons") or []:
+            value = str(reason)
+            reason_counts[value] = reason_counts.get(value, 0) + 1
 
     inherited_summary = dict(plan.get("summary") or {})
-    inherited_truncated = bool(inherited_summary.get("plan_truncated"))
     plan["schema_version"] = "1.1"
     plan["policy_id"] = PRO_V11_POLICY_ID
     plan["jobs"] = jobs
@@ -477,10 +565,16 @@ def build_selective_repair_plan_v11(
         **inherited_summary,
         "job_count": len(jobs),
         "primary_job_count": len(primary_jobs),
+        "primary_candidate_job_count": primary_candidate_count,
+        "primary_deferred_due_to_max_jobs": max(0, primary_candidate_count - len(primary_jobs)),
         "boundary_competitor_job_count": len(competitors),
         "boundary_competitor_omitted_due_to_max_jobs": omitted_competitors,
-        "max_jobs_applies_to": "total_jobs_including_shadow_competitors",
-        "plan_truncated": bool(inherited_truncated or omitted_competitors),
+        "max_jobs_applies_to": "reason_aware_selected_jobs_including_shadow_competitors",
+        "selection_policy": "text_then_concrete_timing_then_unproposed_timing",
+        "selection_tier_counts": dict(sorted(selection_tier_counts.items())),
+        "plan_truncated": bool(primary_truncated or omitted_competitors),
+        "reason_counts": dict(sorted(reason_counts.items())),
+        "asr_language_hint_counts": dict(sorted(language_hint_counts.items())),
         "region_count": len(all_regions),
         "acoustic_region_count": len(acoustic_regions),
         "planned_mix_audio_ms_unmerged": unmerged_ms,

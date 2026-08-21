@@ -10,6 +10,7 @@ import numpy as np
 
 from lyric_aligner.alignment.local_acoustic_v11 import execute_region_source_match_jobs
 from lyric_aligner.alignment.selective_policy import build_selective_repair_plan_v11
+from lyric_aligner.alignment.selective_repair import SelectiveRepairConfig
 from lyric_aligner.text_repair import SubtitleCue
 from lyric_aligner.timeline.anchor_repair import TimedCanonicalOccurrence
 from lyric_aligner.timeline.smart_policy import SMART_POLICY_ID, SMART_SCHEMA_VERSION
@@ -122,6 +123,58 @@ class SelectivePolicyV11Tests(unittest.TestCase):
             plan["summary"]["planned_acoustic_mix_audio_ms_merged"],
             plan["summary"]["planned_acoustic_mix_audio_ms_unmerged"],
         )
+
+    def test_max_jobs_is_applied_after_reason_aware_value_ranking(self) -> None:
+        cues = [
+            _cue(0, 0, 900, "甲"),
+            _cue(1, 1_000, 1_900, "乙"),
+            _cue(2, 2_000, 2_900, "丙"),
+            _cue(3, 3_000, 3_900, "丁"),
+        ]
+        canonical = [
+            _canonical(0, 0, 0, "甲"),
+            _canonical(1, 0, 1_000, "乙"),
+            _canonical(2, 0, 2_000, "丙"),
+            _canonical(3, 0, 3_000, "丁"),
+        ]
+        report = {
+            "schema_version": SMART_SCHEMA_VERSION,
+            "policy_id": SMART_POLICY_ID,
+            "mode": "smart_anchor_timeline_repair_no_audio",
+            "audio_read": False,
+            "models": [
+                {"source_ordinal": 0, "source": "01.lrc", "rate": 1.0, "status": "ready"}
+            ],
+            "timing_decisions": [
+                {"cue_ordinal": 0, "canonical_ordinal": 0, "action": "review", "reason": "unresolved_timing_model_not_ready", "proposed_start_ms": None, "proposed_end_ms": None},
+                {"cue_ordinal": 1, "canonical_ordinal": 1, "action": "review", "reason": "unresolved_timing_model_not_ready", "proposed_start_ms": None, "proposed_end_ms": None},
+                {"cue_ordinal": 2, "canonical_ordinal": 2, "action": "preserve", "reason": "timing_matches_anchor_model", "proposed_start_ms": None, "proposed_end_ms": None},
+                {"cue_ordinal": 3, "canonical_ordinal": 3, "action": "review", "reason": "bpm_prior_conflict", "proposed_start_ms": 3_100, "proposed_end_ms": 4_000},
+            ],
+            "text_decisions": [
+                {"cue_ordinal": 0, "canonical_ordinal": 0, "action": "unchanged"},
+                {"cue_ordinal": 1, "canonical_ordinal": 1, "action": "unchanged"},
+                {"cue_ordinal": 2, "canonical_ordinal": 2, "action": "review", "reason": "low_or_structurally_unsafe_similarity"},
+                {"cue_ordinal": 3, "canonical_ordinal": 3, "action": "unchanged"},
+            ],
+        }
+
+        plan = build_selective_repair_plan_v11(
+            smart_report=report,
+            cues=cues,
+            canonical=canonical,
+            config=SelectiveRepairConfig(max_jobs=2),
+        )
+
+        primary = [job for job in plan["jobs"] if not job.get("shadow_evidence_only")]
+        self.assertEqual([job["cue_ordinal"] for job in primary], [2, 3])
+        self.assertEqual(
+            [job["selection_tier"] for job in primary],
+            ["text_review", "timing_review_with_proposal"],
+        )
+        self.assertEqual(plan["summary"]["primary_candidate_job_count"], 4)
+        self.assertEqual(plan["summary"]["primary_deferred_due_to_max_jobs"], 2)
+        self.assertTrue(plan["summary"]["plan_truncated"])
 
     def test_acoustic_executor_extracts_mix_features_once_per_region(self) -> None:
         cues = [
