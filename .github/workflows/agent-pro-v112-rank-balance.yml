@@ -1,0 +1,45 @@
+name: agent-pro-v112-rank-balance
+
+on:
+  push:
+    branches:
+      - agent/pro-v112-selection-priority-20260821
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/pro-v112-selection-priority-20260821
+      - name: Balance high-value rank
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          p = Path('lyric_aligner/alignment/selective_policy.py')
+          t = p.read_text(encoding='utf-8')
+          t = t.replace(
+          '''    if text_review and timing_has_proposal:\n        return 0, "text_review_with_timing_proposal"\n    if text_review:\n        return 1, "text_review"\n    if timing_review and timing_has_proposal:\n        return 2, "timing_review_with_proposal"\n    return 3, "timing_review_without_proposal"\n''',
+          '''    if text_review and timing_has_proposal:\n        return 0, "text_review_with_timing_proposal"\n    if text_review:\n        return 1, "text_review"\n    if timing_review and timing_has_proposal:\n        return 1, "timing_review_with_proposal"\n    return 2, "timing_review_without_proposal"\n''')
+          t = t.replace('job["priority"] = "high" if selection_rank <= 2 else "medium"', 'job["priority"] = "high" if selection_rank <= 1 else "medium"')
+          t = t.replace('"selection_policy": "text_then_concrete_timing_then_unproposed_timing"', '"selection_policy": "text_or_concrete_timing_before_unproposed_timing"')
+          p.write_text(t, encoding='utf-8')
+
+          for name in ('references/v4-change-record.md','references/v4-status.md','references/v4-implementation.md'):
+              q=Path(name); s=q.read_text(encoding='utf-8')
+              s=s.replace('`text review + timing proposal -> text review -> timing proposal only -> timing-only/no-proposal`', '`text review + timing proposal -> text review OR timing proposal (same high-value tier) -> timing-only/no-proposal`')
+              s=s.replace('0 text_review_with_timing_proposal\n1 text_review\n2 timing_review_with_proposal\n3 timing_review_without_proposal', '0 text_review_with_timing_proposal\n1 text_review / timing_review_with_proposal\n2 timing_review_without_proposal')
+              q.write_text(s, encoding='utf-8')
+          PY
+      - name: Remove temporary workflow and push
+        run: |
+          rm .github/workflows/agent-pro-v112-rank-balance.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add lyric_aligner/alignment/selective_policy.py references/v4-change-record.md references/v4-status.md references/v4-implementation.md .github/workflows/agent-pro-v112-rank-balance.yml
+          git commit -m "fix: balance Pro high-value selection tier"
+          git push origin HEAD:agent/pro-v112-selection-priority-20260821
