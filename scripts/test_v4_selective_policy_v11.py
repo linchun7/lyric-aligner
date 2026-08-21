@@ -109,12 +109,18 @@ class SelectivePolicyV11Tests(unittest.TestCase):
         )
 
         primary = [job for job in plan["jobs"] if not job.get("shadow_evidence_only")]
+        primary_by_cue = {int(job["cue_ordinal"]): job for job in primary}
         competitor = [job for job in plan["jobs"] if job.get("shadow_evidence_only")]
         self.assertEqual(len(primary), 2)
         self.assertEqual(len(competitor), 1)
-        self.assertEqual(primary[0]["requested_capabilities"], ["source_local_acoustic_match"])
-        self.assertIn("mix_asr", primary[1]["requested_capabilities"])
-        self.assertIn("source_forced_alignment", primary[1]["requested_capabilities"])
+        # Reason-aware value ranking may reorder primary jobs; route identity is
+        # attached to the cue, not to a legacy list position.
+        self.assertEqual(
+            primary_by_cue[0]["requested_capabilities"],
+            ["source_local_acoustic_match"],
+        )
+        self.assertIn("mix_asr", primary_by_cue[1]["requested_capabilities"])
+        self.assertIn("source_forced_alignment", primary_by_cue[1]["requested_capabilities"])
         self.assertEqual(competitor[0]["source_ordinal"], 1)
         self.assertEqual(competitor[0]["boundary_role"], "next_source")
         self.assertEqual(plan["summary"]["acoustic_region_count"], 1)
