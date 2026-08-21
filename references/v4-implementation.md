@@ -494,3 +494,8 @@ Public CI 不能证明真实歌曲 false-auto。每次 private real-song failure
 ### Smart v1.2.4 bounded-stream production guards
 
 `timeline/bpm_sequence_reconcile.py` normalizes absent and zero-width canonical claims into one unmapped semantic state. The v1.2.3 bilateral stream path is further constrained so a previously mapped review cannot expand beyond its existing canonical span; this prevents canonical correctness at region level from overriding editor cue ownership. Until token-boundary-aware Latin rendering exists, the new multi-cue bounded tier rejects gaps containing Latin text; the older mapped 1:1 BPM text path remains unchanged. Maintenance review keeps the corresponding report/counter semantics aligned and narrows final ownership mutation back to the reconciliation pairs that justify it.
+
+### Smart v1.2.4 final-acceptance ownership invariant
+
+`ownership_guard` has two distinct permissions. `boundary_move` remains Sequence-reconciliation-only. `duplicate_drop` may run for a Sequence pair **or** when at least one adjacent cue has a materialized upstream `replace` whose normalized `output_text` exactly equals the current working text and differs from the original editor cue. The duplicate must still be 2-6 normalized characters, be present on both sides, be assigned to only one side by the original editor recognition, improve pair similarity, and leave both cues non-empty. This keeps the guard from acting as a free-standing baseline editor while preserving Text Repair duplicates that the guard historically removed.
+

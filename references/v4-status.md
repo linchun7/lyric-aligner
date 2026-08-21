@@ -348,3 +348,8 @@ Smart now has two BPM-derived text-only recovery tiers: conservative mapped 1:1 
 ## Smart v1.2.4 production-acceptance closeout
 
 Smart v1.2.4 hardens the bounded-stream tier after a private 578-cue acceptance rerun: production zero-width unmatched spans are recognized, mapped reviews cannot absorb adjacent canonical rows, and Latin/mixed bounded repartition fails closed until token-aware display layout is implemented. The maintenance review additionally keeps zero-width report semantics consistent and restricts ownership duplicate-drop to the reconciliation scope that originally justified the guard. These changes do not increase timing authority, do not alter cue count/timing, and do not lower the v1.2.2 mapped 1:1 recovery thresholds.
+
+### Smart v1.2.4 final acceptance ownership correction
+
+Final production acceptance refined the #56 ownership scope: ordinary boundary moves remain limited to pairs with Sequence reconciliation evidence. Duplicate-drop additionally permits an already-existing upstream `replace` decision (Text Repair or another existing Smart text layer) to justify cleanup only when the working changed text exactly matches that decision's `output_text` and the original editor boundary proves the duplicate belongs to the opposite side. A fabricated/unproven working replacement remains fail-closed. This is a regression fix to preserve established output, not a new Smart capability or authority increase.
+
