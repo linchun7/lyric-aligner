@@ -284,3 +284,9 @@ backend discovery / forced executor / runtime snapshot identity
 CLI bootstrap tests 也不再用 `env={}` 伪造“完全空环境”：它们保留 OS/CreateProcess 必需环境，只删除 `PYTHONPATH` / `PYTHONHOME` 并禁用 user-site，从而验证真正的 repository-root import isolation，而不是把 Windows 进程创建差异误判为产品 bug。
 
 该兼容性层不参与 Source-to-Mix、canonical timeline、P8 projection、P9 fusion 或 release decision，因此不会产生新的 timing authority。真实 Windows production 可以继续使用 main；external forced family 在 backend 未准备好时仍是 optional auxiliary evidence。
+
+## 12. 2026-08-21 Smart baseline correctness ownership addendum
+
+Standard 与 Smart 的 canonical 输入能力并不完全相同，但“什么是 metadata/title、什么才是 lexical lyric”不能存在两套互相漂移的判断。共享的 `lyric_aligner.text.normalization` 负责 metadata/title classification；Standard 的 `text_repair.parse_canonical_files()` 继续保留 TXT/untimed 支持，Smart 的 timed parser 继续负责 same-timestamp alternative selection。这里共享的是 canonical classification contract，而不是强行合并两个 parser。
+
+Pro v1.1.3 的完整 candidate-pool 扩池同样是内部实现细节：对外 `config.max_jobs` 必须保持调用者请求的 primary unresolved-cue budget；shadow boundary competitors 仍只附着于已选 primary 并作为 additive evidence。该维护不改变任何 Smart/Pro authority 或阈值。

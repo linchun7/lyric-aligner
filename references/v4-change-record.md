@@ -126,7 +126,7 @@ Pro 新增 reason-aware routing、merged-region mix feature reuse、adaptive sou
 
 新增生产基线 `references/production-requirements.md`，明确真实任务以“规范歌词齐全、剪映时间轴大部分可信、中文为主、单曲通常单一匀速变速”为主路径。
 
-新增 `lyric_aligner/timeline/anchor_repair.py`：Smart 不读 audio；复用 Text Repair identity；保留 LRC/Enhanced LRC/QRC timing；仅 original exact/unique/1:1 A anchor 建主 affine model；无 prior 时 robust pairwise median rate，有 exact stretch ratio 时 hard prior；candidate cue 使用 leave-one-out 独立模型；v1 timing 自动修复保守并保持 affine-first。
+新增 `lyric_aligner/timeline/anchor_repair.py`：Smart 不读 audio；复用 Text Repair identity；保留 LRC/Enhanced LRC/QRC timing；仅 original exact/unique/1:1 A anchor 建主 affine model；无 prior 时 robust pairwise median rate，有 exact stretch ratio时 hard prior；candidate cue 使用 leave-one-out 独立模型；v1 timing 自动修复保守并保持 affine-first。
 
 ## 2026-08-19 — Text Repair V2.1 hardening
 
@@ -223,3 +223,12 @@ Final 578-cue acceptance of the maintenance-only #56 change exposed an over-tigh
 - A song-boundary dual-source competitor is additive shadow evidence for an already-selected primary cue and cannot displace that primary cue or disappear merely because the primary budget is full.
 - No acoustic, ASR, forced-alignment threshold, Smart behavior, or timing-mutation authority changed.
 
+## 2026-08-21 — Baseline correctness maintenance before Smart v1.2.5
+
+Private production review found three generic maintenance issues without any confirmed Smart false-auto/false-ready:
+
+- Standard and Smart used different canonical metadata/title classification. Standard now reuses the shared metadata/title classification while preserving its TXT/untimed input scope; this is baseline correctness, not an authority expansion.
+- The documented Smart/Pro direct script entry points now bootstrap repository root before package imports, so they do not depend on an external `PYTHONPATH`.
+- Pro v1.1.3 still expands an internal candidate-pool budget before reason-aware ranking, but public `config.max_jobs` now reports the caller-requested primary budget that is actually applied. Primary/shadow selection semantics are unchanged.
+
+Public regressions are synthetic only. Smart v1.2.4 remains the production default; Smart v1.2.5 capability work stays gated on a corrected private baseline rerun and independent blind validation.

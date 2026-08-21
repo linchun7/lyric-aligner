@@ -7,8 +7,13 @@ import argparse
 import hashlib
 import json
 import math
+import sys
 from pathlib import Path
 from typing import Any
+
+REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
+if str(REPOSITORY_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPOSITORY_ROOT))
 
 from lyric_aligner.io.path_safety import PathCollisionError, validate_separate_artifact_paths
 from lyric_aligner.timeline.anchor_repair import parse_timed_canonical_files

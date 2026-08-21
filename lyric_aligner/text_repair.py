@@ -12,16 +12,14 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, Sequence
 
+from lyric_aligner.text.normalization import is_metadata_text, is_title_like_intro
+
 _UTF8_BOM = b"\xef\xbb\xbf"
 _LRC_TIME_TAG = re.compile(r"\[(\d{1,3}):(\d{2})(?:[.:](\d{1,3}))?\]")
 _QRC_LINE_TAG = re.compile(r"^\[(\d+),(\d+)\]")
 _QRC_TOKEN_TIME = re.compile(r"\(\d+,\d+\)")
 _ENHANCED_TIME_TAG = re.compile(r"<\d{1,3}:\d{2}(?:[.:]\d{1,3})?>")
 _META_TAG = re.compile(r"^\[[A-Za-z][A-Za-z0-9_-]*:.*\]$")
-_META_TEXT = re.compile(
-    r"^(?:作词|作曲|编曲|词\s*[:：]|曲\s*[:：]|制作人|混音|母带|发行|出品|op\s*[:：]|sp\s*[:：])",
-    re.IGNORECASE,
-)
 _SRT_TIMING = re.compile(
     r"^\s*\d{2}:\d{2}:\d{2}[,.]\d{3}\s*-->\s*"
     r"\d{2}:\d{2}:\d{2}[,.]\d{3}(?:\s+.*)?$"
@@ -125,7 +123,7 @@ def parse_canonical_files(paths: Iterable[Path]) -> list[CanonicalLine]:
         sequence = 0
         for raw_line in text.splitlines():
             stripped = raw_line.strip()
-            if not stripped or _META_TAG.match(stripped) or _META_TEXT.match(stripped):
+            if not stripped or _META_TAG.match(stripped) or is_metadata_text(stripped):
                 continue
             timestamps = list(_LRC_TIME_TAG.finditer(stripped))
             qrc_match = _QRC_LINE_TAG.match(stripped)
@@ -141,12 +139,14 @@ def parse_canonical_files(paths: Iterable[Path]) -> list[CanonicalLine]:
                 body = stripped
                 occurrence_times = [None]
             cleaned = _clean_lyric_text(body)
-            if not cleaned or _META_TAG.match(cleaned) or _META_TEXT.match(cleaned):
+            if not cleaned or _META_TAG.match(cleaned) or is_metadata_text(cleaned):
                 continue
             normalized = _normalize_for_match(cleaned)
             if not normalized:
                 continue
             for timestamp_ms in occurrence_times:
+                if timestamp_ms is not None and is_title_like_intro(timestamp_ms, cleaned):
+                    continue
                 entries.append((timestamp_ms, sequence, cleaned, normalized))
                 sequence += 1
         has_timed = any(timestamp is not None for timestamp, _, _, _ in entries)

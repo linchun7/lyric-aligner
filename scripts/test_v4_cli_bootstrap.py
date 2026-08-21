@@ -33,6 +33,8 @@ class V4CLIBootstrapTests(unittest.TestCase):
             "scripts/v4_rebuild_cut.py",
             "scripts/v4_compose_materializations.py",
             "scripts/v4_render.py",
+            "scripts/v4_smart_repair.py",
+            "scripts/v4_pro_selective.py",
         ):
             completed = subprocess.run(
                 [sys.executable, script, "--help"],
