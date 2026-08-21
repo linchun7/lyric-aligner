@@ -361,3 +361,9 @@ Pro selective planner 现在在 reason-aware 分类后才应用 `max_jobs`。文
 
 Pro uses `max_jobs` as a primary unresolved-cue budget. Boundary competitor jobs are companion shadow evidence attached only to selected primary jobs and are additive to that budget; they never introduce additional primary repair candidates.
 
+### 2026-08-21 baseline-correctness maintenance before v1.2.5
+
+- Standard and Smart now share the metadata/title classification contract; Standard keeps its broader TXT/untimed input support.
+- `scripts/v4_smart_repair.py` and `scripts/v4_pro_selective.py` self-bootstrap repository root for the documented direct CLI entry points.
+- Pro public `config.max_jobs` reports the requested primary unresolved-cue budget; the expanded full-pool planning budget remains an internal implementation detail and shadow competitors remain additive.
+- No text/timing threshold, Smart authority, Pro timing-write authority, policy id, or schema changes. Smart v1.2.4 remains the production default pending v1.2.5 private blind validation.
