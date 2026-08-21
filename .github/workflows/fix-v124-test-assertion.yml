@@ -1,0 +1,36 @@
+name: fix-v124-test-assertion
+
+on:
+  push:
+    branches:
+      - agent/smart-v124-production-hardening-20260821
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    if: ${{ github.actor != 'github-actions[bot]' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/smart-v124-production-hardening-20260821
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Fix regression assertion
+        run: python scripts/fix_v124_test_assertion.py
+      - name: Remove one-shot files
+        run: |
+          rm scripts/fix_v124_test_assertion.py
+          rm .github/workflows/fix-v124-test-assertion.yml
+      - name: Commit assertion fix
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -- scripts/test_v4_smart_bpm_bounded_stream_v123.py
+          git add -u -- scripts/fix_v124_test_assertion.py .github/workflows/fix-v124-test-assertion.yml
+          git commit -m "test: fix v1.2.4 latin bounded assertion"
+          git push origin HEAD:agent/smart-v124-production-hardening-20260821
