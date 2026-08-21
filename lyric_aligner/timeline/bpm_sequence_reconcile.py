@@ -733,33 +733,6 @@ def recover_text_reviews_from_bpm_projection(
                 continue
             gap = rows[left_pos + 1 : right_pos]
 
-            # v1.2.3 is additive: a broader bounded stream must never reopen a
-            # cue that v1.2.2 deliberately left review because editor text
-            # already owns an adjacent canonical fragment or a canonical line
-            # is visibly split across existing editor cues. Those ownership
-            # signals remain stronger than LRC row grouping.
-            inherited_guard_blocked = False
-            for guard_cue, guard_decision in zip(block, typed_decisions):
-                if guard_decision.action != "review":
-                    continue
-                guard_ordinal = _single_span(guard_decision)
-                if guard_ordinal is None:
-                    continue
-                guard_occurrence = canonical_by_ordinal.get(guard_ordinal)
-                if guard_occurrence is None:
-                    inherited_guard_blocked = True
-                    break
-                if (
-                    _split_continuation_risk(guard_cue, guard_occurrence, cues)
-                    or _adjacent_lexical_overlap_risk(
-                        guard_occurrence, guard_cue, lexical_rows
-                    )
-                ):
-                    inherited_guard_blocked = True
-                    break
-            if inherited_guard_blocked:
-                continue
-
             candidate = _bounded_stream_candidate(
                 block,
                 typed_decisions,
@@ -771,6 +744,42 @@ def recover_text_reviews_from_bpm_projection(
             if candidate is None:
                 continue
             candidate_texts, candidate_spans = candidate
+
+            # Preserve every v1.2.2 ownership/split fail-closed decision unless
+            # the bounded proof validates the existing editor-owned text exactly.
+            # This permits a canonical/LRC row to span multiple editor cues when
+            # their combined stream is already right, but never uses the broader
+            # v1.2.3 path to delete or move an adjacent fragment that v1.2.2
+            # deliberately protected.
+            inherited_guard_blocked = False
+            for guard_cue, guard_decision, candidate_text in zip(
+                block, typed_decisions, candidate_texts
+            ):
+                if guard_decision.action != "review":
+                    continue
+                guard_ordinal = _single_span(guard_decision)
+                if guard_ordinal is None:
+                    continue
+                guard_occurrence = canonical_by_ordinal.get(guard_ordinal)
+                if guard_occurrence is None:
+                    inherited_guard_blocked = True
+                    break
+                guarded = (
+                    _split_continuation_risk(guard_cue, guard_occurrence, cues)
+                    or _adjacent_lexical_overlap_risk(
+                        guard_occurrence, guard_cue, lexical_rows
+                    )
+                )
+                current_text = _decision_working_text(guard_cue, guard_decision)
+                if guarded and (
+                    _normalize_for_match(candidate_text)
+                    != _normalize_for_match(current_text)
+                ):
+                    inherited_guard_blocked = True
+                    break
+            if inherited_guard_blocked:
+                continue
+
             region_changed = False
             region_unmapped = 0
             for cue, original, candidate_text, span in zip(

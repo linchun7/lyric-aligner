@@ -109,7 +109,7 @@ class SmartBpmBoundedStreamV123Tests(unittest.TestCase):
         self.assertEqual(summary.bounded_stream_cue_count, 1)
         self.assertEqual(summary.bounded_stream_unmapped_cue_count, 1)
         self.assertEqual(summary.resolved_review_cue_count, 2)
-        self.assertTrue(updated[1].reason.startswith("sequence_projection_confirms_bpm_bounded_stream"))
+        self.assertEqual(updated[1].reason, "bpm_projection_confirms_mapped_canonical")
         self.assertTrue(updated[2].reason.startswith("sequence_projection_confirms_bpm_bounded_stream"))
 
     def test_one_canonical_row_may_span_two_editor_cues_without_using_lrc_line_as_boundary(self) -> None:
