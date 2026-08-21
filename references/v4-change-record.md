@@ -196,3 +196,13 @@ v1.2.2 新增 `timeline/bpm_sequence_reconcile.py`，只处理已经存在 canon
 - A mapped review may not expand its canonical span into adjacent rows; only truly unmapped cues may acquire a new canonical span from bounded-stream evidence.
 - Multi-cue bounded recovery now fails closed when the target gap contains Latin text because the current character-owner renderer preserves editor whitespace and is not token-boundary-aware. Existing mapped 1:1 BPM recovery remains available for English/mixed lyrics.
 - Add production-shaped synthetic regressions for zero-width unmatched semantics, mapped-span ownership, and Latin bounded fail-closed behavior.
+
+## 2026-08-21 - Smart v1.2.4 maintenance review fixes
+
+本轮不新增 Smart 功能、不放宽任何 text/timing gate，只收口已实现行为：
+
+- `text_mapped_review_count / text_unmapped_review_count` 与生产 unmatched 语义统一：`canonical_span=None` 和 zero-width `[x,x]` 都统计为 unmapped；
+- `ownership_guard` 的 boundary move 与 duplicate-drop 统一限制在至少一侧来自现有 Sequence reconciliation 的相邻 pair，避免 guard 对普通 baseline pair 获得额外删字权限；同时删除 `_eligible_pair()` 中不可达的旧条件；
+- primary timing `models[].status` 保持兼容，但 report 增加 `prediction_ready` 与 `status_semantics=prediction_readiness_not_auto_repair_authority`，明确 `ready` 只表示模型可用于 prediction，不等于单独授权 timing mutation；
+- bounded-stream 的 unmapped recovery counter 经复核现有实现已经只在候选通过全部 gate 后累计，因此不改 production logic，只增加 fail-closed regression，锁定 rejected candidate 不计数；
+- policy id、schema、cue/timing authority 与所有现有恢复阈值保持 v1.2.4 不变。
