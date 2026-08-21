@@ -206,3 +206,14 @@ v1.2.2 新增 `timeline/bpm_sequence_reconcile.py`，只处理已经存在 canon
 - primary timing `models[].status` 保持兼容，但 report 增加 `prediction_ready` 与 `status_semantics=prediction_readiness_not_auto_repair_authority`，明确 `ready` 只表示模型可用于 prediction，不等于单独授权 timing mutation；
 - bounded-stream 的 unmapped recovery counter 经复核现有实现已经只在候选通过全部 gate 后累计，因此不改 production logic，只增加 fail-closed regression，锁定 rejected candidate 不计数；
 - policy id、schema、cue/timing authority 与所有现有恢复阈值保持 v1.2.4 不变。
+
+## 2026-08-21 - Smart v1.2.4 production-acceptance ownership correction
+
+最终 578-cue acceptance 在 #56 maintenance 后发现一个真实回归：ownership duplicate-drop 若被限制为 Sequence-only，会重新暴露 Text Repair 已安全识别的边界短语重复。该问题来自权限收得过窄，不是新增恢复需求。
+
+- boundary move 继续只允许至少一侧为 `sequence_projection_confirms_*`；
+- duplicate-drop 允许作用于至少一侧 `action=replace` 或 Sequence-related 的 pair，用于删除本轮 text pipeline 实际制造的 2–6 字短重复；
+- 两侧都未发生 mutation 的 untouched/review pair 不获得删除权限；
+- 原 editor ownership、score improvement、非空 cue、2–6 字 bounded removal 等既有 guard 保持；
+- 不改变 policy id/schema、BPM/Text Repair 阈值、cue/timing authority，也不新增 recovery tier。
+
