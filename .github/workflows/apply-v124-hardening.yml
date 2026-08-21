@@ -1,0 +1,36 @@
+name: apply-v124-hardening
+
+on:
+  push:
+    branches:
+      - agent/smart-v124-production-hardening-20260821
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    if: ${{ github.actor != 'github-actions[bot]' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/smart-v124-production-hardening-20260821
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Apply generic production hardening
+        run: python scripts/apply_v124_production_hardening.py
+      - name: Remove one-shot patch machinery
+        run: |
+          rm scripts/apply_v124_production_hardening.py
+          rm .github/workflows/apply-v124-hardening.yml
+      - name: Commit patched production files
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -- lyric_aligner/timeline/bpm_sequence_reconcile.py lyric_aligner/timeline/smart_policy.py scripts/test_v4_smart_bpm_bounded_stream_v123.py scripts/test_v4_smart_bpm_bounded_stream_policy_v123.py SKILL.md references/v4-change-record.md references/v4-implementation.md references/v4-status.md
+          git add -u -- scripts/apply_v124_production_hardening.py .github/workflows/apply-v124-hardening.yml
+          git commit -m "smart: harden bounded stream production acceptance v1.2.4"
+          git push origin HEAD:agent/smart-v124-production-hardening-20260821
