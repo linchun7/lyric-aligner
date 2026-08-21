@@ -209,8 +209,8 @@ def _selection_tier(
     if text_review:
         return 1, "text_review"
     if timing_review and timing_has_proposal:
-        return 2, "timing_review_with_proposal"
-    return 3, "timing_review_without_proposal"
+        return 1, "timing_review_with_proposal"
+    return 2, "timing_review_without_proposal"
 
 
 def _needs_forced_alignment(
@@ -429,7 +429,7 @@ def build_selective_repair_plan_v11(
         )
         job["selection_tier"] = selection_tier
         job["timing_has_concrete_proposal"] = timing_has_proposal
-        job["priority"] = "high" if selection_rank <= 2 else "medium"
+        job["priority"] = "high" if selection_rank <= 1 else "medium"
         job["_selection_rank"] = selection_rank
         canonical_ordinal = job.get("canonical_line_index")
         occurrence = (
@@ -570,7 +570,7 @@ def build_selective_repair_plan_v11(
         "boundary_competitor_job_count": len(competitors),
         "boundary_competitor_omitted_due_to_max_jobs": omitted_competitors,
         "max_jobs_applies_to": "reason_aware_selected_jobs_including_shadow_competitors",
-        "selection_policy": "text_then_concrete_timing_then_unproposed_timing",
+        "selection_policy": "text_or_concrete_timing_before_unproposed_timing",
         "selection_tier_counts": dict(sorted(selection_tier_counts.items())),
         "plan_truncated": bool(primary_truncated or omitted_competitors),
         "reason_counts": dict(sorted(reason_counts.items())),

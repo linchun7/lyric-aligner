@@ -505,9 +505,8 @@ Public CI 不能证明真实歌曲 false-auto。每次 private real-song failure
 
 ```text
 0 text_review_with_timing_proposal
-1 text_review
-2 timing_review_with_proposal
-3 timing_review_without_proposal
+1 text_review / timing_review_with_proposal
+2 timing_review_without_proposal
 ```
 
 按 tier、cue ordinal、job id 稳定排序后才应用用户原始 `max_jobs`。只有被选中的 primary job 才能占用 shadow boundary competitor slot。Plan summary 记录 candidate/deferred/tier counts；后端路由、局部 acoustic/ASR/forced 算法和证据阈值完全不变。
