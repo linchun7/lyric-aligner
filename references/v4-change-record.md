@@ -250,3 +250,14 @@ v1.2.5 adds `lyric_aligner/timeline/a_bounded_reconcile.py` and a production wra
 The production wrapper runs v1.2.4 to completion first, freezes its final timing decisions, and only then materializes A-bounded text. Timing is not rebuilt after recovery, preventing circular authority. The CLI `scripts/v4_smart_repair.py` now calls the v1.2.5 wrapper. Report schema remains `smart-1.1`; policy id becomes `smart-validation-policy-2026-08-21-v1.2.5` and adds `text_a_bounded_recovery_count`, `text_a_bounded_region_count`, and `text_a_bounded_materialized_change_count`.
 
 Public regressions remain synthetic and include both positive bounded recovery and fail-closed cases for unmapped/zero-width spans, residual overflow, non-ready timing models, cross-source gaps, Latin/mixed multi-cue text, vocalization, boundary insertion, low similarity, short regions, and poor length ratio.
+
+## 2026-08-21 — Pro v1.1.4 current-Smart binding maintenance
+
+Incremental review after Smart v1.2.5 promotion found a deterministic Smart→Pro compatibility regression: the Pro reason-aware planner still imported `SMART_POLICY_ID` from the frozen v1.2.4 module, while the production Smart CLI now emits the v1.2.5 wrapper policy id. Because Pro correctly fail-closes on policy mismatch, every legitimate v1.2.5 Smart report would be rejected as stale.
+
+This maintenance patch does not change evidence routing, acoustic/ASR/forced thresholds, region selection, `max_jobs`, or timing-write authority. It changes the compatibility contract only:
+
+- Smart schema remains imported from the frozen base contract (`smart-1.1`);
+- the accepted current Smart policy id now comes from `smart_policy_v125.py`;
+- Pro policy id advances to `smart-to-pro-reason-aware-2026-08-21-v1.1.4` because the accepted-upstream artifact contract changed;
+- public synthetic regression explicitly proves a current v1.2.5 report is accepted and a literal v1.2.4 policy report is rejected as stale, avoiding the previous self-consistent stale import in both production code and tests.
