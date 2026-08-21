@@ -11,15 +11,15 @@ description: Reconstruct, review, materialize, diagnose and render multilingual 
 
 ```text
 Standard -> Text Repair V2.1
-Smart    -> Sequence Reconciliation + Anchor Timeline Repair v1.2.4
-Pro      -> Selective Audio Repair v1.1.1
+Smart    -> Sequence Reconciliation + Anchor Timeline Repair v1.2.5
+Pro      -> Selective Audio Repair v1.1.4
 Max      -> Full V4 Alignment（具体算法版本以 references/v4-status.md / runtime snapshot 为准）
 ```
 
 当前 Smart policy：
 
 ```text
-smart-validation-policy-2026-08-21-v1.2.4
+smart-validation-policy-2026-08-21-v1.2.5
 ```
 
 这个项目的生产原则不是“让 ASR 重写歌词”，而是：**canonical lyric 决定最终文字与顺序；canonical LRC line break 不等于最终 subtitle cue boundary；Jianying timing / cue segmentation 是强但可推翻的先验；Smart 先用 timed canonical + editor majority anchors 做 0-audio 验证；Pro/Max 才引入 Source-to-Mix acoustic evidence。**
@@ -77,7 +77,7 @@ LRC line break != subtitle cue boundary authority
 python scripts/v4_smart_repair.py ...
 ```
 
-Smart v1.2.4 仍然不读音频。它从 Standard/Text Repair V2.1 的安全文字结果开始，再按以下顺序增加证据：
+Smart v1.2.5 仍然不读音频。它从 Standard/Text Repair V2.1 的安全文字结果开始；v1.2.4 的全部 timing 行为保持冻结，v1.2.5 只在最终 timing decisions 已确定后增加 A-bounded text-only recovery：
 
 ```text
 Text Repair V2.1 safe baseline
@@ -86,7 +86,9 @@ Text Repair V2.1 safe baseline
     -> bounded canonical sequence reconciliation / cautious frontier walk
     -> BPM-derived rate 经 baseline-safe anchors 验证后的 text-only recovery
     -> editor cue ownership guard
-    -> final Smart timing plan
+    -> final v1.2.4 Smart timing plan（冻结）
+    -> v1.2.5 A-bounded mapped-review text-only recovery
+    -> 不重新建立 timing model / 不重新计算 timing decisions
 ```
 
 #### Smart timing authority
@@ -99,9 +101,9 @@ bpm_derived      -> soft plausibility prior
 anchor_estimated -> 无 hard prior 时由 A anchors robust estimate
 ```
 
-`bpm_derived` 不能冒充 exact DAW rate。BPM soft prior 与稳定 A-anchor evidence 冲突时，不靠 BPM 强行改 timeline。v1.2.3 即使使用 BPM 帮助文字 recovery，也不会把 BPM 升级成 timing hard prior。
+`bpm_derived` 不能冒充 exact DAW rate。BPM soft prior 与稳定 A-anchor evidence 冲突时，不靠 BPM 强行改 timeline。BPM 帮助文字 recovery 时也不会被升级成 timing hard prior。
 
-Smart v1.2.3 的 `ready` 表示 timing 已被实际验证/安全修复，而不是“因为没能力判断所以原样保留”。下列情况必须 `review` / `pro_escalation_required=true`：
+当前 Smart 的 `models[].status=ready` 只表示 timing model 可用于 prediction，不表示某个 cue 已自动获得 timing mutation 权限。下列情况必须 `review` / `pro_escalation_required=true`：
 
 ```text
 timing model not ready
@@ -135,7 +137,7 @@ Sequence Projection **不是** `SongTimingModel ready` 的替代品。sequence-p
 - 先保留 v1.2.2 的 mapped 1:1 review recovery；随后允许在两个同源 baseline-safe BPM inlier anchors 之间做 bounded continuous-stream recovery；
 - bounded stream 可以处理 mapped review，也可以处理位于完整双侧强锚点之间、与分配后 canonical text 仍有最低 lexical 支持的 unmapped cue；unmapped 口播/ad-lib 不满足 lexical floor 时继续 review；
 - bounded stream 不使用 LRC 行数作为 cue 数，允许一个 canonical 行跨多个 editor cue，但所有已非 review 的 lower-mode 安全文字必须 normalized 完全不变；
-- mapped 1:1 interior candidate 必须被同源安全 anchors 夹住；原有歌曲前缘只允许极窄 leading-edge recovery；v1.2.3 新 bounded-stream path **只允许双侧夹住的 interior region，不做任何 frontier 外推**；
+- mapped 1:1 interior candidate 必须被同源安全 anchors 夹住；原有歌曲前缘只允许极窄 leading-edge recovery；v1.2.3 bounded-stream path **只允许双侧夹住的 interior region，不做任何 frontier 外推**；
 - 相邻 cue 共同 claim 同一 occurrence、split-continuation、下一 lexical canonical 已进入当前 cue、pure vocalization 等情况 fail closed；
 - pure vocalization 不得被 BPM 自动填成 lexical lyric；bounded region 只要存在纯 vocalization review cue 就整体 fail closed，防止把哼唱/ad-lib 强塞成歌词；
 - bounded stream 必须通过固定 BPM projection、双侧 baseline-safe anchors、完整 canonical stream、总长度合理性、editor boundary assignment 和 non-review immutability；遇到跨 song claim、cut/frontier、boundary insertion 或低相似 unmapped cue 时 fail closed；
@@ -151,6 +153,26 @@ text_bpm_bounded_stream_cue_count
 text_bpm_bounded_stream_region_count
 text_bpm_bounded_stream_unmapped_recovery_count
 text_bpm_projection_models
+```
+
+#### v1.2.5 A-bounded mapped-review recovery
+
+A-bounded 是**冻结 final timing 之后的低权限文字层**，不是新的 timing model。只有以下条件同时成立才自动恢复：
+
+- region 是连续 mapped review；`canonical_span=None` 或 zero-width span 直接 fail closed；
+- immediate resolved neighbours 定义 exact same-source canonical gap；
+- 更远的 same-source A/A timing anchors 双侧夹住 region；两侧都来自 `model_status=ready`，且各自 `|residual_ms| <= 750ms`；
+- regional normalized similarity `>=0.80`；normalized length ratio `>=0.85`；region 至少 12 个 normalized characters；
+- pure vocalization、cross-source、boundary insertion、empty ownership、multi-cue Latin/mixed repartition、弱 timing bracket、低相似、短区域或 poor length ratio 全部 fail closed；
+- recovered decision score cap `<=0.89`，低于 B timing authority；
+- cue count / number / start / end 和 v1.2.4 final timing decisions 全部保持不变，恢复后**不得重新运行 timing model**。
+
+report 记录：
+
+```text
+text_a_bounded_recovery_count
+text_a_bounded_region_count
+text_a_bounded_materialized_change_count
 ```
 
 #### v1.2.1 editor cue ownership guard
@@ -171,11 +193,11 @@ v1.2.1 起在 final text materialization 前增加 editor cue ownership guard，
 
 #### Smart 输出语义
 
-Smart report schema 当前仍为：
+Smart report schema 当前为：
 
 ```text
 schema_version = smart-1.1
-policy_id      = smart-validation-policy-2026-08-21-v1.2.3
+policy_id      = smart-validation-policy-2026-08-21-v1.2.5
 ```
 
 生产判断：
@@ -208,7 +230,9 @@ OR pro_escalation_required == true
 python scripts/v4_pro_selective.py ...
 ```
 
-Pro v1.1.1 必须绑定**当前 Smart schema + current Smart policy + exact Smart SRT/canonical hashes**。Smart policy 已升到 v1.2.4，因此 v1.2.1 及更早 Smart artifact 不能直接复用；版本/policy/hash 不匹配时先重新跑当前 Smart。
+Pro v1.1.4 必须绑定**当前 Smart schema + current Smart policy + exact Smart SRT/canonical hashes**。当前只接受 `schema_version=smart-1.1` 且 `policy_id=smart-validation-policy-2026-08-21-v1.2.5`；v1.2.4 及更早 Smart artifact 不能直接复用，版本/policy/hash 不匹配时先重新跑当前 Smart。
+
+实现上，Smart schema 仍由冻结 base contract 提供；“current production Smart policy id”必须来自 `smart_policy_v125.py`。不要从旧 `smart_policy.py` 的 v1.2.4 常量推断当前生产 policy。
 
 Pro 按失败原因选择局部 evidence：
 
@@ -344,11 +368,11 @@ references/v4-change-record.md
 20. 所有实质性更新必须同步 owning docs；CI 不通过不得合并。
 21. Runtime snapshot / doctor / family evaluator 都是可复现与诊断层，不改变 timing authority；没有独立 blind-test 结果不得把 auxiliary family 提升为自动 timing/release authority。
 22. **Standard/Text Repair V2.1 只在时间轴明确冻结时使用。** 它可处理错字、漏字、多字以及 bounded 1↔N / N↔1 / N↔N 断句差异；任何情况下都不得改变 cue 数、编号或 timing。
-23. **Smart v1.2.2 是普通“多数 timing 正确、少数 timing 可疑”任务的默认入口。** 不得把原曲 LRC/source absolute time 直接覆盖到 edited mix；必须经 rate/anchor model。
+23. **Smart v1.2.5 是普通“多数 timing 正确、少数 timing 可疑”任务的默认入口。** 不得把原曲 LRC/source absolute time 直接覆盖到 edited mix；必须经 rate/anchor model；A-bounded 只在 v1.2.4 final timing 冻结后做 text-only recovery。
 24. **Pro 只能处理当前 Smart unresolved 的 bounded regions。** 不得无理由重扫已被 Smart 验证的正常 cue；当前仍不得自动 timing writeback。
 25. **永远不覆盖原始输入。** Standard/Smart/Pro/Max 都写独立 outputs/artifacts；Smart/Pro CLI 的路径碰撞必须 fail closed。
 26. **Higher mode 必须保持能力单调性。** 没有更强独立证据时，不得退化 lower-mode 已安全成立的 text、cue ownership/display segmentation 或 timing。
-27. **Recovered text 不得形成循环证据。** 无论 ready-model recovery、Sequence Projection 还是 BPM-validated recovery，都不能反向把自己的恢复结果提升为 primary timing anchor。
+27. **Recovered text 不得形成循环证据。** 无论 ready-model recovery、Sequence Projection、BPM-validated recovery 还是 A-bounded recovery，都不能反向把自己的恢复结果提升为 primary timing anchor。
 28. **Editor ownership restoration 不是新的 canonical/timing authority。** 它只允许在已有 canonical text stream 内修正相邻 cue 的边界归属；普通移动保持 pair-combined text invariant，窄 duplicate drop 也不得扩张为一般删除规则。
 29. **`review_required` 不是 final-ready。** unresolved editor ASR 可以保留用于诊断，但不能被描述成“规范歌词已全部校正”。
 30. **BPM-derived text evidence 仍必须 fail closed。** 没有足够 baseline-safe anchors、occurrence 不唯一、split/邻 cue 冲突或 pure vocalization 时，不得为了降低 review 数量强行自动修复。
@@ -407,7 +431,7 @@ V2.1 先用唯一 exact 文本锚点把长字幕切成局部区间，再在区�
 
 这个入口完全不读取音频，也不依据 LRC timestamp 修改 SRT timing，因此 **BPM 加速/减速不会改变 Standard 的文字修复规则**。
 
-### 2. Smart / Sequence Reconciliation + Anchor Timeline Repair v1.2.2
+### 2. Smart / Sequence Reconciliation + Anchor Timeline Repair v1.2.5
 
 日常“剪映 timing 大部分正确”的任务优先：
 
@@ -432,7 +456,7 @@ python scripts/v4_smart_repair.py `
 --source-bpm "01.lrc=128"
 ```
 
-`target_bpm/source_bpm` 只作为 soft prior；不要把它伪装成 exact DAW rate。v1.2.2 可在该 soft prior 被多个 baseline-safe text anchors 独立验证后，将其用于**文字 recovery**，但仍不增加 timing mutation authority。
+`target_bpm/source_bpm` 只作为 soft prior；不要把它伪装成 exact DAW rate。BPM text-only recovery 自 v1.2.2 引入，当前 v1.2.5 仍要求该 soft prior 被多个 baseline-safe text anchors 独立验证后才可用于**文字 recovery**，并且不增加 timing mutation authority。v1.2.5 的 A-bounded recovery 同样只处理文字，且发生在 final timing 冻结之后。
 
 Smart 输出后：
 
@@ -444,7 +468,7 @@ status == review_required OR pro_escalation_required == true
     -> 进入 Pro / 人工 review；当前 Smart SRT 不是 final-ready
 ```
 
-### 3. Pro / Selective Audio Repair v1.1.1
+### 3. Pro / Selective Audio Repair v1.1.4
 
 先生成计划，默认仍不读 audio：
 
@@ -455,6 +479,8 @@ python scripts/v4_pro_selective.py `
   --canonical-lyrics "lyrics/01.lrc" "lyrics/02.lrc" `
   --plan-out "output/<任务>/<任务>_PRO_PLAN.json"
 ```
+
+Pro v1.1.4 只接受当前 Smart v1.2.5 policy；不要把旧 v1.2.4 report 直接送入 Pro。CLI 还会继续核验 exact Smart SRT / canonical hash binding。
 
 需要 local source<->mix acoustic evidence 时：
 
