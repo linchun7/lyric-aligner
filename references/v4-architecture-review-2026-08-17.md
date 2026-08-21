@@ -312,3 +312,17 @@ timing decisions copied unchanged
 `smart_policy_v125.py` 作为薄 wrapper 保留 `smart_policy.py` 的 v1.2.4 timing 行为不动。A-bounded recovered score cap `<=0.89`，低于 B timing authority；恢复后不重跑 `build_anchor_timing_plan()`。这个“post-timing + no-rebuild”结构是 anti-circularity 的架构约束，不只是当前实现细节。
 
 因此 v1.2.5 增加的是**更窄的 canonical text recovery capability**，不是新的 timing authority：四-A gate、A/B/C grade 语义、BPM soft-prior 语义、overlap guards、cue count/number/start/end、Pro timing-write 权限全部继承 v1.2.4。
+
+## 14. 2026-08-21 Smart→Pro current-policy ownership addendum
+
+“当前 Smart policy”必须只有一个生产真源。Smart v1.2.5 采用薄 wrapper 冻结 v1.2.4 timing，因此旧 `timeline/smart_policy.py` 仍合法保留 v1.2.4 常量用于 base implementation；它不能再同时承担“current production policy”真源。
+
+Pro v1.1.4 因此把兼容职责拆开：
+
+```text
+smart_policy.py      -> stable schema/base implementation contract
+smart_policy_v125.py -> current production Smart policy id
+selective_policy.py  -> exact current-policy gate before Pro planning
+```
+
+这不是新的 Pro authority，而是消除“base version constant 被误当 current version constant”的双真源。回归测试必须使用一个**字面量旧 policy id**验证 stale rejection，不能让生产代码和测试代码都从同一个可能过期的模块导入 policy id，否则 CI 会再次形成自洽但错误的兼容状态。
