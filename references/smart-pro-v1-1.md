@@ -1,17 +1,20 @@
 # Smart / Pro production policy
 
-Date: 2026-08-19
+Date: 2026-08-21
 
 Normative workload baseline remains `references/production-requirements.md`.
 Smart and Pro remain the daily primary modes; this change does not expand
 Max/Full V4 as the default path.
 
-## Smart v1.2.0
+## Smart v1.2.5
 
 Smart still reads no audio. The primary v1 A-anchor affine timing engine remains
-unchanged, but v1.2.0 adds a separate canonical-sequence text layer so severe
-editor ASR cannot permanently block text recovery merely because lexical
-similarity is low.
+unchanged from the established base policy. v1.2.0 added a separate canonical-
+sequence text layer so severe editor ASR cannot permanently block text recovery
+merely because lexical similarity is low; later v1.2.x releases hardened BPM,
+ownership and bounded recovery without increasing timing authority. v1.2.5 runs
+the frozen v1.2.4 policy to completion, freezes its final timing decisions, then
+adds a post-timing A-bounded mapped-review text-only recovery tier.
 
 Primary timing hardenings remain:
 
@@ -26,7 +29,7 @@ Primary timing hardenings remain:
 - rate prior provenance remains explicit: `exact_daw`, `bpm_derived`, or
   `anchor_estimated`; exact DAW stretch remains stronger than BPM-derived prior;
 - Smart report schema remains `smart-1.1`; current policy id is
-  `smart-validation-policy-2026-08-19-v1.2.0`.
+  `smart-validation-policy-2026-08-21-v1.2.5`.
 
 ### Segmentation authority and mode monotonicity
 
@@ -60,7 +63,7 @@ bad editor ASR
 ```
 
 Lowering Text Repair thresholds or the four-A primary timing gate would increase
-false-auto risk. v1.2.0 instead introduces a **text-only Sequence Projection**
+false-auto risk. v1.2.0 instead introduced a **text-only Sequence Projection**
 with lower authority than the primary timing model.
 
 Without an exact hard rate prior, Sequence Projection requires:
@@ -156,6 +159,22 @@ The independently-ready four-A timing paths remain:
 
 These results are text authority only and do not become primary timing anchors.
 
+### v1.2.5 A-bounded post-timing recovery
+
+After the frozen v1.2.4 Smart timing plan is final, v1.2.5 may recover a
+consecutive **mapped** review region only when immediate resolved neighbours
+define the exact same-source canonical gap and a farther ready same-source A/A
+timing pair brackets that region. Both A anchors must have absolute residual
+`<=750ms`; regional normalized similarity must be `>=0.80`, normalized length
+ratio `>=0.85`, and the region must contain at least 12 normalized characters.
+
+Unmapped/zero-width spans, cross-source gaps, pure vocalization, boundary
+insertion, empty ownership, multi-cue Latin/mixed repartition, weak residuals,
+low similarity, short regions and poor length ratio fail closed. A-bounded
+recovered score is capped at `<=0.89`, below B timing authority. Cue count,
+numbering, start/end and the frozen v1.2.4 timing decisions remain unchanged;
+Smart must not rebuild timing after this text recovery.
+
 ### Smart report
 
 Existing fields remain, including:
@@ -176,10 +195,16 @@ v1.2.0 adds:
 - `text_sequence_frontier_run_count`;
 - `text_sequence_projection_models`.
 
+v1.2.5 adds:
+
+- `text_a_bounded_recovery_count`;
+- `text_a_bounded_region_count`;
+- `text_a_bounded_materialized_change_count`.
+
 `text_sequence_projection_models` are text-only diagnostics and must not be
 confused with `models`, which remain the primary timing models.
 
-## Pro v1.1
+## Pro v1.1.4
 
 Pro stays local and evidence-first. It still performs no timing mutation.
 
@@ -194,10 +219,21 @@ Evidence is routed by the reason Smart escalated the cue:
 - unmapped review cues remain ASR-only instead of pretending source identity is
   known.
 
-Pro requires the exact current Smart schema + policy. After Smart v1.2.0, all
-v1.1.3 and earlier Smart reports are stale and must be rerun. Pro only handles
-Smart-unresolved cues; it does not automatically catch Smart false-ready results,
-which is why segmentation/sequence/authority regressions are Smart release tests.
+Pro requires the exact current Smart schema + policy. The current accepted
+upstream contract is:
+
+```text
+schema_version = smart-1.1
+policy_id      = smart-validation-policy-2026-08-21-v1.2.5
+```
+
+The frozen `smart_policy.py` remains the base implementation/schema contract and
+still contains the v1.2.4 base policy id; it is not the current production-policy
+source. Pro v1.1.4 obtains current `SMART_POLICY_ID` from `smart_policy_v125.py`.
+Therefore v1.2.4 and earlier Smart reports are stale and must be rerun. Pro only
+handles Smart-unresolved cues; it does not automatically catch Smart false-ready
+results, which is why segmentation/sequence/authority regressions are Smart
+release tests.
 
 Nearby acoustic review cues are assigned to merged mix regions. ASR-only jobs do
 not widen an acoustic region. Source windows use token timing / next canonical
@@ -205,7 +241,9 @@ onset and guarantee enough duration for the planned acoustic slope search.
 
 At the first/last canonical lines of a song, a timing-review job may add one
 neighbouring-song shadow competitor. The competitor remains acoustic evidence
-only (`shadow_evidence_only=true`) and cannot directly mutate timing.
+only (`shadow_evidence_only=true`) and cannot directly mutate timing. `max_jobs`
+continues to limit primary unresolved-cue jobs; an attached boundary competitor
+is additive shadow evidence for an already-selected primary job.
 
 The existing external forced-alignment protocol remains callable from
 `scripts/v4_pro_selective.py` through explicit backend/model/command arguments.
@@ -214,9 +252,9 @@ authority.
 
 ## Safety boundary
 
-Pro v1.1 still reports `timing_mutation_performed=false`. Automatic Pro writeback
-must remain disabled until private real-song calibration + independent blind
-validation establishes safe evidence combinations and false-repair bounds.
+Pro v1.1.4 still reports `timing_mutation_performed=false`. Automatic Pro
+writeback must remain disabled until private real-song calibration + independent
+blind validation establishes safe evidence combinations and false-repair bounds.
 
 Max also follows the same segmentation authority contract: line-LRC grouping is
 not sufficient evidence by itself to resegment a trusted editor subtitle cue.
