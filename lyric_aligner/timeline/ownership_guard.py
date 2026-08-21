@@ -1,10 +1,10 @@
 """Conservative editor cue-ownership preservation for Smart text output.
 
 Canonical lyrics own text and order, but line-LRC boundaries do not own SRT
-segmentation.  When Smart sequence reconciliation has moved a short, clearly
-recognized boundary phrase from one Jianying cue into its neighbour, this guard
-may move only that same text back across the existing cue boundary.  It never
-changes cue count or timing and never invents text.
+segmentation.  When Smart reconciliation has moved or duplicated a short,
+clearly recognized boundary phrase across neighbouring Jianying cues, this
+guard may restore the editor-proven ownership.  It never changes cue count or
+timing and never invents text.
 """
 
 from __future__ import annotations
@@ -32,11 +32,53 @@ def _sequence_related(decision: MatchDecision | None) -> bool:
     )
 
 
-def _eligible_pair(left: MatchDecision | None, right: MatchDecision | None) -> bool:
+def _sequence_pair(left: MatchDecision | None, right: MatchDecision | None) -> bool:
     return (
         left is not None
         and right is not None
         and (_sequence_related(left) or _sequence_related(right))
+    )
+
+
+def _materialized_upstream_change(
+    cue: SubtitleCue,
+    decision: MatchDecision | None,
+    current_text: str,
+) -> bool:
+    """Return True only when the decision itself materialized this changed text."""
+
+    if decision is None or decision.action != "replace" or not decision.output_text:
+        return False
+    current = _normalize_for_match(current_text)
+    return (
+        current != cue.normalized
+        and _normalize_for_match(str(decision.output_text)) == current
+    )
+
+
+def _duplicate_drop_pair(
+    left_cue: SubtitleCue,
+    right_cue: SubtitleCue,
+    left_decision: MatchDecision | None,
+    right_decision: MatchDecision | None,
+    current_left: str,
+    current_right: str,
+) -> bool:
+    """Allow duplicate cleanup only when an upstream mutation can explain it.
+
+    Sequence reconciliation remains eligible as before.  Text Repair and other
+    existing Smart text layers may also introduce a short duplicate at an editor
+    boundary; in that case at least one side must prove that its current changed
+    text is exactly the output materialized by its own ``replace`` decision.
+    This prevents the final guard from becoming a free-standing baseline editor.
+    """
+
+    if _sequence_pair(left_decision, right_decision):
+        return True
+    return _materialized_upstream_change(
+        left_cue, left_decision, current_left
+    ) or _materialized_upstream_change(
+        right_cue, right_decision, current_right
     )
 
 
@@ -191,11 +233,13 @@ def restore_editor_cue_ownership(
 ) -> tuple[dict[int, str], list[MatchDecision], int]:
     """Repartition already-selected text across existing cue boundaries only.
 
-    Ordinary boundary restoration preserves the adjacent pair's combined lyric
-    stream exactly. A narrow duplicate-drop path may remove one 2-6 character
-    copy only when the same fragment is present on both sides, the original
-    editor recognition assigns it to one side, and at least one decision in the
-    pair came from Smart sequence reconciliation. Cue count and timing never move.
+    Ordinary boundary restoration remains restricted to Sequence reconciliation
+    and preserves the adjacent pair's combined lyric stream exactly. A narrow
+    duplicate-drop path may remove one 2-6 character copy only when the same
+    fragment is present on both sides, the original editor recognition assigns
+    it to one side, and either Sequence reconciliation or a materialized upstream
+    ``replace`` decision can explain the duplicate. Cue count and timing never
+    move.
     """
 
     output = {item.cue_ordinal: item for item in decisions}
@@ -211,25 +255,33 @@ def restore_editor_cue_ownership(
         right_cue = cues[index + 1]
         left_decision = output.get(left_cue.ordinal)
         right_decision = output.get(right_cue.ordinal)
-        if not _eligible_pair(left_decision, right_decision):
+        if left_decision is None or right_decision is None:
             continue
-        assert left_decision is not None and right_decision is not None
 
         current_left = working[left_cue.ordinal]
         current_right = working[right_cue.ordinal]
         candidates: list[tuple[str, str, float, str]] = []
-        for item in (
-            _best_right_duplicate_drop(left_cue.text, right_cue.text, current_left, current_right),
-            _best_left_duplicate_drop(left_cue.text, right_cue.text, current_left, current_right),
+        if _duplicate_drop_pair(
+            left_cue,
+            right_cue,
+            left_decision,
+            right_decision,
+            current_left,
+            current_right,
         ):
-            if item is not None:
-                candidates.append((*item, "duplicate_drop"))
-        for item in (
-            _best_forward_restore(left_cue.text, right_cue.text, current_left, current_right),
-            _best_backward_restore(left_cue.text, right_cue.text, current_left, current_right),
-        ):
-            if item is not None:
-                candidates.append((*item, "boundary_move"))
+            for item in (
+                _best_right_duplicate_drop(left_cue.text, right_cue.text, current_left, current_right),
+                _best_left_duplicate_drop(left_cue.text, right_cue.text, current_left, current_right),
+            ):
+                if item is not None:
+                    candidates.append((*item, "duplicate_drop"))
+        if _sequence_pair(left_decision, right_decision):
+            for item in (
+                _best_forward_restore(left_cue.text, right_cue.text, current_left, current_right),
+                _best_backward_restore(left_cue.text, right_cue.text, current_left, current_right),
+            ):
+                if item is not None:
+                    candidates.append((*item, "boundary_move"))
         if not candidates:
             continue
 
