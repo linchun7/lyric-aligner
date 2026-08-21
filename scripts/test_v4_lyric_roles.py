@@ -69,7 +69,8 @@ class V4LyricRoleTests(unittest.TestCase):
             "zh",
         )
         self.assertEqual(result["canonical_original_count"], 1)
-        self.assertEqual(result["timestamp_group_count"], 1)
+        self.assertEqual(result["timestamp_group_count"], 3)
+        self.assertEqual(result["lexical_timestamp_group_count"], 1)
         self.assertEqual(result["ignored_metadata_group_count"], 2)
         self.assertEqual(result["groups"][0]["timestamp_ms"], 10_000)
 
@@ -82,6 +83,8 @@ class V4LyricRoleTests(unittest.TestCase):
             "zh",
         )
         self.assertEqual(result["canonical_original_count"], 1)
+        self.assertEqual(result["timestamp_group_count"], 3)
+        self.assertEqual(result["lexical_timestamp_group_count"], 1)
         self.assertEqual(result["ignored_metadata_group_count"], 2)
         self.assertEqual(result["ignored_blank_group_count"], 1)
         self.assertEqual([group["timestamp_ms"] for group in result["groups"]], [10_000])
@@ -94,6 +97,8 @@ class V4LyricRoleTests(unittest.TestCase):
         )
         alternatives = result["groups"][0]["alternatives"]
         self.assertEqual([row["role"] for row in alternatives], ["metadata", "original"])
+        self.assertEqual(result["timestamp_group_count"], 1)
+        self.assertEqual(result["lexical_timestamp_group_count"], 1)
         self.assertEqual(result["ignored_metadata_group_count"], 0)
 
     def test_metadata_only_group_cannot_be_forced_back_by_override(self):
