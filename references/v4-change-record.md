@@ -179,3 +179,13 @@ v1.2.2 新增 `timeline/bpm_sequence_reconcile.py`，只处理已经存在 canon
 - timing review 新增 with/without concrete proposal 计数，避免把“证据不足、原 timing 未被独立验证”误读为“存在 542 个已知错误 timing”；
 - public regression 覆盖 placeholder BPM conflict、统计口径与 review 分类；不写真实歌曲/cue/timestamp/歌词 hard-code。
 
+## 2026-08-21 - Smart v1.2.3 bounded BPM canonical stream recovery
+
+- Private production sampling confirmed all 12 deliberately high-risk v1.2.2 BPM auto-recoveries, including zero-lexical-similarity mapped cues.
+- Add a bilateral bounded-stream text-only path on top of the existing v1.2.2 mapped 1:1 BPM recovery.
+- The new path uses only BPM models validated by baseline-safe anchors and only regions fully bracketed by same-source inlier anchors.
+- It can recover consecutive mapped reviews and cautiously recover an unmapped interior cue only when its assigned canonical text retains minimum lexical support.
+- It preserves every already-resolved lower-mode cue normalized-exactly, allows one canonical row to span multiple editor cues, and never treats LRC row count as subtitle cue count.
+- Pure vocalization, cross-source claims, cut/frontier regions, boundary insertions, short low-information cues, and low-similarity unmapped asides remain review.
+- Recovered text remains below B timing authority and cannot create timing anchors.
+

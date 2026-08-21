@@ -329,3 +329,7 @@ text_semantic_change_count       = normalized lyric 语义变化
 
 BPM compatibility 只对有真实 rate evidence 的 timing model 评估；`insufficient_anchors` + `rate_source=none` 的 placeholder rate 现在显示 `bpm_prior_compatible=null`，不再伪装成 BPM 冲突。
 
+## Smart v1.2.3 bounded-stream closeout
+
+Smart now has two BPM-derived text-only recovery tiers: conservative mapped 1:1 recovery and a stricter bilateral bounded-stream recovery. The latter is interior-only, requires same-source baseline-safe BPM inlier anchors on both sides, preserves all non-review lower-mode text, and fails closed on vocalization/ad-lib/cut/frontier evidence. It does not change cue count, numbering, start/end timing, primary timing authority, or the four-A timing gate.
+
