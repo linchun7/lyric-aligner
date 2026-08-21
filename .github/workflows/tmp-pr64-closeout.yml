@@ -1,0 +1,142 @@
+name: tmp-pr64-closeout
+
+on:
+  push:
+    branches:
+      - maintenance/smart-baseline-correctness-20260821
+  pull_request:
+    types: [synchronize]
+
+permissions:
+  contents: write
+
+jobs:
+  closeout:
+    if: github.event_name == 'push' || github.head_ref == 'maintenance/smart-baseline-correctness-20260821'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: maintenance/smart-baseline-correctness-20260821
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install dependencies
+        run: python -m pip install -r requirements.txt
+      - name: Restore comments and update owning docs
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          def replace_once(path: str, old: str, new: str) -> None:
+              p = Path(path)
+              text = p.read_text(encoding='utf-8')
+              if text.count(old) != 1:
+                  raise SystemExit(f'{path}: expected one replacement anchor, found {text.count(old)}')
+              p.write_text(text.replace(old, new), encoding='utf-8')
+
+          def append_once(path: str, marker: str, block: str) -> None:
+              p = Path(path)
+              text = p.read_text(encoding='utf-8')
+              if marker not in text:
+                  p.write_text(text.rstrip() + '\n\n' + block.strip() + '\n', encoding='utf-8')
+
+          path = 'lyric_aligner/alignment/selective_policy.py'
+          replace_once(
+              path,
+              '    else:\n        max_slope = min(2.2, rate_prior + acoustic_config.slope_radius)\n    return int(math.ceil(mix_duration_ms * max_slope)) + 750\n',
+              '    else:\n        max_slope = min(2.2, rate_prior + acoustic_config.slope_radius)\n    # Retrieval needs at least query_frames * slope source frames. Keep a small\n    # guard margin for rounding/frame boundaries instead of letting short local\n    # windows fail with "coarse retrieval produced no candidates".\n    return int(math.ceil(mix_duration_ms * max_slope)) + 750\n',
+          )
+          replace_once(
+              path,
+              '    planning_config = replace(config, max_jobs=max(config.max_jobs, len(cues)))\n',
+              '    # The legacy bridge sorts timing review ahead of text review and applies\n    # max_jobs before v1.1 reason-aware routing. Build the complete unresolved\n    # candidate pool first; v1.1.2 applies the production budget only after the\n    # richer Smart evidence has been classified.\n    planning_config = replace(config, max_jobs=max(config.max_jobs, len(cues)))\n',
+          )
+          replace_once(
+              path,
+              '    competitors = eligible_competitors\n',
+              '    # Shadow competitors are companion evidence for already-selected primary\n    # boundary cues. They must not consume or displace the primary unresolved\n    # cue budget; otherwise a fully-used max_jobs budget silently drops the\n    # dual-source check exactly where identity is most ambiguous.\n    competitors = eligible_competitors\n',
+          )
+
+          append_once(
+              'references/v4-change-record.md',
+              'Baseline correctness maintenance before Smart v1.2.5',
+              '''## 2026-08-21 — Baseline correctness maintenance before Smart v1.2.5
+
+Private production review found three generic maintenance issues without any confirmed Smart false-auto/false-ready:
+
+- Standard and Smart used different canonical metadata/title classification. Standard now reuses the shared metadata/title classification while preserving its TXT/untimed input scope; this is baseline correctness, not an authority expansion.
+- The documented Smart/Pro direct script entry points now bootstrap repository root before package imports, so they do not depend on an external `PYTHONPATH`.
+- Pro v1.1.3 still expands an internal candidate-pool budget before reason-aware ranking, but public `config.max_jobs` now reports the caller-requested primary budget that is actually applied. Primary/shadow selection semantics are unchanged.
+
+Public regressions are synthetic only. Smart v1.2.4 remains the production default; Smart v1.2.5 capability work stays gated on a corrected private baseline rerun and independent blind validation.''',
+          )
+
+          append_once(
+              'references/v4-status.md',
+              'baseline-correctness maintenance before v1.2.5',
+              '''### 2026-08-21 baseline-correctness maintenance before v1.2.5
+
+- Standard and Smart now share the metadata/title classification contract; Standard keeps its broader TXT/untimed input support.
+- `scripts/v4_smart_repair.py` and `scripts/v4_pro_selective.py` self-bootstrap repository root for the documented direct CLI entry points.
+- Pro public `config.max_jobs` reports the requested primary unresolved-cue budget; the expanded full-pool planning budget remains an internal implementation detail and shadow competitors remain additive.
+- No text/timing threshold, Smart authority, Pro timing-write authority, policy id, or schema changes. Smart v1.2.4 remains the production default pending v1.2.5 private blind validation.''',
+          )
+
+          append_once(
+              'references/v4-implementation.md',
+              'Baseline correctness maintenance before Smart v1.2.5',
+              '''### Baseline correctness maintenance before Smart v1.2.5
+
+`lyric_aligner.text.normalization` owns the shared metadata/title classification used by both canonical paths. `text_repair.parse_canonical_files()` consumes that classification but remains the broader Standard parser, including TXT/untimed support; it is deliberately not replaced wholesale by the timed `parse_canonical_lyrics()` parser.
+
+`build_selective_repair_plan_v11()` may create an expanded internal `planning_config` only to gather the complete unresolved candidate pool. After cloning the base plan, public `plan["config"]` is restored from the caller config; ranking/truncation still uses the caller `config.max_jobs`, while selected-primary boundary competitors remain additive shadow evidence.''',
+          )
+
+          runtime = Path('references/v4-runtime-guide.md')
+          text = runtime.read_text(encoding='utf-8')
+          stale = '`--max-jobs` 现在约束最终 job 总数，包含 shadow boundary competitor；超出的 competitor 会记录 omitted 数量，而不是悄悄超过上限。'
+          current = '`--max-jobs` 在当前 Pro v1.1.3 中约束 **primary unresolved cues**。只为已选 primary 添加的 shadow boundary competitor 是 additive companion evidence，不消耗 primary budget，也不会引入新的 primary cue。'
+          if stale in text:
+              text = text.replace(stale, current)
+          runtime.write_text(text, encoding='utf-8')
+          append_once(
+              'references/v4-runtime-guide.md',
+              '2026-08-21 CLI / Pro budget maintenance',
+              '''### 2026-08-21 CLI / Pro budget maintenance
+
+`python scripts/v4_smart_repair.py --help` 与 `python scripts/v4_pro_selective.py --help` 现在会自行把 repository root 加入 import path，正式文档中的直接入口不要求调用者额外设置 `PYTHONPATH`。
+
+当前 Pro v1.1.3 的 `--max-jobs` 是 **primary unresolved-cue budget**。Shadow boundary competitors 只附着于已经选中的 primary，属于 additive evidence；`plan.config.max_jobs` 对外报告调用者请求的 primary budget，内部完整 candidate-pool 扩池不是公开预算语义。''',
+          )
+          PY
+      - name: Run focused validation
+        run: |
+          python -m unittest scripts.test_v4_text_repair_hardening
+          python -m unittest scripts.test_v4_cli_bootstrap
+          python -m unittest scripts.test_v4_pro_config_semantics
+          python -m unittest scripts.test_v4_selective_policy_v11
+          python scripts/validate_docs_contract.py --base origin/main --head HEAD
+          python scripts/validate_skill.py
+          python scripts/privacy_scan.py
+          git diff --check
+      - name: Self-delete and publish closeout
+        shell: bash
+        run: |
+          rm .github/workflows/tmp-pr64-closeout.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -- \
+            lyric_aligner/alignment/selective_policy.py \
+            references/v4-change-record.md \
+            references/v4-status.md \
+            references/v4-implementation.md \
+            references/v4-runtime-guide.md \
+            .github/workflows/tmp-pr64-closeout.yml
+          if git diff --cached --quiet; then
+            exit 0
+          fi
+          git commit -m "docs: close baseline correctness maintenance"
+          git push origin HEAD:maintenance/smart-baseline-correctness-20260821
