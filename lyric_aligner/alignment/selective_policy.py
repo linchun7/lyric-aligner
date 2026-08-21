@@ -113,9 +113,6 @@ def _minimum_acoustic_source_span_ms(
         max_slope = acoustic_config.no_prior_max_slope
     else:
         max_slope = min(2.2, rate_prior + acoustic_config.slope_radius)
-    # Retrieval needs at least query_frames * slope source frames. Keep a small
-    # guard margin for rounding/frame boundaries instead of letting short local
-    # windows fail with "coarse retrieval produced no candidates".
     return int(math.ceil(mix_duration_ms * max_slope)) + 750
 
 
@@ -394,10 +391,6 @@ def build_selective_repair_plan_v11(
             "Pro v1.1 requires the current Smart production policy; rerun Smart"
         )
 
-    # The legacy bridge sorts timing review ahead of text review and applies
-    # max_jobs before v1.1 reason-aware routing. Build the complete unresolved
-    # candidate pool first; v1.1.2 applies the production budget only after the
-    # richer Smart evidence has been classified.
     planning_config = replace(config, max_jobs=max(config.max_jobs, len(cues)))
     base = build_selective_repair_plan(
         smart_report=smart_report,
@@ -407,6 +400,10 @@ def build_selective_repair_plan_v11(
         config=planning_config,
     )
     plan = deepcopy(base)
+    # The base planner sees an expanded budget only to collect the complete
+    # unresolved pool. The public plan config must report the caller-requested
+    # primary budget that is actually applied below.
+    plan["config"] = config.to_dict()
     by_ordinal = {item.ordinal: item for item in canonical}
     by_source = _canonical_by_source(canonical)
     models = _model_index(smart_report)
@@ -507,10 +504,6 @@ def build_selective_repair_plan_v11(
         for job in candidate_competitors
         if str(job.get("boundary_competitor_for_job_id") or "") in selected_primary_ids
     ]
-    # Shadow competitors are companion evidence for already-selected primary
-    # boundary cues. They must not consume or displace the primary unresolved
-    # cue budget; otherwise a fully-used max_jobs budget silently drops the
-    # dual-source check exactly where identity is most ambiguous.
     competitors = eligible_competitors
     omitted_competitors = 0
     jobs = [*primary_jobs, *competitors]
