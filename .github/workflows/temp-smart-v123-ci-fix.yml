@@ -1,0 +1,32 @@
+name: temporary Smart v1.2.3 CI guard fix
+
+on:
+  push:
+    branches:
+      - agent/smart-v123-bounded-stream-20260821
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/smart-v123-bounded-stream-20260821
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Apply guard inheritance fix
+        run: python scripts/temp_fix_v123_ci.py
+      - name: Remove temporary patch machinery and commit
+        run: |
+          rm scripts/temp_fix_v123_ci.py
+          rm .github/workflows/temp-smart-v123-ci-fix.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "fix: preserve v1.2.2 ownership guards in bounded recovery"
+          git push origin HEAD:agent/smart-v123-bounded-stream-20260821
