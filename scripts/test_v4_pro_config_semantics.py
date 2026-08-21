@@ -6,7 +6,7 @@ from lyric_aligner.alignment.selective_policy import build_selective_repair_plan
 from lyric_aligner.alignment.selective_repair import SelectiveRepairConfig
 from lyric_aligner.text_repair import SubtitleCue
 from lyric_aligner.timeline.anchor_repair import TimedCanonicalOccurrence
-from lyric_aligner.timeline.smart_policy import SMART_POLICY_ID, SMART_SCHEMA_VERSION
+from lyric_aligner.timeline.smart_current import SMART_POLICY_ID, SMART_SCHEMA_VERSION
 
 
 def _cue(ordinal: int, second: int, text: str) -> SubtitleCue:

@@ -10,7 +10,7 @@
 ```text
 Standard -> Text Repair V2.1
 Smart    -> Canonical Sequence Reconciliation + Anchor Timeline Repair v1.2.5（no-audio）
-Pro      -> Selective Audio Repair（局部 audio evidence）
+Pro      -> Selective Audio Repair v1.1.4（局部 audio evidence）
 Max      -> Full V4 Alignment
 ```
 
@@ -47,6 +47,7 @@ lyric_aligner/timeline/bpm_sequence_reconcile.py
 lyric_aligner/timeline/ownership_guard.py
 lyric_aligner/timeline/a_bounded_reconcile.py
 lyric_aligner/timeline/smart_policy_v125.py
+lyric_aligner/timeline/smart_current.py
 scripts/v4_smart_repair.py
 ```
 
@@ -277,9 +278,9 @@ text_a_bounded_region_count
 text_a_bounded_materialized_change_count
 ```
 
-production wrapper `smart_policy_v125.py` 先运行冻结 v1.2.4，再消费该 v1.2.4 final timing evidence，仅 materialize A-bounded 文字；timing decisions 原样保留，防止循环自证。
+production wrapper `smart_policy_v125.py` 先运行冻结 v1.2.4，再消费该 v1.2.4 final timing evidence，仅 materialize A-bounded 文字；timing decisions 原样保留，防止循环自证。`smart_current.py` 当前把 production Smart 绑定到这个 wrapper，CLI 不再直接 import 版本化 module。
 
-## 4. Pro — Selective Audio Repair v1.1.1
+## 4. Pro — Selective Audio Repair v1.1.4
 
 Pro 是 Smart unresolved 的局部声学层，仍保持：
 
@@ -291,10 +292,10 @@ Pro 只接受当前：
 
 ```text
 schema_version = smart-1.1
-policy_id      = current Smart production policy
+policy_id      = smart-validation-policy-2026-08-21-v1.2.5
 ```
 
-因此任何旧 Smart policy artifact 在当前 v1.2.5 前都必须按当前 policy 重跑 Smart 后再进入 Pro。
+因此 v1.2.4 及更早 Smart artifact 都必须按当前 policy 重跑 Smart 后再进入 Pro。Pro v1.1.4 的 `selective_policy.py` 与 Smart CLI 都从 `smart_current.py` 获取 current Smart schema/policy binding；该 facade 当前再绑定 frozen base schema + v1.2.5 wrapper。测试使用字面量 v1.2.4 stale id 验证拒绝路径，避免生产和测试共同引用旧版本常量而“自洽通过”。
 
 reason-aware routing：
 
@@ -305,7 +306,7 @@ reason-aware routing：
 
 Pro 只处理 Smart 明确 unresolved 的 bounded regions；**Smart 的 false-ready 不会被 Pro 自动兜底**，因此 lower-mode monotonicity / false-ready 回归测试属于 Smart 本身的发布门槛。
 
-Enhanced LRC `end_ms=None`、adaptive source-window minimum、ASR-only region isolation、final `max_jobs` cap、shadow boundary competitor 与 source-I/O/path safety 继续保持 v1.1.1 收口语义。
+Enhanced LRC `end_ms=None`、adaptive source-window minimum、ASR-only region isolation、final `max_jobs` cap、shadow boundary competitor 与 source-I/O/path safety 继续保持；v1.1.4 只修 current-Smart compatibility binding，不改变 evidence routing、阈值或 timing mutation authority。
 
 ## 5. Max — Full V4 Alignment
 
@@ -346,7 +347,8 @@ Public CI 必须证明：
 - A-bounded recovery 后 timing decisions 必须 byte-for-byte/structure-equivalent 保持 v1.2.4 final evidence，不得重新建模；
 - recovery 不降低 Text Repair threshold、不把 recovered text 变成 A timing anchor；
 - exact DAW hard prior / BPM-derived soft prior 的 timing authority 语义不变；
-- Enhanced LRC open-ended token、stale Smart rejection、adaptive source window、ASR-only region、max-jobs、path collision、source-I/O 继续不回归；
+- Pro 必须接受当前 Smart v1.2.5 policy，并拒绝 v1.2.4 literal stale policy；
+- Enhanced LRC open-ended token、adaptive source window、ASR-only region、max-jobs、path collision、source-I/O 继续不回归；
 - Python/ASR environment 与 legacy tests 全部继续通过。
 
 Private real-song calibration 仍是 text recovery false-auto 风险的重要验收。真实任务发现的新 failure pattern 应继续转换成**通用、合成、无任务数据硬编码**的 regression；不得为了提高覆盖率把歌曲名、cue 编号、真实时间戳或真实歌词写进 production algorithm/public test。
@@ -402,4 +404,8 @@ Pro uses `max_jobs` as a primary unresolved-cue budget. Boundary competitor jobs
 
 ### 2026-08-21 Smart v1.2.5 promotion status
 
-The A-bounded tier passed public synthetic shadow CI, then a second private clean rerun against the corrected frozen v1.2.4 inputs. The private rerun reproduced only the previously identified narrow candidate regions with no new automatic text changes; independent manual listening accepted the remaining candidates. Promotion remains conditional on the final production-wiring CI for this PR being fully green before merge.
+Smart v1.2.5 A-bounded is now the production Smart path on `main`. The next acceptance step is an independent new production task rather than further promotion work on the original validation sample.
+
+### 2026-08-21 Pro v1.1.4 current-Smart binding status
+
+Incremental post-promotion review found that Pro v1.1.3 still imported the frozen v1.2.4 `SMART_POLICY_ID`, so a legitimate v1.2.5 Smart report would be rejected before evidence planning. Pro v1.1.4 routes current Smart schema/policy selection through `timeline/smart_current.py`; Smart CLI and current-policy tests use the same facade. The facade currently binds schema `smart-1.1` plus v1.2.5 policy/function, while versioned Smart modules remain historical implementations. Evidence routing, selection budgets, thresholds and `timing_mutation_performed=false` remain unchanged.

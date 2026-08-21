@@ -12,9 +12,8 @@ from lyric_aligner.io.path_safety import PathCollisionError, validate_separate_a
 from lyric_aligner.text.canonical_lyrics import CanonicalToken
 from lyric_aligner.text_repair import SubtitleCue
 from lyric_aligner.timeline.anchor_repair import TimedCanonicalOccurrence, TimingDecision
+from lyric_aligner.timeline.smart_current import SMART_POLICY_ID, SMART_SCHEMA_VERSION
 from lyric_aligner.timeline.smart_policy import (
-    SMART_POLICY_ID,
-    SMART_SCHEMA_VERSION,
     _hard_rate_priors,
     _harden_combined_timeline,
 )
