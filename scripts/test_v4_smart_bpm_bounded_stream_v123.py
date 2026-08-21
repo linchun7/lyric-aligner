@@ -212,12 +212,17 @@ class SmartBpmBoundedStreamV123Tests(unittest.TestCase):
             _decision(3, 3, action="unchanged", score=1.0, reason="canonical_content_matches_source_segmentation", source_text="end anchor", canonical_text="end anchor"),
             _decision(4, 4, action="unchanged", score=1.0, reason="canonical_content_matches_source_segmentation", source_text="far anchor", canonical_text="far anchor"),
         ]
-        replacements, _, summary, _ = recover_text_reviews_from_bpm_projection(
+        replacements, updated, summary, _ = recover_text_reviews_from_bpm_projection(
             cues, canonical, decisions, rate_prior_metadata_by_source={0: {"provenance": "bpm_derived", "value": 1.0}}
         )
         self.assertEqual(summary.bounded_stream_region_count, 0)
-        self.assertNotIn(1, replacements)
-        self.assertNotIn(2, replacements)
+        # Existing mapped 1:1 BPM recovery is intentionally unchanged and may
+        # still resolve these English lines.  The new v1.2.4 guard only blocks
+        # the multi-cue bounded tier.
+        self.assertTrue(all(
+            not item.reason.startswith("sequence_projection_confirms_bpm_bounded_stream")
+            for item in updated[1:3]
+        ))
 
 
 if __name__ == "__main__":
