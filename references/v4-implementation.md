@@ -456,3 +456,6 @@ Public CI 不能证明真实歌曲 false-auto。每次 private real-song failure
 
 `timeline/bpm_sequence_reconcile.py` may now consume a complete lexical canonical gap between adjacent same-source BPM inlier anchors and repartition that stream across the existing editor cues. `_assign_targets` is used only inside a region that has passed BPM projection, bilateral-anchor, source-consistency, length, vocalization/ad-lib, boundary-insertion, short-cue, unmapped lexical-floor, and lower-mode immutability guards. Canonical row boundaries remain non-authoritative: one canonical row may intersect more than one editor cue. The resulting decisions use `sequence_projection_confirms_bpm_bounded_stream`, remain C-grade/below B timing authority, and cannot feed timing model construction.
 
+### Smart v1.2.4 bounded-stream production guards
+
+`timeline/bpm_sequence_reconcile.py` normalizes absent and zero-width canonical claims into one unmapped semantic state. The v1.2.3 bilateral stream path is further constrained so a previously mapped review cannot expand beyond its existing canonical span; this prevents canonical correctness at region level from overriding editor cue ownership. Until token-boundary-aware Latin rendering exists, the new multi-cue bounded tier rejects gaps containing Latin text; the older mapped 1:1 BPM text path remains unchanged.

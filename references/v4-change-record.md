@@ -189,3 +189,10 @@ v1.2.2 新增 `timeline/bpm_sequence_reconcile.py`，只处理已经存在 canon
 - Pure vocalization, cross-source claims, cut/frontier regions, boundary insertions, short low-information cues, and low-similarity unmapped asides remain review.
 - Recovered text remains below B timing authority and cannot create timing anchors.
 
+## 2026-08-21 - Smart v1.2.4 production acceptance hardening
+
+- A private 578-cue rerun exposed three generic gaps in the newly added v1.2.3 bounded-stream tier; no real song/cue/lyric identifiers are committed.
+- Treat `canonical_span=None` and zero-width `[x,x]` spans as the same unmatched state so production-shaped Text Repair output can enter the intended bounded unmapped path.
+- A mapped review may not expand its canonical span into adjacent rows; only truly unmapped cues may acquire a new canonical span from bounded-stream evidence.
+- Multi-cue bounded recovery now fails closed when the target gap contains Latin text because the current character-owner renderer preserves editor whitespace and is not token-boundary-aware. Existing mapped 1:1 BPM recovery remains available for English/mixed lyrics.
+- Add production-shaped synthetic regressions for zero-width unmatched semantics, mapped-span ownership, and Latin bounded fail-closed behavior.

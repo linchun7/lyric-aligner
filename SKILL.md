@@ -11,7 +11,7 @@ description: Reconstruct, review, materialize, diagnose and render multilingual 
 
 ```text
 Standard -> Text Repair V2.1
-Smart    -> Sequence Reconciliation + Anchor Timeline Repair v1.2.3
+Smart    -> Sequence Reconciliation + Anchor Timeline Repair v1.2.4
 Pro      -> Selective Audio Repair v1.1.1
 Max      -> Full V4 Alignment（具体算法版本以 references/v4-status.md / runtime snapshot 为准）
 ```
@@ -19,7 +19,7 @@ Max      -> Full V4 Alignment（具体算法版本以 references/v4-status.md / 
 当前 Smart policy：
 
 ```text
-smart-validation-policy-2026-08-21-v1.2.3
+smart-validation-policy-2026-08-21-v1.2.4
 ```
 
 这个项目的生产原则不是“让 ASR 重写歌词”，而是：**canonical lyric 决定最终文字与顺序；canonical LRC line break 不等于最终 subtitle cue boundary；Jianying timing / cue segmentation 是强但可推翻的先验；Smart 先用 timed canonical + editor majority anchors 做 0-audio 验证；Pro/Max 才引入 Source-to-Mix acoustic evidence。**
@@ -77,7 +77,7 @@ LRC line break != subtitle cue boundary authority
 python scripts/v4_smart_repair.py ...
 ```
 
-Smart v1.2.3 仍然不读音频。它从 Standard/Text Repair V2.1 的安全文字结果开始，再按以下顺序增加证据：
+Smart v1.2.4 仍然不读音频。它从 Standard/Text Repair V2.1 的安全文字结果开始，再按以下顺序增加证据：
 
 ```text
 Text Repair V2.1 safe baseline
@@ -125,7 +125,7 @@ Smart 不通过降低 Text Repair 阈值来解决严重 ASR。v1.2.x 增加独�
 
 Sequence Projection **不是** `SongTimingModel ready` 的替代品。sequence-projected decision 固定保持在 B-grade 以下，只提供 final-text evidence，不得反向制造 timing authority。
 
-#### v1.2.3 BPM-validated text recovery
+#### v1.2.4 BPM-validated text recovery
 
 当生产提供“原 BPM -> 目标 BPM”且一首歌主要是固定匀速变化时，BPM 可以帮助 repeated lyric / severe-ASR 的文字定位，但只有经过独立文本证据验证后才能启用：
 
@@ -208,7 +208,7 @@ OR pro_escalation_required == true
 python scripts/v4_pro_selective.py ...
 ```
 
-Pro v1.1.1 必须绑定**当前 Smart schema + current Smart policy + exact Smart SRT/canonical hashes**。Smart policy 已升到 v1.2.3，因此 v1.2.1 及更早 Smart artifact 不能直接复用；版本/policy/hash 不匹配时先重新跑当前 Smart。
+Pro v1.1.1 必须绑定**当前 Smart schema + current Smart policy + exact Smart SRT/canonical hashes**。Smart policy 已升到 v1.2.4，因此 v1.2.1 及更早 Smart artifact 不能直接复用；版本/policy/hash 不匹配时先重新跑当前 Smart。
 
 Pro 按失败原因选择局部 evidence：
 

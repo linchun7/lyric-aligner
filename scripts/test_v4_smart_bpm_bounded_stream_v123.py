@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import unittest
+from dataclasses import replace
 
 from lyric_aligner.text_repair import MatchDecision, SubtitleCue, _normalize_for_match
 from lyric_aligner.timeline.anchor_repair import TimedCanonicalOccurrence
@@ -92,6 +93,9 @@ class SmartBpmBoundedStreamV123Tests(unittest.TestCase):
             middle_two=("山河错碎", "汉到底都不同"),
             middle_two_spans=(1, None),
         )
+        # Production Text Repair represents an unmatched cue with a zero-width
+        # canonical span rather than canonical_span=None.
+        decisions[2] = replace(decisions[2], canonical_span=(2, 2))
 
         replacements, updated, summary, models = recover_text_reviews_from_bpm_projection(
             cues,
@@ -177,6 +181,48 @@ class SmartBpmBoundedStreamV123Tests(unittest.TestCase):
 
         self.assertNotIn(2, replacements)
         self.assertEqual(summary.bounded_stream_region_count, 0)
+
+    def test_mapped_review_cannot_expand_into_adjacent_canonical_rows(self) -> None:
+        from lyric_aligner.timeline.bpm_sequence_reconcile import _is_unmapped_span
+
+        mapped = _decision(1, 1, action="review", score=0.2, reason="low_or_structurally_unsafe_similarity", source_text="错词", canonical_text="山河破碎")
+        self.assertFalse(_is_unmapped_span(mapped))
+        zero_width = replace(mapped, canonical_span=(1, 1))
+        self.assertTrue(_is_unmapped_span(zero_width))
+
+    def test_latin_bounded_stream_fails_closed_before_layout_repartition(self) -> None:
+        cues = [
+            _cue(0, 0, 1500, "start anchor"),
+            _cue(1, 2000, 3500, "alpha rong"),
+            _cue(2, 4000, 5500, "beta rong"),
+            _cue(3, 6000, 7500, "end anchor"),
+            _cue(4, 12000, 13500, "far anchor"),
+        ]
+        canonical = [
+            _canonical(0, 0, "start anchor"),
+            _canonical(1, 2000, "alpha right"),
+            _canonical(2, 4000, "beta right"),
+            _canonical(3, 6000, "end anchor"),
+            _canonical(4, 12000, "far anchor"),
+        ]
+        decisions = [
+            _decision(0, 0, action="unchanged", score=1.0, reason="canonical_content_matches_source_segmentation", source_text="start anchor", canonical_text="start anchor"),
+            _decision(1, 1, action="review", score=0.5, reason="low_or_structurally_unsafe_similarity", source_text="alpha rong", canonical_text="alpha right"),
+            _decision(2, 2, action="review", score=0.5, reason="low_or_structurally_unsafe_similarity", source_text="beta rong", canonical_text="beta right"),
+            _decision(3, 3, action="unchanged", score=1.0, reason="canonical_content_matches_source_segmentation", source_text="end anchor", canonical_text="end anchor"),
+            _decision(4, 4, action="unchanged", score=1.0, reason="canonical_content_matches_source_segmentation", source_text="far anchor", canonical_text="far anchor"),
+        ]
+        replacements, updated, summary, _ = recover_text_reviews_from_bpm_projection(
+            cues, canonical, decisions, rate_prior_metadata_by_source={0: {"provenance": "bpm_derived", "value": 1.0}}
+        )
+        self.assertEqual(summary.bounded_stream_region_count, 0)
+        # Existing mapped 1:1 BPM recovery is intentionally unchanged and may
+        # still resolve these English lines.  The new v1.2.4 guard only blocks
+        # the multi-cue bounded tier.
+        self.assertTrue(all(
+            not item.reason.startswith("sequence_projection_confirms_bpm_bounded_stream")
+            for item in updated[1:3]
+        ))
 
 
 if __name__ == "__main__":

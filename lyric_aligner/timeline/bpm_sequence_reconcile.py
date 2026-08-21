@@ -91,6 +91,15 @@ def _single_span(decision: MatchDecision | None) -> int | None:
     return int(start)
 
 
+def _is_unmapped_span(decision: MatchDecision | None) -> bool:
+    """Treat absent and zero-width canonical spans as the same unmapped state."""
+
+    if decision is None or decision.canonical_span is None:
+        return True
+    start, end = decision.canonical_span
+    return int(start) == int(end)
+
+
 def _pairwise_rate(anchors: Sequence[_Anchor]) -> float | None:
     slopes: list[float] = []
     for index, left in enumerate(anchors):
@@ -502,6 +511,13 @@ def _bounded_stream_candidate(
 
     if not block_cues or not gap or len(block_cues) > _BOUNDED_STREAM_MAX_CUES:
         return None
+    # Latin/mixed canonical rows need token-boundary-aware layout reconstruction.
+    # The current character-owner repartitioner preserves editor whitespace and can
+    # therefore split canonical words even when normalized text is identical.  Keep
+    # the new multi-cue tier Chinese/CJK-only until token-aware rendering exists; the
+    # older mapped 1:1 BPM tier remains available for English/mixed lyrics.
+    if any(_LATIN_TOKEN_RE.search(item.text) for item in gap):
+        return None
     if len(block_cues) != len(block_decisions):
         return None
     if any(
@@ -511,7 +527,7 @@ def _bounded_stream_candidate(
         return None
 
     for decision in block_decisions:
-        if decision.canonical_span is None:
+        if _is_unmapped_span(decision):
             continue
         start, end = decision.canonical_span
         occurrences = [
@@ -581,7 +597,7 @@ def _bounded_stream_candidate(
             and similarity < _BOUNDED_STREAM_SHORT_MIN_SIMILARITY
         ):
             return None
-        if decision.canonical_span is None:
+        if _is_unmapped_span(decision):
             if (
                 len(cue.normalized) < 4
                 or len(candidate_norm) < 4
@@ -592,6 +608,19 @@ def _bounded_stream_candidate(
     spans = _stream_canonical_spans(rendered, gap)
     if spans is None:
         return None
+
+    # A mapped review may be corrected inside its existing canonical claim, but the
+    # broader bounded tier may not enlarge that claim into adjacent canonical rows.
+    # Enlarging a mapped span is exactly the cross-cue ownership failure that can
+    # make one editor cue absorb the previous/next lyric fragment.  Unmapped cues
+    # are the only cues allowed to acquire a new span in this tier.
+    for decision, span in zip(block_decisions, spans):
+        if decision.action != "review" or _is_unmapped_span(decision):
+            continue
+        assert decision.canonical_span is not None
+        old_start, old_end = decision.canonical_span
+        if span[0] < int(old_start) or span[1] > int(old_end):
+            return None
     return rendered, spans
 
 
@@ -790,7 +819,7 @@ def recover_text_reviews_from_bpm_projection(
             ):
                 if original.action != "review":
                     continue
-                if original.canonical_span is None:
+                if _is_unmapped_span(original):
                     region_unmapped += 1
                 decision = _bounded_stream_decision(
                     cue, original, candidate_text, span
