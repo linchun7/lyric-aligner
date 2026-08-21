@@ -154,7 +154,7 @@ planned_mix_audio_ms_unmerged / merged
 planned_acoustic_mix_audio_ms_unmerged / merged
 ```
 
-`--max-jobs` 现在约束最终 job 总数，包含 shadow boundary competitor；超出的 competitor 会记录 omitted 数量，而不是悄悄超过上限。
+`--max-jobs` 在当前 Pro v1.1.3 中约束 **primary unresolved cues**。只为已选 primary 添加的 shadow boundary competitor 是 additive companion evidence，不消耗 primary budget，也不会引入新的 primary cue。
 
 source window 仍优先使用逐字 timing；否则利用下一 canonical onset；最后一行使用 bounded fallback。除此之外，任何 acoustic source window 都必须满足：
 
@@ -270,3 +270,9 @@ Smart/Pro 不借用 P9/P4 authority，也不会反向提升旧 chain。
 ## 9. 验证边界
 
 Public CI 能验证 deterministic policy、最终 overlap guard、soft BPM semantics、Enhanced LRC open token、stale Smart rejection、reason routing、acoustic-only region reuse、source-window minimum、path collision、forced orchestration contract 与 Python/ASR compatibility。真实歌曲 false-auto / false acoustic match 仍必须通过 private calibration + independent blind；通过前不开放 Pro 自动 timing write-back。
+
+### 2026-08-21 CLI / Pro budget maintenance
+
+`python scripts/v4_smart_repair.py --help` 与 `python scripts/v4_pro_selective.py --help` 现在会自行把 repository root 加入 import path，正式文档中的直接入口不要求调用者额外设置 `PYTHONPATH`。
+
+当前 Pro v1.1.3 的 `--max-jobs` 是 **primary unresolved-cue budget**。Shadow boundary competitors 只附着于已经选中的 primary，属于 additive evidence；`plan.config.max_jobs` 对外报告调用者请求的 primary budget，内部完整 candidate-pool 扩池不是公开预算语义。
