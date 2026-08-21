@@ -437,6 +437,19 @@ Max 保留 coarse/Fine/cut/transition/overlap/ASR/forced/P9 等完整能力，�
 
 Max 也必须遵守 segmentation authority：line-LRC 本身不能强迫 final subtitle cue boundary；推翻可信 editor segmentation 需要更强 word/token/audio evidence。
 
+### 5.1 Canonical role preflight contract
+
+`assets/lyric_roles.py` 与 `text/canonical_lyrics.py` 必须对 consumer-LRC 的 non-lyric timestamp groups 使用同一过滤语义。role preflight 在建立 TrackAsset `canonical_selection` 前：
+
+- 先移除 Enhanced/QRC timing markup 并执行 shared `clean_text()`；
+- `is_metadata_text()` 命中的 credits/role labels，以及首秒 `is_title_like_intro()` 命中的 title row 标记为 metadata；
+- 清洗后为空的 timing-only group、以及 metadata-only group不进入 `canonical_selection`；
+- 同一 timestamp 的 metadata + lexical lyric 可以保留原 alternative index，并选择唯一 lexical original；
+- 两个或更多真正 lexical alternatives 仍必须由唯一 language-native identity 或 explicit original-index override 解决，否则 `LyricRoleError` fail closed；
+- override 不能把 metadata 重新引入 canonical truth。
+
+TrackAsset schema 保持 `1.1`，`canonical_selection_sha256` 继续只绑定实际 selected lexical originals。role summary 的 `ignored_blank_group_count` / `ignored_metadata_group_count` 是诊断字段，不授予任何 reconstruction、source identity 或 timing authority。
+
 ## 6. Legacy Partial Timeline Repair P1–P5
 
 旧 formal proposal chain继续固定：
@@ -472,7 +485,8 @@ Public tests必须证明：
 - insufficient/unvalidated timing 必须 Pro escalation；
 - final combined overlap 不新增/扩大；
 - exact DAW hard prior 与 BPM-derived soft prior；
-- Enhanced LRC / stale Smart / acoustic source-window / ASR-only region / max-jobs / path collision / forced protocol / multilingual routing继续不回归。
+- Enhanced LRC / stale Smart / acoustic source-window / ASR-only region / max-jobs / path collision / forced protocol / multilingual routing继续不回归；
+- Max role preflight 与 canonical parser 对 metadata/title/role-label/blank-only groups保持一致，同时真实 lexical ambiguity 继续 fail closed。
 
 Public CI 不能证明真实歌曲 false-auto。每次 private real-song failure 应抽象成同构 synthetic regression，禁止歌曲、cue、timestamp、BPM 或真实歌词 hard-code 到 production algorithm/public test。
 
@@ -514,4 +528,3 @@ Public CI 不能证明真实歌曲 false-auto。每次 private real-song failure
 ### Pro v1.1.3 primary budget vs. shadow evidence
 
 The reason-aware selector first chooses primary unresolved cues under `max_jobs`. Only after that selection, `_boundary_competitor()` may add a dual-source shadow job for a selected primary near a source boundary. Shadow jobs do not consume the primary budget, cannot select new unresolved cues, and retain evidence-only/no-timing-mutation semantics.
-
