@@ -10,7 +10,7 @@ class SmartBpmBoundedStreamPolicyV123Tests(unittest.TestCase):
     def test_policy_id_is_v123(self) -> None:
         self.assertEqual(
             SMART_POLICY_ID,
-            "smart-validation-policy-2026-08-21-v1.2.3",
+            "smart-validation-policy-2026-08-21-v1.2.4",
         )
 
     def test_v123_keeps_backward_compatible_smart_schema(self) -> None:

@@ -333,3 +333,6 @@ BPM compatibility 只对有真实 rate evidence 的 timing model 评估；`insuf
 
 Smart now has two BPM-derived text-only recovery tiers: conservative mapped 1:1 recovery and a stricter bilateral bounded-stream recovery. The latter is interior-only, requires same-source baseline-safe BPM inlier anchors on both sides, preserves all non-review lower-mode text, and fails closed on vocalization/ad-lib/cut/frontier evidence. It does not change cue count, numbering, start/end timing, primary timing authority, or the four-A timing gate.
 
+## Smart v1.2.4 production-acceptance closeout
+
+Smart v1.2.4 hardens the bounded-stream tier after a private 578-cue acceptance rerun: production zero-width unmatched spans are recognized, mapped reviews cannot absorb adjacent canonical rows, and Latin/mixed bounded repartition fails closed until token-aware display layout is implemented. These changes do not increase timing authority, do not alter cue count/timing, and do not lower the v1.2.2 mapped 1:1 recovery thresholds.

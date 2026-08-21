@@ -3,7 +3,7 @@
 Smart keeps Text Repair V2 as the conservative baseline, then separates text
 identity from timing authority. Ready A-anchor timing evidence may recover
 reviews first; an independent song-local sequence projection may then reconcile
-severe-ASR text that the similarity matcher cannot bootstrap. Smart v1.2.3 also
+severe-ASR text that the similarity matcher cannot bootstrap. Smart v1.2.4 also
 allows a BPM-derived rate to support text-only recovery after several safe
 baseline identities independently validate that rate. Neither sequence- nor
 BPM-projected text may create timing authority. Canonical lyrics own text/order,
@@ -41,7 +41,7 @@ from lyric_aligner.timeline.sequence_reconcile import reconcile_text_from_sequen
 from lyric_aligner.timeline.text_recovery import recover_text_reviews_from_timing
 
 SMART_SCHEMA_VERSION = "smart-1.1"
-SMART_POLICY_ID = "smart-validation-policy-2026-08-21-v1.2.3"
+SMART_POLICY_ID = "smart-validation-policy-2026-08-21-v1.2.4"
 _BPM_COMPATIBILITY_TOLERANCE = 0.03
 
 
