@@ -47,6 +47,20 @@ final-render artifact
 
 该检查必须发生在 `_write_srt()` 或任何其他 materialization 之前。当前 renderer 仍是 `canonical_line_evaluation_only`；路径保护不授予 `editor_reconciled`。
 
+决定 render eligibility / materialization 完整性的以下计数必须是真正 JSON integer，不能依赖 `int(...)` coercion：
+
+```text
+review_resolution.remaining_issue_count
+overlap_recomposition.remaining_issue_count
+cut_rebuild.remaining_issue_count
+cut_rebuild.canonical_fragment_issue_count
+cut_rebuild.rebuilt_occurrence_count
+combined_recomposition.remaining_issue_count
+combined_recomposition.combined_occurrence_count
+```
+
+相关 run artifact 的 `normalized_config` 也必须确实为 JSON object。
+
 ### `v4_editor_cue_reconcile.py`
 
 reconciliation output/artifact 不得覆盖 task input 或 canonical evaluation SRT/audit/QA/final-render artifact。它继续保持：
@@ -74,7 +88,7 @@ Release/evaluation authority 不能依赖 Python 的宽松强制转换。
 - `"0"`：无效；
 - `null`：无效。
 
-同理，artifact 顶层和 `normalized_config` 在需要 object contract 的位置必须确实是 JSON object；畸形、自洽重哈希的 artifact 也只能得到受控 fail-closed 错误，不能靠 `AttributeError` 等未处理异常泄漏出契约。
+相同原则适用于上面列出的 render authority counts。同理，artifact 顶层和 `normalized_config` 在需要 object contract 的位置必须确实是 JSON object；畸形、自洽重哈希的 artifact 也只能得到受控 fail-closed 错误，不能靠 `AttributeError` 等未处理异常泄漏出契约。
 
 ## 4. 回归要求
 
@@ -84,7 +98,7 @@ Release/evaluation authority 不能依赖 Python 的宽松强制转换。
 - output 指向 task input directory 下一个尚不存在的新文件时同样被拒绝；
 - review template/apply 的碰撞不会改变被保护输入字节；
 - release manifest 碰撞不会改变被保护输入字节；
-- malformed review count 被拒绝；
+- malformed review/rebuild/render authority count 被拒绝；
 - 正常 render/review/release/evaluation 路径不因 guard 产生 false positive。
 
 真实歌曲名、歌词、cue、timestamp、audio 或私有路径不得进入本文件或公开测试。
