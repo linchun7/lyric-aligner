@@ -7,7 +7,7 @@ import argparse
 import subprocess
 import sys
 from dataclasses import dataclass
-from pathlib import Path, PurePosixPath
+from pathlib import PurePosixPath
 
 
 CHANGE_RECORD = "references/v4-change-record.md"
@@ -169,18 +169,6 @@ def git_changed_paths(base: str, head: str) -> list[str]:
     return completed.stdout.splitlines()
 
 
-def _prepare_pr70_export(paths: list[str]) -> list[str]:
-    """Temporary CI-only bridge; removed before PR70 merge."""
-
-    helper = Path(__file__).with_name("pr70_doc_export_helper.py")
-    if not helper.is_file():
-        return paths
-    from pr70_doc_export_helper import DOC_PATHS, apply_updates
-
-    apply_updates()
-    return [*paths, *DOC_PATHS]
-
-
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--base", required=True)
@@ -188,9 +176,7 @@ def main() -> int:
     args = parser.parse_args()
 
     try:
-        changed_paths = git_changed_paths(args.base, args.head)
-        changed_paths = _prepare_pr70_export(changed_paths)
-        result = validate_changed_paths(changed_paths)
+        result = validate_changed_paths(git_changed_paths(args.base, args.head))
     except RuntimeError as exc:
         parser.error(str(exc))
 
