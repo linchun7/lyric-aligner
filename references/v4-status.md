@@ -320,6 +320,12 @@ Max asset resolution 与 `text/canonical_lyrics.py` 共享 consumer-LRC 的 non-
 
 这只是让 Max 的 TrackAsset preflight 与已经在 Smart/canonical parser 使用的真源过滤语义一致，不新增 source/occurrence/timing authority，也不证明 Max 已能解决任何 Smart hard-tail。真实任务必须在该 preflight 修复合并后重新跑完整 Max 才能评估 reconstruction 上限。
 
+### 5.2 Primary coarse terminal coverage
+
+Primary coarse 不再要求 nominal occurrence interval 的最后每个重叠 retrieval window 都属于同一 source。若连续 monotonic path 已有至少三个 anchors，且第一个不可连接 window 之后的完整 suffix 不超过 `ceil(window_seconds / step_seconds)`，builder 可以保留已证明 prefix 并继续 TimeWarp；`path_coverage.status=bounded_terminal_disconnect` 必须记录被排除的 terminal centers。任何 leading/interior disconnect、超出结构上限或证据不足仍 hard fail。
+
+该行为不确认 terminal source activity，也不自动确认 transition/outro/cut/overlap。全部 retrieval windows 继续保存在 coarse artifact 中，边界事实仍由 transition/cut/overlap stages 独立判定；因此 `bounded_terminal_disconnect` 不能单独计为 Smart hard-tail、reorder identity 或 final-ready 的解决证据。
+
 ## 6. Legacy Partial Timeline Repair P1–P5
 
 旧 formal calibration/P9 proposal chain 不被 Smart/Pro 替换，继续固定：
@@ -356,6 +362,7 @@ Public CI 必须证明：
 - Pro 必须接受当前 Smart v1.2.5 policy，并拒绝 v1.2.4 literal stale policy；
 - Enhanced LRC open-ended token、adaptive source window、ASR-only region、max-jobs、path collision、source-I/O 继续不回归；
 - Max TrackAsset preflight 必须忽略 metadata/title/role-label/blank-only timestamp groups，同时真正的 same-timestamp lexical ambiguity 继续 fail closed；
+- Max primary coarse 只可排除结构上有界的 terminal disconnect；interior disconnect、超过一个 window-overlap span 或少于三个 anchors 必须继续 fail closed，并完整记录 path coverage；
 - Python/ASR environment 与 legacy tests 全部继续通过。
 
 Private real-song calibration 仍是 text recovery false-auto 风险的重要验收。真实任务发现的新 failure pattern 应继续转换成**通用、合成、无任务数据硬编码**的 regression；不得为了提高覆盖率把歌曲名、cue 编号、真实时间戳或真实歌词写进 production algorithm/public test。

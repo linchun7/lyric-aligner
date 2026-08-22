@@ -26,6 +26,21 @@ ASR / forced    -> auxiliary acoustic evidence
 
 ---
 
+## 2026-08-22 — Max coarse bounded terminal-disconnect recovery
+
+PR #67 后的 private 190 production rerun 已通过 12/12 TrackAsset preflight，但三个 primary occurrence 在各自 nominal interval 的最后 1–2 个重叠 coarse windows 失去可连接的 monotonic candidate，导致整个 Full V4 在 reconstruction 前异常终止。使用完全相同输入做只读诊断时，去掉该 terminal suffix 后三条完整内部 path 都通过现有 `AFFINE_ACCEPTED` gate，说明 failure pattern 是边界 transition/outro 对 all-window DP 的污染，而不是 source identity、slope search 或内部 monotonic path 缺失。
+
+本轮做最小泛化修复，不改 score、margin、slope、TimeWarp 或 release threshold：
+
+- `select_monotonic_candidate_path()` 默认仍要求全窗口连续；只有 production coarse builder 显式允许 bounded terminal suffix；
+- 可排除的 suffix 上限由现有 window/step 结构计算为 `ceil(window_seconds / step_seconds)`，且断点前必须已有至少三个连续 anchors；
+- 只允许在第一个不可连接 row 后直接结束，不允许跳过 leading/interior window 后重新连接；超过结构上限或 anchors 不足仍抛出原 `no monotonic coarse candidate path`；
+- coarse payload 保留全部 retrieval `windows`，`path` 只包含被 DP 证明的连续 prefix，并新增 additive `path_coverage`，记录完整/terminal-disconnect 状态、retrieved/selected/excluded count、上限和 excluded mix centers；
+- Fine 在需要运行时只消费与 path 对齐的 coarse-window prefix，并验证每个 mix center；全部 retrieval evidence 仍可供 transition probe 审计；
+- bounded terminal disconnect 只表示内部 Source-to-Mix mapping 可继续求解，不确认尾段 source activity、crossfade、cut 或 overlap；这些事实仍由 transition/cut/overlap stages 按原 gate 决定。
+
+Public regression 全部使用 synthetic retrieval rows，覆盖 bounded terminal success、默认 strict 行为、interior disconnect fail-closed、少于三个 anchors fail-closed，以及 payload coverage 审计。回滚点为 `audio/coarse_mapper.py` 与 `audio/fine_alignment.py` 的 bounded-prefix 支持；无 profile identity、schema version 或 calibration threshold 变化。
+
 ## 2026-08-19 — Smart v1.2.0 canonical sequence reconciliation
 
 多轮真实生产复核确认 v1.1.x 仍有一个结构性退化：Smart 虽然复用了 Text Repair V2，但 severe-ASR cue 的 canonical span 仍先受 lexical similarity gate 控制；当 editor ASR 已错成另一句话时，正确的 1↔N/N↔N span 反而最难建立。若一首歌因此只有 3 个 A timing anchors，主 affine model 会按设计保持 `insufficient_anchors`，后续 ready-model text recovery 也无法启动，形成：

@@ -1,10 +1,19 @@
 import unittest
+from unittest.mock import patch
 
 import librosa
 import numpy as np
 
-from lyric_aligner.audio.coarse_mapper import build_coarse_timewarp
-from lyric_aligner.audio.features import extract_harmonic_features
+from lyric_aligner.audio.coarse_mapper import (
+    build_coarse_timewarp,
+    select_monotonic_candidate_path,
+)
+from lyric_aligner.audio.features import (
+    FeatureBundle,
+    RetrievalCandidate,
+    RetrievalResult,
+    extract_harmonic_features,
+)
 
 
 SR = 8000
@@ -50,7 +59,138 @@ def clicks(length, bpm=140.0):
     return y
 
 
+def retrieval(mix_center, source_center):
+    candidate = RetrievalCandidate(
+        source_start=source_center - 2.0,
+        source_end=source_center + 2.0,
+        source_center=source_center,
+        estimated_slope=1.0,
+        chroma_score=0.90,
+        mfcc_score=0.88,
+        fused_score=0.89,
+        feature_agreement=2,
+    )
+    return RetrievalResult(
+        mix_start=mix_center - 2.0,
+        mix_end=mix_center + 2.0,
+        mix_center=mix_center,
+        top1=candidate,
+        top2=None,
+        candidates=(candidate,),
+        margin=0.20,
+        ambiguous=False,
+        min_score=0.72,
+        min_margin=0.035,
+    )
+
+
 class V4CoarseMapperTests(unittest.TestCase):
+    def test_build_reports_full_retrieval_and_bounded_selected_coverage(self):
+        centers = iter([4.0, 6.0, 8.0, 10.0, 1.0, 1.5])
+
+        def fake_retrieve(_mix, _source, *, mix_start, mix_end, **_kwargs):
+            return retrieval((mix_start + mix_end) / 2.0, next(centers))
+
+        features = FeatureBundle(
+            sr=SR,
+            hop_length=512,
+            duration_seconds=24.0,
+            chroma=np.ones((12, 10), dtype=np.float32),
+            mfcc=np.ones((12, 10), dtype=np.float32),
+        )
+        with (
+            patch(
+                "lyric_aligner.audio.coarse_mapper.extract_harmonic_features",
+                return_value=features,
+            ),
+            patch(
+                "lyric_aligner.audio.coarse_mapper.retrieve_coarse_window",
+                side_effect=fake_retrieve,
+            ),
+        ):
+            result = build_coarse_timewarp(
+                np.zeros(14 * SR, dtype=np.float32),
+                np.zeros(24 * SR, dtype=np.float32),
+                sr=SR,
+                mix_start=0.0,
+                mix_end=14.0,
+                feature_hop_length=512,
+                window_seconds=4.0,
+                step_seconds=2.0,
+            )
+
+        self.assertEqual(len(result["windows"]), 6)
+        self.assertEqual(len(result["path"]), 4)
+        self.assertEqual(
+            result["path_coverage"],
+            {
+                "status": "bounded_terminal_disconnect",
+                "retrieved_window_count": 6,
+                "selected_window_count": 4,
+                "excluded_trailing_window_count": 2,
+                "maximum_excluded_trailing_windows": 2,
+                "excluded_mix_centers": [10.0, 12.0],
+            },
+        )
+
+    def test_bounded_terminal_disconnect_keeps_proven_monotonic_prefix(self):
+        rows = [
+            retrieval(2.0, 4.0),
+            retrieval(4.0, 6.0),
+            retrieval(6.0, 8.0),
+            retrieval(8.0, 10.0),
+            retrieval(10.0, 1.0),
+            retrieval(12.0, 1.5),
+        ]
+
+        path = select_monotonic_candidate_path(
+            rows,
+            max_trailing_unmatched_windows=2,
+        )
+
+        self.assertEqual([point.mix_center for point in path], [2.0, 4.0, 6.0, 8.0])
+
+    def test_terminal_disconnect_is_not_allowed_by_default(self):
+        rows = [
+            retrieval(2.0, 4.0),
+            retrieval(4.0, 6.0),
+            retrieval(6.0, 8.0),
+            retrieval(8.0, 1.0),
+        ]
+
+        with self.assertRaisesRegex(ValueError, "no monotonic coarse candidate path"):
+            select_monotonic_candidate_path(rows)
+
+    def test_interior_disconnect_still_fails_closed(self):
+        rows = [
+            retrieval(2.0, 4.0),
+            retrieval(4.0, 6.0),
+            retrieval(6.0, 8.0),
+            retrieval(8.0, 1.0),
+            retrieval(10.0, 1.5),
+            retrieval(12.0, 2.0),
+        ]
+
+        with self.assertRaisesRegex(ValueError, "mix window 8.000s"):
+            select_monotonic_candidate_path(
+                rows,
+                max_trailing_unmatched_windows=2,
+            )
+
+    def test_terminal_disconnect_requires_three_proven_anchors(self):
+        rows = [
+            retrieval(2.0, 4.0),
+            retrieval(4.0, 6.0),
+            retrieval(6.0, 1.0),
+            retrieval(8.0, 1.5),
+        ]
+
+        with self.assertRaisesRegex(ValueError, "mix window 6.000s"):
+            select_monotonic_candidate_path(
+                rows,
+                max_trailing_unmatched_windows=2,
+            )
+
     def test_multiple_windows_recover_affine_path_under_click(self):
         source = source_song()
         segment_start = 3.0
