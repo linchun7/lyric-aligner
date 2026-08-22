@@ -228,11 +228,88 @@ class SelectivePolicyV11Tests(unittest.TestCase):
         self.assertEqual([job["priority"] for job in primary], ["high", "medium"])
         self.assertEqual(
             plan["summary"]["selection_policy"],
-            "actionable_timing_by_shift_then_text_then_display_tolerance_then_unvalidated",
+            "smart_high_value_then_actionable_text_model_shift_then_display_tolerance_then_unvalidated",
         )
         self.assertEqual(plan["summary"]["primary_candidate_job_count"], 4)
         self.assertEqual(plan["summary"]["primary_deferred_due_to_max_jobs"], 2)
         self.assertTrue(plan["summary"]["plan_truncated"])
+
+    def test_smart_high_value_subset_wins_a_limited_pro_budget(self) -> None:
+        cues = [
+            _cue(0, 10_000, 11_000, "甲"),
+            _cue(1, 20_000, 21_000, "乙"),
+        ]
+        canonical = [
+            _canonical(0, 0, 1_000, "甲"),
+            _canonical(1, 0, 2_000, "乙"),
+        ]
+        report = {
+            "schema_version": SMART_SCHEMA_VERSION,
+            "policy_id": SMART_POLICY_ID,
+            "mode": "smart_anchor_timeline_repair_no_audio",
+            "audio_read": False,
+            "models": [
+                {
+                    "source_ordinal": 0,
+                    "source": "01.lrc",
+                    "rate": 1.0,
+                    "status": "ready",
+                    "inlier_count": 8,
+                    "inlier_fraction": 1.0,
+                    "median_abs_residual_ms": 40.0,
+                }
+            ],
+            "timing_decisions": [
+                {
+                    "cue_ordinal": 0,
+                    "canonical_ordinal": 0,
+                    "action": "review",
+                    "reason": "synthetic",
+                    "old_start_ms": 10_000,
+                    "proposed_start_ms": 5_000,
+                    "proposed_end_ms": 6_000,
+                },
+                {
+                    "cue_ordinal": 1,
+                    "canonical_ordinal": 1,
+                    "action": "review",
+                    "reason": "synthetic",
+                    "old_start_ms": 20_000,
+                    "proposed_start_ms": 18_500,
+                    "proposed_end_ms": 19_500,
+                },
+            ],
+            "text_decisions": [
+                {
+                    "cue_ordinal": 0,
+                    "canonical_ordinal": 0,
+                    "action": "review",
+                    "reason": "synthetic",
+                },
+                {
+                    "cue_ordinal": 1,
+                    "canonical_ordinal": 1,
+                    "action": "unchanged",
+                },
+            ],
+            "timing_high_value_pro_candidate_count": 1,
+            "timing_high_value_pro_candidate_positions": [
+                {"cue_ordinal": 1, "editor_cue_start_ms": 20_000, "smart_shift_abs_ms": 1_500}
+            ],
+        }
+
+        plan = build_selective_repair_plan_v11(
+            smart_report=report,
+            cues=cues,
+            canonical=canonical,
+            config=SelectiveRepairConfig(max_jobs=1),
+        )
+
+        primary = [job for job in plan["jobs"] if not job.get("shadow_evidence_only")]
+        self.assertEqual([job["cue_ordinal"] for job in primary], [1])
+        self.assertTrue(primary[0]["smart_timing_high_value_pro_candidate"])
+        self.assertEqual(plan["summary"]["smart_high_value_candidate_count"], 1)
+        self.assertEqual(plan["summary"]["smart_high_value_selected_count"], 1)
 
     def test_strong_local_model_precedes_larger_weak_model_shift(self) -> None:
         cues = [_cue(0, 10_000, 11_000, "甲"), _cue(1, 20_000, 21_000, "乙")]

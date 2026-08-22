@@ -1,6 +1,10 @@
 import unittest
 
-from lyric_aligner.text.language_spans import editor_mode_for_span, language_spans
+from lyric_aligner.text.language_spans import (
+    asr_language_hint_for_text,
+    editor_mode_for_span,
+    language_spans,
+)
 
 
 class V4LanguageSpanTests(unittest.TestCase):
@@ -31,6 +35,11 @@ class V4LanguageSpanTests(unittest.TestCase):
     def test_unknown_han_is_not_silently_called_mandarin(self):
         spans = language_spans("未知漢字", track_language="auto")
         self.assertEqual(spans[0].language, "und-han")
+
+    def test_mixed_profile_does_not_drop_uncertain_han_and_force_english(self):
+        self.assertIsNone(
+            asr_language_hint_for_text("你好 hello", track_language="mixed")
+        )
 
 
 if __name__ == "__main__":

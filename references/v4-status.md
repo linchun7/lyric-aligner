@@ -9,8 +9,8 @@
 
 ```text
 Standard -> Text Repair V2.1
-Smart    -> Canonical Sequence Reconciliation + Anchor Timeline Repair v1.2.5（no-audio）
-Pro      -> Selective Audio Repair v1.1.4（局部 audio evidence）
+Smart    -> Canonical Sequence Reconciliation + Anchor Timeline Repair v1.2.10（no-audio）
+Pro      -> Selective Audio Repair v1.2.5（局部 audio evidence）
 Max      -> Full V4 Alignment
 ```
 
@@ -32,7 +32,7 @@ Max      -> Full V4 Alignment
 - production `auto-threshold >= 0.72`；
 - report schema `2.1`。
 
-## 3. Smart — Sequence Reconciliation + Anchor Timeline Repair v1.2.5
+## 3. Smart — historical v1.2.5 contract
 
 Smart 是日常主力 no-audio 模式：**大部分信剪映 timing，但 canonical lyric 始终是最终文字/顺序 truth。**
 
@@ -278,9 +278,9 @@ text_a_bounded_region_count
 text_a_bounded_materialized_change_count
 ```
 
-production wrapper `smart_policy_v125.py` 先运行冻结 v1.2.4，再消费该 v1.2.4 final timing evidence，仅 materialize A-bounded 文字；timing decisions 原样保留，防止循环自证。`smart_current.py` 当前把 production Smart 绑定到这个 wrapper，CLI 不再直接 import 版本化 module。
+production wrapper `smart_policy_v125.py` 先运行冻结 v1.2.4，再消费该 v1.2.4 final timing evidence，仅 materialize A-bounded 文字；timing decisions 原样保留，防止循环自证。在该版本发布时，`smart_current.py` 绑定到这个 wrapper；当前绑定见文档顶部与末尾 superseding status。
 
-## 4. Pro — Selective Audio Repair v1.1.4
+## 4. Pro — historical v1.1.4 contract
 
 Pro 是 Smart unresolved 的局部声学层，仍保持：
 
@@ -288,14 +288,14 @@ Pro 是 Smart unresolved 的局部声学层，仍保持：
 timing_mutation_performed = false
 ```
 
-Pro 只接受当前：
+该版本 Pro 只接受：
 
 ```text
 schema_version = smart-1.1
 policy_id      = smart-validation-policy-2026-08-21-v1.2.5
 ```
 
-因此 v1.2.4 及更早 Smart artifact 都必须按当前 policy 重跑 Smart 后再进入 Pro。Pro v1.1.4 的 `selective_policy.py` 与 Smart CLI 都从 `smart_current.py` 获取 current Smart schema/policy binding；该 facade 当前再绑定 frozen base schema + v1.2.5 wrapper。测试使用字面量 v1.2.4 stale id 验证拒绝路径，避免生产和测试共同引用旧版本常量而“自洽通过”。
+因此在该版本中，v1.2.4 及更早 Smart artifact 必须按当时 policy 重跑后再进入 Pro。Pro v1.1.4 的 `selective_policy.py` 与 Smart CLI 都从 `smart_current.py` 获取 policy binding；当前绑定已由末尾 superseding status 取代。
 
 reason-aware routing：
 
@@ -353,7 +353,7 @@ Public CI 必须证明：
 - A-bounded recovery 后 timing decisions 必须 byte-for-byte/structure-equivalent 保持 v1.2.4 final evidence，不得重新建模；
 - recovery 不降低 Text Repair threshold、不把 recovered text 变成 A timing anchor；
 - exact DAW hard prior / BPM-derived soft prior 的 timing authority 语义不变；
-- Pro 必须接受当前 Smart v1.2.5 policy，并拒绝 v1.2.4 literal stale policy；
+- Pro 必须接受当前 Smart v1.2.10 policy，并拒绝旧 literal policy；
 - Enhanced LRC open-ended token、adaptive source window、ASR-only region、max-jobs、path collision、source-I/O 继续不回归；
 - Max TrackAsset preflight 必须忽略 metadata/title/role-label/blank-only timestamp groups，同时真正的 same-timestamp lexical ambiguity 继续 fail closed；
 - Python/ASR environment 与 legacy tests 全部继续通过。
@@ -366,11 +366,11 @@ Smart final text materialization 增加 editor cue ownership guard。canonical �
 
 ### Smart v1.2.2 BPM text closeout
 
-BPM-derived rate 在 timing 层仍是 soft prior；只有被多条 baseline-safe text identities 独立验证后，才可建立**文字专用** projection。该 projection 只减少可证明的 mapped review；v1.2.3 另有严格 bilateral bounded-stream 处理满足证据门槛的 interior unmatched cue。两条路径都不填 pure vocalization、不改变 cue timeline，且任何恢复结果都不能成为 A/B timing anchor。BPM 单行 recovery 还必须保留 editor 已识别出的相邻 canonical 前缀/后缀 ownership；命中该 guard 时继续 review。当前 policy 为 `smart-validation-policy-2026-08-21-v1.2.5`。
+BPM-derived rate 在 timing 层仍是 soft prior；只有被多条 baseline-safe text identities 独立验证后，才可建立**文字专用** projection。该 projection 只减少可证明的 mapped review；v1.2.3 另有严格 bilateral bounded-stream 处理满足证据门槛的 interior unmatched cue。两条路径都不填 pure vocalization、不改变 cue timeline，且任何恢复结果都不能成为 A/B timing anchor。BPM 单行 recovery 还必须保留 editor 已识别出的相邻 canonical 前缀/后缀 ownership；命中该 guard 时继续 review。本段记录的是 v1.2.5 closeout，当前 policy 见文档顶部。
 
 ### Smart report semantics closeout
 
-当前 v1.2.5 继续沿用 v1.2.4 timing authority，但 report 明确区分：
+v1.2.5 closeout 继续沿用 v1.2.4 timing authority，但 report 明确区分：
 
 ```text
 text_decision_replacement_count  = MatchDecision.action == replace
@@ -432,3 +432,9 @@ Pro v1.2.3 accepts only Smart v1.2.8. Acoustic schema 1.3 separates local retrie
 ## 2026-08-22 Smart v1.2.9 / Pro v1.2.4 acceptance-regression status
 
 The first v1.2.8 private acceptance exposed canonical pollution from genuine bare ensemble-member roles. Smart v1.2.9 adds narrow same-file contextual proof: explicit multi-cast membership, plus a stricter repeated/adjacent ensemble grammar for cast members omitted from those rows. Generic bare CJK lexical labels remain fail-closed. The private Smart rerun restored the pre-regression text/timing mapping and additionally removed one genuine role the former surname heuristic missed. Pro v1.2.4 changes only the accepted Smart binding. All automatic mutation and forced-evidence authority limits remain unchanged.
+
+## 2026-08-22 Smart v1.2.10 / Pro v1.2.5 accuracy hardening status
+
+Smart no longer assigns one line-LRC onset to every editor cue in a multi-cue-to-one-line span. The first cue may use the line onset; an internal cue requires an exact normalized editor/canonical token partition and a reliable token timestamp, otherwise it is reported as `segmentation_internal_boundary_unvalidated` with no proposal. The private 790-cue rerun kept the SRT byte-identical while reducing actionable timing suspicions from 87 to 77; confirmed one-to-one anomalies remained actionable.
+
+Pro now treats job-level `auto` as no concrete ASR language override, so explicit source-language metadata can activate canonical-local `zh/en/ko/ja` routing while mixed/unknown remains backend auto-detection. Smart's high-value timing subset is now an actual first-budget sort key without replacing the complete manual queue. Pro automatic text/timing mutation and independent-vocal-onset authority remain disabled.

@@ -141,7 +141,11 @@ def asr_language_hint_for_text(text: str, *, track_language: str) -> str | None:
     }
     supported = languages & {"zh", "en", "ko", "ja"}
     unsupported = languages - {"zh", "en", "ko", "ja"}
-    if unsupported or len(supported) != 1:
+    uncertain = any(
+        span.language in {"unknown", "generic", "und-han"}
+        for span in spans
+    )
+    if unsupported or uncertain or len(supported) != 1:
         return None
     return next(iter(supported))
 

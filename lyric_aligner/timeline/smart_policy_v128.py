@@ -62,6 +62,7 @@ def smart_repair_srt_text_v128(
     auto_threshold: float = DEFAULT_AUTO_THRESHOLD,
     rate_prior_by_source: Mapping[int, float] | None = None,
     rate_prior_metadata_by_source: Mapping[int, Mapping[str, object]] | None = None,
+    _segmentation_internal_boundary_guard: bool = False,
 ) -> tuple[str, dict[str, object]]:
     rendered, base_report = smart_repair_srt_text_v127(
         source_text,
@@ -70,6 +71,7 @@ def smart_repair_srt_text_v128(
         auto_threshold=auto_threshold,
         rate_prior_by_source=rate_prior_by_source,
         rate_prior_metadata_by_source=rate_prior_metadata_by_source,
+        _segmentation_internal_boundary_guard=_segmentation_internal_boundary_guard,
     )
     report = dict(base_report)
     report["policy_id"] = SMART_POLICY_ID

@@ -31,7 +31,7 @@ from lyric_aligner.timeline.smart_current import (
     SMART_TIMING_ACTIONABLE_SHIFT_MS,
 )
 
-PRO_POLICY_ID = "smart-to-pro-reason-aware-2026-08-22-v1.2.4"
+PRO_POLICY_ID = "smart-to-pro-reason-aware-2026-08-22-v1.2.5"
 # Backward-compatible import name retained for existing plan consumers.
 PRO_V11_POLICY_ID = PRO_POLICY_ID
 
@@ -185,6 +185,23 @@ def _timing_review_index(smart_report: Mapping[str, Any]) -> dict[int, Mapping[s
             continue
         try:
             output[int(row["cue_ordinal"])] = row
+        except (TypeError, ValueError):
+            continue
+    return output
+
+
+def _high_value_timing_cues(smart_report: Mapping[str, Any]) -> set[int]:
+    """Return Smart's budget-priority subset without changing manual-review scope."""
+
+    rows = smart_report.get("timing_high_value_pro_candidate_positions")
+    if not isinstance(rows, list):
+        return set()
+    output: set[int] = set()
+    for row in rows:
+        if not isinstance(row, Mapping) or row.get("cue_ordinal") is None:
+            continue
+        try:
+            output.add(int(row["cue_ordinal"]))
         except (TypeError, ValueError):
             continue
     return output
@@ -456,6 +473,7 @@ def build_selective_repair_plan_v11(
     by_source = _canonical_by_source(canonical)
     models = _model_index(smart_report)
     timing_by_cue = _timing_review_index(smart_report)
+    high_value_timing_cues = _high_value_timing_cues(smart_report)
 
     primary_jobs: list[dict[str, Any]] = []
     candidate_competitors: list[dict[str, Any]] = []
@@ -477,6 +495,9 @@ def build_selective_repair_plan_v11(
             timing_proposal_abs_shift_ms=proposal_abs_shift_ms,
         )
         job["selection_tier"] = selection_tier
+        job["smart_timing_high_value_pro_candidate"] = (
+            cue_ordinal in high_value_timing_cues
+        )
         job["timing_has_concrete_proposal"] = timing_has_proposal
         job["timing_proposal_abs_shift_ms"] = proposal_abs_shift_ms
         source_raw = job.get("source_ordinal")
@@ -492,6 +513,9 @@ def build_selective_repair_plan_v11(
             "high" if selection_rank <= 1 else "medium" if selection_rank == 2 else "low"
         )
         job["_selection_rank"] = selection_rank
+        job["_selection_high_value_rank"] = (
+            0 if cue_ordinal in high_value_timing_cues else 1
+        )
         job["_selection_model_rank"] = 0 if strong_model else 1
         canonical_ordinal = job.get("canonical_line_index")
         occurrence = (
@@ -553,6 +577,7 @@ def build_selective_repair_plan_v11(
     primary_candidate_count = len(primary_jobs)
     primary_jobs.sort(
         key=lambda row: (
+            int(row.get("_selection_high_value_rank", 1)),
             int(row.get("_selection_rank", 9)),
             int(row.get("_selection_model_rank", 1)),
             -int(row.get("timing_proposal_abs_shift_ms", 0)),
@@ -565,6 +590,7 @@ def build_selective_repair_plan_v11(
     selected_primary_ids = {str(job["job_id"]) for job in primary_jobs}
     for job in primary_jobs:
         job.pop("_selection_rank", None)
+        job.pop("_selection_high_value_rank", None)
         job.pop("_selection_model_rank", None)
 
     eligible_competitors = [
@@ -635,7 +661,12 @@ def build_selective_repair_plan_v11(
         "boundary_competitor_omitted_due_to_max_jobs": omitted_competitors,
         "max_jobs_applies_to": "primary_jobs_only_shadow_competitors_additive",
         "selection_policy": (
-            "actionable_timing_by_shift_then_text_then_display_tolerance_then_unvalidated"
+            "smart_high_value_then_actionable_text_model_shift_then_display_tolerance_then_unvalidated"
+        ),
+        "smart_high_value_candidate_count": len(high_value_timing_cues),
+        "smart_high_value_selected_count": sum(
+            bool(job.get("smart_timing_high_value_pro_candidate"))
+            for job in primary_jobs
         ),
         "selection_tier_counts": dict(sorted(selection_tier_counts.items())),
         "plan_truncated": bool(primary_truncated),

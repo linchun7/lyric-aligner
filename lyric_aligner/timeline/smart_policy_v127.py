@@ -142,6 +142,7 @@ def smart_repair_srt_text_v127(
     auto_threshold: float = DEFAULT_AUTO_THRESHOLD,
     rate_prior_by_source: Mapping[int, float] | None = None,
     rate_prior_metadata_by_source: Mapping[int, Mapping[str, object]] | None = None,
+    _segmentation_internal_boundary_guard: bool = False,
 ) -> tuple[str, dict[str, object]]:
     rendered_v126, base_report = smart_repair_srt_text_v126(
         source_text,
@@ -150,6 +151,7 @@ def smart_repair_srt_text_v127(
         auto_threshold=auto_threshold,
         rate_prior_by_source=rate_prior_by_source,
         rate_prior_metadata_by_source=rate_prior_metadata_by_source,
+        _segmentation_internal_boundary_guard=_segmentation_internal_boundary_guard,
     )
     parts, cues = parse_srt_text(rendered_v126)
     text_decisions = _match_decisions(base_report["text_decisions"])

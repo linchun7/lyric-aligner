@@ -320,3 +320,12 @@ Public regression uses generic synthetic LRC only and covers metadata-only group
 - Replaced that overcorrection with same-file contextual proof: explicit multi-cast members are safe roles; an omitted member requires a strong ensemble grammar, repetition, and close lexical followers.
 - Kept generic “夏天：/白天：/向前：” and an unproved bare name lexical; no surname list was reintroduced.
 - Promoted Smart/Pro policy IDs so old and corrected artifacts cannot be silently mixed. No acoustic threshold, timing authority, mutation permission, max-jobs or shadow behavior changed.
+
+## 2026-08-22 — Smart v1.2.10 / Pro v1.2.5 split-line and routing accuracy
+
+- Fixed a Smart false-suspicion pattern where every editor cue in a multi-cue-to-one-line mapping reused the canonical line onset. A v1.2.10-only guard now requires an exact normalized, strictly later, line-local token boundary; otherwise the internal cue stays explicitly unvalidated with no proposal. Historical Smart entry points retain their prior behavior and policy identity.
+- A private 790-cue no-audio rerun preserved the Smart SRT byte-for-byte, reduced actionable timing suspicions from 87 to 77, and kept the two confirmed one-to-one timing anomalies actionable. Public regression remains generic synthetic data.
+- Made Smart's high-value Pro subset an actual first-budget selection key without replacing or shrinking the complete actionable manual queue.
+- Fixed the ASR executor so job-level `auto`/empty hints do not mask canonical-local routing when an explicit source language is available. Mixed/unknown and source-language `auto` remain backend auto-detection; no static Han/Latin guess was introduced.
+- Kept slope-boundary results diagnostic-only. Real adjudication showed that bounded acoustic agreement alone still cannot distinguish a normal split cue from a true vocal-onset shift, so slope expansion was not promoted to timing authority.
+- Kept `automatic_timing_change_allowed=false`, `automatic_text_change_allowed=false`, `timing_mutation_performed=false`, and `independent_vocal_onset_evidence_used=false`.

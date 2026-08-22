@@ -6,7 +6,7 @@ Normative workload baseline remains `references/production-requirements.md`.
 Smart and Pro remain the daily primary modes; this change does not expand
 Max/Full V4 as the default path.
 
-## Smart v1.2.9
+## Smart v1.2.10
 
 Smart still reads no audio. The primary v1 A-anchor affine timing engine remains
 unchanged from the established base policy. v1.2.0 added a separate canonical-
@@ -15,6 +15,10 @@ merely because lexical similarity is low; later v1.2.x releases hardened BPM,
 ownership and bounded recovery without increasing timing authority. v1.2.9
 retains the v1.2.8 queue semantics and records the shared-parser contextual cast
 proof needed to remove real bare ensemble roles without reviving surname matching.
+v1.2.10 additionally prevents multiple editor cues mapped to one line-timed
+canonical row from reusing the same line onset. An internal cue receives a
+timing hypothesis only when its text boundary exactly matches reliable canonical
+token timing; otherwise it is explicitly unvalidated.
 
 Primary timing hardenings remain:
 
@@ -29,7 +33,7 @@ Primary timing hardenings remain:
 - rate prior provenance remains explicit: `exact_daw`, `bpm_derived`, or
   `anchor_estimated`; exact DAW stretch remains stronger than BPM-derived prior;
 - Smart report schema remains `smart-1.1`; current policy id is
-  `smart-validation-policy-2026-08-22-v1.2.9`.
+  `smart-validation-policy-2026-08-22-v1.2.10`.
 
 ### Segmentation authority and mode monotonicity
 
@@ -204,7 +208,7 @@ v1.2.5 adds:
 `text_sequence_projection_models` are text-only diagnostics and must not be
 confused with `models`, which remain the primary timing models.
 
-## Pro v1.2.4
+## Pro v1.2.5
 
 Pro stays local and evidence-first. It still performs no timing mutation.
 
@@ -224,14 +228,15 @@ upstream contract is:
 
 ```text
 schema_version = smart-1.1
-policy_id      = smart-validation-policy-2026-08-22-v1.2.9
+policy_id      = smart-validation-policy-2026-08-22-v1.2.10
 ```
 
 Versioned Smart modules remain historical implementations: `smart_policy.py`
 is the frozen v1.2.4 base contract; `smart_policy_v125.py` and
-`smart_policy_v126.py` / `smart_policy_v127.py` are versioned wrappers. `smart_current.py` is the **only
+`smart_policy_v126.py` / `smart_policy_v127.py` / `smart_policy_v128.py` /
+`smart_policy_v129.py` / `smart_policy_v1210.py` are versioned wrappers. `smart_current.py` is the **only
 current-production facade**; it currently binds schema `smart-1.1`, policy
-v1.2.9 and the v1.2.9 repair function. Both the Smart CLI and Pro v1.2.4 import
+v1.2.10 and the v1.2.10 repair function. Both the Smart CLI and Pro v1.2.5 import
 through this facade.
 Therefore a future Smart promotion changes one current binding instead of
 independently changing multiple consumers. v1.2.4 and earlier Smart reports are
@@ -258,26 +263,30 @@ authority.
 
 ## Safety boundary
 
-Pro v1.2.4 still reports `timing_mutation_performed=false`. Automatic Pro
+Pro v1.2.5 still reports `timing_mutation_performed=false`. Automatic Pro
 writeback must remain disabled until private real-song calibration + independent
 blind validation establishes safe evidence combinations and false-repair bounds.
 
 Max also follows the same segmentation authority contract: line-LRC grouping is
 not sufficient evidence by itself to resegment a trusted editor subtitle cue.
 
-## Current superseding contract: Smart v1.2.9 / Pro v1.2.4
+## Current superseding contract: Smart v1.2.10 / Pro v1.2.5
 
 The current Smart facade binds `smart-1.1` to
-`smart-validation-policy-2026-08-22-v1.2.9`. Shared canonical parsing filters
+`smart-validation-policy-2026-08-22-v1.2.10`. Shared canonical parsing filters
 explicit roles before canonical lines/ordinals exist. Bare CJK lines remain
 lexical unless same-file explicit multi-cast evidence proves the name, or a
 strong repeated ensemble-label grammar proves an otherwise missing member.
-v1.2.8 queue/product semantics remain unchanged.
+v1.2.8 queue/product semantics remain unchanged. Multi-cue-to-one-line internal
+boundaries without an exact canonical token onset remain unvalidated and do not
+enter the actionable timing queue.
 
 The current Pro policy is
-`smart-to-pro-reason-aware-2026-08-22-v1.2.4`. Concrete actionable timing
-hypotheses are selected by strong-vs-weak local model quality and value before
-display-tolerance and unvalidated work.
+`smart-to-pro-reason-aware-2026-08-22-v1.2.5`. Smart-declared high-value timing
+candidates receive first bounded evidence budget without replacing the complete
+manual queue. Remaining concrete hypotheses are selected by text/actionable tier,
+strong-vs-weak local model quality and value before display-tolerance and
+unvalidated work.
 Acoustic retrieval gates are observations, not authority. Schema 1.3 records
 the slope interval and makes endpoint/near-endpoint optima diagnostic-only;
 only an explicitly eligible interior optimum can participate in timing fusion.
@@ -291,7 +300,12 @@ itself measure the vocal onset. Because Smart and this retrieval both consume
 the canonical/LRC timeline, their agreement is correlated evidence. v1.2.1
 therefore keeps acoustic-only support/conflict at medium priority; the smallest
 high queue requires additional value such as resolving a one-to-one canonical
-text occurrence. v1.2.4 preserves that boundary while accepting Smart v1.2.9,
+text occurrence. v1.2.5 preserves that boundary while accepting Smart v1.2.10,
 retaining anchored cross-script candidates in the smallest high queue, and
 keeping source-side forced alignment auxiliary rather than independent mix
 vocal-onset authority.
+
+An ASR job-level `auto` hint is the absence of a concrete override. With an
+explicit source language, canonical-local single-language routing may provide
+`zh/en/ko/ja`; mixed/unknown and source-language `auto` remain backend
+auto-detection. No static Han/Latin language guess is added.

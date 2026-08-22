@@ -11,15 +11,15 @@ description: Reconstruct, review, materialize, diagnose and render multilingual 
 
 ```text
 Standard -> Text Repair V2.1
-Smart    -> Sequence Reconciliation + Anchor Timeline Repair v1.2.9
-Pro      -> Selective Audio Repair v1.2.4
+Smart    -> Sequence Reconciliation + Anchor Timeline Repair v1.2.10
+Pro      -> Selective Audio Repair v1.2.5
 Max      -> Full V4 Alignment（具体算法版本以 references/v4-status.md / runtime snapshot 为准）
 ```
 
 当前 Smart policy：
 
 ```text
-smart-validation-policy-2026-08-22-v1.2.9
+smart-validation-policy-2026-08-22-v1.2.10
 ```
 
 这个项目的生产原则不是“让 ASR 重写歌词”，而是：**canonical lyric 决定最终文字与顺序；canonical LRC line break 不等于最终 subtitle cue boundary；Jianying timing / cue segmentation 是强但可推翻的先验；Smart 先用 timed canonical + editor majority anchors 做 0-audio 验证；Pro/Max 才引入 Source-to-Mix acoustic evidence。**
@@ -94,10 +94,11 @@ shared canonical parser conservative role/metadata filtering
     -> no-audio timing hypothesis quality/value stratification
     -> v1.2.8 actionable-review/product-status correction
     -> v1.2.9 same-file contextual CJK cast proof
-    -> 不重新建立 timing model / 不重新计算 timing decisions
+    -> v1.2.10 version-scoped split-line guard in the base timing pass
+    -> post-timing text-only recovery 不重新建立 timing model / 不重新计算 timing decisions
 ```
 
-生产代码中的“当前 Smart”必须通过 `lyric_aligner.timeline.smart_current` 这个稳定 facade 消费。`smart_policy.py` / `smart_policy_v125.py` / `smart_policy_v126.py` / `smart_policy_v127.py` / `smart_policy_v128.py` / `smart_policy_v129.py` 是版本化 base/wrapper，不允许 Smart CLI、Pro gate 或测试各自从版本化模块猜 current policy。
+生产代码中的“当前 Smart”必须通过 `lyric_aligner.timeline.smart_current` 这个稳定 facade 消费。`smart_policy.py` / `smart_policy_v125.py` / `smart_policy_v126.py` / `smart_policy_v127.py` / `smart_policy_v128.py` / `smart_policy_v129.py` / `smart_policy_v1210.py` 是版本化 base/wrapper，不允许 Smart CLI、Pro gate 或测试各自从版本化模块猜 current policy。
 
 #### Smart timing authority
 
@@ -233,7 +234,7 @@ Smart report schema 当前为：
 
 ```text
 schema_version = smart-1.1
-policy_id      = smart-validation-policy-2026-08-22-v1.2.9
+policy_id      = smart-validation-policy-2026-08-22-v1.2.10
 ```
 
 生产判断：
@@ -266,7 +267,7 @@ OR pro_escalation_required == true
 python scripts/v4_pro_selective.py ...
 ```
 
-Pro v1.2.4 必须绑定**当前 Smart schema + current Smart policy + exact Smart SRT/canonical hashes**。当前只接受 `schema_version=smart-1.1` 且 `policy_id=smart-validation-policy-2026-08-22-v1.2.9`；旧 Smart artifact 不能直接复用，版本/policy/hash 不匹配时先重新跑当前 Smart。
+Pro v1.2.5 必须绑定**当前 Smart schema + current Smart policy + exact Smart SRT/canonical hashes**。当前只接受 `schema_version=smart-1.1` 且 `policy_id=smart-validation-policy-2026-08-22-v1.2.10`；旧 Smart artifact 不能直接复用，版本/policy/hash 不匹配时先重新跑当前 Smart。
 
 实现上，`smart_policy.py` 是 frozen v1.2.4 base contract，v1.2.5/v1.2.6/v1.2.7/v1.2.8 是顺序 wrapper；**`smart_current.py` 才是唯一 current-production Smart facade**。Smart CLI 与 Pro compatibility gate 都必须从它取得当前 schema/policy/function binding，不能从旧版本模块的常量推断 current policy。
 
@@ -288,7 +289,7 @@ unmapped review
 
 相邻 acoustic jobs 可共享一个 bounded mix region，但 ASR-only job 不得无意义扩大 acoustic decode。歌曲交界的 neighbouring-source competitor 是 shadow evidence，不能直接改 timing。
 
-Pro v1.2.4 先按价值选择：actionable timing 内先排 strong local model，再按绝对 shift；之后才是 text review、显示容差内 suspicion 和纯 unvalidated timing。局部声学的 `local_match_gate_passed` 只表示 retrieval 成功；只有显式 `timing_fusion_evidence_eligible=true` 且 slope optimum 不在/不接近搜索边界时才能参与 support/rebuttal。边界结果保留 diagnostic，不是 timing anomaly authority。纯 Smart +合格 local-acoustic timing agreement只能进入 medium；anchored cross-script vocalization 同时解决文字 identity 时才保留在最小 high queue。
+Pro v1.2.5 先消费 Smart 明确声明的 high-value 预算子集，再在同类任务中按 actionable/text、local model 与绝对 shift 排序；完整 manual queue 仍独立保留，不能被 high-value 子集覆盖。`asr_language_hint=auto` 不再阻断已有 source language 下的 canonical-local 语言路由；source language 本身未知时仍 fail closed 交给 backend auto-detect。局部声学的 `local_match_gate_passed` 只表示 retrieval 成功；只有显式 `timing_fusion_evidence_eligible=true` 且 slope optimum 不在/不接近搜索边界时才能参与 support/rebuttal。边界结果保留 diagnostic，不是 timing anomaly authority。
 
 当前 Pro 仍固定：
 
@@ -509,7 +510,7 @@ status == review_required OR pro_escalation_required == true
     -> 进入 Pro / 人工 review；当前 Smart SRT 不是 final-ready
 ```
 
-### 3. Pro / Selective Audio Repair v1.2.4
+### 3. Pro / Selective Audio Repair v1.2.5
 
 先生成计划，默认仍不读 audio：
 
@@ -521,7 +522,7 @@ python scripts/v4_pro_selective.py `
   --plan-out "output/<任务>/<任务>_PRO_PLAN.json"
 ```
 
-Pro v1.2.4 只接受当前 Smart v1.2.9 policy；不要把旧 report 直接送入 Pro。CLI 还会继续核验 exact Smart SRT / canonical hash binding。
+Pro v1.2.5 只接受当前 Smart v1.2.10 policy；不要把旧 report 直接送入 Pro。CLI 还会继续核验 exact Smart SRT / canonical hash binding。
 
 需要 local source<->mix acoustic evidence 时：
 

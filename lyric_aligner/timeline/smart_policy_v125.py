@@ -168,6 +168,7 @@ def smart_repair_srt_text_v125(
     auto_threshold: float = DEFAULT_AUTO_THRESHOLD,
     rate_prior_by_source: Mapping[int, float] | None = None,
     rate_prior_metadata_by_source: Mapping[int, Mapping[str, object]] | None = None,
+    _segmentation_internal_boundary_guard: bool = False,
 ) -> tuple[str, dict[str, object]]:
     """Run frozen Smart v1.2.4, then A-bounded text-only recovery."""
 
@@ -178,6 +179,7 @@ def smart_repair_srt_text_v125(
         auto_threshold=auto_threshold,
         rate_prior_by_source=rate_prior_by_source,
         rate_prior_metadata_by_source=rate_prior_metadata_by_source,
+        _segmentation_internal_boundary_guard=_segmentation_internal_boundary_guard,
     )
 
     parts, cues = parse_srt_text(rendered_v124)
