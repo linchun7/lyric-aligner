@@ -20,6 +20,7 @@ from lyric_aligner.contracts.artifacts import (
     validate_artifact_output,
     validate_upstream_artifact,
 )
+from lyric_aligner.io.path_safety import validate_separate_artifact_paths
 from lyric_aligner.qa.final_integrity import FinalIntegrityError, validate_srt_report_binding
 from lyric_aligner.srt import parse_srt_strict
 from lyric_aligner.timeline.editor_cue_reconcile import (
@@ -52,6 +53,36 @@ def _read_audit_rows(path: Path) -> list[dict[str, str]]:
     if not rows:
         raise ValueError("canonical evaluation audit contains no rows")
     return rows
+
+
+def _task_input_paths(manifest_path: Path, task: dict) -> dict[str, Path]:
+    """Expand all manifest-bound files so evaluation outputs cannot overwrite them."""
+
+    protected: dict[str, Path] = {"task_manifest": manifest_path}
+    inputs = task.get("inputs")
+    if not isinstance(inputs, dict):
+        raise ValueError("task manifest inputs must be an object")
+
+    for role, record in sorted(inputs.items()):
+        if record is None:
+            continue
+        if not isinstance(record, dict):
+            raise ValueError(f"task manifest input {role} must be an object")
+        root = resolve_manifest_record(manifest_path, record)
+        protected[f"task_{role}"] = root
+        if record.get("kind") != "directory":
+            continue
+        rows = record.get("files")
+        if not isinstance(rows, list):
+            raise ValueError(f"task manifest directory input {role} has invalid files")
+        for index, item in enumerate(rows):
+            if not isinstance(item, dict):
+                raise ValueError(f"task manifest directory input {role} has invalid file entry")
+            relative = str(item.get("path") or "").strip()
+            if not relative:
+                raise ValueError(f"task manifest directory input {role} has blank file path")
+            protected[f"task_{role}_{index}"] = root / relative
+    return protected
 
 
 def _validate_evaluation_render(
@@ -129,6 +160,23 @@ def main() -> int:
         if not isinstance(source_record, dict):
             raise ValueError("task manifest has no source_srt input")
         source_srt = resolve_manifest_record(args.task_manifest, source_record)
+
+        protected_inputs = _task_input_paths(args.task_manifest, task)
+        protected_inputs.update(
+            {
+                "evaluation_srt": args.evaluation_srt,
+                "evaluation_report": args.report,
+                "evaluation_qa": args.qa_json,
+                "render_artifact": args.render_artifact,
+            }
+        )
+        validate_separate_artifact_paths(
+            inputs=protected_inputs,
+            outputs={
+                "reconciliation_output": args.out,
+                "reconciliation_artifact": args.artifact_out,
+            },
+        )
 
         render_artifact = _load_json(args.render_artifact)
         _validate_evaluation_render(
