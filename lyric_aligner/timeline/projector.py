@@ -29,7 +29,9 @@ class ProjectionWindow:
             raise TimelineProjectionError("invalid projection window")
 
 
-def _mapping_parts(mapping: dict[str, Any]) -> tuple[float, float, tuple[float, ...], tuple[float, ...]]:
+def _mapping_parts(
+    mapping: dict[str, Any],
+) -> tuple[float, float, tuple[float, ...], tuple[float, ...]]:
     try:
         intercept = float(mapping["intercept"])
         base_slope = float(mapping["base_slope"])
@@ -86,15 +88,23 @@ def mix_time_for_source(mapping: dict[str, Any], source_time_seconds: float) -> 
 
 
 def _project_ms(mapping: dict[str, Any], source_ms: int) -> int:
-    return int(round(mix_time_for_source(mapping, float(source_ms) / 1000.0) * 1000.0))
+    return int(
+        round(mix_time_for_source(mapping, float(source_ms) / 1000.0) * 1000.0)
+    )
 
 
-def _line_source_bounds(lines: list[CanonicalLine], index: int) -> tuple[int, int | None, str]:
+def _line_source_bounds(
+    lines: list[CanonicalLine], index: int
+) -> tuple[int, int | None, str]:
     line = lines[index]
     if line.tokens:
         start = line.tokens[0].start_ms
         token_end = next(
-            (token.end_ms for token in reversed(line.tokens) if token.end_ms is not None),
+            (
+                token.end_ms
+                for token in reversed(line.tokens)
+                if token.end_ms is not None
+            ),
             None,
         )
         if token_end is not None and token_end > start:
@@ -107,20 +117,105 @@ def _line_source_bounds(lines: list[CanonicalLine], index: int) -> tuple[int, in
     return line.time_ms, None, "open_end"
 
 
-def project_canonical_lines(
+def _coarse_projection_authority(
+    coarse_result: dict[str, Any],
+) -> dict[str, Any] | None:
+    """Return a fail-closed terminal projection bound from coarse evidence.
+
+    A bounded terminal disconnect means the monotonic path proved only a prefix
+    of the requested occurrence interval. The final selected retrieval window
+    still provides evidence through its own mix_end, but later retrieval rows do
+    not grant ordinary timeline-projection authority.
+    """
+
+    coverage = coarse_result.get("path_coverage")
+    if not isinstance(coverage, dict):
+        return None
+    status = str(coverage.get("status") or "")
+    if status != "bounded_terminal_disconnect":
+        return None
+
+    windows = coarse_result.get("windows")
+    path = coarse_result.get("path")
+    if not isinstance(windows, list) or not isinstance(path, list):
+        raise TimelineProjectionError(
+            "bounded coarse coverage requires serialized windows and path"
+        )
+    try:
+        selected_count = int(coverage["selected_window_count"])
+        retrieved_count = int(coverage["retrieved_window_count"])
+        excluded_count = int(coverage["excluded_trailing_window_count"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise TimelineProjectionError(
+            "invalid bounded coarse path_coverage counts"
+        ) from exc
+    if (
+        retrieved_count != len(windows)
+        or selected_count != len(path)
+        or excluded_count != retrieved_count - selected_count
+        or selected_count < 1
+        or excluded_count < 1
+        or selected_count >= retrieved_count
+    ):
+        raise TimelineProjectionError(
+            "bounded coarse path_coverage does not match serialized evidence"
+        )
+    last_proven_window = windows[selected_count - 1]
+    if not isinstance(last_proven_window, dict):
+        raise TimelineProjectionError("invalid final proven coarse window")
+    try:
+        authority_end_ms = int(round(float(last_proven_window["mix_end"]) * 1000.0))
+    except (KeyError, TypeError, ValueError) as exc:
+        raise TimelineProjectionError("invalid final proven coarse mix_end") from exc
+    if authority_end_ms <= 0:
+        raise TimelineProjectionError("projection authority end must be positive")
+    return {
+        "status": "bounded_terminal_disconnect",
+        "mix_end_ms": authority_end_ms,
+        "selected_window_count": selected_count,
+        "excluded_trailing_window_count": excluded_count,
+    }
+
+
+def _mapping_projection_authority(
+    mapping: dict[str, Any],
+) -> dict[str, Any] | None:
+    authority = mapping.get("projection_authority")
+    if authority is None:
+        return None
+    if not isinstance(authority, dict):
+        raise TimelineProjectionError("invalid projection_authority payload")
+    if str(authority.get("status") or "") != "bounded_terminal_disconnect":
+        raise TimelineProjectionError("unsupported projection_authority status")
+    try:
+        mix_end_ms = int(authority["mix_end_ms"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise TimelineProjectionError("invalid projection_authority mix_end_ms") from exc
+    if mix_end_ms <= 0:
+        raise TimelineProjectionError("projection_authority mix_end_ms must be positive")
+    return {**authority, "mix_end_ms": mix_end_ms}
+
+
+def _project_canonical_lines_with_coverage(
     lines: Iterable[CanonicalLine],
     mapping: dict[str, Any],
     *,
     window: ProjectionWindow | None = None,
-) -> list[dict[str, Any]]:
-    """Project line/token source timestamps into global edited-mix milliseconds."""
-
+) -> tuple[list[dict[str, Any]], int]:
     rows = list(lines)
     projected: list[dict[str, Any]] = []
+    authority = _mapping_projection_authority(mapping)
+    authority_end_ms = None if authority is None else int(authority["mix_end_ms"])
+    authority_omitted_line_count = 0
+
     for index, line in enumerate(rows):
         source_start_ms, source_end_ms, end_basis = _line_source_bounds(rows, index)
         mix_start_ms = _project_ms(mapping, source_start_ms)
-        mix_end_ms = _project_ms(mapping, source_end_ms) if source_end_ms is not None else None
+        mix_end_ms = (
+            _project_ms(mapping, source_end_ms)
+            if source_end_ms is not None
+            else None
+        )
 
         if window is not None:
             effective_end = mix_end_ms if mix_end_ms is not None else mix_start_ms + 1
@@ -130,7 +225,11 @@ def project_canonical_lines(
         tokens: list[dict[str, Any]] = []
         for token in line.tokens:
             token_start = _project_ms(mapping, token.start_ms)
-            token_end = _project_ms(mapping, token.end_ms) if token.end_ms is not None else None
+            token_end = (
+                _project_ms(mapping, token.end_ms)
+                if token.end_ms is not None
+                else None
+            )
             tokens.append(
                 {
                     "text": token.text,
@@ -140,6 +239,24 @@ def project_canonical_lines(
                     "mix_end_ms": token_end,
                 }
             )
+
+        if authority_end_ms is not None:
+            crosses_authority = (
+                mix_start_ms >= authority_end_ms
+                or mix_end_ms is None
+                or mix_end_ms > authority_end_ms
+                or any(
+                    token["mix_start_ms"] >= authority_end_ms
+                    or (
+                        token["mix_end_ms"] is not None
+                        and token["mix_end_ms"] > authority_end_ms
+                    )
+                    for token in tokens
+                )
+            )
+            if crosses_authority:
+                authority_omitted_line_count += 1
+                continue
 
         projected.append(
             {
@@ -154,6 +271,22 @@ def project_canonical_lines(
                 "tokens": tokens,
             }
         )
+    return projected, authority_omitted_line_count
+
+
+def project_canonical_lines(
+    lines: Iterable[CanonicalLine],
+    mapping: dict[str, Any],
+    *,
+    window: ProjectionWindow | None = None,
+) -> list[dict[str, Any]]:
+    """Project line/token timing, respecting any proven terminal authority cap."""
+
+    projected, _ = _project_canonical_lines_with_coverage(
+        lines,
+        mapping,
+        window=window,
+    )
     return projected
 
 
@@ -167,8 +300,12 @@ def project_binding_timeline(
         Path(binding.canonical_lyric_path),
         original_index_by_timestamp=binding.original_index_by_timestamp,
     )
-    projected = project_canonical_lines(lines, mapping, window=window)
-    return {
+    projected, authority_omitted_line_count = _project_canonical_lines_with_coverage(
+        lines,
+        mapping,
+        window=window,
+    )
+    payload = {
         "occurrence_id": binding.occurrence_id,
         "ordinal": binding.ordinal,
         "track_id": binding.track_id,
@@ -182,13 +319,26 @@ def project_binding_timeline(
         "line_count": len(projected),
         "lines": projected,
     }
+    authority = _mapping_projection_authority(mapping)
+    if authority is not None:
+        payload["projection_coverage"] = {
+            **authority,
+            "requested_window_end_ms": None if window is None else window.end_ms,
+            "authority_omitted_line_count": authority_omitted_line_count,
+        }
+    return payload
 
 
 def effective_timewarp(
     coarse_payload: dict[str, Any],
     fine_payload: dict[str, Any] | None = None,
 ) -> tuple[dict[str, Any], bool, str]:
-    """Choose the production mapping: applied fine result, otherwise coarse."""
+    """Choose the production mapping and attach coarse projection authority."""
+
+    coarse = coarse_payload.get("result", {})
+    if not isinstance(coarse, dict):
+        raise TimelineProjectionError("invalid coarse alignment payload")
+    authority = _coarse_projection_authority(coarse)
 
     if fine_payload is not None:
         fine = fine_payload.get("result", {})
@@ -197,13 +347,18 @@ def effective_timewarp(
             mapping = timewarp.get("mapping")
             if not isinstance(mapping, dict):
                 raise TimelineProjectionError("fine TimeWarp has no mapping")
-            return mapping, bool(timewarp.get("blocked", False)), "fine"
+            effective_mapping = dict(mapping)
+            if authority is not None:
+                effective_mapping["projection_authority"] = authority
+            return effective_mapping, bool(timewarp.get("blocked", False)), "fine"
 
-    coarse = coarse_payload.get("result", {})
     timewarp = coarse.get("timewarp")
     if not isinstance(timewarp, dict):
         raise TimelineProjectionError("coarse alignment has no TimeWarp")
     mapping = timewarp.get("mapping")
     if not isinstance(mapping, dict):
         raise TimelineProjectionError("coarse TimeWarp has no mapping")
-    return mapping, bool(timewarp.get("blocked", False)), "coarse"
+    effective_mapping = dict(mapping)
+    if authority is not None:
+        effective_mapping["projection_authority"] = authority
+    return effective_mapping, bool(timewarp.get("blocked", False)), "coarse"

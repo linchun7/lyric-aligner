@@ -241,6 +241,8 @@ Smart 继续 `Affine first`。同一首歌出现少量多 rate 时，先表现�
 
 Smart/Pro 解决不了、或整体 timeline 本来就不可信时再运行完整 Source-to-Mix 主链。Max 不再是普通 timing 修复默认入口。
 
+正式 `scripts/v4_run.py` 会按职责调用 coarse CLI：primary occurrence 使用默认 `--purpose primary_timewarp`；shared-boundary 双侧 activity probe 使用 `--purpose transition_activity`。后者只产出完整 retrieval windows，不产出 Source-to-Mix mapping；不要把 `NOT_REQUESTED` 的 transition coarse artifact 手工接到 Fine 或 timeline projection。purpose 已进入 artifact fingerprint，恢复运行时不得跨 purpose 复用。
+
 ## 7. Legacy Partial Timeline Repair
 
 旧 P1–P5 formal proposal/calibration chain 继续固定：

@@ -450,6 +450,14 @@ Max 也必须遵守 segmentation authority：line-LRC 本身不能强迫 final s
 
 TrackAsset schema 保持 `1.1`，`canonical_selection_sha256` 继续只绑定实际 selected lexical originals。role summary 的 `ignored_blank_group_count` / `ignored_metadata_group_count` 是诊断字段，不授予任何 reconstruction、source identity 或 timing authority。
 
+### 5.2 Coarse path coverage contract
+
+`audio/coarse_mapper.py` 的 retrieval evidence 与 selected path 是两个不同集合：`windows` 始终保存 interval 内全部 retrieval rows，`path` 只保存从首窗开始、由 monotonic DP 连续证明的 prefix。正常情况两者等长；若只在 terminal boundary 失去连接，builder 最多允许排除 `ceil(window_seconds / step_seconds)` 个 trailing rows，且 prefix 至少为 TimeWarp 所需的三个 anchors。
+
+Payload 的 additive `path_coverage` 记录 `status`、retrieved/selected/excluded counts、derived maximum 与 excluded mix centers。算法不允许 leading skip、interior skip 或断后重连。Fine 只消费 `windows[:len(path)]`，并逐点验证 mix center；transition probe 仍读取完整 `windows`，所以被排除的 boundary retrieval evidence 不会消失。该 coverage contract 不改变 calibration profile、TimeWarp gate 或 transition/cut/overlap authority。
+
+Coarse CLI 另外用 fingerprinted `purpose` 分离职责：`primary_timewarp`（默认）执行上述 DP/TimeWarp；`transition_activity` 只做共享边界的 per-source retrieval，返回全部 `windows`、空 `path`、`path_coverage.status=retrieval_only` 与 `timewarp.selection=NOT_REQUESTED`。transition activity 的 downstream consumer 只能是读取 raw window strength/ambiguity 的 probe，不能送入 Fine、timeline projection 或当作 Source-to-Mix mapping。purpose 同时写入 payload、normalized config 和 artifact evidence，因此 resume 不会跨 purpose 复用。
+
 ## 6. Legacy Partial Timeline Repair P1–P5
 
 旧 formal proposal chain继续固定：

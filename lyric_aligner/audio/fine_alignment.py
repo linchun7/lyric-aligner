@@ -97,8 +97,14 @@ def refine_coarse_mapping(
     result = coarse_payload.get("result", coarse_payload)
     windows = list(result.get("windows", []))
     path = list(result.get("path", []))
-    if len(windows) != len(path) or len(path) < 2:
-        raise ValueError("fine alignment requires matching coarse windows and path points")
+    if len(windows) < len(path) or len(path) < 2:
+        raise ValueError("fine alignment requires a coarse window for every path point")
+    windows = windows[: len(path)]
+    if any(
+        abs(float(window["mix_center"]) - float(point["mix_center"])) > 1e-6
+        for window, point in zip(windows, path)
+    ):
+        raise ValueError("fine alignment requires path points to match the coarse window prefix")
 
     # Fine alignment is deliberately local. Do not compute 16 kHz / hop-256
     # features for the entire 40-60 minute mix when only a few coarse windows

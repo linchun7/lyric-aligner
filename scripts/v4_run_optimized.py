@@ -253,8 +253,8 @@ def prestage(a: argparse.Namespace) -> VerifiedStageRunner:
         right, right_artifact = stage / "right.coarse.json", stage / "right.coarse.artifact.json"
         records.append((stage, left, left_artifact, right, right_artifact))
         commands += [
-            CORE._coarse_command(task_manifest=a.task_manifest, mix_audio=mix, track_assets=assets, asset_artifact=asset_artifact, occurrence_id=transition.left_occurrence_id, out=left, artifact_out=left_artifact, git_commit=a.git_commit, mix_start=transition.search_start, mix_end=transition.search_end),
-            CORE._coarse_command(task_manifest=a.task_manifest, mix_audio=mix, track_assets=assets, asset_artifact=asset_artifact, occurrence_id=transition.right_occurrence_id, out=right, artifact_out=right_artifact, git_commit=a.git_commit, mix_start=transition.search_start, mix_end=transition.search_end),
+            CORE._coarse_command(task_manifest=a.task_manifest, mix_audio=mix, track_assets=assets, asset_artifact=asset_artifact, occurrence_id=transition.left_occurrence_id, out=left, artifact_out=left_artifact, git_commit=a.git_commit, mix_start=transition.search_start, mix_end=transition.search_end, purpose="transition_activity"),
+            CORE._coarse_command(task_manifest=a.task_manifest, mix_audio=mix, track_assets=assets, asset_artifact=asset_artifact, occurrence_id=transition.right_occurrence_id, out=right, artifact_out=right_artifact, git_commit=a.git_commit, mix_start=transition.search_start, mix_end=transition.search_end, purpose="transition_activity"),
         ]
     runner.run_many(commands)
     runner.run_many([probe_command(a, assets, asset_artifact, left, left_artifact, right, right_artifact, stage / "transition.json", stage / "transition.artifact.json") for stage, left, left_artifact, right, right_artifact in records])

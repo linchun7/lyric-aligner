@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from dataclasses import asdict, dataclass
 from typing import Any
 
@@ -69,11 +70,14 @@ def select_monotonic_candidate_path(
     *,
     middle_cut: str = "false",
     max_continuous_rate: float = 2.0,
+    max_trailing_unmatched_windows: int = 0,
 ) -> list[PathPoint]:
     if middle_cut not in {"false", "true", "unknown"}:
         raise ValueError("middle_cut must be false, true, or unknown")
     if not results:
         return []
+    if max_trailing_unmatched_windows < 0:
+        raise ValueError("max_trailing_unmatched_windows must be non-negative")
     ordered = sorted(results, key=lambda item: item.mix_center)
     if any(right.mix_center <= left.mix_center for left, right in zip(ordered, ordered[1:])):
         raise ValueError("retrieval windows must have strictly increasing centers")
@@ -115,6 +119,12 @@ def select_monotonic_candidate_path(
                 row_scores[candidate_index] = best_score
                 row_parents[candidate_index] = best_parent
         if not any(np.isfinite(value) for value in row_scores):
+            trailing_count = len(ordered) - window_index
+            if (
+                trailing_count <= max_trailing_unmatched_windows
+                and len(scores) >= 3
+            ):
+                break
             raise ValueError(
                 f"no monotonic coarse candidate path survives at mix window {result.mix_center:.3f}s"
             )
@@ -123,7 +133,7 @@ def select_monotonic_candidate_path(
 
     index = int(np.argmax(scores[-1]))
     chosen: list[tuple[RetrievalResult, RetrievalCandidate, int]] = []
-    for window_index in range(len(ordered) - 1, -1, -1):
+    for window_index in range(len(scores) - 1, -1, -1):
         result = ordered[window_index]
         candidate = result.candidates[index]
         chosen.append((result, candidate, index))
@@ -217,6 +227,7 @@ def build_coarse_timewarp(
     drift_threshold: float = 0.30,
     residual_threshold: float = 0.25,
     complexity_penalty: float = 0.035,
+    require_timewarp: bool = True,
 ) -> dict[str, Any]:
     if sr <= 0:
         raise ValueError("sample rate must be positive")
@@ -276,33 +287,58 @@ def build_coarse_timewarp(
     if len(results) < 2:
         raise ValueError("coarse mapping requires at least two retrieval windows")
 
-    path = select_monotonic_candidate_path(
-        results,
-        middle_cut=middle_cut,
-        max_continuous_rate=max_continuous_rate,
+    maximum_excluded_trailing_windows = max(
+        1, int(math.ceil(window_seconds / step_seconds))
     )
-    anchors = [
-        AlignmentAnchor(
-            mix_time=point.mix_center,
-            source_time=point.source_center,
-            confidence=max(0.05, point.fused_score),
-            feature_scores={"chroma": point.chroma_score, "mfcc": point.mfcc_score},
+    if require_timewarp:
+        path = select_monotonic_candidate_path(
+            results,
+            middle_cut=middle_cut,
+            max_continuous_rate=max_continuous_rate,
+            max_trailing_unmatched_windows=maximum_excluded_trailing_windows,
         )
-        for point in path
-    ]
-    mapping = select_timewarp(
-        anchors,
-        bpm_prior=bpm_prior,
-        bpm_prior_strength=bpm_prior_strength,
-        middle_cut=middle_cut,
-        max_continuous_rate=max_continuous_rate,
-        min_excess_source_jump=min_excess_source_jump,
-        min_piecewise_improvement=min_piecewise_improvement,
-        minimum_feature_families=minimum_feature_families,
-        drift_threshold=drift_threshold,
-        residual_threshold=residual_threshold,
-        complexity_penalty=complexity_penalty,
-    )
+        selected_window_count = len(path)
+        excluded_trailing_windows = results[selected_window_count:]
+        anchors = [
+            AlignmentAnchor(
+                mix_time=point.mix_center,
+                source_time=point.source_center,
+                confidence=max(0.05, point.fused_score),
+                feature_scores={"chroma": point.chroma_score, "mfcc": point.mfcc_score},
+            )
+            for point in path
+        ]
+        mapping = select_timewarp(
+            anchors,
+            bpm_prior=bpm_prior,
+            bpm_prior_strength=bpm_prior_strength,
+            middle_cut=middle_cut,
+            max_continuous_rate=max_continuous_rate,
+            min_excess_source_jump=min_excess_source_jump,
+            min_piecewise_improvement=min_piecewise_improvement,
+            minimum_feature_families=minimum_feature_families,
+            drift_threshold=drift_threshold,
+            residual_threshold=residual_threshold,
+            complexity_penalty=complexity_penalty,
+        )
+        coverage_status = (
+            "bounded_terminal_disconnect"
+            if excluded_trailing_windows
+            else "complete"
+        )
+    else:
+        path = []
+        selected_window_count = 0
+        excluded_trailing_windows = []
+        coverage_status = "retrieval_only"
+        mapping = {
+            "mapping": None,
+            "selection": "NOT_REQUESTED",
+            "escalated": False,
+            "discontinuities": [],
+            "blocked": False,
+            "reason": "transition activity consumes retrieval windows, not a continuous TimeWarp",
+        }
     return {
         "stage": "coarse_timewarp",
         "mix_interval": [mix_start, mix_end],
@@ -333,6 +369,17 @@ def build_coarse_timewarp(
             "drift_threshold": drift_threshold,
             "residual_threshold": residual_threshold,
             "complexity_penalty": complexity_penalty,
+        },
+        "path_coverage": {
+            "status": coverage_status,
+            "timewarp_required": require_timewarp,
+            "retrieved_window_count": len(results),
+            "selected_window_count": selected_window_count,
+            "excluded_trailing_window_count": len(excluded_trailing_windows),
+            "maximum_excluded_trailing_windows": maximum_excluded_trailing_windows,
+            "excluded_mix_centers": [
+                result.mix_center for result in excluded_trailing_windows
+            ],
         },
         "windows": [result.to_dict() for result in results],
         "path": [point.to_dict() for point in path],

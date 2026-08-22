@@ -115,6 +115,7 @@ def _coarse_command(
     git_commit: str,
     mix_start: float | None = None,
     mix_end: float | None = None,
+    purpose: str = "primary_timewarp",
 ) -> list[str]:
     command = [
         sys.executable,
@@ -138,6 +139,8 @@ def _coarse_command(
         command.extend(["--mix-start", f"{mix_start:.6f}"])
     if mix_end is not None:
         command.extend(["--mix-end", f"{mix_end:.6f}"])
+    if purpose != "primary_timewarp":
+        command.extend(["--purpose", purpose])
     if git_commit:
         command.extend(["--git-commit", git_commit])
     return command
@@ -556,6 +559,7 @@ def main() -> int:
                         git_commit=args.git_commit,
                         mix_start=transition.search_start,
                         mix_end=transition.search_end,
+                        purpose="transition_activity",
                     )
                 )
                 boundary_coarse[side] = (
