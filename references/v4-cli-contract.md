@@ -14,7 +14,11 @@ outputs ∩ discovered upstream/materialized inputs = ∅
 all output paths are pairwise distinct
 ```
 
-其中 task manifest 的 directory input 不是只保护目录名；必须展开 manifest 中已 fingerprint 的每个文件成员并逐个保护。这样 `lyrics_dir`、`source_audio_dir` 内的真实输入不能因为输出参数写错而被覆盖。
+其中 task manifest 的 directory input 保护的是**整棵目录子树**，不是只保护目录名或当前已存在的成员：
+
+- manifest 中已 fingerprint 的每个文件成员会显式进入 protected input 集合；
+- 即使 `lyrics_dir/new-output.json` 之类目标文件事先不存在，只要位于受保护 input directory 下也必须拒绝；
+- 这样 artifact writer 既不能覆盖已有输入，也不能通过新增文件静默改变目录递归哈希，使刚验证过的 task manifest 立即失效。
 
 路径保护只负责 ownership/safety，不改变 artifact identity、timing、text、review 或 release authority。
 
@@ -77,6 +81,7 @@ Release/evaluation authority 不能依赖 Python 的宽松强制转换。
 公共 regression 只能使用 generic synthetic fixtures，并至少证明：
 
 - task directory member 会进入 protected path 集合；
+- output 指向 task input directory 下一个尚不存在的新文件时同样被拒绝；
 - review template/apply 的碰撞不会改变被保护输入字节；
 - release manifest 碰撞不会改变被保护输入字节；
 - malformed review count 被拒绝；
