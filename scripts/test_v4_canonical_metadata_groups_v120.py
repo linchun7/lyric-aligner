@@ -30,6 +30,32 @@ class CanonicalMetadataGroupsV120Tests(unittest.TestCase):
         )
         self.assertEqual([item.time_ms for item in lines], [10_000, 20_000])
 
+    def test_cjk_and_mixed_singer_role_labels_are_not_lyrics(self) -> None:
+        lines = self._parse(
+            "[00:01.00]合：\n"
+            "[00:02.00]李明：\n"
+            "[00:02.50]欧阳娜娜：\n"
+            "[00:03.00]周小雨/林晓/孙子涵：\n"
+            "[00:04.00]Nova/River（Rap）：\n"
+            "[00:05.00]MC小林：\n"
+            "[00:10.00]第一句真实歌词\n"
+            "[00:20.00]第二句真实歌词\n"
+        )
+        self.assertEqual(
+            [item.text for item in lines],
+            ["第一句真实歌词", "第二句真实歌词"],
+        )
+
+    def test_short_chinese_lyric_question_is_not_treated_as_role_label(self) -> None:
+        lines = self._parse(
+            "[00:01.00]为什么：\n"
+            "[00:02.00]我还在这里等你\n"
+        )
+        self.assertEqual(
+            [item.text for item in lines],
+            ["为什么：", "我还在这里等你"],
+        )
+
     def test_non_metadata_chinese_text_is_not_overfiltered(self) -> None:
         lines = self._parse(
             "[00:01.00]监制不住心里的想念\n"

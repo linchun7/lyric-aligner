@@ -30,7 +30,7 @@ python scripts/v4_text_repair.py `
 
 Text Repair V2.1 冻结 cue count/number/start/end，canonical 是最终文字/顺序 truth，production `--auto-threshold >= 0.72`。
 
-## 3. Smart v1.1.1
+## 3. Smart v1.2.7
 
 ### 3.1 基本调用
 
@@ -99,7 +99,7 @@ B-grade 不能建立 timing model，只能由 already-ready A-anchor model 二�
 
 因此两条 cue 即使分别检查安全，但组合后互相冲突，也会统一降级 review。
 
-Smart report schema 仍是 `smart-1.1`，但 policy id 更新为当前 v1.1.1 policy；关键字段：
+Smart report schema 仍是 `smart-1.1`，current policy 为 `smart-validation-policy-2026-08-22-v1.2.7`；产品字段：
 
 ```text
 status
@@ -107,10 +107,22 @@ policy_id
 pro_escalation_required
 timing_validated_preserve_count
 timing_repair_count
-timing_review_count
+timing_validated_count
+timing_suspected_count
+timing_suspected_actionable_count
+timing_suspected_within_display_tolerance_count
+timing_unvalidated_count
+manual_timing_review_candidate_count
+timing_high_value_pro_candidate_count
+timing_actionable_strong_model_count
+timing_actionable_weak_or_unknown_model_count
+text_cross_script_vocalization_recovery_count
+timing_review_count  # legacy unresolved total，不是人工队列
 ```
 
-## 4. Pro v1.1.1
+`timing_high_value_pro_candidate_count` 是 no-audio 取证优先级，不是 vocal-onset 错误概率。跨文字拟声恢复要求前一 resolved canonical occurrence 证明 exact adjacency，并保持一对一 cue ownership。
+
+## 4. Pro v1.2.2
 
 ### 4.1 先只计划，不读 audio
 
@@ -124,7 +136,7 @@ python scripts/v4_pro_selective.py `
   --plan-out "output/<任务>/<任务>_PRO_PLAN.json"
 ```
 
-Pro v1.1.1 必须读取**当前 Smart v1.1.1 policy** 产出的 `smart-1.1` report。旧 Smart report 即使 schema 相同，只要 policy id 不是当前版本，也会要求重新跑 Smart，避免旧 false-ready 语义漏掉 escalation。
+Pro v1.2.2 必须读取**当前 Smart v1.2.7 policy** 产出的 `smart-1.1` report。旧 Smart report 即使 schema 相同，只要 policy id 不是当前版本，也会要求重新跑 Smart。
 
 reason-aware routing：
 
@@ -154,7 +166,7 @@ planned_mix_audio_ms_unmerged / merged
 planned_acoustic_mix_audio_ms_unmerged / merged
 ```
 
-`--max-jobs` 在当前 Pro v1.1.3 中约束 **primary unresolved cues**。只为已选 primary 添加的 shadow boundary competitor 是 additive companion evidence，不消耗 primary budget，也不会引入新的 primary cue。
+`--max-jobs` 在当前 Pro v1.2.2 中约束 **primary unresolved cues**。价值顺序为：actionable timing suspicion（strong local model 先于 weak/unknown，同层再按 `|Smart shift|` 降序）、text review、显示容差内 timing suspicion、纯 timing-unvalidated。Shadow competitor 不消耗 primary budget。
 
 source window 仍优先使用逐字 timing；否则利用下一 canonical onset；最后一行使用 bounded fallback。除此之外，任何 acoustic source window 都必须满足：
 
@@ -190,7 +202,19 @@ boundary_role = previous_source | next_source
 
 v1.1.1 acoustic 输出只 hash 当前 acoustic plan 真正使用到的 source audio；未被本次 Pro 任务使用的原曲不做额外整文件 I/O。
 
-### 4.4 局部 Whisper
+Acoustic schema v1.2 同时输出 `acoustic_shift_ms = predicted - editor`、`local_match_gate_passed` 和 `reliability_semantics=local_retrieval_gate_only_not_timing_authority`。不要把 legacy `reliable_local_match` 别名直接当成时间裁决。
+
+### 4.4 Pro decision fusion
+
+在同一 invocation 已执行的 evidence 上生成 fail-closed 产品裁决：
+
+```powershell
+--decision-out "output/<任务>/<任务>_PRO_DECISIONS.json"
+```
+
+decision artifact 分离 text/timing 两轴，列出 `high_priority_manual_review_count` 与精确 cue/start positions。Smart 与 local acoustic 都消费 canonical/LRC timeline，因此二者同向属于相关证据，不能冒充独立 vocal onset；仅此类 timing support/conflict 降为 medium。只有同时解决一对一 canonical text occurrence 等额外高价值问题时才进入 high。纯 `timing_unvalidated` 不伪装成人工 review，当前仍固定 `automatic_timing_change_allowed=false`、`timing_mutation_performed=false`。
+
+### 4.5 局部 Whisper
 
 ```powershell
 --mix-audio "private/<任务>/input/mix.wav" `
@@ -200,7 +224,7 @@ v1.1.1 acoustic 输出只 hash 当前 acoustic plan 真正使用到的 source au
 
 语言按当前 canonical line 路由：中文歌纯英文 rap -> `en`；code-switch -> auto；韩/日 pure line -> `ko/ja`。
 
-### 4.5 External forced alignment
+### 4.6 External forced alignment
 
 ```powershell
 python scripts/v4_pro_selective.py `
@@ -220,7 +244,7 @@ python scripts/v4_pro_selective.py `
 
 Forced alignment 仍是 auxiliary source-side evidence；canonical lyric 仍拥有最终文字/顺序 authority。v1.1.1 只为实际请求 forced alignment 的 source 建 binding/hash。
 
-### 4.6 Pro artifact 路径安全
+### 4.7 Pro artifact 路径安全
 
 在写 `plan-out / acoustic-out / asr-out / forced-out` 前，Pro 会统一检查它们不得覆盖：
 
@@ -275,4 +299,4 @@ Public CI 能验证 deterministic policy、最终 overlap guard、soft BPM seman
 
 `python scripts/v4_smart_repair.py --help` 与 `python scripts/v4_pro_selective.py --help` 现在会自行把 repository root 加入 import path，正式文档中的直接入口不要求调用者额外设置 `PYTHONPATH`。
 
-当前 Pro v1.1.3 的 `--max-jobs` 是 **primary unresolved-cue budget**。Shadow boundary competitors 只附着于已经选中的 primary，属于 additive evidence；`plan.config.max_jobs` 对外报告调用者请求的 primary budget，内部完整 candidate-pool 扩池不是公开预算语义。
+当前 Pro v1.2.2 的 `--max-jobs` 是 **primary unresolved-cue budget**。Shadow boundary competitors 只附着于已经选中的 primary，属于 additive evidence；`plan.config.max_jobs` 对外报告调用者请求的 primary budget，内部完整 candidate-pool 扩池不是公开预算语义。

@@ -15,6 +15,8 @@ from lyric_aligner.timeline.smart_policy import (
     _text_review_mapping_counts,
     _timing_review_proposal_counts,
 )
+from lyric_aligner.timeline.smart_policy_v126 import add_timing_product_semantics
+from lyric_aligner.timeline.smart_policy_v127 import add_timing_confidence_semantics
 
 
 def _cue(index: int, text: str) -> SubtitleCue:
@@ -194,6 +196,87 @@ class SmartReportSemanticsV122Tests(unittest.TestCase):
                 "bpm_prior_conflict": 1,
                 "unresolved_timing_model_not_ready": 1,
             },
+        )
+
+    def test_product_timing_semantics_do_not_call_all_unvalidated_cues_review(self) -> None:
+        report = {
+            "timing_validated_preserve_count": 5,
+            "timing_repair_count": 1,
+            "timing_review_count": 9,
+            "timing_review_with_proposal_count": 2,
+            "timing_review_without_proposal_count": 7,
+            "timing_decisions": [
+                {
+                    "action": "review",
+                    "old_start_ms": 10_000,
+                    "proposed_start_ms": 8_800,
+                },
+                {
+                    "action": "review",
+                    "old_start_ms": 20_000,
+                    "proposed_start_ms": 19_600,
+                },
+            ],
+        }
+
+        add_timing_product_semantics(report)
+
+        self.assertEqual(report["timing_validated_count"], 6)
+        self.assertEqual(report["timing_suspected_count"], 2)
+        self.assertEqual(report["timing_unvalidated_count"], 7)
+        self.assertEqual(report["timing_suspected_actionable_count"], 1)
+        self.assertEqual(report["timing_suspected_within_display_tolerance_count"], 1)
+        self.assertEqual(report["manual_timing_review_candidate_count"], 1)
+        self.assertEqual(report["timing_product_state"], "suspected_and_unvalidated")
+        self.assertEqual(
+            report["timing_review_count_semantics"],
+            "legacy_unresolved_total_not_manual_review_queue",
+        )
+
+    def test_actionable_hypotheses_are_ranked_by_model_and_text_evidence(self) -> None:
+        report = {
+            "models": [
+                {
+                    "source_ordinal": 0,
+                    "status": "ready",
+                    "inlier_count": 8,
+                    "inlier_fraction": 1.0,
+                    "median_abs_residual_ms": 40.0,
+                },
+                {
+                    "source_ordinal": 1,
+                    "status": "ready",
+                    "inlier_count": 4,
+                    "inlier_fraction": 0.8,
+                    "median_abs_residual_ms": 200.0,
+                },
+            ],
+            "text_decisions": [
+                {"cue_ordinal": 0, "action": "review"},
+                {"cue_ordinal": 1, "action": "unchanged"},
+                {"cue_ordinal": 2, "action": "review"},
+                {"cue_ordinal": 3, "action": "replace", "reason": "preceding_canonical_anchor_confirms_cross_script_vocalization"},
+            ],
+            "timing_decisions": [
+                {"cue_ordinal": 0, "source_ordinal": 0, "action": "review", "old_start_ms": 10_000, "proposed_start_ms": 8_800},
+                {"cue_ordinal": 1, "source_ordinal": 0, "action": "review", "old_start_ms": 20_000, "proposed_start_ms": 18_800},
+                {"cue_ordinal": 2, "source_ordinal": 1, "action": "review", "old_start_ms": 30_000, "proposed_start_ms": 28_800},
+                {"cue_ordinal": 3, "source_ordinal": 0, "action": "review", "old_start_ms": 40_000, "proposed_start_ms": 38_800},
+            ],
+        }
+
+        add_timing_confidence_semantics(report)
+
+        self.assertEqual(report["timing_actionable_strong_model_count"], 3)
+        self.assertEqual(report["timing_actionable_weak_or_unknown_model_count"], 1)
+        self.assertEqual(report["timing_actionable_text_unresolved_count"], 2)
+        self.assertEqual(report["timing_actionable_resolved_text_count"], 2)
+        self.assertEqual(report["timing_actionable_text_identity_special_count"], 3)
+        self.assertEqual(report["timing_high_value_pro_candidate_count"], 2)
+        self.assertEqual(report["manual_timing_review_candidate_count"], 2)
+        self.assertEqual(
+            report["timing_high_value_pro_candidate_positions"][0]["cue_ordinal"],
+            0,
         )
 
 

@@ -1,4 +1,4 @@
-"""Region-reusing local acoustic executor for Pro v1.1.
+"""Region-reusing local acoustic executor for Pro v1.2.
 
 Nearby Smart review cues share one decoded/featured mix region.  Each cue still
 keeps its own source window and local retrieval query, so batching reduces work
@@ -20,7 +20,7 @@ from lyric_aligner.alignment.local_acoustic_match import (
 )
 from lyric_aligner.audio.features import extract_harmonic_features, retrieve_coarse_window
 
-LOCAL_ACOUSTIC_V11_SCHEMA_VERSION = "1.1"
+LOCAL_ACOUSTIC_V11_SCHEMA_VERSION = "1.2"
 
 
 def _window(row: Mapping[str, Any], key: str) -> tuple[int, int]:
@@ -208,6 +208,9 @@ def execute_region_source_match_jobs(
             editor_start = job.get("editor_cue_start_ms")
             residual = None if editor_start is None else int(editor_start) - predicted_mix_start_ms
             reliable = not retrieval.ambiguous and best.feature_agreement >= 2
+            acoustic_shift = (
+                None if editor_start is None else predicted_mix_start_ms - int(editor_start)
+            )
             results.append(
                 {
                     "job_id": job_id,
@@ -225,11 +228,23 @@ def execute_region_source_match_jobs(
                     "feature_agreement": int(best.feature_agreement),
                     "margin": round(float(retrieval.margin), 6),
                     "ambiguous": bool(retrieval.ambiguous),
+                    "local_match_gate_passed": reliable,
+                    "local_match_status": (
+                        "gate_passed_unadjudicated"
+                        if reliable
+                        else "ambiguous_or_feature_disagreement"
+                    ),
+                    "reliability_semantics": (
+                        "local_retrieval_gate_only_not_timing_authority"
+                    ),
+                    # Legacy alias retained for artifact readers.  New Pro
+                    # decision code consumes local_match_gate_passed instead.
                     "reliable_local_match": reliable,
                     "matched_source_start_ms": matched_source_start_ms,
                     "expected_source_time_ms": expected_source_ms,
                     "predicted_mix_start_ms": predicted_mix_start_ms,
                     "editor_start_residual_ms": residual,
+                    "acoustic_shift_ms": acoustic_shift,
                     "shadow_evidence_only": bool(job.get("shadow_evidence_only", False)),
                     "boundary_competitor_for_job_id": job.get("boundary_competitor_for_job_id"),
                     "boundary_role": job.get("boundary_role"),

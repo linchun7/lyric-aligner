@@ -528,3 +528,19 @@ Public CI 不能证明真实歌曲 false-auto。每次 private real-song failure
 ### Pro v1.1.3 primary budget vs. shadow evidence
 
 The reason-aware selector first chooses primary unresolved cues under `max_jobs`. Only after that selection, `_boundary_competitor()` may add a dual-source shadow job for a selected primary near a source boundary. Shadow jobs do not consume the primary budget, cannot select new unresolved cues, and retain evidence-only/no-timing-mutation semantics.
+
+### Smart v1.2.6 role normalization and product semantics
+
+`text/normalization.py` classifies conservative timestamped singer-role labels across Latin, CJK, mixed names and slash-separated casts while preserving ordinary lexical lines such as questions ending in a colon. `timeline/smart_policy_v126.py` wraps the frozen v1.2.5 result, applies `final_text_recovery.py` after timing is frozen, and reports `timing_validated_count`, `timing_suspected_count`, `timing_unvalidated_count` and the actionable/display-tolerance split. The old unresolved total is retained with an explicit legacy semantic label.
+
+### Smart v1.2.7 anchored cross-script recovery
+
+`timeline/smart_policy_v127.py` wraps the frozen v1.2.6 artifact after timing finalization. `final_text_recovery.py` may replace a mapped 1:1 review only when the preceding resolved decision ends exactly at the candidate occurrence, both occurrences share a source, and editor/canonical text are narrow cross-script vocalizations. Ordinary lexical text, missing adjacency and boundary movement fail closed. The layer never rebuilds timing.
+
+Smart actionable hypotheses are separately stratified by local model strength (`>=6` inliers, `>=0.80` inlier fraction, median absolute residual `<=250ms`) and text-identity value. These fields rank Pro evidence acquisition; they are explicitly not vocal-onset probabilities.
+
+### Pro v1.2.2 value selection and decision fusion
+
+`alignment/selective_policy.py` computes `timing_proposal_abs_shift_ms` from Smart proposal vs. editor start. Primary order is actionable text+timing/actionable timing with strong local models before weak/unknown models and then descending absolute shift, followed by text review, display-tolerance timing suspicion and timing-unvalidated. `alignment/local_acoustic_v11.py` schema 1.2 records `acoustic_shift_ms = predicted_mix_start_ms - editor_start_ms`; its gate is explicitly unadjudicated retrieval evidence.
+
+`alignment/selective_fusion.py` binds the exact current Smart and Pro policy and produces decision support only. Smart and acoustic hypotheses that agree in direction/magnitude become supported; a local match inside product display tolerance can rebut a materially different Smart hypothesis; large disagreement stays conflict. The agreement is explicitly labelled correlated canonical-timeline evidence, not independent vocal-onset evidence, so resolved-text timing support/conflict stays medium. A supported one-to-one canonical occurrence can independently support cross-script text identity and enter the smallest high queue, but neither text nor timing is automatically written. The decision summary includes exact positions and preserves `timing_mutation_performed=false`.

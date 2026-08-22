@@ -280,3 +280,28 @@ This maintenance fix aligns those two contracts without expanding alignment auth
 - Smart, Pro, text/timing thresholds, evidence routing, timing mutation authority, and forced-alignment configuration are unchanged.
 
 Public regression uses generic synthetic LRC only and covers metadata-only groups, early title rows, role labels, blank Enhanced-LRC timing groups, same-timestamp metadata+lyric selection, and asset-resolver integration. The immutable production tag `prod-smart-v1.2.5-pro-v1.1.4-20260821` remains on `56841c40d6a90101efe1da568e2d5c2e5e67a0a2`; the private 190 Max experiment must be rerun after merge before any claim that Max can now resolve the Smart hard tail or reorder region.
+
+## 2026-08-22 — Smart v1.2.6 / Pro v1.2.0 general hardening
+
+- Fixed canonical pollution from timestamped Chinese/mixed singer labels; conservative lexical colon lines remain lyrics.
+- Added final text-only recovery for same-length one-character canonical corrections and prefix-ownership-proven suffix corrections after timing freeze.
+- Split Smart product timing counts into validated, suspected, actionable, within-display-tolerance and unvalidated; retained the old unresolved total as a labelled compatibility field, not a manual queue.
+- Changed Pro budget selection to prioritize actionable concrete timing hypotheses and larger absolute shifts before text-only, display-tolerance and unvalidated items.
+- Acoustic schema 1.2 now exposes prediction-minus-editor shift and labels its local gate as unadjudicated retrieval evidence.
+- Added fail-closed Pro decision fusion, independent text/timing states, supported/rebutted/conflict classifications, cross-script canonical-occurrence support and exact high-priority positions.
+- Kept automatic Pro timing and text writeback disabled. All public regressions are generic synthetic cases; private lyrics, timestamps and media remain untracked.
+
+## 2026-08-22 — Pro v1.2.1 correlated-evidence priority correction
+
+- Manual adjudication disproved the assumption that Smart plus local music retrieval constitutes two independent vocal-onset measurements.
+- Fusion now labels local acoustic support as correlated canonical-timeline evidence and explicitly records that independent vocal-onset evidence was not used.
+- Resolved-text acoustic-only supported/conflict/pro-only timing states move from high to medium; a supported one-to-one canonical text occurrence remains high because it resolves an additional text-identity problem.
+- No timing/text mutation authority or evidence threshold was loosened. Public regression remains synthetic and contains no private cue, lyric or timestamp.
+
+## 2026-08-22 — Smart v1.2.7 / Pro v1.2.2 pre-push hardening
+
+- Added post-timing cross-script vocalization recovery constrained to mapped 1:1 ownership, exact preceding resolved canonical adjacency, same source and narrow vocalization character sets.
+- Added Smart no-audio timing hypothesis stratification by local model strength and text-identity value; the result is evidence-acquisition priority, not vocal-onset probability.
+- Pro now orders strong-model actionable candidates before weak/unknown model extrapolations and retains anchored cross-script timing candidates in the smallest high queue.
+- Private rerun recovered two additional canonical texts, reduced mapped text reviews, excluded adjudicated false timing candidates from Smart high-value positions, and retained the adjudicated true candidates. No private content is committed or hard-coded.
+- Smart remains no-audio and performs no new timing mutation; Pro automatic text/timing writeback remains disabled.

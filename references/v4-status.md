@@ -416,3 +416,9 @@ Smart v1.2.5 A-bounded is now the production Smart path on `main`. The next acce
 ### 2026-08-21 Pro v1.1.4 current-Smart binding status
 
 Incremental post-promotion review found that Pro v1.1.3 still imported the frozen v1.2.4 `SMART_POLICY_ID`, so a legitimate v1.2.5 Smart report would be rejected before evidence planning. Pro v1.1.4 routes current Smart schema/policy selection through `timeline/smart_current.py`; Smart CLI and current-policy tests use the same facade. The facade currently binds schema `smart-1.1` plus v1.2.5 policy/function, while versioned Smart modules remain historical implementations. Evidence routing, selection budgets, thresholds and `timing_mutation_performed=false` remain unchanged.
+
+## 2026-08-22 Smart v1.2.7 / Pro v1.2.2 status
+
+Smart v1.2.7 is the current production facade. It retains v1.2.6 role filtering/product semantics and adds exact-predecessor anchored cross-script vocalization recovery after timing freeze. Actionable hypotheses are stratified by local model quality and text identity; the high-value count is a Pro evidence priority, not a claim that vocal onset is wrong.
+
+Pro v1.2.2 accepts the v1.2.7 binding and ranks strong-model actionable candidates ahead of weak/unknown model extrapolations. Private adjudication showed that Smart+local-acoustic timing agreement alone can still be a false vocal-onset suspicion because both consume the canonical/LRC timeline. Fusion keeps resolved-text acoustic-only support/conflict at medium while anchored cross-script identity plus supported timing remains in the smallest high queue. Timing mutation remains disabled.

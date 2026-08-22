@@ -1,20 +1,21 @@
 # Smart / Pro production policy
 
-Date: 2026-08-21
+Date: 2026-08-22
 
 Normative workload baseline remains `references/production-requirements.md`.
 Smart and Pro remain the daily primary modes; this change does not expand
 Max/Full V4 as the default path.
 
-## Smart v1.2.5
+## Smart v1.2.7
 
 Smart still reads no audio. The primary v1 A-anchor affine timing engine remains
 unchanged from the established base policy. v1.2.0 added a separate canonical-
 sequence text layer so severe editor ASR cannot permanently block text recovery
 merely because lexical similarity is low; later v1.2.x releases hardened BPM,
-ownership and bounded recovery without increasing timing authority. v1.2.5 runs
-the frozen v1.2.4 policy to completion, freezes its final timing decisions, then
-adds a post-timing A-bounded mapped-review text-only recovery tier.
+ownership and bounded recovery without increasing timing authority. v1.2.7 runs
+the frozen v1.2.6 policy to completion, freezes its final timing decisions, then
+adds exact-adjacency cross-script vocalization recovery and no-audio hypothesis
+quality/value stratification.
 
 Primary timing hardenings remain:
 
@@ -29,7 +30,7 @@ Primary timing hardenings remain:
 - rate prior provenance remains explicit: `exact_daw`, `bpm_derived`, or
   `anchor_estimated`; exact DAW stretch remains stronger than BPM-derived prior;
 - Smart report schema remains `smart-1.1`; current policy id is
-  `smart-validation-policy-2026-08-21-v1.2.5`.
+  `smart-validation-policy-2026-08-22-v1.2.7`.
 
 ### Segmentation authority and mode monotonicity
 
@@ -204,7 +205,7 @@ v1.2.5 adds:
 `text_sequence_projection_models` are text-only diagnostics and must not be
 confused with `models`, which remain the primary timing models.
 
-## Pro v1.1.4
+## Pro v1.2.2
 
 Pro stays local and evidence-first. It still performs no timing mutation.
 
@@ -224,14 +225,15 @@ upstream contract is:
 
 ```text
 schema_version = smart-1.1
-policy_id      = smart-validation-policy-2026-08-21-v1.2.5
+policy_id      = smart-validation-policy-2026-08-22-v1.2.7
 ```
 
 Versioned Smart modules remain historical implementations: `smart_policy.py`
-is the frozen v1.2.4 base contract and `smart_policy_v125.py` is the v1.2.5
-wrapper implementation. `smart_current.py` is the **only current-production
-facade**; it currently binds schema `smart-1.1`, policy v1.2.5 and the v1.2.5
-repair function. Both the Smart CLI and Pro v1.1.4 import through this facade.
+is the frozen v1.2.4 base contract; `smart_policy_v125.py` and
+`smart_policy_v126.py` / `smart_policy_v127.py` are versioned wrappers. `smart_current.py` is the **only
+current-production facade**; it currently binds schema `smart-1.1`, policy
+v1.2.7 and the v1.2.7 repair function. Both the Smart CLI and Pro v1.2.2 import
+through this facade.
 Therefore a future Smart promotion changes one current binding instead of
 independently changing multiple consumers. v1.2.4 and earlier Smart reports are
 stale and must be rerun.
@@ -257,9 +259,36 @@ authority.
 
 ## Safety boundary
 
-Pro v1.1.4 still reports `timing_mutation_performed=false`. Automatic Pro
+Pro v1.2.2 still reports `timing_mutation_performed=false`. Automatic Pro
 writeback must remain disabled until private real-song calibration + independent
 blind validation establishes safe evidence combinations and false-repair bounds.
 
 Max also follows the same segmentation authority contract: line-LRC grouping is
 not sufficient evidence by itself to resegment a trusted editor subtitle cue.
+
+## Current superseding contract: Smart v1.2.7 / Pro v1.2.2
+
+The current Smart facade binds `smart-1.1` to
+`smart-validation-policy-2026-08-22-v1.2.7`. In addition to the frozen v1.2.6
+pipeline, it filters conservative CJK/mixed singer-role metadata, applies a
+post-timing ownership-preserving final-text recovery, and separates timing
+suspected from timing merely unvalidated in product reports. v1.2.7 additionally
+recovers only exact-adjacency cross-script vocalizations and stratifies no-audio
+timing hypotheses by model strength and text-identity value.
+
+The current Pro policy is
+`smart-to-pro-reason-aware-2026-08-22-v1.2.2`. Concrete actionable timing
+hypotheses are selected by strong-vs-weak local model quality and value before
+display-tolerance and unvalidated work.
+Acoustic gates are observations, not authority. Optional `--decision-out`
+combines executed evidence into supported, rebutted, conflict and unvalidated
+states with exact high-priority positions. Automatic timing mutation remains
+disabled.
+
+Local acoustic retrieval synchronizes source music to the mix but does not by
+itself measure the vocal onset. Because Smart and this retrieval both consume
+the canonical/LRC timeline, their agreement is correlated evidence. v1.2.1
+therefore keeps acoustic-only support/conflict at medium priority; the smallest
+high queue requires additional value such as resolving a one-to-one canonical
+text occurrence. v1.2.2 preserves that boundary while accepting Smart v1.2.7
+and retaining anchored cross-script candidates in the smallest high queue.

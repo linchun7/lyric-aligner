@@ -218,9 +218,26 @@ def main() -> int:
 
     print(json.dumps({
         "status": report["status"],
+        "product_status": report.get("product_status", report["status"]),
         "audio_read": False,
         "text_replacement_count": report["text_replacement_count"],
         "timing_repair_count": report["timing_repair_count"],
+        "timing_validated_count": report["timing_validated_count"],
+        "timing_suspected_count": report["timing_suspected_count"],
+        "timing_suspected_actionable_count": report.get(
+            "timing_suspected_actionable_count", 0
+        ),
+        "manual_timing_review_candidate_count": report.get(
+            "manual_timing_review_candidate_count", 0
+        ),
+        "timing_high_value_pro_candidate_count": report.get(
+            "timing_high_value_pro_candidate_count", 0
+        ),
+        "timing_actionable_weak_or_unknown_model_count": report.get(
+            "timing_actionable_weak_or_unknown_model_count", 0
+        ),
+        "timing_unvalidated_count": report["timing_unvalidated_count"],
+        # Retained for legacy artifact consumers.  It is not a manual queue.
         "timing_review_count": report["timing_review_count"],
         "pro_escalation_required": report["pro_escalation_required"],
         "output_srt": str(args.output_srt),
