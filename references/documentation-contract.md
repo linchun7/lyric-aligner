@@ -68,6 +68,8 @@ CI 通过 `scripts/validate_docs_contract.py` 检查本契约。规则以“受�
 - `references/workflow.md`
 - 本文件（如果契约本身改变）
 
+涉及 production release authority 的跨 artifact 一致性时，不能只记录“某个 CLI 检查了一个字段”；owner 文档必须明确哪些 hash-bound config/evidence/QA 层共同构成 release contract，以及任一层矛盾时的 fail-closed 语义。`references/v4-cli-contract.md` 可记录具体 CLI 不变量，但仍需满足本 D 类 owner 要求。
+
 ### E. 架构职责或目录边界变化
 
 至少更新以下一项，并同时满足 A/B：
@@ -124,6 +126,7 @@ subtitle segmentation authority
 - canonical LRC line break 不是 final subtitle cue segmentation authority；
 - 当前 canonical-line renderer 必须显式声明 `segmentation_authority=canonical_line_evaluation_only` 与 `publish_ready=false`；
 - V4 production release 只有在绑定的 final-render artifact 明确声明 `segmentation_authority=editor_reconciled` 时才可继续；
+- production final-render 的 `normalized_config`、artifact `evidence` 与其 exact hash-bound QA 必须对 `editor_reconciled` / `publish_ready` 保持一致；任一层仍为 evaluation-only、not-publish-ready 或带 `release_blocked_reason` 时必须 fail closed；
 - transition/cut/overlap 人工 review 完成、artifact hash 完整、或 run 已 `ready_for_render` 都不能替代 editor reconciliation authority；
 - `projection_coverage.authority_omitted_line_count > 0` 属于内容完整性 blocker：unproven canonical suffix 不得被 extrapolation 恢复普通 timing authority，也不得被静默丢弃后继续 final render；
 - future Editor-Cue Reconciliation 必须是 first-class、fingerprinted、lineage-bearing artifact，并绑定 exact editor/source SRT、canonical occurrence/timeline identity 及任何用于推翻 editor boundary 的更强证据。
