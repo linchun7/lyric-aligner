@@ -8,6 +8,7 @@ from lyric_aligner.contracts.artifacts import validate_artifact_output, validate
 from lyric_aligner.qa.final_integrity import (
     FinalIntegrityError,
     build_release_artifact_manifest,
+    validate_qa_payload,
     validate_srt_report_binding,
 )
 from lyric_aligner.srt import SRTParseError, parse_srt_strict, timeline_end_ms
@@ -196,6 +197,37 @@ class V4ReleaseIntegrityTests(unittest.TestCase):
             self.assertTrue(
                 validate_artifact_output(manifest, role="final_srt", path=srt)
             )
+
+    def test_qa_review_candidate_count_rejects_non_integer_zero_values(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            _, _, qa = write_case(root)
+            baseline = json.loads(qa.read_text(encoding="utf-8"))
+            for invalid in (False, 0.0, 0.5, "0", None):
+                with self.subTest(value=invalid):
+                    payload = dict(baseline)
+                    payload["review_candidate_count"] = invalid
+                    qa.write_text(json.dumps(payload), encoding="utf-8")
+                    with self.assertRaisesRegex(
+                        FinalIntegrityError,
+                        "review_candidate_count must be integer 0",
+                    ):
+                        validate_qa_payload(
+                            qa,
+                            expected_task_fingerprint=FINGERPRINT,
+                            expected_algorithm_version="3.9",
+                        )
+
+    def test_qa_payload_must_be_json_object(self):
+        with tempfile.TemporaryDirectory() as directory:
+            qa = Path(directory) / "qa.json"
+            qa.write_text("[]", encoding="utf-8")
+            with self.assertRaisesRegex(FinalIntegrityError, "must contain an object"):
+                validate_qa_payload(
+                    qa,
+                    expected_task_fingerprint=FINGERPRINT,
+                    expected_algorithm_version="3.9",
+                )
 
     def test_malformed_srt_block_fails_closed(self):
         with tempfile.TemporaryDirectory() as directory:
