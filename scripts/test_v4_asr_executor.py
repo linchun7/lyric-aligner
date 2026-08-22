@@ -132,6 +132,138 @@ class V4AsrExecutorTests(unittest.TestCase):
             )
             self.assertIsNone(fake.calls[0][1]["language"])
 
+    def test_explicit_supported_job_hint_overrides_local_canonical_language(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            audio = Path(temporary) / "mix.wav"
+            audio.write_bytes(b"fake")
+            plan = self.plan()
+            plan["jobs"][0]["language_profile"] = "zh"
+            plan["jobs"][0]["asr_language_hint"] = "en"
+            fake = FakeModel()
+            execute_faster_whisper_jobs(
+                audio_path=audio,
+                plan=plan,
+                canonical_text_by_job_id={"job-1": "你好世界"},
+                config=FasterWhisperExecutionConfig(model_id="test-model"),
+                model_factory=lambda *args, **kwargs: fake,
+            )
+            self.assertEqual(fake.calls[0][1]["language"], "en")
+
+    def test_planner_force_auto_wins_over_cross_language_local_hint(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            audio = Path(temporary) / "mix.wav"
+            audio.write_bytes(b"fake")
+            plan = self.plan()
+            plan["jobs"][0]["language_profile"] = "zh"
+            plan["jobs"][0]["asr_language_hint"] = "auto"
+            plan["jobs"][0]["asr_force_auto_detect"] = True
+            fake = FakeModel()
+            execute_faster_whisper_jobs(
+                audio_path=audio,
+                plan=plan,
+                canonical_text_by_job_id={"job-1": "hello world"},
+                config=FasterWhisperExecutionConfig(model_id="test-model"),
+                model_factory=lambda *args, **kwargs: fake,
+            )
+            self.assertIsNone(fake.calls[0][1]["language"])
+
+    def test_auto_job_hint_uses_local_chinese_canonical_language(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            audio = Path(temporary) / "mix.wav"
+            audio.write_bytes(b"fake")
+            plan = self.plan()
+            plan["jobs"][0]["language_profile"] = "zh"
+            plan["jobs"][0]["asr_language_hint"] = "auto"
+            fake = FakeModel()
+            execute_faster_whisper_jobs(
+                audio_path=audio,
+                plan=plan,
+                canonical_text_by_job_id={"job-1": "你好世界"},
+                config=FasterWhisperExecutionConfig(model_id="test-model"),
+                model_factory=lambda *args, **kwargs: fake,
+            )
+            self.assertEqual(fake.calls[0][1]["language"], "zh")
+
+    def test_empty_job_hint_uses_local_english_canonical_language(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            audio = Path(temporary) / "mix.wav"
+            audio.write_bytes(b"fake")
+            plan = self.plan()
+            plan["jobs"][0]["language_profile"] = "en"
+            plan["jobs"][0]["asr_language_hint"] = ""
+            fake = FakeModel()
+            execute_faster_whisper_jobs(
+                audio_path=audio,
+                plan=plan,
+                canonical_text_by_job_id={"job-1": "hello world"},
+                config=FasterWhisperExecutionConfig(model_id="test-model"),
+                model_factory=lambda *args, **kwargs: fake,
+            )
+            self.assertEqual(fake.calls[0][1]["language"], "en")
+
+    def test_auto_job_hint_keeps_mixed_or_unknown_canonical_open(self):
+        for canonical, profile in (
+            ("你好 hello", "zh"),
+            ("你好 hello", "mixed"),
+            ("123 !!!", "zh"),
+        ):
+            with (
+                self.subTest(canonical=canonical, profile=profile),
+                tempfile.TemporaryDirectory() as temporary,
+            ):
+                audio = Path(temporary) / "mix.wav"
+                audio.write_bytes(b"fake")
+                plan = self.plan()
+                plan["jobs"][0]["language_profile"] = profile
+                plan["jobs"][0]["asr_language_hint"] = "auto"
+                fake = FakeModel()
+                execute_faster_whisper_jobs(
+                    audio_path=audio,
+                    plan=plan,
+                    canonical_text_by_job_id={"job-1": canonical},
+                    config=FasterWhisperExecutionConfig(model_id="test-model"),
+                    model_factory=lambda *args, **kwargs: fake,
+                )
+                self.assertIsNone(fake.calls[0][1]["language"])
+
+    def test_auto_job_hint_without_canonical_falls_back_to_track_profile(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            audio = Path(temporary) / "mix.wav"
+            audio.write_bytes(b"fake")
+            plan = self.plan()
+            plan["jobs"][0]["language_profile"] = "ko"
+            plan["jobs"][0]["asr_language_hint"] = "auto"
+            fake = FakeModel()
+            execute_faster_whisper_jobs(
+                audio_path=audio,
+                plan=plan,
+                canonical_text_by_job_id={},
+                config=FasterWhisperExecutionConfig(model_id="test-model"),
+                model_factory=lambda *args, **kwargs: fake,
+            )
+            self.assertEqual(fake.calls[0][1]["language"], "ko")
+
+    def test_explicit_mixed_or_unknown_job_hint_keeps_detection_open(self):
+        for job_hint in ("mixed", "unknown"):
+            with (
+                self.subTest(job_hint=job_hint),
+                tempfile.TemporaryDirectory() as temporary,
+            ):
+                audio = Path(temporary) / "mix.wav"
+                audio.write_bytes(b"fake")
+                plan = self.plan()
+                plan["jobs"][0]["language_profile"] = "zh"
+                plan["jobs"][0]["asr_language_hint"] = job_hint
+                fake = FakeModel()
+                execute_faster_whisper_jobs(
+                    audio_path=audio,
+                    plan=plan,
+                    canonical_text_by_job_id={"job-1": "你好世界"},
+                    config=FasterWhisperExecutionConfig(model_id="test-model"),
+                    model_factory=lambda *args, **kwargs: fake,
+                )
+                self.assertIsNone(fake.calls[0][1]["language"])
+
     def test_no_asr_jobs_does_not_load_model(self):
         with tempfile.TemporaryDirectory() as temporary:
             audio = Path(temporary) / "mix.wav"

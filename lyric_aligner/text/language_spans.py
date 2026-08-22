@@ -141,9 +141,32 @@ def asr_language_hint_for_text(text: str, *, track_language: str) -> str | None:
     }
     supported = languages & {"zh", "en", "ko", "ja"}
     unsupported = languages - {"zh", "en", "ko", "ja"}
-    if unsupported or len(supported) != 1:
+    uncertain = any(
+        span.language in {"unknown", "generic", "und-han"}
+        for span in spans
+    )
+    if unsupported or uncertain or len(supported) != 1:
         return None
     return next(iter(supported))
+
+
+def asr_language_hint_for_bounded_context(
+    text: str,
+    *,
+    track_language: str,
+) -> str | None:
+    """Pin ASR only when local text and known track language agree.
+
+    Pro windows intentionally include timing-search context around one cue.  A
+    cross-language local line can therefore contain adjacent track-language
+    vocals; backend auto-detection is safer than forcing the local script.
+    """
+
+    track = _base_language(track_language)
+    if track not in {"zh", "en", "ko", "ja"}:
+        return None
+    local = asr_language_hint_for_text(text, track_language=track)
+    return local if local == track else None
 
 
 def editor_mode_for_span(span: LanguageSpan) -> str:

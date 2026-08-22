@@ -36,6 +36,7 @@ class LocalAcousticMatchConfig:
     no_prior_max_slope: float = 1.35
     no_prior_step: float = 0.05
     candidate_step_seconds: float = 0.05
+    source_boundary_margin_seconds: float = 0.25
     min_score: float = 0.62
     min_margin: float = 0.012
 
@@ -51,6 +52,7 @@ class LocalAcousticMatchConfig:
             ("no_prior_max_slope", self.no_prior_max_slope),
             ("no_prior_step", self.no_prior_step),
             ("candidate_step_seconds", self.candidate_step_seconds),
+            ("source_boundary_margin_seconds", self.source_boundary_margin_seconds),
             ("min_score", self.min_score),
             ("min_margin", self.min_margin),
         ):
@@ -60,7 +62,11 @@ class LocalAcousticMatchConfig:
             raise LocalAcousticMatchError("slope radius/step must be positive")
         if not 0.45 <= self.no_prior_min_slope < self.no_prior_max_slope <= 2.2:
             raise LocalAcousticMatchError("invalid no-prior slope range")
-        if self.no_prior_step <= 0 or self.candidate_step_seconds <= 0:
+        if (
+            self.no_prior_step <= 0
+            or self.candidate_step_seconds <= 0
+            or self.source_boundary_margin_seconds <= 0
+        ):
             raise LocalAcousticMatchError("search steps must be positive")
         if not 0.0 <= self.min_score <= 1.0 or not 0.0 <= self.min_margin <= 1.0:
             raise LocalAcousticMatchError("score/margin thresholds must be within [0,1]")

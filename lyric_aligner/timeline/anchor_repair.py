@@ -52,6 +52,18 @@ class TimedCanonicalOccurrence:
     def has_word_timing(self) -> bool:
         return bool(self.tokens)
 
+    @property
+    def has_reliable_word_timing(self) -> bool:
+        """Return whether word timing is plausible for line-local projection."""
+
+        if not self.tokens:
+            return False
+        starts = [token.start_ms for token in self.tokens]
+        return (
+            self.time_ms - 250 <= starts[0] <= self.time_ms + 2500
+            and all(left < right for left, right in zip(starts, starts[1:]))
+        )
+
 
 @dataclass(frozen=True)
 class AnchorObservation:
@@ -64,6 +76,7 @@ class AnchorObservation:
     source_time_ms: int
     score: float
     has_word_timing: bool
+    source_time_basis: str
 
 
 @dataclass(frozen=True)
@@ -215,12 +228,71 @@ def _decision_grade(
     return "C"
 
 
+def _line_internal_token_onset_ms(
+    *,
+    cue_ordinal: int,
+    cue_span: tuple[int, int],
+    cues: Sequence[SubtitleCue],
+    occurrence: TimedCanonicalOccurrence,
+    next_source_onset_ms: int | None,
+) -> int | None:
+    """Project an editor split only when it lands on an exact token boundary."""
+
+    cue_start, cue_end = cue_span
+    if not occurrence.has_reliable_word_timing:
+        return None
+    if not (0 <= cue_start < cue_ordinal < cue_end <= len(cues)):
+        return None
+
+    cue_parts = [cues[index].normalized for index in range(cue_start, cue_end)]
+    if not all(cue_parts) or "".join(cue_parts) != occurrence.normalized:
+        return None
+
+    token_parts = [
+        (_normalize_for_match(token.text), token.start_ms)
+        for token in occurrence.tokens
+        if _normalize_for_match(token.text)
+    ]
+    if not token_parts or "".join(text for text, _ in token_parts) != occurrence.normalized:
+        return None
+
+    credible_ends = [
+        int(token.end_ms)
+        for token in occurrence.tokens
+        if token.end_ms is not None and int(token.end_ms) > token.start_ms
+    ]
+    line_end_ms = next_source_onset_ms
+    if line_end_ms is None and credible_ends:
+        line_end_ms = max(credible_ends)
+    if line_end_ms is None or line_end_ms <= occurrence.anchor_time_ms:
+        return None
+
+    boundary = sum(len(value) for value in cue_parts[: cue_ordinal - cue_start])
+    cursor = 0
+    for token_text, token_start_ms in token_parts:
+        if cursor == boundary:
+            return token_start_ms if token_start_ms < line_end_ms else None
+        cursor += len(token_text)
+        if cursor > boundary:
+            return None
+    return None
+
+
 def _build_observations(
     cues: Sequence[SubtitleCue],
     canonical: Sequence[TimedCanonicalOccurrence],
     decisions: Sequence[Mapping[str, object]],
+    *,
+    segmentation_internal_boundary_guard: bool = False,
 ) -> tuple[list[AnchorObservation], dict[int, AnchorObservation]]:
     canonical_by_ordinal = {line.ordinal: line for line in canonical}
+    next_source_onset_by_ordinal: dict[int, int] = {}
+    previous_by_source: dict[int, TimedCanonicalOccurrence] = {}
+    for line in canonical:
+        previous = previous_by_source.get(line.source_ordinal)
+        if previous is not None:
+            next_source_onset_by_ordinal[previous.ordinal] = line.anchor_time_ms
+        previous_by_source[line.source_ordinal] = line
     decision_by_cue = {int(item["cue_ordinal"]): item for item in decisions}
 
     canonical_counts: dict[int, Counter[str]] = defaultdict(Counter)
@@ -262,6 +334,34 @@ def _build_observations(
             cue_count=cue_counts[occurrence.source_ordinal][cue.normalized],
         )
         start_ms, _ = _cue_times(cue)
+        source_time_ms = occurrence.anchor_time_ms
+        source_time_basis = "line_onset"
+        cue_span = decision.get("cue_span")
+        canonical_span = decision.get("canonical_span")
+        if (
+            segmentation_internal_boundary_guard
+            and cue_span
+            and canonical_span
+            and len(cue_span) == 2
+            and len(canonical_span) == 2
+            and int(cue_span[1]) - int(cue_span[0]) > 1
+            and int(canonical_span[1]) - int(canonical_span[0]) == 1
+            and int(cue_span[0]) < cue.ordinal < int(cue_span[1])
+        ):
+            internal_onset = _line_internal_token_onset_ms(
+                cue_ordinal=cue.ordinal,
+                cue_span=(int(cue_span[0]), int(cue_span[1])),
+                cues=cues,
+                occurrence=occurrence,
+                next_source_onset_ms=next_source_onset_by_ordinal.get(
+                    occurrence.ordinal
+                ),
+            )
+            if internal_onset is None:
+                source_time_basis = "unvalidated_internal_boundary"
+            else:
+                source_time_ms = internal_onset
+                source_time_basis = "word_token_boundary"
         observation = AnchorObservation(
             cue_ordinal=cue.ordinal,
             canonical_ordinal=occurrence.ordinal,
@@ -269,9 +369,10 @@ def _build_observations(
             source=occurrence.source,
             grade=grade,
             mix_start_ms=start_ms,
-            source_time_ms=occurrence.anchor_time_ms,
+            source_time_ms=source_time_ms,
             score=float(decision.get("score", 0.0)),
             has_word_timing=occurrence.has_word_timing,
+            source_time_basis=source_time_basis,
         )
         observations.append(observation)
         by_cue[cue.ordinal] = observation
@@ -445,6 +546,36 @@ def _structurally_safe_shift(
     return True
 
 
+def _is_unvalidated_segmentation_internal_boundary(
+    cue_ordinal: int,
+    decision: Mapping[str, object] | None,
+    observation: AnchorObservation,
+) -> bool:
+    """Reject a line onset as evidence for an un-timed internal cue boundary.
+
+    A canonical line timestamp identifies only the first cue when an editor has
+    split that line across multiple cues.  Later cue onsets need word/token
+    timing before they can receive their own timing hypothesis.
+    """
+
+    if decision is None:
+        return False
+    cue_span = decision.get("cue_span")
+    canonical_span = decision.get("canonical_span")
+    if not cue_span or not canonical_span:
+        return False
+    if len(cue_span) != 2 or len(canonical_span) != 2:
+        return False
+    cue_start, cue_end = (int(value) for value in cue_span)
+    canonical_start, canonical_end = (int(value) for value in canonical_span)
+    return (
+        cue_end - cue_start > 1
+        and canonical_end - canonical_start == 1
+        and cue_start < cue_ordinal < cue_end
+        and observation.source_time_basis != "word_token_boundary"
+    )
+
+
 def build_anchor_timing_plan(
     cues: Sequence[SubtitleCue],
     canonical: Sequence[TimedCanonicalOccurrence],
@@ -454,6 +585,7 @@ def build_anchor_timing_plan(
     preserve_tolerance_ms: int = 350,
     repair_threshold_ms: int = 900,
     max_auto_shift_ms: int = 8000,
+    segmentation_internal_boundary_guard: bool = False,
 ) -> tuple[list[TimingDecision], list[SongTimingModel]]:
     """Build conservative no-audio timing repairs.
 
@@ -462,7 +594,15 @@ def build_anchor_timing_plan(
     """
 
     rate_prior_by_source = rate_prior_by_source or {}
-    observations, by_cue = _build_observations(cues, canonical, text_decisions)
+    observations, by_cue = _build_observations(
+        cues,
+        canonical,
+        text_decisions,
+        segmentation_internal_boundary_guard=segmentation_internal_boundary_guard,
+    )
+    text_decision_by_cue = {
+        int(item["cue_ordinal"]): item for item in text_decisions
+    }
     by_source: dict[int, list[AnchorObservation]] = defaultdict(list)
     source_names: dict[int, str] = {}
     for item in observations:
@@ -502,6 +642,35 @@ def build_anchor_timing_plan(
             )
             continue
         model = models.get(observation.source_ordinal)
+        if (
+            segmentation_internal_boundary_guard
+            and _is_unvalidated_segmentation_internal_boundary(
+                cue.ordinal,
+                text_decision_by_cue.get(cue.ordinal),
+                observation,
+            )
+        ):
+            decisions.append(
+                TimingDecision(
+                    cue.ordinal,
+                    observation.source_ordinal,
+                    observation.canonical_ordinal,
+                    observation.grade,
+                    "review",
+                    "segmentation_internal_boundary_unvalidated",
+                    old_start,
+                    old_end,
+                    None,
+                    None,
+                    None,
+                    model.status if model else "missing",
+                    (
+                        "canonical_line_onset_only",
+                        "word_token_boundary_absent_or_unusable",
+                    ),
+                )
+            )
+            continue
         if model is None or model.status != "ready":
             decisions.append(
                 TimingDecision(
@@ -602,6 +771,8 @@ def build_anchor_timing_plan(
             evidence.extend(("one_sided_anchor_support", "rate_prior"))
         if observation.has_word_timing:
             evidence.append("word_timing")
+        if observation.source_time_basis == "word_token_boundary":
+            evidence.append("word_token_boundary")
 
         new_start = proposed_start
         new_end = proposed_start + (old_end - old_start)

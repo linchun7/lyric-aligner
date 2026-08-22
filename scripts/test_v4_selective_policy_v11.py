@@ -8,7 +8,11 @@ from unittest.mock import patch
 
 import numpy as np
 
-from lyric_aligner.alignment.local_acoustic_v11 import execute_region_source_match_jobs
+from lyric_aligner.alignment.local_acoustic_v11 import (
+    _source_search_metadata,
+    _slope_search_metadata,
+    execute_region_source_match_jobs,
+)
 from lyric_aligner.alignment.selective_policy import build_selective_repair_plan_v11
 from lyric_aligner.alignment.selective_repair import (
     SelectiveRepairConfig,
@@ -90,7 +94,7 @@ class SelectivePolicyV11Tests(unittest.TestCase):
             ],
         }
 
-    def test_pro_accepts_current_v125_and_rejects_v124_policy(self) -> None:
+    def test_pro_accepts_current_v126_and_rejects_v124_policy(self) -> None:
         cues = [_cue(0, 10_000, 11_000, "测试行")]
         canonical = [_canonical(0, 0, 10_000, "测试行")]
         report = self._smart_report()
@@ -162,6 +166,9 @@ class SelectivePolicyV11Tests(unittest.TestCase):
         )
         self.assertIn("mix_asr", primary_by_cue[1]["requested_capabilities"])
         self.assertIn("source_forced_alignment", primary_by_cue[1]["requested_capabilities"])
+        self.assertEqual(primary_by_cue[1]["asr_language_hint"], "en")
+        self.assertFalse(primary_by_cue[1]["asr_force_auto_detect"])
+        self.assertEqual(plan["summary"]["asr_force_auto_detect_count"], 0)
         self.assertEqual(competitor[0]["source_ordinal"], 1)
         self.assertEqual(competitor[0]["boundary_role"], "next_source")
         self.assertEqual(plan["summary"]["acoustic_region_count"], 1)
@@ -169,6 +176,24 @@ class SelectivePolicyV11Tests(unittest.TestCase):
         self.assertLess(
             plan["summary"]["planned_acoustic_mix_audio_ms_merged"],
             plan["summary"]["planned_acoustic_mix_audio_ms_unmerged"],
+        )
+
+        cross_language_plan = build_selective_repair_plan_v11(
+            smart_report=self._smart_report(),
+            cues=cues,
+            canonical=canonical,
+            language_by_source={0: "zh", 1: "zh"},
+        )
+        cross_language_job = next(
+            job
+            for job in cross_language_plan["jobs"]
+            if not job.get("shadow_evidence_only") and int(job["cue_ordinal"]) == 1
+        )
+        self.assertEqual(cross_language_job["asr_language_hint"], "auto")
+        self.assertTrue(cross_language_job["asr_force_auto_detect"])
+        self.assertEqual(
+            cross_language_plan["summary"]["asr_force_auto_detect_count"],
+            1,
         )
 
     def test_max_jobs_is_applied_after_reason_aware_value_ranking(self) -> None:
@@ -196,7 +221,7 @@ class SelectivePolicyV11Tests(unittest.TestCase):
                 {"cue_ordinal": 0, "canonical_ordinal": 0, "action": "review", "reason": "unresolved_timing_model_not_ready", "proposed_start_ms": None, "proposed_end_ms": None},
                 {"cue_ordinal": 1, "canonical_ordinal": 1, "action": "review", "reason": "unresolved_timing_model_not_ready", "proposed_start_ms": None, "proposed_end_ms": None},
                 {"cue_ordinal": 2, "canonical_ordinal": 2, "action": "preserve", "reason": "timing_matches_anchor_model", "proposed_start_ms": None, "proposed_end_ms": None},
-                {"cue_ordinal": 3, "canonical_ordinal": 3, "action": "review", "reason": "bpm_prior_conflict", "proposed_start_ms": 3_100, "proposed_end_ms": 4_000},
+                {"cue_ordinal": 3, "canonical_ordinal": 3, "action": "review", "reason": "bpm_prior_conflict", "proposed_start_ms": 4_500, "proposed_end_ms": 5_400},
             ],
             "text_decisions": [
                 {"cue_ordinal": 0, "canonical_ordinal": 0, "action": "unchanged"},
@@ -214,22 +239,136 @@ class SelectivePolicyV11Tests(unittest.TestCase):
         )
 
         primary = [job for job in plan["jobs"] if not job.get("shadow_evidence_only")]
-        self.assertEqual([job["cue_ordinal"] for job in primary], [2, 3])
+        self.assertEqual([job["cue_ordinal"] for job in primary], [3, 2])
         self.assertEqual(
             [job["selection_tier"] for job in primary],
-            ["text_review", "timing_review_with_proposal"],
+            ["actionable_timing_suspicion", "text_review"],
         )
-        # Text identity review and concrete timing proposals share the same
-        # high-value budget tier; only timing review without a proposal is
-        # deliberately deferred behind them.
-        self.assertEqual([job["priority"] for job in primary], ["high", "high"])
+        self.assertEqual(primary[0]["timing_proposal_abs_shift_ms"], 1_500)
+        # A large concrete Smart hypothesis is tested before text-only work;
+        # small display-tolerance candidates and unvalidated timing are lower.
+        self.assertEqual([job["priority"] for job in primary], ["high", "medium"])
         self.assertEqual(
             plan["summary"]["selection_policy"],
-            "text_or_concrete_timing_before_unproposed_timing",
+            "smart_high_value_then_actionable_text_model_shift_then_display_tolerance_then_unvalidated",
         )
         self.assertEqual(plan["summary"]["primary_candidate_job_count"], 4)
         self.assertEqual(plan["summary"]["primary_deferred_due_to_max_jobs"], 2)
         self.assertTrue(plan["summary"]["plan_truncated"])
+
+    def test_smart_high_value_subset_wins_a_limited_pro_budget(self) -> None:
+        cues = [
+            _cue(0, 10_000, 11_000, "甲"),
+            _cue(1, 20_000, 21_000, "乙"),
+        ]
+        canonical = [
+            _canonical(0, 0, 1_000, "甲"),
+            _canonical(1, 0, 2_000, "乙"),
+        ]
+        report = {
+            "schema_version": SMART_SCHEMA_VERSION,
+            "policy_id": SMART_POLICY_ID,
+            "mode": "smart_anchor_timeline_repair_no_audio",
+            "audio_read": False,
+            "models": [
+                {
+                    "source_ordinal": 0,
+                    "source": "01.lrc",
+                    "rate": 1.0,
+                    "status": "ready",
+                    "inlier_count": 8,
+                    "inlier_fraction": 1.0,
+                    "median_abs_residual_ms": 40.0,
+                }
+            ],
+            "timing_decisions": [
+                {
+                    "cue_ordinal": 0,
+                    "canonical_ordinal": 0,
+                    "action": "review",
+                    "reason": "synthetic",
+                    "old_start_ms": 10_000,
+                    "proposed_start_ms": 5_000,
+                    "proposed_end_ms": 6_000,
+                },
+                {
+                    "cue_ordinal": 1,
+                    "canonical_ordinal": 1,
+                    "action": "review",
+                    "reason": "synthetic",
+                    "old_start_ms": 20_000,
+                    "proposed_start_ms": 18_500,
+                    "proposed_end_ms": 19_500,
+                },
+            ],
+            "text_decisions": [
+                {
+                    "cue_ordinal": 0,
+                    "canonical_ordinal": 0,
+                    "action": "review",
+                    "reason": "synthetic",
+                },
+                {
+                    "cue_ordinal": 1,
+                    "canonical_ordinal": 1,
+                    "action": "unchanged",
+                },
+            ],
+            "timing_high_value_pro_candidate_count": 1,
+            "timing_high_value_pro_candidate_positions": [
+                {"cue_ordinal": 1, "editor_cue_start_ms": 20_000, "smart_shift_abs_ms": 1_500}
+            ],
+        }
+
+        plan = build_selective_repair_plan_v11(
+            smart_report=report,
+            cues=cues,
+            canonical=canonical,
+            config=SelectiveRepairConfig(max_jobs=1),
+        )
+
+        primary = [job for job in plan["jobs"] if not job.get("shadow_evidence_only")]
+        self.assertEqual([job["cue_ordinal"] for job in primary], [1])
+        self.assertTrue(primary[0]["smart_timing_high_value_pro_candidate"])
+        self.assertEqual(plan["summary"]["smart_high_value_candidate_count"], 1)
+        self.assertEqual(plan["summary"]["smart_high_value_selected_count"], 1)
+
+    def test_strong_local_model_precedes_larger_weak_model_shift(self) -> None:
+        cues = [_cue(0, 10_000, 11_000, "甲"), _cue(1, 20_000, 21_000, "乙")]
+        canonical = [
+            _canonical(0, 0, 1_000, "甲"),
+            _canonical(1, 1, 1_000, "乙"),
+        ]
+        report = {
+            "schema_version": SMART_SCHEMA_VERSION,
+            "policy_id": SMART_POLICY_ID,
+            "mode": "smart_anchor_timeline_repair_no_audio",
+            "audio_read": False,
+            "models": [
+                {"source_ordinal": 0, "source": "01.lrc", "rate": 1.0, "status": "ready", "inlier_count": 8, "inlier_fraction": 1.0, "median_abs_residual_ms": 40.0},
+                {"source_ordinal": 1, "source": "02.lrc", "rate": 1.0, "status": "ready", "inlier_count": 4, "inlier_fraction": 0.8, "median_abs_residual_ms": 180.0},
+            ],
+            "timing_decisions": [
+                {"cue_ordinal": 0, "canonical_ordinal": 0, "source_ordinal": 0, "action": "review", "reason": "synthetic", "old_start_ms": 10_000, "proposed_start_ms": 8_800, "proposed_end_ms": 9_800},
+                {"cue_ordinal": 1, "canonical_ordinal": 1, "source_ordinal": 1, "action": "review", "reason": "synthetic", "old_start_ms": 20_000, "proposed_start_ms": 15_000, "proposed_end_ms": 16_000},
+            ],
+            "text_decisions": [
+                {"cue_ordinal": 0, "canonical_ordinal": 0, "action": "review", "reason": "synthetic"},
+                {"cue_ordinal": 1, "canonical_ordinal": 1, "action": "review", "reason": "synthetic"},
+            ],
+        }
+
+        plan = build_selective_repair_plan_v11(
+            smart_report=report,
+            cues=cues,
+            canonical=canonical,
+            config=SelectiveRepairConfig(max_jobs=1),
+        )
+
+        primary = [job for job in plan["jobs"] if not job.get("shadow_evidence_only")]
+        self.assertEqual(len(primary), 1)
+        self.assertEqual(primary[0]["cue_ordinal"], 0)
+        self.assertEqual(primary[0]["timing_model_evidence_tier"], "strong")
 
     def test_acoustic_executor_extracts_mix_features_once_per_region(self) -> None:
         cues = [
@@ -297,6 +436,52 @@ class SelectivePolicyV11Tests(unittest.TestCase):
         self.assertEqual(sum(path == mix for path in calls), 1)
         self.assertEqual(extract.call_count, 1 + len(acoustic_jobs))
         self.assertEqual(result["job_count"], len(acoustic_jobs))
+        self.assertEqual(result["schema_version"], "1.4")
+        self.assertFalse(result["automatic_timing_change_allowed"])
+        self.assertFalse(result["automatic_text_change_allowed"])
+        self.assertFalse(result["timing_mutation_performed"])
+        for row in result["jobs"]:
+            self.assertTrue(row["local_match_gate_passed"])
+            self.assertTrue(row["timing_fusion_evidence_eligible"])
+            self.assertFalse(row["slope_search_boundary_hit"])
+            self.assertFalse(row["source_search_boundary_hit"])
+            self.assertLess(row["slope_search_min"], row["estimated_slope"])
+            self.assertGreater(row["slope_search_max"], row["estimated_slope"])
+            self.assertEqual(row["local_match_status"], "gate_passed_unadjudicated")
+            self.assertEqual(
+                row["reliability_semantics"],
+                "local_retrieval_gate_only_not_timing_authority",
+            )
+            self.assertEqual(
+                row["acoustic_shift_ms"],
+                -row["editor_start_residual_ms"],
+            )
+            self.assertFalse(row["automatic_timing_change_allowed"])
+            self.assertFalse(row["automatic_text_change_allowed"])
+            self.assertFalse(row["timing_mutation_performed"])
+
+    def test_slope_search_endpoint_is_diagnostic_only(self) -> None:
+        minimum, maximum, boundary_hit = _slope_search_metadata(
+            [0.94, 0.95, 0.96, 0.97, 0.98, 0.99, 1.0, 1.01, 1.02, 1.03, 1.04, 1.05, 1.06],
+            1.06,
+            step=0.01,
+        )
+        self.assertEqual(minimum, 0.94)
+        self.assertEqual(maximum, 1.06)
+        self.assertTrue(boundary_hit)
+
+    def test_source_search_endpoint_is_diagnostic_only(self) -> None:
+        minimum, maximum, boundary_hit = _source_search_metadata(
+            source_window_start_ms=20_000,
+            source_duration_seconds=12.0,
+            query_duration_seconds=5.0,
+            estimated_slope=1.0,
+            matched_source_start_seconds=0.128,
+            boundary_margin_seconds=0.25,
+        )
+        self.assertEqual(minimum, 20_000)
+        self.assertEqual(maximum, 27_000)
+        self.assertTrue(boundary_hit)
 
 
 if __name__ == "__main__":

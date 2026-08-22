@@ -536,3 +536,35 @@ Public CI 不能证明真实歌曲 false-auto。每次 private real-song failure
 ### Pro v1.1.3 primary budget vs. shadow evidence
 
 The reason-aware selector first chooses primary unresolved cues under `max_jobs`. Only after that selection, `_boundary_competitor()` may add a dual-source shadow job for a selected primary near a source boundary. Shadow jobs do not consume the primary budget, cannot select new unresolved cues, and retain evidence-only/no-timing-mutation semantics.
+
+### Smart v1.2.6 role normalization and product semantics
+
+`text/normalization.py` is consumed by the shared canonical parser **before canonical lines and ordinals are established**; it is not a post-Smart timing cleanup. It filters explicit role words, separated casts and explicit parenthesized roles, but a bare CJK name/short colon line fails closed as lexical because a surname list cannot establish metadata identity. `timeline/smart_policy_v126.py` separately wraps the frozen v1.2.5 result, applies `final_text_recovery.py` after timing is frozen, and reports the validated/suspected/unvalidated timing split.
+
+### Smart v1.2.7 anchored cross-script recovery
+
+`timeline/smart_policy_v127.py` wraps the frozen v1.2.6 artifact after timing finalization. `final_text_recovery.py` may replace a mapped 1:1 review only when the preceding resolved decision ends exactly at the candidate occurrence, both occurrences share a source, and editor/canonical text are narrow cross-script vocalizations. Ordinary lexical text, missing adjacency and boundary movement fail closed. The layer never rebuilds timing.
+
+Smart actionable hypotheses are separately stratified by local model strength (`>=6` inliers, `>=0.80` inlier fraction, median absolute residual `<=250ms`) and text-identity value. These fields rank Pro evidence acquisition; they are explicitly not vocal-onset probabilities.
+
+### Pro v1.2.2 value selection and decision fusion
+
+`alignment/selective_policy.py` computes `timing_proposal_abs_shift_ms` from Smart proposal vs. editor start. Primary order is actionable text+timing/actionable timing with strong local models before weak/unknown models and then descending absolute shift, followed by text review, display-tolerance timing suspicion and timing-unvalidated. `alignment/local_acoustic_v11.py` schema 1.2 records `acoustic_shift_ms = predicted_mix_start_ms - editor_start_ms`; its gate is explicitly unadjudicated retrieval evidence.
+
+`alignment/selective_fusion.py` binds the exact current Smart and Pro policy and produces decision support only. Smart and acoustic hypotheses that agree in direction/magnitude become supported; a local match inside product display tolerance can rebut a materially different Smart hypothesis; large disagreement stays conflict. The agreement is explicitly labelled correlated canonical-timeline evidence, not independent vocal-onset evidence, so resolved-text timing support/conflict stays medium. A supported one-to-one canonical occurrence can independently support cross-script text identity and enter the smallest high queue, but neither text nor timing is automatically written. The decision summary includes exact positions and preserves `timing_mutation_performed=false`.
+
+### Smart v1.2.8 / Pro v1.2.3 production-safety correction
+
+`timeline/smart_policy_v128.py` leaves v1.2.7 decisions unchanged but restores two separate product counts: every actionable timing suspicion remains in `manual_timing_review_candidate_count`, while `timing_high_value_pro_candidate_count` is only a budget-priority subset. Any actionable suspicion prevents `product_status=ready`.
+
+`alignment/local_acoustic_v11.py` schema 1.3 records the exact slope interval and detects an optimum at/near either endpoint using half a search-grid step. Retrieval success remains visible, but only an explicit interior optimum receives `timing_fusion_evidence_eligible=true`. Fusion fails closed on boundary-limited or legacy unqualified artifacts: they cannot support/rebut Smart or become Pro-only timing anomaly authority. Search remains local/bounded and score/margin thresholds are unchanged. Forced alignment remains auxiliary and never sets independent mix vocal-onset evidence true.
+
+### Smart v1.2.9 / Pro v1.2.4 contextual role correction
+
+Real production acceptance showed that unconditional bare-CJK fail-closed behavior retained genuine ensemble member labels and polluted canonical ordinals. The shared parser now builds a same-file role context before selecting canonical lines. Explicit multi-person rows directly prove exact CJK members. An otherwise unlisted bare member is inferred only after at least four distinct proved bare labels establish an ensemble grammar, the candidate repeats, and every occurrence is followed by lexical text within two seconds. This removes no generic single lexical label and does not use a surname list. Standard, Smart and Max preflight consume the same context rule. Smart policy advances to v1.2.9 and Pro binding to v1.2.4; timing/acoustic authority is unchanged.
+
+### Smart v1.2.10 / Pro v1.2.6 split-line, budget and local-search correction
+
+Smart v1.2.10 enables a version-scoped `anchor_repair.py` guard; historical v1.2.9 and earlier entry points keep their frozen behavior. The guard treats a line-LRC onset as authority only for the first editor cue in a multi-cue-to-one-canonical span. For an internal cue it requires the concatenated editor span and canonical token stream to match exactly after normalization, and the editor boundary must land at a strictly later, line-local reliable token onset. Otherwise the decision is `segmentation_internal_boundary_unvalidated` with no proposed timing. This removes repeated-line-onset false suspicions without changing the rendered SRT or granting new timing mutation authority.
+
+`selective_policy.py` consumes `timing_high_value_pro_candidate_positions` as a first-budget key while retaining all actionable suspicions in the independent manual queue. For ASR, planner and executor distinguish an absent override from explicit `asr_force_auto_detect`: only canonical-local language that agrees with the known source language is pinned. Cross-language local lines, mixed/unknown and source-auto remain backend auto-detection because the bounded timing-search window may contain adjacent vocals. Pro v1.2.6 acoustic schema 1.4 additionally records the valid source-start search interval and removes timing-fusion authority when the winning source position hits or approaches either local boundary. Automatic text/timing mutation remains disabled.

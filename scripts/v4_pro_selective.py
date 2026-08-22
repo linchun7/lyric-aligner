@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Plan and optionally execute bounded Pro evidence from a Smart report.
 
-Pro v1.1 routes evidence by failure reason, reuses nearby mix regions, can run
+Pro v1.2 routes evidence by failure reason, reuses nearby mix regions, can run
 source-local acoustic matching, faster-whisper, and the existing external
 forced-alignment protocol, and still never mutates subtitle timing by itself.
 """
@@ -31,6 +31,10 @@ from lyric_aligner.alignment.forced_executor import (
 )
 from lyric_aligner.alignment.local_acoustic_match import LocalAcousticMatchConfig
 from lyric_aligner.alignment.local_acoustic_v11 import execute_region_source_match_jobs
+from lyric_aligner.alignment.selective_fusion import (
+    ProDecisionFusionError,
+    build_pro_decisions,
+)
 from lyric_aligner.alignment.selective_policy import build_selective_repair_plan_v11
 from lyric_aligner.alignment.selective_repair import (
     SelectiveRepairConfig,
@@ -185,7 +189,7 @@ def _forced_bindings(
                 track_id=source_names[source_ordinal],
                 artist="Smart Pro",
                 title=source_names[source_ordinal],
-                version_id="smart-pro-v1.1.1",
+                version_id="smart-pro-v1.2.6",
                 nominal_start_ms=0,
                 middle_cut="unknown",
                 language_profile=str(languages.get(source_ordinal, "auto") or "auto"),
@@ -242,6 +246,14 @@ def main() -> int:
     parser.add_argument("--forced-model-id")
     parser.add_argument("--forced-model-revision")
     parser.add_argument("--forced-timeout-seconds", type=float, default=120.0)
+    parser.add_argument(
+        "--decision-out",
+        type=Path,
+        help=(
+            "Write fail-closed Pro text/timing decisions from evidence executed "
+            "in this invocation; never mutates SRT timing"
+        ),
+    )
     args = parser.parse_args()
 
     try:
@@ -280,6 +292,7 @@ def main() -> int:
                 "acoustic_out": args.acoustic_out,
                 "asr_out": args.asr_out,
                 "forced_out": args.forced_out,
+                "decision_out": args.decision_out,
             },
         )
 
@@ -318,6 +331,9 @@ def main() -> int:
             "planned_mix_audio_ms_merged": plan["summary"].get("planned_mix_audio_ms_merged", 0),
             "timing_mutation_performed": False,
         }
+        acoustic_evidence: dict[str, Any] | None = None
+        asr_evidence: dict[str, Any] | None = None
+        forced_evidence: dict[str, Any] | None = None
 
         if args.acoustic_out is not None:
             if args.mix_audio is None:
@@ -337,6 +353,7 @@ def main() -> int:
                 source_names[index]: _sha256(path)
                 for index, path in sorted(acoustic_paths.items())
             }
+            acoustic_evidence = evidence
             _write_json(args.acoustic_out, evidence)
             summary["acoustic_out"] = str(args.acoustic_out)
             summary["acoustic_job_count"] = evidence["job_count"]
@@ -361,6 +378,7 @@ def main() -> int:
                 ),
             )
             evidence["mix_audio_sha256"] = _sha256(args.mix_audio)
+            asr_evidence = evidence
             _write_json(args.asr_out, evidence)
             summary["asr_out"] = str(args.asr_out)
             summary["asr_job_count"] = evidence["job_count"]
@@ -407,9 +425,47 @@ def main() -> int:
                     timeout_seconds=args.forced_timeout_seconds,
                 ),
             )
+            forced_evidence = evidence
             _write_json(args.forced_out, evidence)
             summary["forced_out"] = str(args.forced_out)
             summary["forced_job_count"] = evidence["job_count"]
+
+        if args.decision_out is not None:
+            decisions = build_pro_decisions(
+                smart_report=smart_report,
+                plan=plan,
+                acoustic_evidence=acoustic_evidence,
+                asr_evidence=asr_evidence,
+                forced_evidence=forced_evidence,
+            )
+            decisions["inputs"] = {
+                "smart_report_sha256": _sha256(args.smart_report),
+                "smart_srt_sha256": _sha256(args.smart_srt),
+                "plan_sha256": _sha256(args.plan_out),
+                "acoustic_evidence_sha256": (
+                    _sha256(args.acoustic_out)
+                    if args.acoustic_out is not None and args.acoustic_out.is_file()
+                    else None
+                ),
+                "asr_evidence_sha256": (
+                    _sha256(args.asr_out)
+                    if args.asr_out is not None and args.asr_out.is_file()
+                    else None
+                ),
+                "forced_evidence_sha256": (
+                    _sha256(args.forced_out)
+                    if args.forced_out is not None and args.forced_out.is_file()
+                    else None
+                ),
+            }
+            _write_json(args.decision_out, decisions)
+            summary["decision_out"] = str(args.decision_out)
+            summary["high_priority_manual_review_count"] = decisions["summary"].get(
+                "high_priority_manual_review_count", 0
+            )
+            summary["high_priority_manual_review_positions"] = decisions["summary"].get(
+                "high_priority_manual_review_positions", []
+            )
 
         print(json.dumps(summary, ensure_ascii=False, allow_nan=False))
         return 0
@@ -420,6 +476,7 @@ def main() -> int:
         PathCollisionError,
         AsrExecutionError,
         ForcedAlignmentExecutionError,
+        ProDecisionFusionError,
     ) as exc:
         parser.error(str(exc))
 

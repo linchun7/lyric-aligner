@@ -12,7 +12,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, Sequence
 
-from lyric_aligner.text.normalization import is_metadata_text, is_title_like_intro
+from lyric_aligner.text.normalization import (
+    contextual_cjk_role_names,
+    is_metadata_text,
+    is_title_like_intro,
+)
 
 _UTF8_BOM = b"\xef\xbb\xbf"
 _LRC_TIME_TAG = re.compile(r"\[(\d{1,3}):(\d{2})(?:[.:](\d{1,3}))?\]")
@@ -119,11 +123,34 @@ def parse_canonical_files(paths: Iterable[Path]) -> list[CanonicalLine]:
     lines: list[CanonicalLine] = []
     for source_ordinal, path in enumerate(paths):
         text, _ = _read_utf8(path)
+        raw_lines = text.splitlines()
+        role_context_entries: list[tuple[int | None, str]] = []
+        for raw_line in raw_lines:
+            stripped_candidate = raw_line.strip()
+            timestamp_matches = list(_LRC_TIME_TAG.finditer(stripped_candidate))
+            qrc_candidate = _QRC_LINE_TAG.match(stripped_candidate)
+            if timestamp_matches:
+                candidate_times: list[int | None] = [
+                    _lrc_timestamp_ms(match) for match in timestamp_matches
+                ]
+                candidate = _LRC_TIME_TAG.sub("", stripped_candidate)
+            elif qrc_candidate:
+                candidate_times = [int(qrc_candidate.group(1))]
+                candidate = _QRC_LINE_TAG.sub("", stripped_candidate, count=1)
+            else:
+                candidate_times = [None]
+                candidate = stripped_candidate
+            candidate = _clean_lyric_text(candidate)
+            if candidate:
+                role_context_entries.extend(
+                    (timestamp, candidate) for timestamp in candidate_times
+                )
+        contextual_role_names = contextual_cjk_role_names(role_context_entries)
         entries: list[tuple[int | None, int, str, str]] = []
         sequence = 0
-        for raw_line in text.splitlines():
+        for raw_line in raw_lines:
             stripped = raw_line.strip()
-            if not stripped or _META_TAG.match(stripped) or is_metadata_text(stripped):
+            if not stripped or _META_TAG.match(stripped):
                 continue
             timestamps = list(_LRC_TIME_TAG.finditer(stripped))
             qrc_match = _QRC_LINE_TAG.match(stripped)
@@ -139,7 +166,14 @@ def parse_canonical_files(paths: Iterable[Path]) -> list[CanonicalLine]:
                 body = stripped
                 occurrence_times = [None]
             cleaned = _clean_lyric_text(body)
-            if not cleaned or _META_TAG.match(cleaned) or is_metadata_text(cleaned):
+            if (
+                not cleaned
+                or _META_TAG.match(cleaned)
+                or is_metadata_text(
+                    cleaned,
+                    contextual_role_names=contextual_role_names,
+                )
+            ):
                 continue
             normalized = _normalize_for_match(cleaned)
             if not normalized:

@@ -11,15 +11,15 @@ description: Reconstruct, review, materialize, diagnose and render multilingual 
 
 ```text
 Standard -> Text Repair V2.1
-Smart    -> Sequence Reconciliation + Anchor Timeline Repair v1.2.5
-Pro      -> Selective Audio Repair v1.1.4
+Smart    -> Sequence Reconciliation + Anchor Timeline Repair v1.2.10
+Pro      -> Selective Audio Repair v1.2.6
 Max      -> Full V4 Alignment（具体算法版本以 references/v4-status.md / runtime snapshot 为准）
 ```
 
 当前 Smart policy：
 
 ```text
-smart-validation-policy-2026-08-21-v1.2.5
+smart-validation-policy-2026-08-22-v1.2.10
 ```
 
 这个项目的生产原则不是“让 ASR 重写歌词”，而是：**canonical lyric 决定最终文字与顺序；canonical LRC line break 不等于最终 subtitle cue boundary；Jianying timing / cue segmentation 是强但可推翻的先验；Smart 先用 timed canonical + editor majority anchors 做 0-audio 验证；Pro/Max 才引入 Source-to-Mix acoustic evidence。**
@@ -80,7 +80,8 @@ python scripts/v4_smart_repair.py ...
 Smart v1.2.5 仍然不读音频。它从 Standard/Text Repair V2.1 的安全文字结果开始；v1.2.4 的全部 timing 行为保持冻结，v1.2.5 只在最终 timing decisions 已确定后增加 A-bounded text-only recovery：
 
 ```text
-Text Repair V2.1 safe baseline
+shared canonical parser conservative role/metadata filtering
+    -> Text Repair V2.1 safe baseline
     -> independently-ready four-A timing recovery（若已有）
     -> baseline strong text identities 建立 text-only Sequence Projection
     -> bounded canonical sequence reconciliation / cautious frontier walk
@@ -88,10 +89,16 @@ Text Repair V2.1 safe baseline
     -> editor cue ownership guard
     -> final v1.2.4 Smart timing plan（冻结）
     -> v1.2.5 A-bounded mapped-review text-only recovery
-    -> 不重新建立 timing model / 不重新计算 timing decisions
+    -> final one-character / proven-suffix ownership text recovery
+    -> v1.2.7 anchored cross-script vocalization text recovery
+    -> no-audio timing hypothesis quality/value stratification
+    -> v1.2.8 actionable-review/product-status correction
+    -> v1.2.9 same-file contextual CJK cast proof
+    -> v1.2.10 version-scoped split-line guard in the base timing pass
+    -> post-timing text-only recovery 不重新建立 timing model / 不重新计算 timing decisions
 ```
 
-生产代码中的“当前 Smart”必须通过 `lyric_aligner.timeline.smart_current` 这个稳定 facade 消费。`smart_policy.py` / `smart_policy_v125.py` 是版本化 base/implementation，不允许 Smart CLI、Pro gate 或测试各自从版本化模块猜 current policy。
+生产代码中的“当前 Smart”必须通过 `lyric_aligner.timeline.smart_current` 这个稳定 facade 消费。`smart_policy.py` / `smart_policy_v125.py` / `smart_policy_v126.py` / `smart_policy_v127.py` / `smart_policy_v128.py` / `smart_policy_v129.py` / `smart_policy_v1210.py` 是版本化 base/wrapper，不允许 Smart CLI、Pro gate 或测试各自从版本化模块猜 current policy。
 
 #### Smart timing authority
 
@@ -177,6 +184,34 @@ text_a_bounded_region_count
 text_a_bounded_materialized_change_count
 ```
 
+#### v1.2.6 metadata / final-text hardening
+
+角色/metadata 过滤属于 **shared canonical parser 的前置阶段**：它在 canonical lines/ordinal 建立前执行，因此会影响后续所有 Standard/Smart/Pro/Max canonical identity；不是 Smart timing 完成后的纯后处理。裸中文短行默认 fail closed 保留为 lexical；明确角色词、多人分隔名单或显式 `(主唱)/(Rap)` 等标记可直接过滤。v1.2.9 只增加 same-file context：裸中文名字必须被同文件明确多人 cast 直接证明；若是 cast 外成员，还必须在至少四个已证明裸标签建立 ensemble grammar 后重复出现，且每次都在两秒内紧接 lexical 行。普通“夏天：/白天：/向前：”仍保留。v1.2.6 的 final-text recovery 则发生在冻结 timing 后。
+
+Smart 产品字段不再把所有 unresolved timing 都叫人工 review：
+
+```text
+timing_validated_count
+timing_suspected_count
+timing_suspected_actionable_count
+timing_suspected_within_display_tolerance_count
+timing_unvalidated_count
+manual_timing_review_candidate_count
+timing_review_count_semantics = legacy_unresolved_total_not_manual_review_queue
+```
+
+`timing_review_count` 为兼容旧 artifact reader 保留，等于 suspected + unvalidated，不是人工逐条核查队列。
+
+#### v1.2.7 cross-script vocalization / hypothesis ranking
+
+跨文字体系拟声恢复只允许 mapped 1:1 review cue，且前一 cue 必须已经安全解决并证明 exact same-source canonical adjacency；两边都必须落在窄定义拟声字符集合，普通中文或英文 lexical text fail closed。该层只改文字，不改 cue ownership/timing，也不建立 timing anchor。
+
+Smart no-audio actionable timing 另外按 local model 质量和 text identity 状态分层。`timing_high_value_pro_candidate_count` 只表示优先取证价值，不是 vocal-onset 错误概率；弱/未知模型的大 shift 继续保留 hypothesis，但不得抢在 strong-model candidate 前面。
+
+#### v1.2.8 product review semantics
+
+`manual_timing_review_candidate_count` 等于所有明确 actionable timing suspicions；`timing_high_value_pro_candidate_count` 只是 Pro 预算有限时优先取证的子集。只要前者非零，`manual_review_required=true` 且 `product_status=review_required`，不能因为 high-value 子集为空而 false-ready。
+
 #### v1.2.1 editor cue ownership guard
 
 v1.2.1 起在 final text materialization 前增加 editor cue ownership guard，用来修复 sequence/BPM/text-repair 已经产生的局部边界误搬，而不是扩大 canonical recovery 权限。
@@ -199,7 +234,7 @@ Smart report schema 当前为：
 
 ```text
 schema_version = smart-1.1
-policy_id      = smart-validation-policy-2026-08-21-v1.2.5
+policy_id      = smart-validation-policy-2026-08-22-v1.2.10
 ```
 
 生产判断：
@@ -232,9 +267,9 @@ OR pro_escalation_required == true
 python scripts/v4_pro_selective.py ...
 ```
 
-Pro v1.1.4 必须绑定**当前 Smart schema + current Smart policy + exact Smart SRT/canonical hashes**。当前只接受 `schema_version=smart-1.1` 且 `policy_id=smart-validation-policy-2026-08-21-v1.2.5`；v1.2.4 及更早 Smart artifact 不能直接复用，版本/policy/hash 不匹配时先重新跑当前 Smart。
+Pro v1.2.6 必须绑定**当前 Smart schema + current Smart policy + exact Smart SRT/canonical hashes**。当前只接受 `schema_version=smart-1.1` 且 `policy_id=smart-validation-policy-2026-08-22-v1.2.10`；旧 Smart artifact 不能直接复用，版本/policy/hash 不匹配时先重新跑当前 Smart。
 
-实现上，`smart_policy.py` 是 frozen v1.2.4 base contract，`smart_policy_v125.py` 是版本化 v1.2.5 wrapper；**`smart_current.py` 才是唯一 current-production Smart facade**。Smart CLI 与 Pro compatibility gate 都必须从它取得当前 schema/policy/function binding，不能从旧版本模块的常量推断 current policy。
+实现上，`smart_policy.py` 是 frozen v1.2.4 base contract，v1.2.5/v1.2.6/v1.2.7/v1.2.8 是顺序 wrapper；**`smart_current.py` 才是唯一 current-production Smart facade**。Smart CLI 与 Pro compatibility gate 都必须从它取得当前 schema/policy/function binding，不能从旧版本模块的常量推断 current policy。
 
 Pro 按失败原因选择局部 evidence：
 
@@ -254,10 +289,14 @@ unmapped review
 
 相邻 acoustic jobs 可共享一个 bounded mix region，但 ASR-only job 不得无意义扩大 acoustic decode。歌曲交界的 neighbouring-source competitor 是 shadow evidence，不能直接改 timing。
 
+Pro v1.2.6 先消费 Smart 明确声明的 high-value 预算子集，再在同类任务中按 actionable/text、local model 与绝对 shift 排序；完整 manual queue 仍独立保留，不能被 high-value 子集覆盖。只有 canonical-local language 与已知 source language 一致时才固定 `zh/en/ko/ja`；code-switch/mixed/unknown 使用显式 `asr_force_auto_detect=true`，防止宽 timing-search 窗口被错误锁成局部语言。局部声学的 `local_match_gate_passed` 只表示 retrieval 成功；只有显式 `timing_fusion_evidence_eligible=true` 且 slope optimum 与 source-start optimum 都不在/不接近各自搜索边界时才能参与 support/rebuttal。任一边界结果都只保留 diagnostic，不是 timing anomaly authority。
+
 当前 Pro 仍固定：
 
 ```text
 timing_mutation_performed = false
+automatic_timing_change_allowed = false
+automatic_text_change_allowed = false
 ```
 
 即 Pro 当前负责**局部取证和定位**，不因为声学结果看起来很强就自动写回字幕时间。Pro 只处理 Smart 明确 unresolved 的 cue；因此不能假设 Smart 的 false-ready 会自动被 Pro 兜底。
@@ -459,7 +498,7 @@ python scripts/v4_smart_repair.py `
 --source-bpm "01.lrc=128"
 ```
 
-`target_bpm/source_bpm` 只作为 soft prior；不要把它伪装成 exact DAW rate。BPM text-only recovery 自 v1.2.2 引入，当前 v1.2.5 仍要求该 soft prior 被多个 baseline-safe text anchors 独立验证后才可用于**文字 recovery**，并且不增加 timing mutation authority。v1.2.5 的 A-bounded recovery 同样只处理文字，且发生在 final timing 冻结之后。
+`target_bpm/source_bpm` 只作为 soft prior；不要把它伪装成 exact DAW rate。BPM text-only recovery 自 v1.2.2 引入，当前 v1.2.7 仍要求该 soft prior 被多个 baseline-safe text anchors 独立验证后才可用于**文字 recovery**，并且不增加 timing mutation authority。v1.2.5 A-bounded、v1.2.6 final recovery 与 v1.2.7 cross-script recovery 都只处理文字，且发生在 final timing 冻结之后。
 
 Smart 输出后：
 
@@ -471,7 +510,7 @@ status == review_required OR pro_escalation_required == true
     -> 进入 Pro / 人工 review；当前 Smart SRT 不是 final-ready
 ```
 
-### 3. Pro / Selective Audio Repair v1.1.4
+### 3. Pro / Selective Audio Repair v1.2.6
 
 先生成计划，默认仍不读 audio：
 
@@ -483,7 +522,7 @@ python scripts/v4_pro_selective.py `
   --plan-out "output/<任务>/<任务>_PRO_PLAN.json"
 ```
 
-Pro v1.1.4 只接受当前 Smart v1.2.5 policy；不要把旧 v1.2.4 report 直接送入 Pro。CLI 还会继续核验 exact Smart SRT / canonical hash binding。
+Pro v1.2.6 只接受当前 Smart v1.2.10 policy；不要把旧 report 直接送入 Pro。CLI 还会继续核验 exact Smart SRT / canonical hash binding。
 
 需要 local source<->mix acoustic evidence 时：
 
@@ -492,6 +531,7 @@ Pro v1.1.4 只接受当前 Smart v1.2.5 policy；不要把旧 v1.2.4 report 直�
 --source-audio "01.lrc=private/<任务>/source/01.wav" `
 --source-audio "02.lrc=private/<任务>/source/02.wav" `
 --acoustic-out "output/<任务>/<任务>_PRO_ACOUSTIC.json"
+--decision-out "output/<任务>/<任务>_PRO_DECISIONS.json"
 ```
 
 需要 ASR 时仅对 planner 选中的 bounded jobs 执行：

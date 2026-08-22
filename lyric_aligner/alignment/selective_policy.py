@@ -1,4 +1,4 @@
-"""Reason-aware Smart -> Pro v1.1 planning policy.
+"""Reason-aware Smart -> Pro v1.2 planning policy.
 
 The base selective planner remains the privacy-safe identity bridge. This
 policy keeps Pro cheap and targeted while hardening v1.1 production behavior:
@@ -22,12 +22,18 @@ from lyric_aligner.alignment.selective_repair import (
     SelectiveRepairPlanningError,
     build_selective_repair_plan,
 )
-from lyric_aligner.text.language_spans import asr_language_hint_for_text
+from lyric_aligner.text.language_spans import asr_language_hint_for_bounded_context
 from lyric_aligner.text_repair import SubtitleCue
 from lyric_aligner.timeline.anchor_repair import TimedCanonicalOccurrence
-from lyric_aligner.timeline.smart_current import SMART_POLICY_ID, SMART_SCHEMA_VERSION
+from lyric_aligner.timeline.smart_current import (
+    SMART_POLICY_ID,
+    SMART_SCHEMA_VERSION,
+    SMART_TIMING_ACTIONABLE_SHIFT_MS,
+)
 
-PRO_V11_POLICY_ID = "smart-to-pro-reason-aware-2026-08-21-v1.1.4"
+PRO_POLICY_ID = "smart-to-pro-reason-aware-2026-08-22-v1.2.6"
+# Backward-compatible import name retained for existing plan consumers.
+PRO_V11_POLICY_ID = PRO_POLICY_ID
 
 
 def _sha(value: Any) -> str:
@@ -184,6 +190,23 @@ def _timing_review_index(smart_report: Mapping[str, Any]) -> dict[int, Mapping[s
     return output
 
 
+def _high_value_timing_cues(smart_report: Mapping[str, Any]) -> set[int]:
+    """Return Smart's budget-priority subset without changing manual-review scope."""
+
+    rows = smart_report.get("timing_high_value_pro_candidate_positions")
+    if not isinstance(rows, list):
+        return set()
+    output: set[int] = set()
+    for row in rows:
+        if not isinstance(row, Mapping) or row.get("cue_ordinal") is None:
+            continue
+        try:
+            output.add(int(row["cue_ordinal"]))
+        except (TypeError, ValueError):
+            continue
+    return output
+
+
 def _has_concrete_timing_proposal(row: Mapping[str, Any] | None) -> bool:
     return bool(
         row is not None
@@ -200,14 +223,56 @@ def _selection_tier(
     timing_review: bool,
     text_review: bool,
     timing_has_proposal: bool,
+    timing_proposal_abs_shift_ms: int,
 ) -> tuple[int, str]:
-    if text_review and timing_has_proposal:
-        return 0, "text_review_with_timing_proposal"
+    actionable = (
+        timing_has_proposal
+        and timing_proposal_abs_shift_ms >= SMART_TIMING_ACTIONABLE_SHIFT_MS
+    )
+    if text_review and actionable:
+        return 0, "text_review_with_actionable_timing_suspicion"
+    if timing_review and actionable:
+        return 1, "actionable_timing_suspicion"
     if text_review:
-        return 1, "text_review"
+        return 2, "text_review"
     if timing_review and timing_has_proposal:
-        return 1, "timing_review_with_proposal"
-    return 2, "timing_review_without_proposal"
+        return 3, "timing_suspicion_within_display_tolerance"
+    return 4, "timing_unvalidated"
+
+
+def _timing_proposal_abs_shift_ms(
+    row: Mapping[str, Any] | None,
+    *,
+    editor_start_ms: Any,
+) -> int:
+    """Return a stable value signal for concrete Smart start proposals."""
+
+    if not _has_concrete_timing_proposal(row):
+        return 0
+    proposed = row.get("proposed_start_ms") if row is not None else None
+    old = row.get("old_start_ms") if row is not None else None
+    if old is None:
+        old = editor_start_ms
+    if proposed is None or old is None:
+        return 0
+    try:
+        return abs(int(proposed) - int(old))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _strong_timing_model(row: Mapping[str, Any] | None) -> bool:
+    if row is None or row.get("status") != "ready":
+        return False
+    try:
+        median = row.get("median_abs_residual_ms")
+        return (
+            int(row.get("inlier_count", 0) or 0) >= 6
+            and float(row.get("inlier_fraction", 0.0) or 0.0) >= 0.80
+            and float(median if median is not None else 10_000.0) <= 250.0
+        )
+    except (TypeError, ValueError):
+        return False
 
 
 def _needs_forced_alignment(
@@ -319,6 +384,10 @@ def _boundary_competitor(
     language_profile = str(
         language_by_source.get(alternative.source_ordinal, "auto") or "auto"
     )
+    asr_hint = asr_language_hint_for_bounded_context(
+        alternative.text,
+        track_language=language_profile,
+    )
     rate = _ready_rate(models, alternative.source_ordinal)
     identity = {
         "boundary_competitor_for": primary["job_id"],
@@ -337,11 +406,8 @@ def _boundary_competitor(
         "canonical_line_index": alternative.ordinal,
         "canonical_text_sha256": _text_sha(alternative.text),
         "language_profile": language_profile,
-        "asr_language_hint": asr_language_hint_for_text(
-            alternative.text,
-            track_language=language_profile,
-        )
-        or "auto",
+        "asr_language_hint": asr_hint or "auto",
+        "asr_force_auto_detect": asr_hint is None,
         "mix_window_ms": list(primary["mix_window_ms"]),
         "source_window_ms": _adaptive_source_window(
             alternative,
@@ -373,7 +439,7 @@ def build_selective_repair_plan_v11(
     config: SelectiveRepairConfig | None = None,
     region_merge_gap_ms: int = 750,
 ) -> dict[str, Any]:
-    """Build the reason-aware Pro v1.1.4 plan from the current Smart policy only."""
+    """Build the reason-aware Pro v1.2 plan from the current Smart policy only."""
 
     language_by_source = language_by_source or {}
     config = config or SelectiveRepairConfig()
@@ -384,11 +450,11 @@ def build_selective_repair_plan_v11(
         raise ValueError("region_merge_gap_ms must be >= 0")
     if smart_report.get("schema_version") != SMART_SCHEMA_VERSION:
         raise SelectiveRepairPlanningError(
-            f"Pro v1.1 requires Smart schema {SMART_SCHEMA_VERSION}; rerun Smart"
+            f"Pro v1.2 requires Smart schema {SMART_SCHEMA_VERSION}; rerun Smart"
         )
     if smart_report.get("policy_id") != SMART_POLICY_ID:
         raise SelectiveRepairPlanningError(
-            "Pro v1.1 requires the current Smart production policy; rerun Smart"
+            "Pro v1.2 requires the current Smart production policy; rerun Smart"
         )
 
     planning_config = replace(config, max_jobs=max(config.max_jobs, len(cues)))
@@ -408,6 +474,7 @@ def build_selective_repair_plan_v11(
     by_source = _canonical_by_source(canonical)
     models = _model_index(smart_report)
     timing_by_cue = _timing_review_index(smart_report)
+    high_value_timing_cues = _high_value_timing_cues(smart_report)
 
     primary_jobs: list[dict[str, Any]] = []
     candidate_competitors: list[dict[str, Any]] = []
@@ -416,18 +483,41 @@ def build_selective_repair_plan_v11(
             continue
         timing_review, text_review = _reason_flags(job)
         cue_ordinal = int(job["cue_ordinal"])
-        timing_has_proposal = _has_concrete_timing_proposal(
-            timing_by_cue.get(cue_ordinal)
+        timing_row = timing_by_cue.get(cue_ordinal)
+        timing_has_proposal = _has_concrete_timing_proposal(timing_row)
+        proposal_abs_shift_ms = _timing_proposal_abs_shift_ms(
+            timing_row,
+            editor_start_ms=job.get("editor_cue_start_ms"),
         )
         selection_rank, selection_tier = _selection_tier(
             timing_review=timing_review,
             text_review=text_review,
             timing_has_proposal=timing_has_proposal,
+            timing_proposal_abs_shift_ms=proposal_abs_shift_ms,
         )
         job["selection_tier"] = selection_tier
+        job["smart_timing_high_value_pro_candidate"] = (
+            cue_ordinal in high_value_timing_cues
+        )
         job["timing_has_concrete_proposal"] = timing_has_proposal
-        job["priority"] = "high" if selection_rank <= 1 else "medium"
+        job["timing_proposal_abs_shift_ms"] = proposal_abs_shift_ms
+        source_raw = job.get("source_ordinal")
+        try:
+            model_row = models.get(int(source_raw)) if source_raw is not None else None
+        except (TypeError, ValueError):
+            model_row = None
+        strong_model = _strong_timing_model(model_row)
+        job["timing_model_evidence_tier"] = (
+            "strong" if strong_model else "weak_or_unknown"
+        )
+        job["priority"] = (
+            "high" if selection_rank <= 1 else "medium" if selection_rank == 2 else "low"
+        )
         job["_selection_rank"] = selection_rank
+        job["_selection_high_value_rank"] = (
+            0 if cue_ordinal in high_value_timing_cues else 1
+        )
+        job["_selection_model_rank"] = 0 if strong_model else 1
         canonical_ordinal = job.get("canonical_line_index")
         occurrence = (
             by_ordinal.get(int(canonical_ordinal))
@@ -488,7 +578,10 @@ def build_selective_repair_plan_v11(
     primary_candidate_count = len(primary_jobs)
     primary_jobs.sort(
         key=lambda row: (
+            int(row.get("_selection_high_value_rank", 1)),
             int(row.get("_selection_rank", 9)),
+            int(row.get("_selection_model_rank", 1)),
+            -int(row.get("timing_proposal_abs_shift_ms", 0)),
             int(row["cue_ordinal"]),
             str(row["job_id"]),
         )
@@ -498,6 +591,8 @@ def build_selective_repair_plan_v11(
     selected_primary_ids = {str(job["job_id"]) for job in primary_jobs}
     for job in primary_jobs:
         job.pop("_selection_rank", None)
+        job.pop("_selection_high_value_rank", None)
+        job.pop("_selection_model_rank", None)
 
     eligible_competitors = [
         job
@@ -555,7 +650,7 @@ def build_selective_repair_plan_v11(
 
     inherited_summary = dict(plan.get("summary") or {})
     plan["schema_version"] = "1.1"
-    plan["policy_id"] = PRO_V11_POLICY_ID
+    plan["policy_id"] = PRO_POLICY_ID
     plan["jobs"] = jobs
     plan["summary"] = {
         **inherited_summary,
@@ -566,11 +661,23 @@ def build_selective_repair_plan_v11(
         "boundary_competitor_job_count": len(competitors),
         "boundary_competitor_omitted_due_to_max_jobs": omitted_competitors,
         "max_jobs_applies_to": "primary_jobs_only_shadow_competitors_additive",
-        "selection_policy": "text_or_concrete_timing_before_unproposed_timing",
+        "selection_policy": (
+            "smart_high_value_then_actionable_text_model_shift_then_display_tolerance_then_unvalidated"
+        ),
+        "smart_high_value_candidate_count": len(high_value_timing_cues),
+        "smart_high_value_selected_count": sum(
+            bool(job.get("smart_timing_high_value_pro_candidate"))
+            for job in primary_jobs
+        ),
         "selection_tier_counts": dict(sorted(selection_tier_counts.items())),
         "plan_truncated": bool(primary_truncated),
         "reason_counts": dict(sorted(reason_counts.items())),
         "asr_language_hint_counts": dict(sorted(language_hint_counts.items())),
+        "asr_force_auto_detect_count": sum(
+            bool(job.get("asr_force_auto_detect"))
+            for job in primary_jobs
+            if "mix_asr" in (job.get("requested_capabilities") or [])
+        ),
         "region_count": len(all_regions),
         "acoustic_region_count": len(acoustic_regions),
         "planned_mix_audio_ms_unmerged": unmerged_ms,
