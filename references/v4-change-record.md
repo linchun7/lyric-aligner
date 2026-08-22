@@ -93,6 +93,24 @@ production_authority_granted = false
 
 Public synthetic regression 覆盖唯一包含、1 editor cue 承载多条非重叠 canonical cue、跨边界、重叠 editor ambiguity、canonical overlap、无 evidence、非单调 file order、audit identity，以及 CLI 对 source render authority / QA / artifact lineage 的 fail-closed 检查。
 
+## 2026-08-23 — Max artifact-writer path safety / strict QA types
+
+在进入私有 Max review/render/reconciliation 校准前，对公开 CLI 做输入所有权复核，确认 `v4_review.py`、`v4_render.py`、`v4_validate_release.py` 原先没有统一 output-path collision gate。误填输出参数时，理论上可覆盖 task input、run/artifact、timeline evidence 或 final 文件。
+
+本轮只收紧 artifact writer 安全边界，不改任何 Smart/Pro/Max 算法、threshold、review action 或 segmentation/release authority：
+
+- 新增共享 `protected_task_input_paths()`：保护 task manifest、所有 file inputs，并把 manifest directory input 展开到每个 fingerprinted 文件成员；
+- `v4_review.py` 的 template/apply 在写入前保护 task inputs、run/run artifact、decisions，并保证多个输出互不重合；
+- `v4_render.py` 在第一次 materialization 前同时保护 task inputs、run/TrackAssets/asset artifact，以及 run 实际读取的每个 canonical timeline/timeline artifact；四个 render outputs 必须 pairwise distinct；
+- `v4_editor_cue_reconcile.py` 复用同一 shared task-path contract；
+- `v4_validate_release.py` 保护 final SRT/audit/QA、所有 upstream artifacts 与 task inputs，release manifest 不得覆盖任何输入；
+- release/reconciliation 的 `review_candidate_count` 不再使用 Python `int(...)` 宽松强转，`false`、float、string、null 都不能冒充整数 0；
+- release upstream artifact 与 `normalized_config` 必须确实是 JSON object，畸形 artifact 受控 fail closed。
+
+这些变更不产生新的 timing/text/segmentation authority。`canonical_line_evaluation_only`、`editor_reconciliation_evaluation_only` 和 `editor_reconciled` 三层语义保持不变。
+
+CLI 安全契约集中到 `references/v4-cli-contract.md`，并加入文档同步 owner 集合。
+
 ## 冻结与回滚
 
 Smart/Pro production freeze tag 继续固定在：
@@ -102,4 +120,4 @@ prod-smart-v1.2.5-pro-v1.1.4-20260821
 56841c40d6a90101efe1da568e2d5c2e5e67a0a2
 ```
 
-Max #68/#70 与后续 reconciliation evaluation 不移动该 tag，不改变冻结 Smart/Pro 的行为。回滚依赖 Git commit/tag + artifact lineage，不维护第二套静默 fallback。
+Max #68/#70 与后续 reconciliation evaluation / CLI safety maintenance 不移动该 tag，不改变冻结 Smart/Pro 的行为。回滚依赖 Git commit/tag + artifact lineage，不维护第二套静默 fallback。
