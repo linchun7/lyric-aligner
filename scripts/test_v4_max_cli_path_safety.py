@@ -128,6 +128,37 @@ class V4MaxCLIPathSafetyTests(unittest.TestCase):
                     outputs={"unsafe": lyric},
                 )
 
+    def test_new_output_inside_task_input_directory_is_blocked(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            manifest, manifest_path, _, lyric = build_task(root)
+            protected = protected_task_input_paths(
+                manifest_path=manifest_path,
+                manifest=manifest,
+            )
+            lyrics_dir = lyric.parent
+            output = lyrics_dir / "new-artifact.json"
+            self.assertFalse(output.exists())
+            with self.assertRaisesRegex(PathCollisionError, "is inside input directory"):
+                validate_separate_artifact_paths(
+                    inputs=protected,
+                    outputs={"unsafe": output},
+                )
+            self.assertFalse(output.exists())
+
+    def test_normal_output_outside_task_inputs_remains_allowed(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            manifest, manifest_path, _, _ = build_task(root)
+            protected = protected_task_input_paths(
+                manifest_path=manifest_path,
+                manifest=manifest,
+            )
+            validate_separate_artifact_paths(
+                inputs=protected,
+                outputs={"safe": root / "output" / "artifact.json"},
+            )
+
     def test_review_template_refuses_to_overwrite_production_run(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
