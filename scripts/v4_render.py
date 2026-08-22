@@ -21,6 +21,8 @@ from lyric_aligner.contracts.artifacts import (
     validate_artifact_output,
     validate_upstream_artifact,
 )
+from lyric_aligner.io.path_safety import validate_separate_artifact_paths
+from lyric_aligner.io.task_path_safety import protected_task_input_paths
 from lyric_aligner.pipeline.context import build_pipeline_context
 from lyric_aligner.srt import Cue, cue_id, text_sha256
 from lyric_aligner.timeline.composer import (
@@ -273,6 +275,20 @@ def main() -> int:
             raise ValueError("task manifest validation failed: " + "; ".join(task_issues))
         fingerprint = str(task["task_fingerprint_sha256"])
 
+        protected_inputs = protected_task_input_paths(
+            manifest_path=args.task_manifest,
+            manifest=task,
+            repository_root=REPOSITORY_ROOT,
+        )
+        protected_inputs.update(
+            {
+                "run": args.run,
+                "run_artifact": args.run_artifact,
+                "track_assets": args.track_assets,
+                "asset_artifact": args.asset_artifact,
+            }
+        )
+
         run = _load(args.run)
         run_artifact = _load(args.run_artifact)
         run_stage = _validate_run_artifact(
@@ -397,6 +413,8 @@ def main() -> int:
             )
             if not timeline_path.is_file() or not timeline_artifact_path.is_file():
                 raise ValueError("renderable occurrence is missing canonical timeline artifact")
+            protected_inputs[f"timeline_{occurrence_id}"] = timeline_path
+            protected_inputs[f"timeline_artifact_{occurrence_id}"] = timeline_artifact_path
             timeline = _load(timeline_path)
             timeline_artifact = _load(timeline_artifact_path)
             timeline_stage = str(
@@ -527,6 +545,16 @@ def main() -> int:
             combined_metadata.get("combined_occurrence_count", -1)
         ):
             raise ValueError("combined occurrence count differs from combined metadata")
+
+        validate_separate_artifact_paths(
+            inputs=protected_inputs,
+            outputs={
+                "final_srt": args.final_srt,
+                "audit_csv": args.report,
+                "qa_json": args.qa_json,
+                "render_artifact": args.artifact_out,
+            },
+        )
 
         cues = compose_canonical_timelines(
             timeline_payloads,
