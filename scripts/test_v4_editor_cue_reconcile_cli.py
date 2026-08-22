@@ -65,7 +65,8 @@ class V4EditorCueReconcileCLITests(unittest.TestCase):
         audio.write_bytes(b"synthetic-audio")
         song_list = input_dir / "songs.txt"
         song_list.write_text("00:00 Generic Artist - Generic Track\n", encoding="utf-8")
-        (lyrics_dir / "generic.lrc").write_text(
+        lyric_file = lyrics_dir / "generic.lrc"
+        lyric_file.write_text(
             "[00:00.50]canonical alpha\n[00:03.50]canonical beta\n",
             encoding="utf-8",
         )
@@ -172,6 +173,8 @@ class V4EditorCueReconcileCLITests(unittest.TestCase):
         return {
             "manifest": manifest,
             "manifest_path": manifest_path,
+            "source_srt": source_srt,
+            "lyric_file": lyric_file,
             "evaluation_srt": evaluation_srt,
             "report": report,
             "qa_json": qa_json,
@@ -277,6 +280,32 @@ class V4EditorCueReconcileCLITests(unittest.TestCase):
             )
             self.assertNotEqual(result.returncode, 0)
             self.assertIn("must remain publish_ready=false", result.stderr)
+
+    def test_cli_refuses_to_overwrite_manifest_directory_member(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            fixture = self.build_fixture(root)
+            before = fixture["lyric_file"].read_bytes()
+            result = run_command(
+                self.command(
+                    fixture,
+                    fixture["lyric_file"],
+                    root / "reconcile.artifact.json",
+                )
+            )
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("collides with input", result.stderr)
+            self.assertEqual(fixture["lyric_file"].read_bytes(), before)
+
+    def test_cli_refuses_outputs_sharing_one_path(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            fixture = self.build_fixture(root)
+            shared = root / "shared.json"
+            result = run_command(self.command(fixture, shared, shared))
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("share the same path", result.stderr)
+            self.assertFalse(shared.exists())
 
 
 if __name__ == "__main__":
