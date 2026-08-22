@@ -1,6 +1,6 @@
 # Lyric Aligner v4 生产运行手册
 
-更新：2026-08-19  
+更新：2026-08-23  
 主线算法版本：`4.0.0a9`
 
 > 真实生产 workload 与产品设计基线见 `references/production-requirements.md`；Smart / Pro v1.1 设计细节见 `references/smart-pro-v1-1.md`。
@@ -311,7 +311,6 @@ Public CI 能验证 deterministic policy、最终 overlap guard、soft BPM seman
 
 当前 Pro v1.2.6 的 `--max-jobs` 是 **primary unresolved-cue budget**。Shadow boundary competitors 只附着于已经选中的 primary，属于 additive evidence；`plan.config.max_jobs` 对外报告调用者请求的 primary budget，内部完整 candidate-pool 扩池不是公开预算语义。Acoustic schema 1.4 同时记录 slope 与 source-start 搜索边界；任一 optimum 命中/接近边界时都不得参与 timing fusion。
 
-
 ## Max evaluation render vs production release — 2026-08-22 safety contract
 
 `scripts/v4_render.py` currently renders canonical timelines for evaluation/QA only. A successful command can still write `FINAL.srt`, audit CSV and QA JSON, but success no longer means that file is production-release eligible.
@@ -333,3 +332,45 @@ normalized_config.segmentation_authority = editor_reconciled
 ```
 
 That value must be produced by a future renderer that actually consumes a validated Editor-Cue Reconciliation artifact. Resolving transition/cut/overlap review alone does not create this authority.
+
+## 10. Editor-Cue Reconciliation evaluation — 2026-08-23
+
+在已有 Max canonical evaluation render 后运行：
+
+```powershell
+python scripts/v4_editor_cue_reconcile.py `
+  --task-manifest "private/<任务>/qa/task_manifest.json" `
+  --evaluation-srt "output/<任务>/FINAL.srt" `
+  --report "output/<任务>/FINAL.csv" `
+  --qa-json "output/<任务>/FINAL.qa.json" `
+  --render-artifact "output/<任务>/FINAL.render.artifact.json" `
+  --out "output/<任务>/EDITOR_RECONCILE_EVAL.json" `
+  --artifact-out "output/<任务>/EDITOR_RECONCILE_EVAL.artifact.json"
+```
+
+输入 `final_render` 必须仍是 #70 contract：
+
+```text
+segmentation_authority = canonical_line_evaluation_only
+publish_ready = false
+release_blocked_reason = editor_cue_reconciliation_required
+```
+
+CLI 会从 task manifest 解析并验证 exact `source_srt`，不会接受另一份手工替换的 editor SRT。canonical evaluation SRT / audit / QA 必须与同一个 `final_render` artifact 精确 hash-bound。
+
+输出只用于评估：
+
+```text
+stage = editor_cue_reconciliation_evaluation
+segmentation_authority = editor_reconciliation_evaluation_only
+production_authority_granted = false
+```
+
+逐 editor cue 结果：
+
+- `resolved`：canonical interval(s) 完整落入唯一 editor cue，且同 cue 内 canonical material 不互相 overlap；
+- `still_review`：跨 editor boundary、多个重叠 editor cue ownership ambiguity、或同 editor cue 内 canonical overlap；
+- `not_evaluable`：没有 canonical temporal evidence；
+- `rebutted`：schema 保留，但首版不会自动产生。
+
+`full_topology_candidate=true` 也不能直接进入 release；它不是 `editor_reconciled`。当前 `v4_validate_release.py` 仍会拒绝 canonical evaluation render。下一步先在私有任务上统计 resolved/review/not-evaluable 分布，再决定 production materialization contract 与是否需要 token/word/audio boundary rebuttal。
