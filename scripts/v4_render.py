@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Render one effective review-free v4 run into final SRT/audit/QA artifacts."""
+"""Render one effective review-free v4 run into evaluation SRT/audit/QA artifacts."""
 
 from __future__ import annotations
 
@@ -28,6 +28,10 @@ from lyric_aligner.timeline.composer import (
     compose_canonical_timelines,
 )
 from task_contract import load_task_manifest, verify_manifest_inputs
+
+
+_SEGMENTATION_AUTHORITY = "canonical_line_evaluation_only"
+_RELEASE_BLOCKED_REASON = "editor_cue_reconciliation_required"
 
 
 def _load(path: Path) -> dict:
@@ -591,7 +595,9 @@ def main() -> int:
             "passed": True,
             "structurally_valid": True,
             "fully_reviewed": True,
-            "publish_ready": True,
+            "publish_ready": False,
+            "segmentation_authority": _SEGMENTATION_AUTHORITY,
+            "release_blocked_reason": _RELEASE_BLOCKED_REASON,
             "review_candidate_count": 0,
             "cue_count": len(cues),
             "confirmed_overlap_region_count": len(confirmed_overlap_regions),
@@ -617,6 +623,7 @@ def main() -> int:
                 "confirmed_overlap_region_count": len(confirmed_overlap_regions),
                 "rebuilt_cut_occurrence_count": rebuilt_cut_count,
                 "combined_recomposition_occurrence_count": combined_count,
+                "segmentation_authority": _SEGMENTATION_AUTHORITY,
                 "legacy_fallback": False,
             },
             producer={"git_commit": args.git_commit} if args.git_commit else {},
@@ -633,6 +640,9 @@ def main() -> int:
                 "rebuilt_cut_occurrence_count": rebuilt_cut_count,
                 "combined_recomposition_occurrence_count": combined_count,
                 "source_run_stage": run_stage,
+                "publish_ready": False,
+                "segmentation_authority": _SEGMENTATION_AUTHORITY,
+                "release_blocked_reason": _RELEASE_BLOCKED_REASON,
             },
         )
         atomic_write_json(args.artifact_out, render_artifact)
@@ -651,7 +661,9 @@ def main() -> int:
             {
                 "algorithm_version": __version__,
                 "cue_count": len(cues),
-                "publish_ready": True,
+                "publish_ready": False,
+                "segmentation_authority": _SEGMENTATION_AUTHORITY,
+                "release_blocked_reason": _RELEASE_BLOCKED_REASON,
                 "source_run_stage": run_stage,
                 "confirmed_overlap_regions": len(confirmed_overlap_regions),
                 "rebuilt_cut_occurrences": int(
