@@ -118,6 +118,12 @@ def validate_srt_report_binding(
     }
 
 
+def _is_json_int(value: object) -> bool:
+    """Return True only for a JSON-style integer, never bool/float/string."""
+
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
 def validate_qa_payload(
     qa_json: Path,
     *,
@@ -127,6 +133,8 @@ def validate_qa_payload(
     expected_calibration_profile_version: str | None = None,
 ) -> dict[str, Any]:
     payload = json.loads(qa_json.read_text(encoding="utf-8-sig"))
+    if not isinstance(payload, dict):
+        raise FinalIntegrityError("QA JSON must contain an object")
     issues: list[str] = []
     if payload.get("task_fingerprint_sha256") != expected_task_fingerprint:
         issues.append("QA task fingerprint mismatch")
@@ -152,8 +160,9 @@ def validate_qa_payload(
     for key in ("passed", "structurally_valid", "fully_reviewed", "publish_ready"):
         if payload.get(key) is not True:
             issues.append(f"QA {key} must be true")
-    if int(payload.get("review_candidate_count", 0)) != 0:
-        issues.append("QA review_candidate_count must be 0")
+    review_count = payload.get("review_candidate_count", 0)
+    if not _is_json_int(review_count) or review_count != 0:
+        issues.append("QA review_candidate_count must be integer 0")
     if issues:
         raise FinalIntegrityError("; ".join(issues))
     return payload
