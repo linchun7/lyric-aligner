@@ -54,10 +54,11 @@ CI 通过 `scripts/validate_docs_contract.py` 检查本契约。规则以“受�
 至少更新以下一项：
 
 - `SKILL.md`
+- `references/v4-cli-contract.md`
 - `references/v4-runtime-guide.md`
 - `references/workflow.md`
 
-其中新的默认 v4 入口优先更新 `SKILL.md` 与 `v4-runtime-guide.md`。
+新的默认 v4 入口优先更新 `SKILL.md` 与 `v4-runtime-guide.md`；跨多个 artifact-writing CLI 的路径、写入、fail-closed 不变量由 `v4-cli-contract.md` 统一负责。
 
 ### D. schema / contract / artifact / calibration / release 变化
 
@@ -82,7 +83,7 @@ CI 对 PR 的完整 base..head diff 做检查，不只看最后一个 commit。
 
 - 有实质性生产代码变化而 `v4-change-record.md` 未变化：FAIL。
 - v4 核心能力/状态变化而 `v4-status.md` 未变化：FAIL。
-- CLI 发生变化但 SKILL/runtime/workflow 均未变化：FAIL。
+- CLI 发生变化但 SKILL/CLI-contract/runtime/workflow 均未变化：FAIL。
 - schema/contract 类变化但 implementation/workflow/contract 文档均未变化：FAIL。
 - 架构目录/职责变化但 implementation/architecture 文档均未变化：FAIL。
 
