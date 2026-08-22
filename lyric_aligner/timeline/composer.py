@@ -45,12 +45,11 @@ def _timeline_parts(payload: dict[str, Any]) -> tuple[dict[str, Any], dict[str, 
     if coverage is not None:
         if not isinstance(coverage, dict):
             raise TimelineComposeError("canonical timeline has invalid projection_coverage")
-        try:
-            omitted_line_count = int(coverage.get("authority_omitted_line_count", 0))
-        except (TypeError, ValueError) as exc:
+        omitted_line_count = coverage.get("authority_omitted_line_count", 0)
+        if type(omitted_line_count) is not int:
             raise TimelineComposeError(
                 "canonical timeline has invalid authority_omitted_line_count"
-            ) from exc
+            )
         if omitted_line_count < 0:
             raise TimelineComposeError(
                 "canonical timeline has negative authority_omitted_line_count"
