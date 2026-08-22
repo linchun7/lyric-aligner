@@ -145,6 +145,20 @@ production_authority_granted = false
 
 因此当前 Max 应描述为：**强 reconstruction/evidence engine + canonical evaluation renderer + editor-topology reconciliation evaluator；production subtitle path 仍未闭环。** 下一步必须先用私有任务验证 evaluator 的 coverage/review 分布，再设计真正可授予 `editor_reconciled` 的 materialization contract；不能直接把 evaluation result 改名为 production authority。
 
+### 5.5 Artifact-writer path safety
+
+Max 下一步实际会使用的 review/render/reconciliation/release CLI 现在共享同一输入所有权 contract：
+
+- task manifest 与所有 manifest-bound files 都是 protected inputs；directory input 会展开到每个 fingerprinted 文件成员；
+- review 保护 run/run artifact/decisions；
+- render 额外保护 TrackAssets/asset artifact，以及 run 实际读取的每个 canonical timeline/timeline artifact；四个 render outputs 必须彼此不同；
+- reconciliation 保护 canonical evaluation SRT/audit/QA/final-render artifact；
+- release manifest 不能覆盖 final SRT/audit/QA、upstream artifact 或任一 task input。
+
+所有 collision 在第一次 materialization 前 fail closed。该机制只保护文件 ownership，不改变 review、timing、text、segmentation 或 release authority。
+
+Release/reconciliation 对 `review_candidate_count` 也要求真正 JSON integer `0`；bool/float/string/null 不再通过 Python coercion 冒充“无 review”。完整 CLI 规则见 `references/v4-cli-contract.md`。
+
 ## 6. Legacy Partial Timeline Repair
 
 旧 P1–P5 bridge 继续固定：
@@ -169,6 +183,8 @@ Public CI 必须继续证明：
 - omitted canonical lines 不能静默 render；
 - canonical-line Max output 不能通过 production release gate；
 - reconciliation evaluator 不移动 editor boundaries、不自动产生 `rebutted`、不授予 production authority；
+- Max artifact writers 不覆盖 task/upstream inputs，多个 outputs 不允许同路径；
+- malformed release/evaluation QA types fail closed；
 - artifact/task/version/hash lineage 完整；
 - Python/ASR environment 与 legacy regressions 不回归。
 
