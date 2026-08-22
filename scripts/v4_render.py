@@ -85,6 +85,28 @@ def _validate_artifact(
         raise ValueError(f"invalid {stage} artifact: " + "; ".join(issues))
 
 
+def _artifact_config(artifact: dict, *, label: str) -> dict:
+    config = artifact.get("normalized_config")
+    if not isinstance(config, dict):
+        raise ValueError(f"{label} has invalid normalized_config")
+    return config
+
+
+def _json_int(
+    payload: dict,
+    key: str,
+    *,
+    label: str,
+    minimum: int | None = None,
+) -> int:
+    value = payload.get(key)
+    if not isinstance(value, int) or isinstance(value, bool):
+        raise ValueError(f"{label} {key} must be a JSON integer")
+    if minimum is not None and value < minimum:
+        raise ValueError(f"{label} {key} must be >= {minimum}")
+    return value
+
+
 def _validate_run_artifact(
     artifact: dict,
     *,
@@ -112,6 +134,7 @@ def _validate_run_artifact(
         role=role,
         output_path=output_path,
     )
+    _artifact_config(artifact, label="run artifact")
     return stage
 
 
@@ -133,10 +156,16 @@ def _validate_review_only(run: dict, artifact: dict, upstreams: set[str]) -> Non
     base_run_artifact_id = str(resolution.get("base_run_artifact_id") or "")
     if not base_run_artifact_id or base_run_artifact_id not in upstreams:
         raise ValueError("reviewed run is not upstream-bound to its base production run")
-    if int(resolution.get("remaining_issue_count", -1)) != 0:
+    if _json_int(
+        resolution,
+        "remaining_issue_count",
+        label="review_resolution",
+        minimum=0,
+    ) != 0:
         raise ValueError("reviewed run still records unresolved review issues")
     config_base_id = str(
-        artifact.get("normalized_config", {}).get("base_run_artifact_id") or ""
+        _artifact_config(artifact, label="review artifact").get("base_run_artifact_id")
+        or ""
     )
     if config_base_id != base_run_artifact_id:
         raise ValueError("review artifact base-run identity mismatch")
@@ -155,10 +184,18 @@ def _validate_overlap_metadata(
     source_review_id = str(metadata.get("source_review_artifact_id") or "")
     if not source_review_id or source_review_id not in upstreams:
         raise ValueError("overlap recomposition is not bound to its review artifact")
-    if require_resolved and int(metadata.get("remaining_issue_count", -1)) != 0:
+    if require_resolved and _json_int(
+        metadata,
+        "remaining_issue_count",
+        label="overlap_recomposition",
+        minimum=0,
+    ) != 0:
         raise ValueError("overlap recomposition still records unresolved review issues")
     config_review_id = str(
-        artifact.get("normalized_config", {}).get("source_review_artifact_id") or ""
+        _artifact_config(artifact, label="overlap artifact").get(
+            "source_review_artifact_id"
+        )
+        or ""
     )
     if config_review_id != source_review_id:
         raise ValueError("overlap artifact source-review identity mismatch")
@@ -188,14 +225,32 @@ def _validate_cut_metadata(
     source_review_id = str(metadata.get("source_review_artifact_id") or "")
     if not source_review_id or source_review_id not in upstreams:
         raise ValueError("cut rebuild is not bound to its review artifact")
-    if require_resolved and int(metadata.get("remaining_issue_count", -1)) != 0:
+    if require_resolved and _json_int(
+        metadata,
+        "remaining_issue_count",
+        label="cut_rebuild",
+        minimum=0,
+    ) != 0:
         raise ValueError("cut rebuild still records unresolved review issues")
-    if int(metadata.get("canonical_fragment_issue_count", -1)) != 0:
+    if _json_int(
+        metadata,
+        "canonical_fragment_issue_count",
+        label="cut_rebuild",
+        minimum=0,
+    ) != 0:
         raise ValueError("cut rebuild still contains unresolved canonical fragments")
-    if int(metadata.get("rebuilt_occurrence_count", 0)) < 1:
+    if _json_int(
+        metadata,
+        "rebuilt_occurrence_count",
+        label="cut_rebuild",
+        minimum=0,
+    ) < 1:
         raise ValueError("cut rebuild has no rebuilt occurrence")
     config_review_id = str(
-        artifact.get("normalized_config", {}).get("source_review_artifact_id") or ""
+        _artifact_config(artifact, label="cut-rebuild artifact").get(
+            "source_review_artifact_id"
+        )
+        or ""
     )
     if config_review_id != source_review_id:
         raise ValueError("cut-rebuild artifact source-review identity mismatch")
@@ -224,7 +279,12 @@ def _validate_combined_metadata(
     metadata = run.get("combined_recomposition")
     if not isinstance(metadata, dict):
         raise ValueError("combined run is missing combined_recomposition metadata")
-    if int(metadata.get("remaining_issue_count", -1)) != 0:
+    if _json_int(
+        metadata,
+        "remaining_issue_count",
+        label="combined_recomposition",
+        minimum=0,
+    ) != 0:
         raise ValueError("combined recomposition still records unresolved review issues")
     if str(metadata.get("source_review_artifact_id") or "") != source_review_id:
         raise ValueError("combined recomposition source-review identity mismatch")
@@ -234,7 +294,7 @@ def _validate_combined_metadata(
         raise ValueError("combined run is not upstream-bound to cut_rebuild")
     if not source_overlap_id or source_overlap_id not in upstreams:
         raise ValueError("combined run is not upstream-bound to overlap_recomposition")
-    config = artifact.get("normalized_config", {})
+    config = _artifact_config(artifact, label="combined artifact")
     if str(config.get("source_cut_artifact_id") or "") != source_cut_id:
         raise ValueError("combined artifact cut source identity mismatch")
     if str(config.get("source_overlap_artifact_id") or "") != source_overlap_id:
@@ -248,8 +308,13 @@ def _validate_combined_metadata(
     )
     if timeline_ids - upstreams:
         raise ValueError("combined timeline artifacts are not upstream of run")
-    expected_count = int(metadata.get("combined_occurrence_count", -1))
-    if expected_count < 0 or expected_count != len(timeline_ids):
+    expected_count = _json_int(
+        metadata,
+        "combined_occurrence_count",
+        label="combined_recomposition",
+        minimum=0,
+    )
+    if expected_count != len(timeline_ids):
         raise ValueError("combined occurrence count differs from combined timeline IDs")
     return metadata, timeline_ids
 
@@ -535,14 +600,20 @@ def main() -> int:
 
         if set(context.binding_by_occurrence_id) != seen_occurrences:
             raise ValueError("run does not contain exactly all resolved TrackOccurrences")
-        if cut_metadata and cut_rebuilt_occurrence_count != int(
-            cut_metadata.get("rebuilt_occurrence_count", -1)
+        if cut_metadata and cut_rebuilt_occurrence_count != _json_int(
+            cut_metadata,
+            "rebuilt_occurrence_count",
+            label="cut_rebuild",
+            minimum=0,
         ):
             raise ValueError("cut-rebuild occurrence count differs from cut metadata")
         if overlap_metadata and overlap_recomposed_occurrence_count < 1:
             raise ValueError("overlap metadata exists but no occurrence is overlap_recomposed")
-        if combined_metadata and combined_occurrence_count != int(
-            combined_metadata.get("combined_occurrence_count", -1)
+        if combined_metadata and combined_occurrence_count != _json_int(
+            combined_metadata,
+            "combined_occurrence_count",
+            label="combined_recomposition",
+            minimum=0,
         ):
             raise ValueError("combined occurrence count differs from combined metadata")
 
@@ -609,8 +680,26 @@ def main() -> int:
                     }
                 )
 
-        rebuilt_cut_count = int(cut_metadata.get("rebuilt_occurrence_count", 0))
-        combined_count = int(combined_metadata.get("combined_occurrence_count", 0))
+        rebuilt_cut_count = (
+            _json_int(
+                cut_metadata,
+                "rebuilt_occurrence_count",
+                label="cut_rebuild",
+                minimum=0,
+            )
+            if cut_metadata
+            else 0
+        )
+        combined_count = (
+            _json_int(
+                combined_metadata,
+                "combined_occurrence_count",
+                label="combined_recomposition",
+                minimum=0,
+            )
+            if combined_metadata
+            else 0
+        )
         qa = {
             "schema_version": "1.0",
             "algorithm_version": __version__,
@@ -694,12 +783,8 @@ def main() -> int:
                 "release_blocked_reason": _RELEASE_BLOCKED_REASON,
                 "source_run_stage": run_stage,
                 "confirmed_overlap_regions": len(confirmed_overlap_regions),
-                "rebuilt_cut_occurrences": int(
-                    cut_metadata.get("rebuilt_occurrence_count", 0)
-                ),
-                "combined_recomposition_occurrences": int(
-                    combined_metadata.get("combined_occurrence_count", 0)
-                ),
+                "rebuilt_cut_occurrences": rebuilt_cut_count,
+                "combined_recomposition_occurrences": combined_count,
                 "artifact_id": render_artifact["artifact_id"],
                 "final_srt": str(args.final_srt),
                 "report": str(args.report),
