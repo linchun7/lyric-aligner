@@ -428,3 +428,7 @@ Pro v1.2.2 accepts the v1.2.7 binding and ranks strong-model actionable candidat
 Smart v1.2.8 is current. It keeps all v1.2.7 decisions but prevents the Pro high-value subset from replacing the complete actionable manual-timing queue; any actionable timing suspicion blocks `product_status=ready`. Shared canonical parsing now fails closed on bare CJK name-like colon lines while retaining explicit role labels.
 
 Pro v1.2.3 accepts only Smart v1.2.8. Acoustic schema 1.3 separates local retrieval success from timing-fusion eligibility and makes slope-boundary optima diagnostic-only. Non-boundary gated retrieval preserves existing fusion behavior. Automatic text/timing mutation remains disabled, no Pro SRT is produced, and forced alignment remains auxiliary rather than independent mix vocal-onset evidence.
+
+## 2026-08-22 Smart v1.2.9 / Pro v1.2.4 acceptance-regression status
+
+The first v1.2.8 private acceptance exposed canonical pollution from genuine bare ensemble-member roles. Smart v1.2.9 adds narrow same-file contextual proof: explicit multi-cast membership, plus a stricter repeated/adjacent ensemble grammar for cast members omitted from those rows. Generic bare CJK lexical labels remain fail-closed. The private Smart rerun restored the pre-regression text/timing mapping and additionally removed one genuine role the former surname heuristic missed. Pro v1.2.4 changes only the accepted Smart binding. All automatic mutation and forced-evidence authority limits remain unchanged.

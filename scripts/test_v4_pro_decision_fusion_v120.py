@@ -60,7 +60,7 @@ class ProDecisionFusionV120Tests(unittest.TestCase):
     def test_fusion_separates_support_rebuttal_tolerance_and_unvalidated(self) -> None:
         smart = {
             "schema_version": "smart-1.1",
-            "policy_id": "smart-validation-policy-2026-08-22-v1.2.8",
+            "policy_id": "smart-validation-policy-2026-08-22-v1.2.9",
             "timing_decisions": [
                 _timing(0, proposal=None),
                 _timing(1, proposal=11_200),
@@ -76,7 +76,7 @@ class ProDecisionFusionV120Tests(unittest.TestCase):
         }
         plan = {
             "schema_version": "1.1",
-            "policy_id": "smart-to-pro-reason-aware-2026-08-22-v1.2.3",
+            "policy_id": "smart-to-pro-reason-aware-2026-08-22-v1.2.4",
             "jobs": [_job(cue) for cue in range(6)],
         }
         acoustic = {
@@ -113,7 +113,7 @@ class ProDecisionFusionV120Tests(unittest.TestCase):
     def test_slope_boundary_match_cannot_support_or_rebut_smart(self) -> None:
         smart = {
             "schema_version": "smart-1.1",
-            "policy_id": "smart-validation-policy-2026-08-22-v1.2.8",
+            "policy_id": "smart-validation-policy-2026-08-22-v1.2.9",
             "timing_decisions": [
                 _timing(1, proposal=11_200),
                 _timing(2, proposal=24_000),
@@ -125,7 +125,7 @@ class ProDecisionFusionV120Tests(unittest.TestCase):
         }
         plan = {
             "schema_version": "1.1",
-            "policy_id": "smart-to-pro-reason-aware-2026-08-22-v1.2.3",
+            "policy_id": "smart-to-pro-reason-aware-2026-08-22-v1.2.4",
             "jobs": [_job(1), _job(2)],
         }
         acoustic = {
@@ -159,7 +159,7 @@ class ProDecisionFusionV120Tests(unittest.TestCase):
     def test_text_and_timing_axes_are_independent(self) -> None:
         smart = {
             "schema_version": "smart-1.1",
-            "policy_id": "smart-validation-policy-2026-08-22-v1.2.8",
+            "policy_id": "smart-validation-policy-2026-08-22-v1.2.9",
             "timing_decisions": [_timing(0, proposal=None)],
             "text_decisions": [
                 {
@@ -171,7 +171,7 @@ class ProDecisionFusionV120Tests(unittest.TestCase):
         }
         plan = {
             "schema_version": "1.1",
-            "policy_id": "smart-to-pro-reason-aware-2026-08-22-v1.2.3",
+            "policy_id": "smart-to-pro-reason-aware-2026-08-22-v1.2.4",
             "jobs": [_job(0, text_review=True)],
         }
         asr = {
@@ -194,7 +194,7 @@ class ProDecisionFusionV120Tests(unittest.TestCase):
     def test_supported_acoustic_occurrence_can_support_cross_script_text_identity(self) -> None:
         smart = {
             "schema_version": "smart-1.1",
-            "policy_id": "smart-validation-policy-2026-08-22-v1.2.8",
+            "policy_id": "smart-validation-policy-2026-08-22-v1.2.9",
             "timing_decisions": [_timing(1, proposal=11_200)],
             "text_decisions": [
                 {
@@ -211,7 +211,7 @@ class ProDecisionFusionV120Tests(unittest.TestCase):
         job["canonical_text_sha256"] = "synthetic-hash"
         plan = {
             "schema_version": "1.1",
-            "policy_id": "smart-to-pro-reason-aware-2026-08-22-v1.2.3",
+            "policy_id": "smart-to-pro-reason-aware-2026-08-22-v1.2.4",
             "jobs": [job],
         }
         acoustic = {"schema_version": "1.3", "jobs": [_acoustic(1, shift_ms=650)]}
@@ -235,7 +235,7 @@ class ProDecisionFusionV120Tests(unittest.TestCase):
     def test_smart_cross_script_recovery_retains_high_timing_value(self) -> None:
         smart = {
             "schema_version": "smart-1.1",
-            "policy_id": "smart-validation-policy-2026-08-22-v1.2.8",
+            "policy_id": "smart-validation-policy-2026-08-22-v1.2.9",
             "timing_decisions": [_timing(1, proposal=11_200)],
             "text_decisions": [
                 {
@@ -250,7 +250,7 @@ class ProDecisionFusionV120Tests(unittest.TestCase):
         job["canonical_line_index"] = 7
         plan = {
             "schema_version": "1.1",
-            "policy_id": "smart-to-pro-reason-aware-2026-08-22-v1.2.3",
+            "policy_id": "smart-to-pro-reason-aware-2026-08-22-v1.2.4",
             "jobs": [job],
         }
         acoustic = {"schema_version": "1.3", "jobs": [_acoustic(1, shift_ms=650)]}

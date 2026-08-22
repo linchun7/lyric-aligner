@@ -31,7 +31,7 @@ from lyric_aligner.timeline.smart_current import (
     SMART_TIMING_ACTIONABLE_SHIFT_MS,
 )
 
-PRO_POLICY_ID = "smart-to-pro-reason-aware-2026-08-22-v1.2.3"
+PRO_POLICY_ID = "smart-to-pro-reason-aware-2026-08-22-v1.2.4"
 # Backward-compatible import name retained for existing plan consumers.
 PRO_V11_POLICY_ID = PRO_POLICY_ID
 

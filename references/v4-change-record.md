@@ -313,3 +313,10 @@ Public regression uses generic synthetic LRC only and covers metadata-only group
 - Removed the unsafe bare-CJK surname heuristic from shared canonical parsing. Explicit roles, separated casts and parenthesized role markers remain metadata; ambiguous short CJK colon lines remain lexical and therefore preserve canonical ordinal truth.
 - Kept slope search bounded/local and retained existing score/margin thresholds, max-jobs selection, shadow competitor behavior, exact artifact binding and forced-evidence authority.
 - Kept `automatic_timing_change_allowed=false`, `automatic_text_change_allowed=false`, `timing_mutation_performed=false`; Pro still emits evidence and decisions only and does not create a Pro SRT.
+
+## 2026-08-22 — Smart v1.2.9 / Pro v1.2.4 contextual-role regression fix
+
+- A real from-scratch acceptance run proved that retaining every bare CJK colon label polluted canonical ordinals in an ensemble lyric file and broke previously correct cue mapping.
+- Replaced that overcorrection with same-file contextual proof: explicit multi-cast members are safe roles; an omitted member requires a strong ensemble grammar, repetition, and close lexical followers.
+- Kept generic “夏天：/白天：/向前：” and an unproved bare name lexical; no surname list was reintroduced.
+- Promoted Smart/Pro policy IDs so old and corrected artifacts cannot be silently mixed. No acoustic threshold, timing authority, mutation permission, max-jobs or shadow behavior changed.

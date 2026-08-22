@@ -59,6 +59,48 @@ class CanonicalMetadataGroupsV120Tests(unittest.TestCase):
             ["夏天：", "白天：", "向前：", "李明："],
         )
 
+    def test_explicit_multi_cast_can_prove_matching_bare_role_name(self) -> None:
+        lines = self._parse(
+            "[00:01.00]李明/王芳：\n"
+            "[00:02.00]李明：\n"
+            "[00:03.00]夏天：\n"
+            "[00:04.00]第一句真实歌词\n"
+        )
+        self.assertEqual(
+            [item.text for item in lines],
+            ["夏天：", "第一句真实歌词"],
+        )
+
+    def test_repeated_bare_role_requires_strong_ensemble_context(self) -> None:
+        lines = self._parse(
+            "[00:01.00]王甲/李乙/赵丙/陈丁：\n"
+            "[00:02.00]王甲：\n"
+            "[00:02.50]甲的歌词\n"
+            "[00:04.00]李乙：\n"
+            "[00:04.50]乙的歌词\n"
+            "[00:06.00]赵丙：\n"
+            "[00:06.50]丙的歌词\n"
+            "[00:08.00]陈丁：\n"
+            "[00:08.50]丁的歌词\n"
+            "[00:10.00]周戊：\n"
+            "[00:10.50]重复角色歌词一\n"
+            "[00:12.00]周戊：\n"
+            "[00:12.50]重复角色歌词二\n"
+            "[00:14.00]夏天：\n"
+        )
+        self.assertEqual(
+            [item.text for item in lines],
+            [
+                "甲的歌词",
+                "乙的歌词",
+                "丙的歌词",
+                "丁的歌词",
+                "重复角色歌词一",
+                "重复角色歌词二",
+                "夏天：",
+            ],
+        )
+
     def test_short_chinese_lyric_question_is_not_treated_as_role_label(self) -> None:
         lines = self._parse(
             "[00:01.00]为什么：\n"

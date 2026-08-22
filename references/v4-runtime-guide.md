@@ -30,7 +30,7 @@ python scripts/v4_text_repair.py `
 
 Text Repair V2.1 冻结 cue count/number/start/end，canonical 是最终文字/顺序 truth，production `--auto-threshold >= 0.72`。
 
-## 3. Smart v1.2.8
+## 3. Smart v1.2.9
 
 ### 3.1 基本调用
 
@@ -99,7 +99,7 @@ B-grade 不能建立 timing model，只能由 already-ready A-anchor model 二�
 
 因此两条 cue 即使分别检查安全，但组合后互相冲突，也会统一降级 review。
 
-Smart report schema 仍是 `smart-1.1`，current policy 为 `smart-validation-policy-2026-08-22-v1.2.8`；产品字段：
+Smart report schema 仍是 `smart-1.1`，current policy 为 `smart-validation-policy-2026-08-22-v1.2.9`；产品字段：
 
 ```text
 status
@@ -122,9 +122,9 @@ timing_review_count  # legacy unresolved total，不是人工队列
 
 `manual_timing_review_candidate_count` 是所有明确 actionable timing suspicion；`timing_high_value_pro_candidate_count` 是 Pro 预算优先级子集，不是 vocal-onset 错误概率。只要 actionable count 非零，`product_status` 必须为 `review_required`。跨文字拟声恢复要求前一 resolved canonical occurrence 证明 exact adjacency，并保持一对一 cue ownership。
 
-角色/metadata 过滤发生在 shared canonical parser 建立 canonical lines/ordinal 之前，会影响所有下游模式。裸中文短行如“夏天：”“白天：”“向前：”以及无法可靠判断的单独中文姓名保留为 lexical；明确角色词、多人分隔名单和显式角色括号仍过滤。
+角色/metadata 过滤发生在 shared canonical parser 建立 canonical lines/ordinal 之前，会影响所有下游模式。裸中文短行默认保留；明确角色词、多人分隔名单和显式角色括号直接过滤。v1.2.9 允许同文件多人 cast 证明 exact bare member；cast 外裸标签只有在强 ensemble grammar、重复出现且每次两秒内紧接 lexical 行时才过滤。“夏天：”“白天：”“向前：”回归仍必须保留。
 
-## 4. Pro v1.2.3
+## 4. Pro v1.2.4
 
 ### 4.1 先只计划，不读 audio
 
@@ -138,7 +138,7 @@ python scripts/v4_pro_selective.py `
   --plan-out "output/<任务>/<任务>_PRO_PLAN.json"
 ```
 
-Pro v1.2.3 必须读取**当前 Smart v1.2.8 policy** 产出的 `smart-1.1` report。旧 Smart report 即使 schema 相同，只要 policy id 不是当前版本，也会要求重新跑 Smart。
+Pro v1.2.4 必须读取**当前 Smart v1.2.9 policy** 产出的 `smart-1.1` report。旧 Smart report 即使 schema 相同，只要 policy id 不是当前版本，也会要求重新跑 Smart。
 
 reason-aware routing：
 
@@ -168,7 +168,7 @@ planned_mix_audio_ms_unmerged / merged
 planned_acoustic_mix_audio_ms_unmerged / merged
 ```
 
-`--max-jobs` 在当前 Pro v1.2.3 中约束 **primary unresolved cues**。价值顺序为：actionable timing suspicion（strong local model 先于 weak/unknown，同层再按 `|Smart shift|` 降序）、text review、显示容差内 timing suspicion、纯 timing-unvalidated。Shadow competitor 不消耗 primary budget。
+`--max-jobs` 在当前 Pro v1.2.4 中约束 **primary unresolved cues**。价值顺序为：actionable timing suspicion（strong local model 先于 weak/unknown，同层再按 `|Smart shift|` 降序）、text review、显示容差内 timing suspicion、纯 timing-unvalidated。Shadow competitor 不消耗 primary budget。
 
 source window 仍优先使用逐字 timing；否则利用下一 canonical onset；最后一行使用 bounded fallback。除此之外，任何 acoustic source window 都必须满足：
 
@@ -301,4 +301,4 @@ Public CI 能验证 deterministic policy、最终 overlap guard、soft BPM seman
 
 `python scripts/v4_smart_repair.py --help` 与 `python scripts/v4_pro_selective.py --help` 现在会自行把 repository root 加入 import path，正式文档中的直接入口不要求调用者额外设置 `PYTHONPATH`。
 
-当前 Pro v1.2.3 的 `--max-jobs` 是 **primary unresolved-cue budget**。Shadow boundary competitors 只附着于已经选中的 primary，属于 additive evidence；`plan.config.max_jobs` 对外报告调用者请求的 primary budget，内部完整 candidate-pool 扩池不是公开预算语义。
+当前 Pro v1.2.4 的 `--max-jobs` 是 **primary unresolved-cue budget**。Shadow boundary competitors 只附着于已经选中的 primary，属于 additive evidence；`plan.config.max_jobs` 对外报告调用者请求的 primary budget，内部完整 candidate-pool 扩池不是公开预算语义。

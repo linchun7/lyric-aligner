@@ -15,6 +15,7 @@ from typing import Any
 from lyric_aligner.io.text import read_task_text
 from lyric_aligner.text.normalization import (
     clean_text,
+    contextual_cjk_role_names,
     is_metadata_text,
     is_title_like_intro,
 )
@@ -175,6 +176,11 @@ def parse_canonical_lyrics(
             _Alternative(text, tokens, "enhanced_lrc" if tokens else "line_lrc")
         )
 
+    contextual_role_names = contextual_cjk_role_names(
+        (start, item.text)
+        for start, alternatives in groups.items()
+        for item in alternatives
+    )
     result: list[CanonicalLine] = []
     for start, alternatives in sorted(groups.items()):
         selected_index = original_index_by_timestamp.get(start)
@@ -183,7 +189,10 @@ def parse_canonical_lyrics(
                 index
                 for index, item in enumerate(alternatives)
                 if item.text
-                and not is_metadata_text(item.text)
+                and not is_metadata_text(
+                    item.text,
+                    contextual_role_names=contextual_role_names,
+                )
                 and not is_title_like_intro(start, item.text)
             ]
             # Timestamped credits/role labels/title rows are common in consumer
@@ -205,7 +214,10 @@ def parse_canonical_lyrics(
         selected = alternatives[selected_index]
         if (
             not selected.text
-            or is_metadata_text(selected.text)
+            or is_metadata_text(
+                selected.text,
+                contextual_role_names=contextual_role_names,
+            )
             or is_title_like_intro(start, selected.text)
         ):
             raise CanonicalLyricError(
