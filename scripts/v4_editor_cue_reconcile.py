@@ -21,6 +21,7 @@ from lyric_aligner.contracts.artifacts import (
     validate_upstream_artifact,
 )
 from lyric_aligner.io.path_safety import validate_separate_artifact_paths
+from lyric_aligner.io.task_path_safety import protected_task_input_paths
 from lyric_aligner.qa.final_integrity import FinalIntegrityError, validate_srt_report_binding
 from lyric_aligner.srt import parse_srt_strict
 from lyric_aligner.timeline.editor_cue_reconcile import (
@@ -53,36 +54,6 @@ def _read_audit_rows(path: Path) -> list[dict[str, str]]:
     if not rows:
         raise ValueError("canonical evaluation audit contains no rows")
     return rows
-
-
-def _task_input_paths(manifest_path: Path, task: dict) -> dict[str, Path]:
-    """Expand all manifest-bound files so evaluation outputs cannot overwrite them."""
-
-    protected: dict[str, Path] = {"task_manifest": manifest_path}
-    inputs = task.get("inputs")
-    if not isinstance(inputs, dict):
-        raise ValueError("task manifest inputs must be an object")
-
-    for role, record in sorted(inputs.items()):
-        if record is None:
-            continue
-        if not isinstance(record, dict):
-            raise ValueError(f"task manifest input {role} must be an object")
-        root = resolve_manifest_record(manifest_path, record)
-        protected[f"task_{role}"] = root
-        if record.get("kind") != "directory":
-            continue
-        rows = record.get("files")
-        if not isinstance(rows, list):
-            raise ValueError(f"task manifest directory input {role} has invalid files")
-        for index, item in enumerate(rows):
-            if not isinstance(item, dict):
-                raise ValueError(f"task manifest directory input {role} has invalid file entry")
-            relative = str(item.get("path") or "").strip()
-            if not relative:
-                raise ValueError(f"task manifest directory input {role} has blank file path")
-            protected[f"task_{role}_{index}"] = root / relative
-    return protected
 
 
 def _validate_evaluation_render(
@@ -122,8 +93,16 @@ def _validate_evaluation_render(
         raise ValueError("canonical evaluation QA algorithm version mismatch")
     if qa.get("passed") is not True or qa.get("structurally_valid") is not True:
         raise ValueError("canonical evaluation QA is not structurally valid")
-    if qa.get("fully_reviewed") is not True or int(qa.get("review_candidate_count", -1)) != 0:
-        raise ValueError("canonical evaluation QA still contains unresolved review")
+    review_count = qa.get("review_candidate_count")
+    if (
+        qa.get("fully_reviewed") is not True
+        or not isinstance(review_count, int)
+        or isinstance(review_count, bool)
+        or review_count != 0
+    ):
+        raise ValueError(
+            "canonical evaluation QA must be fully reviewed with integer review_candidate_count=0"
+        )
     if qa.get("publish_ready") is not False:
         raise ValueError("canonical evaluation QA must remain publish_ready=false")
     if str(qa.get("segmentation_authority") or "") != _SOURCE_SEGMENTATION_AUTHORITY:
@@ -161,7 +140,11 @@ def main() -> int:
             raise ValueError("task manifest has no source_srt input")
         source_srt = resolve_manifest_record(args.task_manifest, source_record)
 
-        protected_inputs = _task_input_paths(args.task_manifest, task)
+        protected_inputs = protected_task_input_paths(
+            manifest_path=args.task_manifest,
+            manifest=task,
+            repository_root=REPOSITORY_ROOT,
+        )
         protected_inputs.update(
             {
                 "evaluation_srt": args.evaluation_srt,
