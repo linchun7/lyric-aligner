@@ -110,6 +110,11 @@ def main() -> int:
     parser.add_argument("--track-assets", required=True, type=Path)
     parser.add_argument("--asset-artifact", required=True, type=Path)
     parser.add_argument("--occurrence-id", required=True)
+    parser.add_argument(
+        "--purpose",
+        choices=("primary_timewarp", "transition_activity"),
+        default="primary_timewarp",
+    )
     parser.add_argument("--bpm-prior", type=float)
     parser.add_argument("--mix-start", type=float)
     parser.add_argument("--mix-end", type=float)
@@ -215,6 +220,7 @@ def main() -> int:
             drift_threshold=timewarp_defaults.drift_threshold,
             residual_threshold=timewarp_defaults.residual_threshold,
             complexity_penalty=timewarp_defaults.complexity_penalty,
+            require_timewarp=args.purpose == "primary_timewarp",
         )
         payload = {
             "schema_version": "1.1",
@@ -223,6 +229,7 @@ def main() -> int:
             "calibration_profile_version": context.calibration_profile_version,
             "calibration_profile_id": context.calibration_profile_id,
             "calibration_overrides": overrides,
+            "purpose": args.purpose,
             "occurrence_id": binding.occurrence_id,
             "track_id": binding.track_id,
             "canonical_selection_sha256": binding.canonical_selection_sha256,
@@ -249,6 +256,7 @@ def main() -> int:
             "bpm_prior": args.bpm_prior,
             "mix_start": mix_start,
             "mix_end": mix_end,
+            "purpose": args.purpose,
         }
         artifact = build_artifact_manifest(
             task_fingerprint_sha256=fingerprint,
@@ -263,6 +271,7 @@ def main() -> int:
                 "track_id": binding.track_id,
                 "selection": mapping["timewarp"]["selection"],
                 "blocked": mapping["timewarp"]["blocked"],
+                "purpose": args.purpose,
             },
         )
         atomic_write_json(args.artifact_out, artifact)
@@ -271,6 +280,7 @@ def main() -> int:
 
     print(json.dumps({
         "occurrence_id": binding.occurrence_id,
+        "purpose": args.purpose,
         "selection": mapping["timewarp"]["selection"],
         "blocked": mapping["timewarp"]["blocked"],
         "source_feature_cache": cache_status,

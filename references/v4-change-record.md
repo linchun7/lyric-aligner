@@ -39,7 +39,11 @@ PR #67 后的 private 190 production rerun 已通过 12/12 TrackAsset preflight�
 - Fine 在需要运行时只消费与 path 对齐的 coarse-window prefix，并验证每个 mix center；全部 retrieval evidence 仍可供 transition probe 审计；
 - bounded terminal disconnect 只表示内部 Source-to-Mix mapping 可继续求解，不确认尾段 source activity、crossfade、cut 或 overlap；这些事实仍由 transition/cut/overlap stages 按原 gate 决定。
 
-Public regression 全部使用 synthetic retrieval rows，覆盖 bounded terminal success、默认 strict 行为、interior disconnect fail-closed、少于三个 anchors fail-closed，以及 payload coverage 审计。回滚点为 `audio/coarse_mapper.py` 与 `audio/fine_alignment.py` 的 bounded-prefix 支持；无 profile identity、schema version 或 calibration threshold 变化。
+继续同一 190 run 后，三个 shared-boundary source probe 又因 194/359/1568 秒处无连续 path 而异常退出。代码复核确认 `probe_adjacent_transition()` 只消费双方完整 retrieval windows 的 score/margin/ambiguity，不消费 coarse path 或 TimeWarp。复用 primary CLI 时无条件求全窗 TimeWarp 因而是无关 gate：边界左 source 可以在 shared window 中途结束，右 source 也可以中途才开始。
+
+为此 coarse CLI 新增显式 `--purpose primary_timewarp|transition_activity`。默认及全部 primary 调用仍为 `primary_timewarp`；Full V4 的 transition 双侧命令使用 `transition_activity`，保留并 fingerprint 全部 retrieval windows，输出 `path_coverage.status=retrieval_only` 与 `timewarp.selection=NOT_REQUESTED`，不制造 mapping。transition probe 的现有 activity thresholds、ambiguity、overlap/review authority 均不变。purpose 进入 payload、artifact normalized config/evidence 与 CLI stdout，防止两类产物在 resume/lineage 中混用。
+
+Public regression 全部使用 synthetic retrieval rows，覆盖 bounded terminal success、默认 strict 行为、interior disconnect fail-closed、少于三个 anchors fail-closed、payload coverage 审计，以及 transition retrieval-only 在 non-monotonic candidates 下保留全部 windows。回滚点为 `audio/coarse_mapper.py`、`audio/fine_alignment.py` 与 run/CLI purpose wiring；无 profile identity、schema version 或 calibration threshold 变化。
 
 ## 2026-08-19 — Smart v1.2.0 canonical sequence reconciliation
 

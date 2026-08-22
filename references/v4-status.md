@@ -326,6 +326,8 @@ Primary coarse 不再要求 nominal occurrence interval 的最后每个重叠 re
 
 该行为不确认 terminal source activity，也不自动确认 transition/outro/cut/overlap。全部 retrieval windows 继续保存在 coarse artifact 中，边界事实仍由 transition/cut/overlap stages 独立判定；因此 `bounded_terminal_disconnect` 不能单独计为 Smart hard-tail、reorder identity 或 final-ready 的解决证据。
 
+Shared-boundary 双侧 coarse 使用独立的 `transition_activity` purpose：它只生成 transition probe 实际消费的完整 retrieval windows，不请求连续 path/TimeWarp。左 source 在窗口中途结束、右 source 中途开始是合法输入形态，不因缺少全窗 mapping 中断 run；score/margin/ambiguity 与 overlap review gate 仍保持原 profile。`NOT_REQUESTED` 不能作为 primary mapping、timing 修复或 source occurrence 已解决证据。
+
 ## 6. Legacy Partial Timeline Repair P1–P5
 
 旧 formal calibration/P9 proposal chain 不被 Smart/Pro 替换，继续固定：
@@ -363,6 +365,7 @@ Public CI 必须证明：
 - Enhanced LRC open-ended token、adaptive source window、ASR-only region、max-jobs、path collision、source-I/O 继续不回归；
 - Max TrackAsset preflight 必须忽略 metadata/title/role-label/blank-only timestamp groups，同时真正的 same-timestamp lexical ambiguity 继续 fail closed；
 - Max primary coarse 只可排除结构上有界的 terminal disconnect；interior disconnect、超过一个 window-overlap span 或少于三个 anchors 必须继续 fail closed，并完整记录 path coverage；
+- Max transition activity 必须保留共享窗口的全部 retrieval evidence，不能要求任一 source 在整个边界窗口拥有连续 TimeWarp，也不能把 retrieval-only 产物当 primary mapping；
 - Python/ASR environment 与 legacy tests 全部继续通过。
 
 Private real-song calibration 仍是 text recovery false-auto 风险的重要验收。真实任务发现的新 failure pattern 应继续转换成**通用、合成、无任务数据硬编码**的 regression；不得为了提高覆盖率把歌曲名、cue 编号、真实时间戳或真实歌词写进 production algorithm/public test。

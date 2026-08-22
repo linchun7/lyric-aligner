@@ -227,6 +227,7 @@ def build_coarse_timewarp(
     drift_threshold: float = 0.30,
     residual_threshold: float = 0.25,
     complexity_penalty: float = 0.035,
+    require_timewarp: bool = True,
 ) -> dict[str, Any]:
     if sr <= 0:
         raise ValueError("sample rate must be positive")
@@ -286,38 +287,58 @@ def build_coarse_timewarp(
     if len(results) < 2:
         raise ValueError("coarse mapping requires at least two retrieval windows")
 
-    path = select_monotonic_candidate_path(
-        results,
-        middle_cut=middle_cut,
-        max_continuous_rate=max_continuous_rate,
-        max_trailing_unmatched_windows=max(
-            1, int(math.ceil(window_seconds / step_seconds))
-        ),
+    maximum_excluded_trailing_windows = max(
+        1, int(math.ceil(window_seconds / step_seconds))
     )
-    selected_window_count = len(path)
-    excluded_trailing_windows = results[selected_window_count:]
-    anchors = [
-        AlignmentAnchor(
-            mix_time=point.mix_center,
-            source_time=point.source_center,
-            confidence=max(0.05, point.fused_score),
-            feature_scores={"chroma": point.chroma_score, "mfcc": point.mfcc_score},
+    if require_timewarp:
+        path = select_monotonic_candidate_path(
+            results,
+            middle_cut=middle_cut,
+            max_continuous_rate=max_continuous_rate,
+            max_trailing_unmatched_windows=maximum_excluded_trailing_windows,
         )
-        for point in path
-    ]
-    mapping = select_timewarp(
-        anchors,
-        bpm_prior=bpm_prior,
-        bpm_prior_strength=bpm_prior_strength,
-        middle_cut=middle_cut,
-        max_continuous_rate=max_continuous_rate,
-        min_excess_source_jump=min_excess_source_jump,
-        min_piecewise_improvement=min_piecewise_improvement,
-        minimum_feature_families=minimum_feature_families,
-        drift_threshold=drift_threshold,
-        residual_threshold=residual_threshold,
-        complexity_penalty=complexity_penalty,
-    )
+        selected_window_count = len(path)
+        excluded_trailing_windows = results[selected_window_count:]
+        anchors = [
+            AlignmentAnchor(
+                mix_time=point.mix_center,
+                source_time=point.source_center,
+                confidence=max(0.05, point.fused_score),
+                feature_scores={"chroma": point.chroma_score, "mfcc": point.mfcc_score},
+            )
+            for point in path
+        ]
+        mapping = select_timewarp(
+            anchors,
+            bpm_prior=bpm_prior,
+            bpm_prior_strength=bpm_prior_strength,
+            middle_cut=middle_cut,
+            max_continuous_rate=max_continuous_rate,
+            min_excess_source_jump=min_excess_source_jump,
+            min_piecewise_improvement=min_piecewise_improvement,
+            minimum_feature_families=minimum_feature_families,
+            drift_threshold=drift_threshold,
+            residual_threshold=residual_threshold,
+            complexity_penalty=complexity_penalty,
+        )
+        coverage_status = (
+            "bounded_terminal_disconnect"
+            if excluded_trailing_windows
+            else "complete"
+        )
+    else:
+        path = []
+        selected_window_count = 0
+        excluded_trailing_windows = []
+        coverage_status = "retrieval_only"
+        mapping = {
+            "mapping": None,
+            "selection": "NOT_REQUESTED",
+            "escalated": False,
+            "discontinuities": [],
+            "blocked": False,
+            "reason": "transition activity consumes retrieval windows, not a continuous TimeWarp",
+        }
     return {
         "stage": "coarse_timewarp",
         "mix_interval": [mix_start, mix_end],
@@ -350,17 +371,12 @@ def build_coarse_timewarp(
             "complexity_penalty": complexity_penalty,
         },
         "path_coverage": {
-            "status": (
-                "bounded_terminal_disconnect"
-                if excluded_trailing_windows
-                else "complete"
-            ),
+            "status": coverage_status,
+            "timewarp_required": require_timewarp,
             "retrieved_window_count": len(results),
             "selected_window_count": selected_window_count,
             "excluded_trailing_window_count": len(excluded_trailing_windows),
-            "maximum_excluded_trailing_windows": max(
-                1, int(math.ceil(window_seconds / step_seconds))
-            ),
+            "maximum_excluded_trailing_windows": maximum_excluded_trailing_windows,
             "excluded_mix_centers": [
                 result.mix_center for result in excluded_trailing_windows
             ],

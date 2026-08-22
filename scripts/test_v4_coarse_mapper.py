@@ -125,6 +125,7 @@ class V4CoarseMapperTests(unittest.TestCase):
             result["path_coverage"],
             {
                 "status": "bounded_terminal_disconnect",
+                "timewarp_required": True,
                 "retrieved_window_count": 6,
                 "selected_window_count": 4,
                 "excluded_trailing_window_count": 2,
@@ -132,6 +133,48 @@ class V4CoarseMapperTests(unittest.TestCase):
                 "excluded_mix_centers": [10.0, 12.0],
             },
         )
+
+    def test_transition_activity_keeps_all_windows_without_requesting_timewarp(self):
+        centers = iter([4.0, 6.0, 8.0, 10.0, 1.0, 1.5])
+
+        def fake_retrieve(_mix, _source, *, mix_start, mix_end, **_kwargs):
+            return retrieval((mix_start + mix_end) / 2.0, next(centers))
+
+        features = FeatureBundle(
+            sr=SR,
+            hop_length=512,
+            duration_seconds=24.0,
+            chroma=np.ones((12, 10), dtype=np.float32),
+            mfcc=np.ones((12, 10), dtype=np.float32),
+        )
+        with (
+            patch(
+                "lyric_aligner.audio.coarse_mapper.extract_harmonic_features",
+                return_value=features,
+            ),
+            patch(
+                "lyric_aligner.audio.coarse_mapper.retrieve_coarse_window",
+                side_effect=fake_retrieve,
+            ),
+        ):
+            result = build_coarse_timewarp(
+                np.zeros(14 * SR, dtype=np.float32),
+                np.zeros(24 * SR, dtype=np.float32),
+                sr=SR,
+                mix_start=0.0,
+                mix_end=14.0,
+                feature_hop_length=512,
+                window_seconds=4.0,
+                step_seconds=2.0,
+                require_timewarp=False,
+            )
+
+        self.assertEqual(len(result["windows"]), 6)
+        self.assertEqual(result["path"], [])
+        self.assertEqual(result["timewarp"]["selection"], "NOT_REQUESTED")
+        self.assertFalse(result["timewarp"]["blocked"])
+        self.assertEqual(result["path_coverage"]["status"], "retrieval_only")
+        self.assertFalse(result["path_coverage"]["timewarp_required"])
 
     def test_bounded_terminal_disconnect_keeps_proven_monotonic_prefix(self):
         rows = [
