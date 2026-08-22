@@ -12,7 +12,7 @@ CONFIG = RenderConfig(
 )
 
 
-def timeline(*, omitted: int):
+def timeline(*, omitted: object):
     return {
         "result": {
             "occurrence_id": "occ-1",
@@ -53,13 +53,16 @@ class V4ProjectionRenderGuardTests(unittest.TestCase):
         self.assertEqual(cues[0].text, "generic line")
 
     def test_malformed_omitted_count_fails_closed(self):
-        payload = timeline(omitted=0)
-        payload["result"]["projection_coverage"]["authority_omitted_line_count"] = "bad"
-        with self.assertRaisesRegex(
-            TimelineComposeError,
-            "invalid authority_omitted_line_count",
-        ):
-            compose_canonical_timelines([payload], config=CONFIG)
+        for malformed in ("bad", "0", 0.5, False, None):
+            with self.subTest(malformed=malformed):
+                with self.assertRaisesRegex(
+                    TimelineComposeError,
+                    "invalid authority_omitted_line_count",
+                ):
+                    compose_canonical_timelines(
+                        [timeline(omitted=malformed)],
+                        config=CONFIG,
+                    )
 
 
 if __name__ == "__main__":
