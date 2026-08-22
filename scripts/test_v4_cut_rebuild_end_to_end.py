@@ -405,7 +405,13 @@ class V4CutRebuildEndToEndTests(unittest.TestCase):
             self.assertTrue(any("final" in text for text in texts))
             self.assertFalse(any("removed" in text for text in texts))
             qa = json.loads(final_qa.read_text(encoding="utf-8"))
-            self.assertTrue(qa["publish_ready"])
+            self.assertFalse(qa["publish_ready"])
+            self.assertEqual(
+                qa["segmentation_authority"], "canonical_line_evaluation_only"
+            )
+            self.assertEqual(
+                qa["release_blocked_reason"], "editor_cue_reconciliation_required"
+            )
             self.assertEqual(qa["source_run_stage"], "cut_rebuild")
             self.assertEqual(qa["rebuilt_cut_occurrence_count"], 1)
 

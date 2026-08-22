@@ -21,6 +21,9 @@ from lyric_aligner.qa.final_integrity import FinalIntegrityError, build_release_
 from task_contract import load_task_manifest, verify_manifest_inputs
 
 
+_REQUIRED_V4_SEGMENTATION_AUTHORITY = "editor_reconciled"
+
+
 def _load_upstream_artifacts(paths: list[Path], *, fingerprint: str) -> tuple[tuple[str, ...], dict]:
     ids: list[str] = []
     profile_ids: set[str] = set()
@@ -78,7 +81,7 @@ def _validate_final_render_binding(
     report: Path,
     qa_json: Path,
 ) -> str:
-    """Require exactly one final_render artifact bound to these exact files."""
+    """Require one exact final render with production-safe segmentation authority."""
 
     matches: list[tuple[Path, dict]] = []
     for path in paths:
@@ -104,6 +107,16 @@ def _validate_final_render_binding(
         raise ValueError(
             f"final_render artifact {artifact_path} does not bind current final files: "
             + "; ".join(issues)
+        )
+
+    config = payload.get("normalized_config")
+    if not isinstance(config, dict):
+        raise ValueError("final_render artifact has invalid normalized_config")
+    segmentation_authority = str(config.get("segmentation_authority") or "").strip()
+    if segmentation_authority != _REQUIRED_V4_SEGMENTATION_AUTHORITY:
+        raise ValueError(
+            "v4 release blocked: final render has no editor-reconciled segmentation "
+            "authority; canonical-line rendering is evaluation-only"
         )
     return str(payload["artifact_id"])
 

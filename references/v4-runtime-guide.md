@@ -310,3 +310,26 @@ Public CI 能验证 deterministic policy、最终 overlap guard、soft BPM seman
 `python scripts/v4_smart_repair.py --help` 与 `python scripts/v4_pro_selective.py --help` 现在会自行把 repository root 加入 import path，正式文档中的直接入口不要求调用者额外设置 `PYTHONPATH`。
 
 当前 Pro v1.2.6 的 `--max-jobs` 是 **primary unresolved-cue budget**。Shadow boundary competitors 只附着于已经选中的 primary，属于 additive evidence；`plan.config.max_jobs` 对外报告调用者请求的 primary budget，内部完整 candidate-pool 扩池不是公开预算语义。Acoustic schema 1.4 同时记录 slope 与 source-start 搜索边界；任一 optimum 命中/接近边界时都不得参与 timing fusion。
+
+
+## Max evaluation render vs production release — 2026-08-22 safety contract
+
+`scripts/v4_render.py` currently renders canonical timelines for evaluation/QA only. A successful command can still write `FINAL.srt`, audit CSV and QA JSON, but success no longer means that file is production-release eligible.
+
+Expected current output semantics:
+
+```text
+publish_ready = false
+segmentation_authority = canonical_line_evaluation_only
+release_blocked_reason = editor_cue_reconciliation_required
+```
+
+The renderer also fails before writing a normal final cue stream when a timeline reports `projection_coverage.authority_omitted_line_count > 0`; rerun/remap/rebuild that occurrence rather than accepting a subtitle with silently omitted canonical lines.
+
+Running `scripts/v4_validate_release.py` on the current canonical-line evaluation render is expected to fail with a segmentation-authority error. This is intentional. Do not bypass the gate by editing the artifact or relabeling the render. V4 release requires a bound final-render artifact with:
+
+```text
+normalized_config.segmentation_authority = editor_reconciled
+```
+
+That value must be produced by a future renderer that actually consumes a validated Editor-Cue Reconciliation artifact. Resolving transition/cut/overlap review alone does not create this authority.

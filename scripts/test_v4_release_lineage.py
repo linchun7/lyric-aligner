@@ -25,6 +25,7 @@ class V4ReleaseLineageTests(unittest.TestCase):
         algorithm_version: str = __version__,
         outputs=None,
         name: str | None = None,
+        extra_config: dict | None = None,
     ) -> Path:
         if outputs is None:
             output = root / f"{name or stage}.json"
@@ -38,6 +39,7 @@ class V4ReleaseLineageTests(unittest.TestCase):
             normalized_config={
                 "calibration_profile_id": profile_id,
                 "calibration_profile_version": profile_version,
+                **(extra_config or {}),
             },
         )
         path = root / f"{name or stage}.artifact.json"
@@ -62,8 +64,12 @@ class V4ReleaseLineageTests(unittest.TestCase):
         *,
         name="render",
         algorithm_version=__version__,
+        segmentation_authority="editor_reconciled",
     ):
         final_srt, report, qa = self.final_files(root)
+        extra_config = {}
+        if segmentation_authority is not None:
+            extra_config["segmentation_authority"] = segmentation_authority
         artifact = self.artifact(
             root,
             stage="final_render",
@@ -76,6 +82,7 @@ class V4ReleaseLineageTests(unittest.TestCase):
                 ("audit_csv", report),
                 ("qa_json", qa),
             ),
+            extra_config=extra_config,
         )
         return artifact, final_srt, report, qa
 
@@ -123,6 +130,46 @@ class V4ReleaseLineageTests(unittest.TestCase):
             )
             self.assertTrue(artifact_id)
 
+    def test_final_render_binding_rejects_canonical_only_segmentation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            artifact, final_srt, report, qa = self.final_render_artifact(
+                root,
+                segmentation_authority=None,
+            )
+            with self.assertRaisesRegex(
+                ValueError,
+                "no editor-reconciled segmentation authority",
+            ):
+                _validate_final_render_binding(
+                    [artifact],
+                    fingerprint=FINGERPRINT,
+                    algorithm_version=__version__,
+                    final_srt=final_srt,
+                    report=report,
+                    qa_json=qa,
+                )
+
+    def test_final_render_binding_rejects_unknown_segmentation_authority(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            artifact, final_srt, report, qa = self.final_render_artifact(
+                root,
+                segmentation_authority="canonical_line",
+            )
+            with self.assertRaisesRegex(
+                ValueError,
+                "canonical-line rendering is evaluation-only",
+            ):
+                _validate_final_render_binding(
+                    [artifact],
+                    fingerprint=FINGERPRINT,
+                    algorithm_version=__version__,
+                    final_srt=final_srt,
+                    report=report,
+                    qa_json=qa,
+                )
+
     def test_final_render_binding_rejects_modified_srt(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -156,6 +203,7 @@ class V4ReleaseLineageTests(unittest.TestCase):
                     ("audit_csv", report),
                     ("qa_json", qa),
                 ),
+                extra_config={"segmentation_authority": "editor_reconciled"},
             )
             with self.assertRaisesRegex(ValueError, "exactly one final_render"):
                 _validate_final_render_binding(

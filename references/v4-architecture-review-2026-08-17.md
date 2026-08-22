@@ -330,3 +330,24 @@ selective_policy.py   -> imports smart_current for exact Pro compatibility gate
 以后 Smart v1.2.x promotion 只更新 `smart_current.py` 对新版本化 implementation 的绑定；Smart CLI、Pro gate 与回归测试不再各自猜“current”版本。这不是新的 Smart/Pro authority，而是消除 current-version 双真源。
 
 回归测试仍必须使用一个**字面量旧 policy id**验证 stale rejection，不能从 frozen old module 导入“旧值”作为 expected current；否则生产代码与测试可能再次形成自洽但错误的兼容状态。
+
+## 15. 2026-08-22 Max segmentation authority addendum
+
+#68/#70 之后，Max 架构必须显式区分三个互相独立的状态：
+
+```text
+projection authority      -> 哪些 canonical line/token 可获得 mix timing
+review completeness       -> reconstruction/transition/cut/overlap 是否已足以进入评估
+segmentation authority    -> final subtitle cue topology 是否得到产品级证明
+```
+
+其中：
+
+- `projection_coverage.authority_omitted_line_count > 0` 是内容完整性 blocker；proven coverage 外的 canonical 内容既不能被 affine extrapolation 重新授予普通 timing authority，也不能被静默删除后 render；
+- `ready_for_render` 只代表 reconstruction/review 可进入 renderer，不代表 production publish；
+- 当前 `v4_render.py` 直接 materialize canonical timeline lines，因此只能声明 `segmentation_authority=canonical_line_evaluation_only` 与 `publish_ready=false`；
+- release stage 独立要求 final-render artifact 声明 `segmentation_authority=editor_reconciled`。hash、artifact lineage、人工 review 完成或 canonical timeline 自身 ready 都不能替代这个 authority。
+
+下一架构层应是 **Editor-Cue Reconciliation**，并且必须 first-class / fingerprinted / lineage-bearing：绑定 exact editor/source SRT、canonical occurrence/timeline identity，以及任何用于 rebut editor boundary 的 token/word/audio evidence。默认保留 editor cue topology；canonical 只拥有 text/order。首版保持 evaluation-only，逐 editor cue 输出 `resolved / still_review / rebutted / not_evaluable`，在独立验证完成前不得让 materializer 生成 `editor_reconciled`。
+
+这条边界意味着 Max 当前是强 reconstruction/evidence engine + evaluation renderer，而不是已经闭环的 production subtitle renderer。不得通过降低 transition/acoustic threshold 来绕过 segmentation authority。
