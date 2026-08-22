@@ -64,6 +64,35 @@ normalized_config.segmentation_authority = editor_reconciled
 
 Public regression 全部使用 generic synthetic fixtures：覆盖 omitted-line render block、malformed coverage、canonical evaluation render、release lineage/segmentation gate，以及 review/cut/overlap/combined 路径不会误获 publish authority。私有歌词、音频、cue 编号与真实时间戳不进入仓库。
 
+## 2026-08-23 — Editor-Cue Reconciliation evaluation bridge
+
+新增 `lyric_aligner/timeline/editor_cue_reconcile.py` 与 `scripts/v4_editor_cue_reconcile.py`，用于评估 #70 canonical-line evaluation render 能否在**不改变原 editor cue topology** 的前提下回填 canonical text/order。
+
+首版刻意不重新解析或重建 Max timeline，而是消费已经经过 task/version/hash/upstream binding 的 `final_render` evaluation artifact，再与 task manifest 中 exact `source_srt` 对照。这样 canonical timing/occurrence lineage 仍只有 #70 render 一套真源。
+
+结构判定固定为 fail-closed：
+
+- canonical cue 完整 interval 被唯一 editor cue 包含 -> 该 ownership 可标 `resolved`；
+- canonical cue 跨 editor boundary -> 涉及 cue 均 `still_review`；
+- canonical cue 同时完整落入多个重叠 editor cue -> `still_review`；
+- 同一 editor cue 内被分配的 canonical cues 彼此 overlap -> `still_review`，禁止静默压平成单 cue；
+- 没有 canonical temporal evidence 的 editor cue -> `not_evaluable`；
+- `rebutted` 保留为 schema 状态，但首版**永不自动产生**，直到以后有独立 token/word/audio boundary evidence。
+
+stage 输出：
+
+```text
+stage = editor_cue_reconciliation_evaluation
+segmentation_authority = editor_reconciliation_evaluation_only
+production_authority_granted = false
+```
+
+即使 `full_topology_candidate=true`、所有 editor cue 均为 `resolved`，也只代表“现有 editor topology 与 canonical render 在结构上可兼容”的评估结果；它不修改 `v4_render.py`、不生成生产 SRT、不改变 `v4_validate_release.py`，也绝不等价于 `editor_reconciled`。
+
+额外记录 `editor_file_order_monotonic`。若 source SRT 文件顺序存在时间回退，单 cue 结果仍可供诊断，但 `full_topology_candidate=false`，避免复杂 reorder 在首版被误当成已闭环 production segmentation。
+
+Public synthetic regression 覆盖唯一包含、1 editor cue 承载多条非重叠 canonical cue、跨边界、重叠 editor ambiguity、canonical overlap、无 evidence、非单调 file order、audit identity，以及 CLI 对 source render authority / QA / artifact lineage 的 fail-closed 检查。
+
 ## 冻结与回滚
 
 Smart/Pro production freeze tag 继续固定在：
@@ -73,4 +102,4 @@ prod-smart-v1.2.5-pro-v1.1.4-20260821
 56841c40d6a90101efe1da568e2d5c2e5e67a0a2
 ```
 
-Max #68/#70 不移动该 tag，不改变冻结 Smart/Pro 的行为。回滚依赖 Git commit/tag + artifact lineage，不维护第二套静默 fallback。
+Max #68/#70 与后续 reconciliation evaluation 不移动该 tag，不改变冻结 Smart/Pro 的行为。回滚依赖 Git commit/tag + artifact lineage，不维护第二套静默 fallback。

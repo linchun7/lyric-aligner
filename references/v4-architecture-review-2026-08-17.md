@@ -281,7 +281,7 @@ backend discovery / forced executor / runtime snapshot identity
 
 执行始终 `shell=False`；Windows 只规范化 native 双引号 token，malformed quote fail closed，不引入 shell interpolation。Runtime snapshot 仍只记录 executable basename、command SHA 与 argument count，不保存完整 command。
 
-CLI bootstrap tests 也不再用 `env={}` 伪造“完全空环境”：它们保留 OS/CreateProcess 必需环境，只删除 `PYTHONPATH` / `PYTHONHOME` 并禁用 user-site，从而验证真正的 repository-root import isolation，而不是把 Windows 进程创建差异误判为产品 bug。
+CLI bootstrap tests 也不再用 `env={}` 伪造“完全空环境”：它们保留 OS/CreateProcess 必需环境，只删除 `PYTHONPATH` / `PYTHONHOME` 并禁用 user-site，从而验证真正的 repository-root import isolation，而不是把 Windows 进程创建差异误判成产品 bug。
 
 该兼容性层不参与 Source-to-Mix、canonical timeline、P8 projection、P9 fusion 或 release decision，因此不会产生新的 timing authority。真实 Windows production 可以继续使用 main；external forced family 在 backend 未准备好时仍是 optional auxiliary evidence。
 
@@ -351,3 +351,45 @@ segmentation authority    -> final subtitle cue topology 是否得到产品级�
 下一架构层应是 **Editor-Cue Reconciliation**，并且必须 first-class / fingerprinted / lineage-bearing：绑定 exact editor/source SRT、canonical occurrence/timeline identity，以及任何用于 rebut editor boundary 的 token/word/audio evidence。默认保留 editor cue topology；canonical 只拥有 text/order。首版保持 evaluation-only，逐 editor cue 输出 `resolved / still_review / rebutted / not_evaluable`，在独立验证完成前不得让 materializer 生成 `editor_reconciled`。
 
 这条边界意味着 Max 当前是强 reconstruction/evidence engine + evaluation renderer，而不是已经闭环的 production subtitle renderer。不得通过降低 transition/acoustic threshold 来绕过 segmentation authority。
+
+## 16. 2026-08-23 Editor-Cue Reconciliation evaluation ownership
+
+首版 reconciliation 被刻意放在 canonical evaluation render **之后**，而不是在另一个模块里重新读取 TrackAsset/TimeWarp/canonical timeline 并再次推导一遍。事实链固定为：
+
+```text
+Max reconstruction/review
+        ↓
+canonical-line evaluation render + audit + QA
+        ↓  exact final_render artifact binding
+Editor-Cue Reconciliation evaluation
+        ↓
+editor_reconciliation_evaluation_only artifact
+```
+
+这样 source-to-mix、canonical occurrence identity 与 render cue timing 仍由已有 Max artifact chain 拥有；reconciliation stage 只拥有“这些 canonical rendered intervals 能否在不改变 editor cue topology 的情况下获得唯一 ownership”这一项判断。
+
+首版结构 authority 是零容忍、无隐藏 tolerance 的 containment test：canonical interval 必须完整落入唯一 editor cue；跨 boundary、同时落入多个重叠 editor cue、或同一 editor cue 内存在互相 overlap 的 canonical material，均进入 `still_review`。无 temporal evidence 的 editor cue 为 `not_evaluable`。
+
+`rebutted` 只作为 schema 预留值存在，首版不会自动产生。原因是 canonical line timing 与 editor timing 虽来自不同处理层，但还不足以单独构成“更强 boundary rebuttal”；真正 rebut 必须以后显式接入 independently strong token/word/audio boundary evidence，并在 artifact lineage 中可追溯。
+
+最重要的反授权约束：
+
+```text
+full_topology_candidate = true
+```
+
+只表示当前 canonical render 与 editor topology 结构兼容，**绝不**转换为：
+
+```text
+segmentation_authority = editor_reconciled
+publish_ready = true
+```
+
+首版 artifact 永远固定：
+
+```text
+segmentation_authority = editor_reconciliation_evaluation_only
+production_authority_granted = false
+```
+
+因此该 stage 可以安全用于真实私有任务统计 resolved/review/not-evaluable 分布，而不会提前打开 production release gate。复杂 non-monotonic editor file order 也不会被首版静默接受为闭环：单 cue 诊断保留，但 `full_topology_candidate=false`。
