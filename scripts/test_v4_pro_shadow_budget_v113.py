@@ -83,7 +83,7 @@ class ProShadowBudgetV113Tests(unittest.TestCase):
 
         primary = [job for job in plan["jobs"] if not job.get("shadow_evidence_only")]
         shadow = [job for job in plan["jobs"] if job.get("shadow_evidence_only")]
-        self.assertEqual(PRO_V11_POLICY_ID, "smart-to-pro-reason-aware-2026-08-21-v1.1.4")
+        self.assertEqual(PRO_V11_POLICY_ID, "smart-to-pro-reason-aware-2026-08-22-v1.2.6")
         self.assertEqual(len(primary), 1)
         self.assertEqual(len(shadow), 1)
         self.assertEqual(plan["summary"]["job_count"], 2)

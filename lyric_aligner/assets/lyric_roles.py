@@ -10,6 +10,7 @@ from typing import Iterable
 from lyric_aligner.io.text import read_task_text
 from lyric_aligner.text.normalization import (
     clean_text,
+    contextual_cjk_role_names,
     is_metadata_text,
     is_title_like_intro,
 )
@@ -105,6 +106,7 @@ def classify_alternatives(
     texts: Iterable[str],
     *,
     language: str,
+    contextual_role_names: frozenset[str] = frozenset(),
 ) -> list[LyricAlternative]:
     cleaned = [_display_text(text) for text in texts]
     cleaned = [text for text in cleaned if text]
@@ -117,7 +119,10 @@ def classify_alternatives(
     # Max to invent an "original" merely because they have timestamps.
     roles = [
         "metadata"
-        if is_metadata_text(text) or is_title_like_intro(timestamp_ms, text)
+        if is_metadata_text(
+            text,
+            contextual_role_names=contextual_role_names,
+        ) or is_title_like_intro(timestamp_ms, text)
         else "unknown"
         for text in cleaned
     ]
@@ -177,13 +182,23 @@ def inspect_lyric_roles(
     if not groups:
         raise LyricRoleError(f"no timestamped lyric lines in {path}")
 
+    contextual_role_names = contextual_cjk_role_names(
+        (timestamp, text)
+        for timestamp, texts in groups.items()
+        for text in texts
+    )
     inspected: list[dict] = []
     ambiguous: list[int] = []
     original_count = 0
     ignored_blank_group_count = 0
     ignored_metadata_group_count = 0
     for timestamp, texts in sorted(groups.items()):
-        alternatives = classify_alternatives(timestamp, texts, language=language)
+        alternatives = classify_alternatives(
+            timestamp,
+            texts,
+            language=language,
+            contextual_role_names=contextual_role_names,
+        )
         if not alternatives:
             ignored_blank_group_count += 1
             continue

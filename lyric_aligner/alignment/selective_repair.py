@@ -12,7 +12,7 @@ import json
 from dataclasses import asdict, dataclass
 from typing import Any, Mapping, Sequence
 
-from lyric_aligner.text.language_spans import asr_language_hint_for_text
+from lyric_aligner.text.language_spans import asr_language_hint_for_bounded_context
 from lyric_aligner.text_repair import SubtitleCue
 from lyric_aligner.timeline.anchor_repair import TimedCanonicalOccurrence, _cue_times
 
@@ -229,6 +229,7 @@ def build_selective_repair_plan(
             source_window = None
             language_profile = "auto"
             asr_hint = None
+            asr_force_auto = True
             canonical_sha = None
             capabilities = ["mix_asr", "word_timestamps"]
             occurrence_id = "smart-unmapped"
@@ -243,10 +244,11 @@ def build_selective_repair_plan(
                 after_ms=config.source_context_after_ms,
             )
             language_profile = str(language_by_source.get(source_ordinal, "auto") or "auto")
-            asr_hint = asr_language_hint_for_text(
+            asr_hint = asr_language_hint_for_bounded_context(
                 occurrence.text,
                 track_language=language_profile,
             )
+            asr_force_auto = asr_hint is None
             canonical_sha = _text_sha(occurrence.text)
             capabilities = [
                 "mix_asr",
@@ -281,6 +283,7 @@ def build_selective_repair_plan(
                 "canonical_text_sha256": canonical_sha,
                 "language_profile": language_profile,
                 "asr_language_hint": asr_hint or "auto",
+                "asr_force_auto_detect": asr_force_auto,
                 "mix_window_ms": mix_window,
                 "source_window_ms": source_window,
                 "editor_cue_start_ms": start_ms,

@@ -76,15 +76,22 @@ def _language_hint(profile: str) -> str | None:
 def _job_language_hint(job: dict[str, Any], canonical_text: str | None) -> str | None:
     """Prefer explicit/local canonical evidence over whole-track language.
 
-    ``asr_language_hint`` is a planner-level override and may intentionally be
-    ``auto``/empty.  When canonical text is available we derive the hint from
-    that local line.  A mixed-language result intentionally returns ``None``
-    and must not fall back to the track profile, otherwise a Chinese track could
-    force an English rap/code-switch job through ``language='zh'``.
+    A supported concrete ``asr_language_hint`` is a planner-level override.
+    ``auto``/empty means no concrete override, so canonical text may still
+    provide a safe local hint.  A mixed-language result intentionally returns
+    ``None`` and must not fall back to the track profile, otherwise a Chinese
+    track could force an English rap/code-switch job through ``language='zh'``.
+    Explicit mixed/unknown markers likewise keep backend auto-detection open.
     """
 
-    if "asr_language_hint" in job:
-        return _language_hint(str(job.get("asr_language_hint") or ""))
+    if bool(job.get("asr_force_auto_detect", False)):
+        return None
+    planner_hint = str(job.get("asr_language_hint") or "").strip().lower()
+    concrete_hint = _language_hint(planner_hint)
+    if concrete_hint is not None:
+        return concrete_hint
+    if planner_hint not in {"", "auto"}:
+        return None
     if canonical_text is not None and str(canonical_text).strip():
         return asr_language_hint_for_text(
             canonical_text,

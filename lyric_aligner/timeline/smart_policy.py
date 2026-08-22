@@ -355,6 +355,7 @@ def smart_repair_srt_text_v11(
     auto_threshold: float = DEFAULT_AUTO_THRESHOLD,
     rate_prior_by_source: Mapping[int, float] | None = None,
     rate_prior_metadata_by_source: Mapping[int, Mapping[str, object]] | None = None,
+    _segmentation_internal_boundary_guard: bool = False,
 ) -> tuple[str, dict[str, object]]:
     """Run canonical text reconciliation + Smart timing production semantics."""
 
@@ -375,6 +376,7 @@ def smart_repair_srt_text_v11(
         timed_canonical,
         _text_payload(text_decisions),
         rate_prior_by_source=hard_priors,
+        segmentation_internal_boundary_guard=_segmentation_internal_boundary_guard,
     )
     del initial_timing
     recovery_replacements, text_decisions, recovery = recover_text_reviews_from_timing(
@@ -425,6 +427,7 @@ def smart_repair_srt_text_v11(
         timed_canonical,
         text_payload,
         rate_prior_by_source=hard_priors,
+        segmentation_internal_boundary_guard=_segmentation_internal_boundary_guard,
     )
     bpm_compatibility = _bpm_prior_compatibility(models, rate_prior_metadata_by_source)
     timing = _harden_timing_decisions(cues, raw_timing)

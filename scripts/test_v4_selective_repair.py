@@ -132,8 +132,10 @@ class SelectiveRepairTests(unittest.TestCase):
         self.assertEqual(plan["summary"]["job_count"], 2)
         self.assertEqual([row["cue_ordinal"] for row in plan["jobs"]], [1, 2])
         english, mixed = plan["jobs"]
-        self.assertEqual(english["asr_language_hint"], "en")
+        self.assertEqual(english["asr_language_hint"], "auto")
+        self.assertTrue(english["asr_force_auto_detect"])
         self.assertEqual(mixed["asr_language_hint"], "auto")
+        self.assertTrue(mixed["asr_force_auto_detect"])
         self.assertEqual(english["rate_prior"], 1.1)
         self.assertIn("source_local_acoustic_match", english["requested_capabilities"])
         self.assertLess(english["mix_window_ms"][0], 20_000)

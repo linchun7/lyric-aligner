@@ -299,3 +299,60 @@ This maintenance fix aligns those two contracts without expanding alignment auth
 - Smart, Pro, text/timing thresholds, evidence routing, timing mutation authority, and forced-alignment configuration are unchanged.
 
 Public regression uses generic synthetic LRC only and covers metadata-only groups, early title rows, role labels, blank Enhanced-LRC timing groups, same-timestamp metadata+lyric selection, and asset-resolver integration. The immutable production tag `prod-smart-v1.2.5-pro-v1.1.4-20260821` remains on `56841c40d6a90101efe1da568e2d5c2e5e67a0a2`; the private 190 Max experiment must be rerun after merge before any claim that Max can now resolve the Smart hard tail or reorder region.
+
+## 2026-08-22 — Smart v1.2.6 / Pro v1.2.0 general hardening
+
+- Fixed canonical pollution from timestamped Chinese/mixed singer labels; conservative lexical colon lines remain lyrics.
+- Added final text-only recovery for same-length one-character canonical corrections and prefix-ownership-proven suffix corrections after timing freeze.
+- Split Smart product timing counts into validated, suspected, actionable, within-display-tolerance and unvalidated; retained the old unresolved total as a labelled compatibility field, not a manual queue.
+- Changed Pro budget selection to prioritize actionable concrete timing hypotheses and larger absolute shifts before text-only, display-tolerance and unvalidated items.
+- Acoustic schema 1.2 now exposes prediction-minus-editor shift and labels its local gate as unadjudicated retrieval evidence.
+- Added fail-closed Pro decision fusion, independent text/timing states, supported/rebutted/conflict classifications, cross-script canonical-occurrence support and exact high-priority positions.
+- Kept automatic Pro timing and text writeback disabled. All public regressions are generic synthetic cases; private lyrics, timestamps and media remain untracked.
+
+## 2026-08-22 — Pro v1.2.1 correlated-evidence priority correction
+
+- Manual adjudication disproved the assumption that Smart plus local music retrieval constitutes two independent vocal-onset measurements.
+- Fusion now labels local acoustic support as correlated canonical-timeline evidence and explicitly records that independent vocal-onset evidence was not used.
+- Resolved-text acoustic-only supported/conflict/pro-only timing states move from high to medium; a supported one-to-one canonical text occurrence remains high because it resolves an additional text-identity problem.
+- No timing/text mutation authority or evidence threshold was loosened. Public regression remains synthetic and contains no private cue, lyric or timestamp.
+
+## 2026-08-22 — Smart v1.2.7 / Pro v1.2.2 pre-push hardening
+
+- Added post-timing cross-script vocalization recovery constrained to mapped 1:1 ownership, exact preceding resolved canonical adjacency, same source and narrow vocalization character sets.
+- Added Smart no-audio timing hypothesis stratification by local model strength and text-identity value; the result is evidence-acquisition priority, not vocal-onset probability.
+- Pro now orders strong-model actionable candidates before weak/unknown model extrapolations and retains anchored cross-script timing candidates in the smallest high queue.
+- Private rerun recovered two additional canonical texts, reduced mapped text reviews, excluded adjudicated false timing candidates from Smart high-value positions, and retained the adjudicated true candidates. No private content is committed or hard-coded.
+- Smart remains no-audio and performs no new timing mutation; Pro automatic text/timing writeback remains disabled.
+
+## 2026-08-22 — Smart v1.2.8 / Pro v1.2.3 production-safety review
+
+- Separated every actionable Smart timing suspicion from the smaller high-value Pro evidence subset; actionable work can no longer disappear behind ranking or produce a false-ready product status.
+- Acoustic schema 1.3 records slope search min/max and boundary-hit state. A local match at/near a slope endpoint remains diagnostic retrieval evidence but cannot support/rebut Smart or assert a Pro-only timing anomaly.
+- Removed the unsafe bare-CJK surname heuristic from shared canonical parsing. Explicit roles, separated casts and parenthesized role markers remain metadata; ambiguous short CJK colon lines remain lexical and therefore preserve canonical ordinal truth.
+- Kept slope search bounded/local and retained existing score/margin thresholds, max-jobs selection, shadow competitor behavior, exact artifact binding and forced-evidence authority.
+- Kept `automatic_timing_change_allowed=false`, `automatic_text_change_allowed=false`, `timing_mutation_performed=false`; Pro still emits evidence and decisions only and does not create a Pro SRT.
+
+## 2026-08-22 — Smart v1.2.9 / Pro v1.2.4 contextual-role regression fix
+
+- A real from-scratch acceptance run proved that retaining every bare CJK colon label polluted canonical ordinals in an ensemble lyric file and broke previously correct cue mapping.
+- Replaced that overcorrection with same-file contextual proof: explicit multi-cast members are safe roles; an omitted member requires a strong ensemble grammar, repetition, and close lexical followers.
+- Kept generic “夏天：/白天：/向前：” and an unproved bare name lexical; no surname list was reintroduced.
+- Promoted Smart/Pro policy IDs so old and corrected artifacts cannot be silently mixed. No acoustic threshold, timing authority, mutation permission, max-jobs or shadow behavior changed.
+
+## 2026-08-22 — Smart v1.2.10 / Pro v1.2.5 split-line and routing accuracy
+
+- Fixed a Smart false-suspicion pattern where every editor cue in a multi-cue-to-one-line mapping reused the canonical line onset. A v1.2.10-only guard now requires an exact normalized, strictly later, line-local token boundary; otherwise the internal cue stays explicitly unvalidated with no proposal. Historical Smart entry points retain their prior behavior and policy identity.
+- A private 790-cue no-audio rerun preserved the Smart SRT byte-for-byte, reduced actionable timing suspicions from 87 to 77, and kept the two confirmed one-to-one timing anomalies actionable. Public regression remains generic synthetic data.
+- Made Smart's high-value Pro subset an actual first-budget selection key without replacing or shrinking the complete actionable manual queue.
+- Fixed the ASR executor so job-level `auto`/empty hints do not mask canonical-local routing when an explicit source language is available. Mixed/unknown and source-language `auto` remain backend auto-detection; no static Han/Latin guess was introduced.
+- Kept slope-boundary results diagnostic-only. Real adjudication showed that bounded acoustic agreement alone still cannot distinguish a normal split cue from a true vocal-onset shift, so slope expansion was not promoted to timing authority.
+- Kept `automatic_timing_change_allowed=false`, `automatic_text_change_allowed=false`, `timing_mutation_performed=false`, and `independent_vocal_onset_evidence_used=false`.
+
+## 2026-08-22 — Pro v1.2.6 source-search boundary safety
+
+- Acoustic schema 1.4 records the valid source-start search interval and an explicit `source_search_boundary_hit` result for the winning slope.
+- A local match that hits or approaches either source-position boundary remains useful retrieval diagnostics but cannot support, rebut, or independently declare a timing anomaly.
+- Existing score/margin thresholds and bounded source/mix windows are unchanged; no wider scan or automatic subtitle mutation is introduced.
+- Production A/B showed that forcing a code-switch line's local language over a wider timing-search window could reduce a previously strong canonical support score. Current plans therefore pin ASR only when local and source language agree; conflicts carry `asr_force_auto_detect=true`. A rejected cue-local-window experiment is not part of the production algorithm because it reduced high-support results on timing-suspicious cues.
+- In the private 790-cue rerun, schema 1.4 found 60 source-position boundary hits among 95 acoustic jobs and removed timing authority from two otherwise slope-interior matches. Track-consistent/force-auto routing preserved every comparable old auto-detect support score, restored one strong code-switch result that unconditional local pinning had degraded, and produced three canonical-supported text decisions. No private lyric, cue number or timestamp is encoded in production logic or public regression.
