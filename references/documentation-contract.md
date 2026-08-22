@@ -106,3 +106,25 @@ v4 采用 production-first：尽早进入真实任务，真实失败与 review c
 - 线上/真实任务遇到的问题能对应到具体版本、profile 和 artifact；
 - 下一轮 AI/Codex 不会基于过期说明重复设计或错误接线；
 - 退役 v3.9 后，回滚依赖 Git tag/commit + artifact lineage，而不是维护第二套生产说明。
+
+## 7. Max segmentation / release authority contract（2026-08-22）
+
+Max 必须把以下三类状态分开记录，不能用一个 `ready` 布尔值互相替代：
+
+```text
+projection authority
+review completeness
+subtitle segmentation authority
+```
+
+具体约束：
+
+- `ready_for_render` 只表示 reconstruction/review 足以进入 renderer，不自动代表 production publish；
+- canonical LRC line break 不是 final subtitle cue segmentation authority；
+- 当前 canonical-line renderer 必须显式声明 `segmentation_authority=canonical_line_evaluation_only` 与 `publish_ready=false`；
+- V4 production release 只有在绑定的 final-render artifact 明确声明 `segmentation_authority=editor_reconciled` 时才可继续；
+- transition/cut/overlap 人工 review 完成、artifact hash 完整、或 run 已 `ready_for_render` 都不能替代 editor reconciliation authority；
+- `projection_coverage.authority_omitted_line_count > 0` 属于内容完整性 blocker：unproven canonical suffix 不得被 extrapolation 恢复普通 timing authority，也不得被静默丢弃后继续 final render；
+- future Editor-Cue Reconciliation 必须是 first-class、fingerprinted、lineage-bearing artifact，并绑定 exact editor/source SRT、canonical occurrence/timeline identity 及任何用于推翻 editor boundary 的更强证据。
+
+这些规则是 release contract，不是可通过降低 acoustic/transition threshold 绕过的 calibration 参数。

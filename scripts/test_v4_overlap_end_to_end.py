@@ -465,7 +465,13 @@ class V4OverlapEndToEndTests(unittest.TestCase):
                     break
             self.assertTrue(overlapping_cross_track)
             qa = json.loads(final_qa.read_text(encoding="utf-8"))
-            self.assertTrue(qa["publish_ready"])
+            self.assertFalse(qa["publish_ready"])
+            self.assertEqual(
+                qa["segmentation_authority"], "canonical_line_evaluation_only"
+            )
+            self.assertEqual(
+                qa["release_blocked_reason"], "editor_cue_reconciliation_required"
+            )
             self.assertEqual(qa["source_run_stage"], "overlap_recomposition")
             self.assertEqual(qa["confirmed_overlap_region_count"], 1)
 

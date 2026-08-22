@@ -54,7 +54,7 @@ def run_command(command):
 
 
 class V4RenderEndToEndTests(unittest.TestCase):
-    def test_synthetic_task_runs_from_manifest_to_release_manifest(self):
+    def test_synthetic_task_renders_evaluation_output_but_blocks_release(self):
         with tempfile.TemporaryDirectory() as temporary:
             repo = Path(temporary)
             task = repo / "private" / "synthetic_v4_render"
@@ -146,6 +146,12 @@ class V4RenderEndToEndTests(unittest.TestCase):
                 ]
             )
             self.assertEqual(render_result.returncode, 0, msg=render_result.stderr)
+            render_stdout = json.loads(render_result.stdout)
+            self.assertFalse(render_stdout["publish_ready"])
+            self.assertEqual(
+                render_stdout["segmentation_authority"],
+                "canonical_line_evaluation_only",
+            )
 
             cues = parse_srt_strict(final_srt)
             self.assertEqual([cue.text for cue in cues], ["alpha line", "beta line", "gamma line"])
@@ -153,10 +159,27 @@ class V4RenderEndToEndTests(unittest.TestCase):
             self.assertLessEqual(cues[-1].end_ms, 12000)
 
             qa = json.loads(qa_json.read_text(encoding="utf-8"))
-            self.assertTrue(qa["publish_ready"])
+            self.assertFalse(qa["publish_ready"])
+            self.assertTrue(qa["passed"])
+            self.assertTrue(qa["structurally_valid"])
+            self.assertEqual(
+                qa["segmentation_authority"],
+                "canonical_line_evaluation_only",
+            )
+            self.assertEqual(
+                qa["release_blocked_reason"],
+                "editor_cue_reconciliation_required",
+            )
             self.assertEqual(qa["review_candidate_count"], 0)
             self.assertEqual(qa["algorithm_version"], __version__)
             self.assertEqual(qa["source_run_stage"], "production_orchestration")
+
+            render_manifest = json.loads(render_artifact.read_text(encoding="utf-8"))
+            self.assertEqual(
+                render_manifest["normalized_config"]["segmentation_authority"],
+                "canonical_line_evaluation_only",
+            )
+            self.assertFalse(render_manifest["evidence"]["publish_ready"])
 
             release_manifest = final_dir / "release.artifact.json"
             release_result = run_command(
@@ -181,19 +204,17 @@ class V4RenderEndToEndTests(unittest.TestCase):
                     "synthetic-render-test",
                 ]
             )
-            self.assertEqual(release_result.returncode, 0, msg=release_result.stderr)
-            release = json.loads(release_manifest.read_text(encoding="utf-8"))
-            self.assertEqual(release["stage"], "release")
-            self.assertEqual(release["algorithm_version"], __version__)
-            self.assertEqual(
-                release["task_fingerprint_sha256"],
-                manifest["task_fingerprint_sha256"],
+            self.assertNotEqual(release_result.returncode, 0)
+            self.assertIn(
+                "no editor-reconciled segmentation authority",
+                release_result.stderr,
             )
+            self.assertFalse(release_manifest.exists())
 
             # Exercise the replayable review path without re-running audio stages.
-            # We wrap the already valid production evidence in a synthetic
-            # transition review issue, clear it through v4_review, then prove the
-            # reviewed-run artifact is accepted by the same final renderer.
+            # Clearing an unrelated transition review can make the evidence run
+            # ready for evaluation rendering, but it must not grant subtitle
+            # segmentation authority or production release eligibility.
             production_artifact_path = out_dir / "v4_run.artifact.json"
             production_artifact = json.loads(
                 production_artifact_path.read_text(encoding="utf-8")
@@ -322,7 +343,11 @@ class V4RenderEndToEndTests(unittest.TestCase):
                 msg=reviewed_render_result.stderr,
             )
             reviewed_qa_payload = json.loads(reviewed_qa.read_text(encoding="utf-8"))
-            self.assertTrue(reviewed_qa_payload["publish_ready"])
+            self.assertFalse(reviewed_qa_payload["publish_ready"])
+            self.assertEqual(
+                reviewed_qa_payload["segmentation_authority"],
+                "canonical_line_evaluation_only",
+            )
             self.assertEqual(
                 reviewed_qa_payload["source_run_stage"], "review_resolution"
             )
