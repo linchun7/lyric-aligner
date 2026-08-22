@@ -1,6 +1,6 @@
 # Lyric Aligner v4 当前实施状态
 
-更新日期：2026-08-22  
+更新日期：2026-08-23  
 主线算法版本：`4.0.0a9`
 
 > PR #70 前的完整状态说明已无损归档到 `references/archive/2026-08-22-pre-max-authority-v4-status.md`。P3 前状态见 `references/archive/2026-08-19-pre-p3-v4-status.md`。生产基线见 `references/production-requirements.md`；Smart / Pro 细节见 `references/smart-pro-v1-1.md`。
@@ -113,18 +113,37 @@ segmentation_authority = editor_reconciled
 
 没有这个 authority 时，production release 必须失败。人工清完 transition/cut/overlap review 也不能自动获得该 authority。
 
-### 5.4 当前真正的下一步
+### 5.4 Editor-Cue Reconciliation evaluation bridge
 
-下一阶段是单独的 **Editor-Cue Reconciliation evaluation bridge**：
+已新增首版 evaluation-only bridge：
 
-- first-class fingerprinted/lineage-bearing artifact；
-- 绑定 exact editor/source SRT 与 canonical occurrence/timeline identity；
-- 默认保留 editor cue topology；canonical 只拥有 text/order；
-- 只有独立、更强 token/word/audio boundary evidence 才可 rebut editor boundary；
-- 首版 evaluation-only，逐 editor cue 输出 `resolved / still_review / rebutted / not_evaluable`；
-- 在该 stage 被独立验证前，任何 production materializer 都不得声明 `editor_reconciled`。
+```text
+lyric_aligner/timeline/editor_cue_reconcile.py
+scripts/v4_editor_cue_reconcile.py
+```
 
-因此当前 Max 应描述为：**强 reconstruction/evidence engine + evaluation renderer；production subtitle path 尚未完全闭环。** transition threshold tuning 不是当前 architecture blocker。
+它只消费 #70 的 `canonical_line_evaluation_only` final-render artifact，并与 task manifest 中 exact source/editor SRT 对照；不重新推导 Max timeline，不修改 editor cue count/number/start/end，也不生成 production SRT。
+
+逐 editor cue 状态：
+
+```text
+resolved       -> canonical interval(s) 完整落入唯一 editor cue，且同 cue 内 canonical material 不互相 overlap
+still_review   -> canonical 跨 editor boundary、落入多个重叠 editor cue，或同 editor cue 内 canonical material overlap
+rebutted       -> schema 保留；首版不自动产生
+not_evaluable  -> 没有 canonical temporal evidence
+```
+
+输出 stage：
+
+```text
+editor_cue_reconciliation_evaluation
+segmentation_authority = editor_reconciliation_evaluation_only
+production_authority_granted = false
+```
+
+`full_topology_candidate=true` 也**不**等于 production authority。它只表示在当前 evaluation render 下，所有 canonical cue 可以不改变 editor cue topology 地获得唯一 ownership，并且 editor SRT 文件时间顺序单调。若 editor file order 有时间回退，单 cue 诊断仍保留，但 `full_topology_candidate=false`。
+
+因此当前 Max 应描述为：**强 reconstruction/evidence engine + canonical evaluation renderer + editor-topology reconciliation evaluator；production subtitle path 仍未闭环。** 下一步必须先用私有任务验证 evaluator 的 coverage/review 分布，再设计真正可授予 `editor_reconciled` 的 materialization contract；不能直接把 evaluation result 改名为 production authority。
 
 ## 6. Legacy Partial Timeline Repair
 
@@ -149,6 +168,7 @@ Public CI 必须继续证明：
 - Max bounded terminal coverage 只缩小/记录 authority，不扩张；
 - omitted canonical lines 不能静默 render；
 - canonical-line Max output 不能通过 production release gate；
+- reconciliation evaluator 不移动 editor boundaries、不自动产生 `rebutted`、不授予 production authority；
 - artifact/task/version/hash lineage 完整；
 - Python/ASR environment 与 legacy regressions 不回归。
 
