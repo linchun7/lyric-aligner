@@ -10,12 +10,12 @@ from __future__ import annotations
 
 from lyric_aligner.timeline.smart_policy import SMART_SCHEMA_VERSION
 from lyric_aligner.timeline.smart_policy_v126 import SMART_TIMING_ACTIONABLE_SHIFT_MS
-from lyric_aligner.timeline.smart_policy_v127 import (
+from lyric_aligner.timeline.smart_policy_v128 import (
     SMART_POLICY_ID,
-    smart_repair_srt_text_v127,
+    smart_repair_srt_text_v128,
 )
 
-smart_repair_srt_text = smart_repair_srt_text_v127
+smart_repair_srt_text = smart_repair_srt_text_v128
 
 __all__ = (
     "SMART_POLICY_ID",

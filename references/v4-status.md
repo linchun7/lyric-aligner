@@ -422,3 +422,9 @@ Incremental post-promotion review found that Pro v1.1.3 still imported the froze
 Smart v1.2.7 is the current production facade. It retains v1.2.6 role filtering/product semantics and adds exact-predecessor anchored cross-script vocalization recovery after timing freeze. Actionable hypotheses are stratified by local model quality and text identity; the high-value count is a Pro evidence priority, not a claim that vocal onset is wrong.
 
 Pro v1.2.2 accepts the v1.2.7 binding and ranks strong-model actionable candidates ahead of weak/unknown model extrapolations. Private adjudication showed that Smart+local-acoustic timing agreement alone can still be a false vocal-onset suspicion because both consume the canonical/LRC timeline. Fusion keeps resolved-text acoustic-only support/conflict at medium while anchored cross-script identity plus supported timing remains in the smallest high queue. Timing mutation remains disabled.
+
+## 2026-08-22 Smart v1.2.8 / Pro v1.2.3 review-blocker status
+
+Smart v1.2.8 is current. It keeps all v1.2.7 decisions but prevents the Pro high-value subset from replacing the complete actionable manual-timing queue; any actionable timing suspicion blocks `product_status=ready`. Shared canonical parsing now fails closed on bare CJK name-like colon lines while retaining explicit role labels.
+
+Pro v1.2.3 accepts only Smart v1.2.8. Acoustic schema 1.3 separates local retrieval success from timing-fusion eligibility and makes slope-boundary optima diagnostic-only. Non-boundary gated retrieval preserves existing fusion behavior. Automatic text/timing mutation remains disabled, no Pro SRT is produced, and forced alignment remains auxiliary rather than independent mix vocal-onset evidence.

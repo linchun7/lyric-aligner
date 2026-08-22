@@ -20,7 +20,7 @@ from lyric_aligner.alignment.local_acoustic_match import (
 )
 from lyric_aligner.audio.features import extract_harmonic_features, retrieve_coarse_window
 
-LOCAL_ACOUSTIC_V11_SCHEMA_VERSION = "1.2"
+LOCAL_ACOUSTIC_V11_SCHEMA_VERSION = "1.3"
 
 
 def _window(row: Mapping[str, Any], key: str) -> tuple[int, int]:
@@ -65,6 +65,31 @@ def _slopes(rate_prior: float | None, config: LocalAcousticMatchConfig) -> list[
     if rate_prior is not None:
         values.append(round(rate_prior, 6))
     return sorted(set(values))
+
+
+def _slope_search_metadata(
+    slopes: list[float],
+    estimated_slope: float,
+    *,
+    step: float,
+) -> tuple[float, float, bool]:
+    """Describe the bounded search and reject endpoint optima as authority.
+
+    A best candidate at (or within half a grid step of) either endpoint only
+    proves that bounded retrieval found a local candidate.  It does not prove
+    that the true rate optimum lies inside the searched interval.
+    """
+
+    if not slopes:
+        raise LocalAcousticMatchError("slope search produced no candidates")
+    minimum = float(min(slopes))
+    maximum = float(max(slopes))
+    boundary_margin = max(float(step) / 2.0, 1e-6)
+    boundary_hit = (
+        float(estimated_slope) <= minimum + boundary_margin
+        or float(estimated_slope) >= maximum - boundary_margin
+    )
+    return minimum, maximum, boundary_hit
 
 
 def _default_loader(path: Path, *, sr: int, start_ms: int, end_ms: int) -> np.ndarray:
@@ -186,12 +211,13 @@ def execute_region_source_match_jobs(
             local_mix_start = (mix_start_ms - region_start_ms) / 1000.0
             local_mix_end = (mix_end_ms - region_start_ms) / 1000.0
             rate_prior = _rate(job.get("rate_prior"))
+            slope_candidates = _slopes(rate_prior, config)
             retrieval = retrieve_coarse_window(
                 mix_features,
                 source_features,
                 mix_start=local_mix_start,
                 mix_end=local_mix_end,
-                slopes=_slopes(rate_prior, config),
+                slopes=slope_candidates,
                 source_search_start=0.0,
                 source_search_end=source_features.duration_seconds,
                 candidate_step_seconds=config.candidate_step_seconds,
@@ -208,6 +234,13 @@ def execute_region_source_match_jobs(
             editor_start = job.get("editor_cue_start_ms")
             residual = None if editor_start is None else int(editor_start) - predicted_mix_start_ms
             reliable = not retrieval.ambiguous and best.feature_agreement >= 2
+            slope_step = config.slope_step if rate_prior is not None else config.no_prior_step
+            slope_min, slope_max, slope_boundary_hit = _slope_search_metadata(
+                slope_candidates,
+                float(best.estimated_slope),
+                step=slope_step,
+            )
+            timing_fusion_eligible = reliable and not slope_boundary_hit
             acoustic_shift = (
                 None if editor_start is None else predicted_mix_start_ms - int(editor_start)
             )
@@ -222,6 +255,9 @@ def execute_region_source_match_jobs(
                     "source_window_ms": [source_start_ms, source_end_ms],
                     "rate_prior": rate_prior,
                     "estimated_slope": round(float(best.estimated_slope), 6),
+                    "slope_search_min": round(slope_min, 6),
+                    "slope_search_max": round(slope_max, 6),
+                    "slope_search_boundary_hit": slope_boundary_hit,
                     "fused_score": round(float(best.fused_score), 6),
                     "chroma_score": round(float(best.chroma_score), 6),
                     "mfcc_score": round(float(best.mfcc_score), 6),
@@ -237,6 +273,14 @@ def execute_region_source_match_jobs(
                     "reliability_semantics": (
                         "local_retrieval_gate_only_not_timing_authority"
                     ),
+                    "timing_fusion_evidence_eligible": timing_fusion_eligible,
+                    "timing_fusion_evidence_status": (
+                        "eligible_bounded_interior_optimum"
+                        if timing_fusion_eligible
+                        else "diagnostic_boundary_limited"
+                        if reliable and slope_boundary_hit
+                        else "retrieval_gate_failed"
+                    ),
                     # Legacy alias retained for artifact readers.  New Pro
                     # decision code consumes local_match_gate_passed instead.
                     "reliable_local_match": reliable,
@@ -248,6 +292,8 @@ def execute_region_source_match_jobs(
                     "shadow_evidence_only": bool(job.get("shadow_evidence_only", False)),
                     "boundary_competitor_for_job_id": job.get("boundary_competitor_for_job_id"),
                     "boundary_role": job.get("boundary_role"),
+                    "automatic_timing_change_allowed": False,
+                    "automatic_text_change_allowed": False,
                     "timing_mutation_performed": False,
                 }
             )
@@ -259,6 +305,8 @@ def execute_region_source_match_jobs(
         "config": config.to_dict(),
         "job_count": len(results),
         "mix_feature_region_count": mix_feature_region_count,
+        "automatic_timing_change_allowed": False,
+        "automatic_text_change_allowed": False,
         "timing_mutation_performed": False,
         "jobs": results,
     }

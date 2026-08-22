@@ -21,7 +21,7 @@ from lyric_aligner.timeline.smart_current import (
 )
 
 PRO_DECISION_SCHEMA_VERSION = "1.0"
-PRO_DECISION_POLICY_ID = "pro-selective-decision-fusion-2026-08-22-v1.1"
+PRO_DECISION_POLICY_ID = "pro-selective-decision-fusion-2026-08-22-v1.2"
 
 
 class ProDecisionFusionError(ValueError):
@@ -118,6 +118,22 @@ def _local_gate(row: Mapping[str, Any] | None) -> bool:
     return bool(row.get("reliable_local_match", False))
 
 
+def _timing_fusion_gate(row: Mapping[str, Any] | None) -> bool:
+    """Require an explicit interior-optimum grant for timing adjudication.
+
+    Local retrieval success and timing authority are separate.  Old artifacts
+    without the explicit v1.3 field fail closed instead of silently inheriting
+    authority they were never designed to carry.
+    """
+
+    return bool(
+        _local_gate(row)
+        and row is not None
+        and row.get("timing_fusion_evidence_eligible") is True
+        and row.get("slope_search_boundary_hit") is False
+    )
+
+
 def _timing_state(
     smart_row: Mapping[str, Any] | None,
     acoustic_row: Mapping[str, Any] | None,
@@ -127,7 +143,7 @@ def _timing_state(
         return "not_requested", None, _acoustic_shift(acoustic_row)
     smart_shift = _smart_shift(smart_row)
     acoustic_shift = _acoustic_shift(acoustic_row)
-    gate = _local_gate(acoustic_row)
+    gate = _timing_fusion_gate(acoustic_row)
     if smart_shift is None:
         if gate and acoustic_shift is not None:
             if abs(acoustic_shift) >= config.pro_only_anomaly_ms:
@@ -187,7 +203,7 @@ def _text_state(
     )
     if (
         same_occurrence
-        and _local_gate(acoustic_row)
+        and _timing_fusion_gate(acoustic_row)
         and timing_state == "smart_candidate_supported"
     ):
         return "canonical_occurrence_supported_by_acoustic", score
@@ -297,8 +313,16 @@ def build_pro_decisions(
                 "acoustic_shift_ms": acoustic_shift,
                 "asr_canonical_support_score": asr_score,
                 "local_match_gate_passed": _local_gate(acoustic.get(job_id)),
+                "timing_fusion_evidence_eligible": _timing_fusion_gate(
+                    acoustic.get(job_id)
+                ),
+                "slope_search_boundary_hit": (
+                    acoustic.get(job_id, {}).get("slope_search_boundary_hit")
+                ),
                 "timing_evidence_semantics": (
                     "correlated_canonical_timeline_observation_not_vocal_onset"
+                    if _timing_fusion_gate(acoustic.get(job_id))
+                    else "diagnostic_only_slope_boundary_limited"
                     if _local_gate(acoustic.get(job_id))
                     else "no_local_acoustic_gate_support"
                 ),

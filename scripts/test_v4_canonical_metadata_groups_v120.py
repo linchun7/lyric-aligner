@@ -33,17 +33,30 @@ class CanonicalMetadataGroupsV120Tests(unittest.TestCase):
     def test_cjk_and_mixed_singer_role_labels_are_not_lyrics(self) -> None:
         lines = self._parse(
             "[00:01.00]合：\n"
-            "[00:02.00]李明：\n"
-            "[00:02.50]欧阳娜娜：\n"
+            "[00:01.50]主唱：\n"
+            "[00:02.00]男声：\n"
+            "[00:02.50]女声：\n"
             "[00:03.00]周小雨/林晓/孙子涵：\n"
             "[00:04.00]Nova/River（Rap）：\n"
-            "[00:05.00]MC小林：\n"
+            "[00:05.00]李明（主唱）：\n"
             "[00:10.00]第一句真实歌词\n"
             "[00:20.00]第二句真实歌词\n"
         )
         self.assertEqual(
             [item.text for item in lines],
             ["第一句真实歌词", "第二句真实歌词"],
+        )
+
+    def test_bare_cjk_colon_lines_fail_closed_as_lexical(self) -> None:
+        lines = self._parse(
+            "[00:01.00]夏天：\n"
+            "[00:02.00]白天：\n"
+            "[00:03.00]向前：\n"
+            "[00:04.00]李明：\n"
+        )
+        self.assertEqual(
+            [item.text for item in lines],
+            ["夏天：", "白天：", "向前：", "李明："],
         )
 
     def test_short_chinese_lyric_question_is_not_treated_as_role_label(self) -> None:

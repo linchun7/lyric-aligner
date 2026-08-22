@@ -8,7 +8,10 @@ from unittest.mock import patch
 
 import numpy as np
 
-from lyric_aligner.alignment.local_acoustic_v11 import execute_region_source_match_jobs
+from lyric_aligner.alignment.local_acoustic_v11 import (
+    _slope_search_metadata,
+    execute_region_source_match_jobs,
+)
 from lyric_aligner.alignment.selective_policy import build_selective_repair_plan_v11
 from lyric_aligner.alignment.selective_repair import (
     SelectiveRepairConfig,
@@ -334,9 +337,16 @@ class SelectivePolicyV11Tests(unittest.TestCase):
         self.assertEqual(sum(path == mix for path in calls), 1)
         self.assertEqual(extract.call_count, 1 + len(acoustic_jobs))
         self.assertEqual(result["job_count"], len(acoustic_jobs))
-        self.assertEqual(result["schema_version"], "1.2")
+        self.assertEqual(result["schema_version"], "1.3")
+        self.assertFalse(result["automatic_timing_change_allowed"])
+        self.assertFalse(result["automatic_text_change_allowed"])
+        self.assertFalse(result["timing_mutation_performed"])
         for row in result["jobs"]:
             self.assertTrue(row["local_match_gate_passed"])
+            self.assertTrue(row["timing_fusion_evidence_eligible"])
+            self.assertFalse(row["slope_search_boundary_hit"])
+            self.assertLess(row["slope_search_min"], row["estimated_slope"])
+            self.assertGreater(row["slope_search_max"], row["estimated_slope"])
             self.assertEqual(row["local_match_status"], "gate_passed_unadjudicated")
             self.assertEqual(
                 row["reliability_semantics"],
@@ -346,6 +356,19 @@ class SelectivePolicyV11Tests(unittest.TestCase):
                 row["acoustic_shift_ms"],
                 -row["editor_start_residual_ms"],
             )
+            self.assertFalse(row["automatic_timing_change_allowed"])
+            self.assertFalse(row["automatic_text_change_allowed"])
+            self.assertFalse(row["timing_mutation_performed"])
+
+    def test_slope_search_endpoint_is_diagnostic_only(self) -> None:
+        minimum, maximum, boundary_hit = _slope_search_metadata(
+            [0.94, 0.95, 0.96, 0.97, 0.98, 0.99, 1.0, 1.01, 1.02, 1.03, 1.04, 1.05, 1.06],
+            1.06,
+            step=0.01,
+        )
+        self.assertEqual(minimum, 0.94)
+        self.assertEqual(maximum, 1.06)
+        self.assertTrue(boundary_hit)
 
 
 if __name__ == "__main__":

@@ -305,3 +305,11 @@ Public regression uses generic synthetic LRC only and covers metadata-only group
 - Pro now orders strong-model actionable candidates before weak/unknown model extrapolations and retains anchored cross-script timing candidates in the smallest high queue.
 - Private rerun recovered two additional canonical texts, reduced mapped text reviews, excluded adjudicated false timing candidates from Smart high-value positions, and retained the adjudicated true candidates. No private content is committed or hard-coded.
 - Smart remains no-audio and performs no new timing mutation; Pro automatic text/timing writeback remains disabled.
+
+## 2026-08-22 — Smart v1.2.8 / Pro v1.2.3 production-safety review
+
+- Separated every actionable Smart timing suspicion from the smaller high-value Pro evidence subset; actionable work can no longer disappear behind ranking or produce a false-ready product status.
+- Acoustic schema 1.3 records slope search min/max and boundary-hit state. A local match at/near a slope endpoint remains diagnostic retrieval evidence but cannot support/rebut Smart or assert a Pro-only timing anomaly.
+- Removed the unsafe bare-CJK surname heuristic from shared canonical parsing. Explicit roles, separated casts and parenthesized role markers remain metadata; ambiguous short CJK colon lines remain lexical and therefore preserve canonical ordinal truth.
+- Kept slope search bounded/local and retained existing score/margin thresholds, max-jobs selection, shadow competitor behavior, exact artifact binding and forced-evidence authority.
+- Kept `automatic_timing_change_allowed=false`, `automatic_text_change_allowed=false`, `timing_mutation_performed=false`; Pro still emits evidence and decisions only and does not create a Pro SRT.
