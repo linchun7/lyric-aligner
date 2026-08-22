@@ -20,13 +20,31 @@ def _safe_relative(value: object, *, label: str) -> Path:
     return path
 
 
+def _manifest_root(path: Path) -> Path:
+    resolved = Path(path).resolve()
+    if (
+        resolved.name == "task_manifest.json"
+        and resolved.parent.name == "qa"
+        and resolved.parent.parent.parent.name == "private"
+    ):
+        return resolved.parent.parent.parent.parent
+    raise TaskPathSafetyError(
+        "task manifest must be stored at private/<task>/qa/task_manifest.json"
+    )
+
+
 def protected_task_input_paths(
     *,
     manifest_path: Path,
     manifest: Mapping[str, Any],
-    repository_root: Path,
+    repository_root: Path | None = None,
 ) -> dict[str, Path]:
     """Return every manifest-bound path that artifact writers must not overwrite.
+
+    The manifest location is the path authority, matching the task-manifest
+    contract. ``repository_root`` is accepted only so the first callers from the
+    same maintenance series remain source-compatible; it is deliberately not a
+    second root source and is ignored.
 
     Directory inputs are expanded to every fingerprinted file member because
     the generic path-collision guard compares concrete paths rather than doing
@@ -35,12 +53,14 @@ def protected_task_input_paths(
     malformed records instead of trusting that precondition implicitly.
     """
 
-    protected: dict[str, Path] = {"task_manifest": Path(manifest_path)}
+    del repository_root
+    resolved_manifest = Path(manifest_path).resolve()
+    protected: dict[str, Path] = {"task_manifest": resolved_manifest}
     inputs = manifest.get("inputs")
     if not isinstance(inputs, Mapping):
         raise TaskPathSafetyError("task manifest inputs must be an object")
 
-    root = Path(repository_root)
+    root = _manifest_root(resolved_manifest)
     for role, record in sorted(inputs.items(), key=lambda item: str(item[0])):
         if record is None:
             continue
