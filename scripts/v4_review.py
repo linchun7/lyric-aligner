@@ -20,6 +20,8 @@ from lyric_aligner.contracts.artifacts import (
     validate_artifact_output,
     validate_upstream_artifact,
 )
+from lyric_aligner.io.path_safety import validate_separate_artifact_paths
+from lyric_aligner.io.task_path_safety import protected_task_input_paths
 from lyric_aligner.review.decisions import (
     REVIEW_DECISION_SCHEMA_VERSION,
     ReviewDecisionError,
@@ -41,7 +43,7 @@ def _load_run(
     task_manifest: Path,
     run_path: Path,
     run_artifact_path: Path,
-) -> tuple[dict, dict, str]:
+) -> tuple[dict, dict, dict, str]:
     task = load_task_manifest(task_manifest)
     issues = verify_manifest_inputs(task_manifest, task)
     if issues:
@@ -64,14 +66,47 @@ def _load_run(
         raise ValueError("production run algorithm version mismatch; rerun v4_run")
     if run.get("task_fingerprint_sha256") != fingerprint:
         raise ValueError("production run belongs to another task")
-    return run, artifact, fingerprint
+    return task, run, artifact, fingerprint
+
+
+def _protected_review_inputs(
+    *,
+    task_manifest: Path,
+    task: dict,
+    run_path: Path,
+    run_artifact_path: Path,
+    decisions: Path | None = None,
+) -> dict[str, Path]:
+    protected = protected_task_input_paths(
+        manifest_path=task_manifest,
+        manifest=task,
+        repository_root=REPOSITORY_ROOT,
+    )
+    protected.update(
+        {
+            "production_run": run_path,
+            "production_run_artifact": run_artifact_path,
+        }
+    )
+    if decisions is not None:
+        protected["review_decisions"] = decisions
+    return protected
 
 
 def command_template(args: argparse.Namespace) -> int:
-    run, artifact, _ = _load_run(
+    task, run, artifact, _ = _load_run(
         task_manifest=args.task_manifest,
         run_path=args.run,
         run_artifact_path=args.run_artifact,
+    )
+    validate_separate_artifact_paths(
+        inputs=_protected_review_inputs(
+            task_manifest=args.task_manifest,
+            task=task,
+            run_path=args.run,
+            run_artifact_path=args.run_artifact,
+        ),
+        outputs={"review_template": args.out},
     )
     template = build_review_template(
         run,
@@ -92,10 +127,23 @@ def command_template(args: argparse.Namespace) -> int:
 
 
 def command_apply(args: argparse.Namespace) -> int:
-    run, artifact, fingerprint = _load_run(
+    task, run, artifact, fingerprint = _load_run(
         task_manifest=args.task_manifest,
         run_path=args.run,
         run_artifact_path=args.run_artifact,
+    )
+    validate_separate_artifact_paths(
+        inputs=_protected_review_inputs(
+            task_manifest=args.task_manifest,
+            task=task,
+            run_path=args.run,
+            run_artifact_path=args.run_artifact,
+            decisions=args.decisions,
+        ),
+        outputs={
+            "reviewed_run": args.out,
+            "review_artifact": args.artifact_out,
+        },
     )
     template = _load(args.decisions)
     reviewed = apply_review_template(

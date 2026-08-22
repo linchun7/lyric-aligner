@@ -17,6 +17,8 @@ from lyric_aligner.contracts.artifacts import (
     validate_artifact_output,
     validate_upstream_artifact,
 )
+from lyric_aligner.io.path_safety import validate_separate_artifact_paths
+from lyric_aligner.io.task_path_safety import protected_task_input_paths
 from lyric_aligner.qa.final_integrity import FinalIntegrityError, build_release_artifact_manifest
 from task_contract import load_task_manifest, verify_manifest_inputs
 
@@ -33,6 +35,8 @@ def _load_upstream_artifacts(paths: list[Path], *, fingerprint: str) -> tuple[tu
     unprofiled_overrides: list[dict] = []
     for path in paths:
         payload = json.loads(path.read_text(encoding="utf-8-sig"))
+        if not isinstance(payload, dict):
+            raise ValueError(f"upstream artifact {path} must contain a JSON object")
         issues = validate_upstream_artifact(payload, expected_task_fingerprint=fingerprint)
         if issues:
             raise ValueError(f"invalid upstream artifact {path}: " + "; ".join(issues))
@@ -43,6 +47,8 @@ def _load_upstream_artifacts(paths: list[Path], *, fingerprint: str) -> tuple[tu
         if version:
             algorithm_versions.add(version)
         config = payload.get("normalized_config", {})
+        if not isinstance(config, dict):
+            raise ValueError(f"upstream artifact {path} has invalid normalized_config")
         profile_id = str(config.get("calibration_profile_id") or "").strip()
         profile_version = str(config.get("calibration_profile_version") or "").strip()
         if profile_id:
@@ -86,6 +92,8 @@ def _validate_final_render_binding(
     matches: list[tuple[Path, dict]] = []
     for path in paths:
         payload = json.loads(path.read_text(encoding="utf-8-sig"))
+        if not isinstance(payload, dict):
+            raise ValueError(f"upstream artifact {path} must contain a JSON object")
         if payload.get("stage") == "final_render":
             matches.append((path, payload))
     if len(matches) != 1:
@@ -145,6 +153,28 @@ def main() -> int:
         if issues:
             raise ValueError("task manifest validation failed: " + "; ".join(issues))
         fingerprint = str(task["task_fingerprint_sha256"])
+
+        protected_inputs = protected_task_input_paths(
+            manifest_path=args.task_manifest,
+            manifest=task,
+            repository_root=REPOSITORY_ROOT,
+        )
+        protected_inputs.update(
+            {
+                "final_srt": args.final_srt,
+                "audit_csv": args.report,
+                "qa_json": args.qa_json,
+                **{
+                    f"upstream_artifact_{index}": path
+                    for index, path in enumerate(args.upstream_artifact)
+                },
+            }
+        )
+        validate_separate_artifact_paths(
+            inputs=protected_inputs,
+            outputs={"release_manifest": args.out_manifest},
+        )
+
         upstream_ids, upstream_metadata = _load_upstream_artifacts(
             args.upstream_artifact, fingerprint=fingerprint
         )

@@ -12,7 +12,12 @@ from pathlib import PurePosixPath
 
 CHANGE_RECORD = "references/v4-change-record.md"
 STATUS_DOC = "references/v4-status.md"
-CLI_DOCS = {"SKILL.md", "references/v4-runtime-guide.md", "references/workflow.md"}
+CLI_DOCS = {
+    "SKILL.md",
+    "references/v4-cli-contract.md",
+    "references/v4-runtime-guide.md",
+    "references/workflow.md",
+}
 CONTRACT_DOCS = {
     "references/v4-implementation.md",
     "references/workflow.md",
