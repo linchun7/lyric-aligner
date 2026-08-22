@@ -19,7 +19,13 @@ def validate_separate_artifact_paths(
     inputs: Mapping[str, Path],
     outputs: Mapping[str, Path | None],
 ) -> None:
-    """Fail closed when outputs collide with source inputs or each other."""
+    """Fail closed when outputs collide with source inputs or each other.
+
+    Existing directory inputs protect their entire subtree, including output
+    filenames that do not exist yet. This prevents artifact writers from adding
+    a new file to a fingerprinted input directory and silently invalidating the
+    task manifest after verification.
+    """
 
     resolved_inputs = {
         label: _resolved(path)
@@ -29,6 +35,11 @@ def validate_separate_artifact_paths(
         label: _resolved(path)
         for label, path in outputs.items()
         if path is not None
+    }
+    input_directories = {
+        label: resolved_inputs[label]
+        for label, original in inputs.items()
+        if Path(original).expanduser().is_dir()
     }
 
     input_by_path: dict[Path, list[str]] = {}
@@ -47,6 +58,12 @@ def validate_separate_artifact_paths(
                 f"output {', '.join(sorted(output_labels))} collides with input "
                 f"{', '.join(sorted(input_labels))}: {path}"
             )
+        for input_label, directory in input_directories.items():
+            if path != directory and path.is_relative_to(directory):
+                collisions.append(
+                    f"output {', '.join(sorted(output_labels))} is inside input directory "
+                    f"{input_label}: {directory}"
+                )
         if len(output_labels) > 1:
             collisions.append(
                 f"outputs {', '.join(sorted(output_labels))} share the same path: {path}"
