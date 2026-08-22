@@ -74,7 +74,19 @@ production_authority_granted = false
 
 release manifest 不得覆盖 task manifest/任一 task input、final SRT、audit CSV、QA JSON 或任何 upstream artifact。
 
-release authority gate 不因路径保护改变：V4 仍要求 exact final-render binding + `segmentation_authority=editor_reconciled` + release QA 完整通过。
+V4 release 只有在唯一 exact final-render artifact 的 production authority **三层一致**时才可继续：
+
+```text
+normalized_config.segmentation_authority = editor_reconciled
+evidence.segmentation_authority          = editor_reconciled
+evidence.publish_ready                   = true
+exact QA.segmentation_authority           = editor_reconciled
+exact QA.publish_ready                    = true
+```
+
+artifact evidence 或 exact QA 任何一处仍有非空 `release_blocked_reason` 时必须 fail closed。不能只把 `normalized_config` 改成 production authority，而让 evidence/QA 仍保持 evaluation-only；这种半升级状态不得生成 release manifest。
+
+之后仍需通过既有 exact SRT/audit/QA hash binding、task fingerprint、algorithm version、calibration profile 与 release QA 完整检查。路径保护和三层一致性检查都不创造新的 segmentation authority；它们只验证真正的 production materializer 是否给出了完整一致的证据。
 
 ## 3. JSON 类型必须 fail closed
 
@@ -88,7 +100,7 @@ Release/evaluation authority 不能依赖 Python 的宽松强制转换。
 - `"0"`：无效；
 - `null`：无效。
 
-相同原则适用于上面列出的 render authority counts。同理，artifact 顶层和 `normalized_config` 在需要 object contract 的位置必须确实是 JSON object；畸形、自洽重哈希的 artifact 也只能得到受控 fail-closed 错误，不能靠 `AttributeError` 等未处理异常泄漏出契约。
+相同原则适用于上面列出的 render authority counts。同理，artifact 顶层、`normalized_config` 与 production release 需要消费的 `evidence` 在 object contract 位置必须确实是 JSON object；畸形、自洽重哈希的 artifact 也只能得到受控 fail-closed 错误，不能靠 `AttributeError` 等未处理异常泄漏出契约。
 
 ## 4. 回归要求
 
@@ -99,6 +111,7 @@ Release/evaluation authority 不能依赖 Python 的宽松强制转换。
 - review template/apply 的碰撞不会改变被保护输入字节；
 - release manifest 碰撞不会改变被保护输入字节；
 - malformed review/rebuild/render authority count 被拒绝；
+- final-render config/evidence/QA authority 任一层不一致时 release 被拒绝；
 - 正常 render/review/release/evaluation 路径不因 guard 产生 false positive。
 
 真实歌曲名、歌词、cue、timestamp、audio 或私有路径不得进入本文件或公开测试。
