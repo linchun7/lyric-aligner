@@ -72,7 +72,7 @@ def line(index, text, source_start, source_end, mix_start, mix_end, **extra):
 
 
 class V4CombinedRecompositionEndToEndTests(unittest.TestCase):
-    def test_disjoint_cut_and_overlap_materializations_compose_render_and_release(self):
+    def test_disjoint_cut_and_overlap_materializations_compose_evaluation_render_and_block_release(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             task_root = root / "private" / "combined-task"
@@ -688,7 +688,13 @@ class V4CombinedRecompositionEndToEndTests(unittest.TestCase):
             )
 
             qa = json.loads(final_qa.read_text(encoding="utf-8"))
-            self.assertTrue(qa["publish_ready"])
+            self.assertFalse(qa["publish_ready"])
+            self.assertEqual(
+                qa["segmentation_authority"], "canonical_line_evaluation_only"
+            )
+            self.assertEqual(
+                qa["release_blocked_reason"], "editor_cue_reconciliation_required"
+            )
             self.assertEqual(qa["source_run_stage"], "combined_recomposition")
             self.assertEqual(qa["rebuilt_cut_occurrence_count"], 1)
             self.assertEqual(qa["confirmed_overlap_region_count"], 1)
@@ -715,10 +721,16 @@ class V4CombinedRecompositionEndToEndTests(unittest.TestCase):
                     str(release_path),
                 ]
             )
-            self.assertEqual(release_result.returncode, 0, msg=release_result.stderr)
-            release = json.loads(release_path.read_text(encoding="utf-8"))
-            self.assertEqual(release["stage"], "release")
-            self.assertEqual(release["algorithm_version"], __version__)
+            self.assertNotEqual(release_result.returncode, 0)
+            self.assertIn(
+                "no editor-reconciled segmentation authority",
+                release_result.stderr,
+            )
+            self.assertIn(
+                "canonical-line rendering is evaluation-only",
+                release_result.stderr,
+            )
+            self.assertFalse(release_path.exists())
 
 
 if __name__ == "__main__":
