@@ -329,3 +329,11 @@ Public regression uses generic synthetic LRC only and covers metadata-only group
 - Fixed the ASR executor so job-level `auto`/empty hints do not mask canonical-local routing when an explicit source language is available. Mixed/unknown and source-language `auto` remain backend auto-detection; no static Han/Latin guess was introduced.
 - Kept slope-boundary results diagnostic-only. Real adjudication showed that bounded acoustic agreement alone still cannot distinguish a normal split cue from a true vocal-onset shift, so slope expansion was not promoted to timing authority.
 - Kept `automatic_timing_change_allowed=false`, `automatic_text_change_allowed=false`, `timing_mutation_performed=false`, and `independent_vocal_onset_evidence_used=false`.
+
+## 2026-08-22 — Pro v1.2.6 source-search boundary safety
+
+- Acoustic schema 1.4 records the valid source-start search interval and an explicit `source_search_boundary_hit` result for the winning slope.
+- A local match that hits or approaches either source-position boundary remains useful retrieval diagnostics but cannot support, rebut, or independently declare a timing anomaly.
+- Existing score/margin thresholds and bounded source/mix windows are unchanged; no wider scan or automatic subtitle mutation is introduced.
+- Production A/B showed that forcing a code-switch line's local language over a wider timing-search window could reduce a previously strong canonical support score. Current plans therefore pin ASR only when local and source language agree; conflicts carry `asr_force_auto_detect=true`. A rejected cue-local-window experiment is not part of the production algorithm because it reduced high-support results on timing-suspicious cues.
+- In the private 790-cue rerun, schema 1.4 found 60 source-position boundary hits among 95 acoustic jobs and removed timing authority from two otherwise slope-interior matches. Track-consistent/force-auto routing preserved every comparable old auto-detect support score, restored one strong code-switch result that unconditional local pinning had degraded, and produced three canonical-supported text decisions. No private lyric, cue number or timestamp is encoded in production logic or public regression.

@@ -12,7 +12,7 @@ description: Reconstruct, review, materialize, diagnose and render multilingual 
 ```text
 Standard -> Text Repair V2.1
 Smart    -> Sequence Reconciliation + Anchor Timeline Repair v1.2.10
-Pro      -> Selective Audio Repair v1.2.5
+Pro      -> Selective Audio Repair v1.2.6
 Max      -> Full V4 Alignment（具体算法版本以 references/v4-status.md / runtime snapshot 为准）
 ```
 
@@ -267,7 +267,7 @@ OR pro_escalation_required == true
 python scripts/v4_pro_selective.py ...
 ```
 
-Pro v1.2.5 必须绑定**当前 Smart schema + current Smart policy + exact Smart SRT/canonical hashes**。当前只接受 `schema_version=smart-1.1` 且 `policy_id=smart-validation-policy-2026-08-22-v1.2.10`；旧 Smart artifact 不能直接复用，版本/policy/hash 不匹配时先重新跑当前 Smart。
+Pro v1.2.6 必须绑定**当前 Smart schema + current Smart policy + exact Smart SRT/canonical hashes**。当前只接受 `schema_version=smart-1.1` 且 `policy_id=smart-validation-policy-2026-08-22-v1.2.10`；旧 Smart artifact 不能直接复用，版本/policy/hash 不匹配时先重新跑当前 Smart。
 
 实现上，`smart_policy.py` 是 frozen v1.2.4 base contract，v1.2.5/v1.2.6/v1.2.7/v1.2.8 是顺序 wrapper；**`smart_current.py` 才是唯一 current-production Smart facade**。Smart CLI 与 Pro compatibility gate 都必须从它取得当前 schema/policy/function binding，不能从旧版本模块的常量推断 current policy。
 
@@ -289,7 +289,7 @@ unmapped review
 
 相邻 acoustic jobs 可共享一个 bounded mix region，但 ASR-only job 不得无意义扩大 acoustic decode。歌曲交界的 neighbouring-source competitor 是 shadow evidence，不能直接改 timing。
 
-Pro v1.2.5 先消费 Smart 明确声明的 high-value 预算子集，再在同类任务中按 actionable/text、local model 与绝对 shift 排序；完整 manual queue 仍独立保留，不能被 high-value 子集覆盖。`asr_language_hint=auto` 不再阻断已有 source language 下的 canonical-local 语言路由；source language 本身未知时仍 fail closed 交给 backend auto-detect。局部声学的 `local_match_gate_passed` 只表示 retrieval 成功；只有显式 `timing_fusion_evidence_eligible=true` 且 slope optimum 不在/不接近搜索边界时才能参与 support/rebuttal。边界结果保留 diagnostic，不是 timing anomaly authority。
+Pro v1.2.6 先消费 Smart 明确声明的 high-value 预算子集，再在同类任务中按 actionable/text、local model 与绝对 shift 排序；完整 manual queue 仍独立保留，不能被 high-value 子集覆盖。只有 canonical-local language 与已知 source language 一致时才固定 `zh/en/ko/ja`；code-switch/mixed/unknown 使用显式 `asr_force_auto_detect=true`，防止宽 timing-search 窗口被错误锁成局部语言。局部声学的 `local_match_gate_passed` 只表示 retrieval 成功；只有显式 `timing_fusion_evidence_eligible=true` 且 slope optimum 与 source-start optimum 都不在/不接近各自搜索边界时才能参与 support/rebuttal。任一边界结果都只保留 diagnostic，不是 timing anomaly authority。
 
 当前 Pro 仍固定：
 
@@ -510,7 +510,7 @@ status == review_required OR pro_escalation_required == true
     -> 进入 Pro / 人工 review；当前 Smart SRT 不是 final-ready
 ```
 
-### 3. Pro / Selective Audio Repair v1.2.5
+### 3. Pro / Selective Audio Repair v1.2.6
 
 先生成计划，默认仍不读 audio：
 
@@ -522,7 +522,7 @@ python scripts/v4_pro_selective.py `
   --plan-out "output/<任务>/<任务>_PRO_PLAN.json"
 ```
 
-Pro v1.2.5 只接受当前 Smart v1.2.10 policy；不要把旧 report 直接送入 Pro。CLI 还会继续核验 exact Smart SRT / canonical hash binding。
+Pro v1.2.6 只接受当前 Smart v1.2.10 policy；不要把旧 report 直接送入 Pro。CLI 还会继续核验 exact Smart SRT / canonical hash binding。
 
 需要 local source<->mix acoustic evidence 时：
 

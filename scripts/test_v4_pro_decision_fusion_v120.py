@@ -39,6 +39,7 @@ def _acoustic(
     shift_ms: int,
     passed: bool = True,
     boundary_hit: bool = False,
+    source_boundary_hit: bool = False,
 ) -> dict:
     editor = cue * 10_000
     return {
@@ -51,7 +52,10 @@ def _acoustic(
         "slope_search_min": 0.94,
         "slope_search_max": 1.06,
         "slope_search_boundary_hit": boundary_hit,
-        "timing_fusion_evidence_eligible": passed and not boundary_hit,
+        "source_search_boundary_hit": source_boundary_hit,
+        "timing_fusion_evidence_eligible": (
+            passed and not boundary_hit and not source_boundary_hit
+        ),
         "shadow_evidence_only": False,
     }
 
@@ -76,11 +80,11 @@ class ProDecisionFusionV120Tests(unittest.TestCase):
         }
         plan = {
             "schema_version": "1.1",
-            "policy_id": "smart-to-pro-reason-aware-2026-08-22-v1.2.5",
+            "policy_id": "smart-to-pro-reason-aware-2026-08-22-v1.2.6",
             "jobs": [_job(cue) for cue in range(6)],
         }
         acoustic = {
-            "schema_version": "1.3",
+            "schema_version": "1.4",
             "jobs": [
                 _acoustic(0, shift_ms=-1_200),
                 _acoustic(1, shift_ms=650),
@@ -125,11 +129,11 @@ class ProDecisionFusionV120Tests(unittest.TestCase):
         }
         plan = {
             "schema_version": "1.1",
-            "policy_id": "smart-to-pro-reason-aware-2026-08-22-v1.2.5",
+            "policy_id": "smart-to-pro-reason-aware-2026-08-22-v1.2.6",
             "jobs": [_job(1), _job(2)],
         }
         acoustic = {
-            "schema_version": "1.3",
+            "schema_version": "1.4",
             "jobs": [
                 _acoustic(1, shift_ms=650, boundary_hit=True),
                 _acoustic(2, shift_ms=-50, boundary_hit=True),
@@ -149,12 +153,71 @@ class ProDecisionFusionV120Tests(unittest.TestCase):
             self.assertFalse(row["timing_fusion_evidence_eligible"])
             self.assertEqual(
                 row["timing_evidence_semantics"],
-                "diagnostic_only_slope_boundary_limited",
+                "diagnostic_only_search_boundary_limited",
             )
             self.assertNotIn(
                 row["timing_state"],
                 {"smart_candidate_supported", "smart_candidate_rebutted"},
             )
+
+    def test_source_search_boundary_match_cannot_adjudicate_timing(self) -> None:
+        smart = {
+            "schema_version": "smart-1.1",
+            "policy_id": "smart-validation-policy-2026-08-22-v1.2.10",
+            "timing_decisions": [_timing(1, proposal=11_200)],
+            "text_decisions": [{"cue_ordinal": 1, "action": "unchanged"}],
+        }
+        plan = {
+            "schema_version": "1.1",
+            "policy_id": "smart-to-pro-reason-aware-2026-08-22-v1.2.6",
+            "jobs": [_job(1)],
+        }
+        acoustic = {
+            "schema_version": "1.4",
+            "jobs": [
+                _acoustic(1, shift_ms=650, source_boundary_hit=True),
+            ],
+        }
+
+        result = build_pro_decisions(
+            smart_report=smart,
+            plan=plan,
+            acoustic_evidence=acoustic,
+        )
+        row = result["decisions"][0]
+        self.assertEqual(row["timing_state"], "smart_candidate_unverified")
+        self.assertTrue(row["local_match_gate_passed"])
+        self.assertFalse(row["timing_fusion_evidence_eligible"])
+        self.assertTrue(row["source_search_boundary_hit"])
+        self.assertEqual(
+            row["timing_evidence_semantics"],
+            "diagnostic_only_search_boundary_limited",
+        )
+
+    def test_legacy_acoustic_without_source_boundary_field_fails_closed(self) -> None:
+        smart = {
+            "schema_version": "smart-1.1",
+            "policy_id": "smart-validation-policy-2026-08-22-v1.2.10",
+            "timing_decisions": [_timing(1, proposal=11_200)],
+            "text_decisions": [{"cue_ordinal": 1, "action": "unchanged"}],
+        }
+        plan = {
+            "schema_version": "1.1",
+            "policy_id": "smart-to-pro-reason-aware-2026-08-22-v1.2.6",
+            "jobs": [_job(1)],
+        }
+        legacy_row = _acoustic(1, shift_ms=650)
+        legacy_row.pop("source_search_boundary_hit")
+        acoustic = {"schema_version": "1.3", "jobs": [legacy_row]}
+
+        result = build_pro_decisions(
+            smart_report=smart,
+            plan=plan,
+            acoustic_evidence=acoustic,
+        )
+        row = result["decisions"][0]
+        self.assertEqual(row["timing_state"], "smart_candidate_unverified")
+        self.assertFalse(row["timing_fusion_evidence_eligible"])
 
     def test_text_and_timing_axes_are_independent(self) -> None:
         smart = {
@@ -171,7 +234,7 @@ class ProDecisionFusionV120Tests(unittest.TestCase):
         }
         plan = {
             "schema_version": "1.1",
-            "policy_id": "smart-to-pro-reason-aware-2026-08-22-v1.2.5",
+            "policy_id": "smart-to-pro-reason-aware-2026-08-22-v1.2.6",
             "jobs": [_job(0, text_review=True)],
         }
         asr = {
@@ -211,10 +274,10 @@ class ProDecisionFusionV120Tests(unittest.TestCase):
         job["canonical_text_sha256"] = "synthetic-hash"
         plan = {
             "schema_version": "1.1",
-            "policy_id": "smart-to-pro-reason-aware-2026-08-22-v1.2.5",
+            "policy_id": "smart-to-pro-reason-aware-2026-08-22-v1.2.6",
             "jobs": [job],
         }
-        acoustic = {"schema_version": "1.3", "jobs": [_acoustic(1, shift_ms=650)]}
+        acoustic = {"schema_version": "1.4", "jobs": [_acoustic(1, shift_ms=650)]}
 
         result = build_pro_decisions(
             smart_report=smart,
@@ -250,10 +313,10 @@ class ProDecisionFusionV120Tests(unittest.TestCase):
         job["canonical_line_index"] = 7
         plan = {
             "schema_version": "1.1",
-            "policy_id": "smart-to-pro-reason-aware-2026-08-22-v1.2.5",
+            "policy_id": "smart-to-pro-reason-aware-2026-08-22-v1.2.6",
             "jobs": [job],
         }
-        acoustic = {"schema_version": "1.3", "jobs": [_acoustic(1, shift_ms=650)]}
+        acoustic = {"schema_version": "1.4", "jobs": [_acoustic(1, shift_ms=650)]}
 
         row = build_pro_decisions(
             smart_report=smart,

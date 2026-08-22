@@ -22,7 +22,7 @@ from lyric_aligner.alignment.selective_repair import (
     SelectiveRepairPlanningError,
     build_selective_repair_plan,
 )
-from lyric_aligner.text.language_spans import asr_language_hint_for_text
+from lyric_aligner.text.language_spans import asr_language_hint_for_bounded_context
 from lyric_aligner.text_repair import SubtitleCue
 from lyric_aligner.timeline.anchor_repair import TimedCanonicalOccurrence
 from lyric_aligner.timeline.smart_current import (
@@ -31,7 +31,7 @@ from lyric_aligner.timeline.smart_current import (
     SMART_TIMING_ACTIONABLE_SHIFT_MS,
 )
 
-PRO_POLICY_ID = "smart-to-pro-reason-aware-2026-08-22-v1.2.5"
+PRO_POLICY_ID = "smart-to-pro-reason-aware-2026-08-22-v1.2.6"
 # Backward-compatible import name retained for existing plan consumers.
 PRO_V11_POLICY_ID = PRO_POLICY_ID
 
@@ -384,6 +384,10 @@ def _boundary_competitor(
     language_profile = str(
         language_by_source.get(alternative.source_ordinal, "auto") or "auto"
     )
+    asr_hint = asr_language_hint_for_bounded_context(
+        alternative.text,
+        track_language=language_profile,
+    )
     rate = _ready_rate(models, alternative.source_ordinal)
     identity = {
         "boundary_competitor_for": primary["job_id"],
@@ -402,11 +406,8 @@ def _boundary_competitor(
         "canonical_line_index": alternative.ordinal,
         "canonical_text_sha256": _text_sha(alternative.text),
         "language_profile": language_profile,
-        "asr_language_hint": asr_language_hint_for_text(
-            alternative.text,
-            track_language=language_profile,
-        )
-        or "auto",
+        "asr_language_hint": asr_hint or "auto",
+        "asr_force_auto_detect": asr_hint is None,
         "mix_window_ms": list(primary["mix_window_ms"]),
         "source_window_ms": _adaptive_source_window(
             alternative,
@@ -672,6 +673,11 @@ def build_selective_repair_plan_v11(
         "plan_truncated": bool(primary_truncated),
         "reason_counts": dict(sorted(reason_counts.items())),
         "asr_language_hint_counts": dict(sorted(language_hint_counts.items())),
+        "asr_force_auto_detect_count": sum(
+            bool(job.get("asr_force_auto_detect"))
+            for job in primary_jobs
+            if "mix_asr" in (job.get("requested_capabilities") or [])
+        ),
         "region_count": len(all_regions),
         "acoustic_region_count": len(acoustic_regions),
         "planned_mix_audio_ms_unmerged": unmerged_ms,

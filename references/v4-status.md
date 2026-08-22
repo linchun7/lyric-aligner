@@ -10,7 +10,7 @@
 ```text
 Standard -> Text Repair V2.1
 Smart    -> Canonical Sequence Reconciliation + Anchor Timeline Repair v1.2.10（no-audio）
-Pro      -> Selective Audio Repair v1.2.5（局部 audio evidence）
+Pro      -> Selective Audio Repair v1.2.6（局部 audio evidence）
 Max      -> Full V4 Alignment
 ```
 
@@ -433,8 +433,8 @@ Pro v1.2.3 accepts only Smart v1.2.8. Acoustic schema 1.3 separates local retrie
 
 The first v1.2.8 private acceptance exposed canonical pollution from genuine bare ensemble-member roles. Smart v1.2.9 adds narrow same-file contextual proof: explicit multi-cast membership, plus a stricter repeated/adjacent ensemble grammar for cast members omitted from those rows. Generic bare CJK lexical labels remain fail-closed. The private Smart rerun restored the pre-regression text/timing mapping and additionally removed one genuine role the former surname heuristic missed. Pro v1.2.4 changes only the accepted Smart binding. All automatic mutation and forced-evidence authority limits remain unchanged.
 
-## 2026-08-22 Smart v1.2.10 / Pro v1.2.5 accuracy hardening status
+## 2026-08-22 Smart v1.2.10 / Pro v1.2.6 accuracy hardening status
 
 Smart no longer assigns one line-LRC onset to every editor cue in a multi-cue-to-one-line span. The first cue may use the line onset; an internal cue requires an exact normalized editor/canonical token partition and a reliable token timestamp, otherwise it is reported as `segmentation_internal_boundary_unvalidated` with no proposal. The private 790-cue rerun kept the SRT byte-identical while reducing actionable timing suspicions from 87 to 77; confirmed one-to-one anomalies remained actionable.
 
-Pro now treats job-level `auto` as no concrete ASR language override, so explicit source-language metadata can activate canonical-local `zh/en/ko/ja` routing while mixed/unknown remains backend auto-detection. Smart's high-value timing subset is now an actual first-budget sort key without replacing the complete manual queue. Pro automatic text/timing mutation and independent-vocal-onset authority remain disabled.
+Pro distinguishes an absent ASR override from explicit `asr_force_auto_detect`. It pins `zh/en/ko/ja` only when canonical-local and known source language agree; cross-language local lines, mixed/unknown and source-auto remain backend auto-detection because the bounded window may include adjacent vocals. Smart's high-value timing subset is now an actual first-budget sort key without replacing the complete manual queue. Acoustic schema 1.4 adds source-start boundary metadata; slope or source-position boundary optima remain diagnostic-only. Pro automatic text/timing mutation and independent-vocal-onset authority remain disabled.

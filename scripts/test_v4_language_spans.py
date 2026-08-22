@@ -1,6 +1,7 @@
 import unittest
 
 from lyric_aligner.text.language_spans import (
+    asr_language_hint_for_bounded_context,
     asr_language_hint_for_text,
     editor_mode_for_span,
     language_spans,
@@ -39,6 +40,28 @@ class V4LanguageSpanTests(unittest.TestCase):
     def test_mixed_profile_does_not_drop_uncertain_han_and_force_english(self):
         self.assertIsNone(
             asr_language_hint_for_text("你好 hello", track_language="mixed")
+        )
+
+    def test_bounded_context_hint_requires_track_language_agreement(self):
+        self.assertEqual(
+            asr_language_hint_for_bounded_context(
+                "hello world",
+                track_language="en",
+            ),
+            "en",
+        )
+        self.assertEqual(
+            asr_language_hint_for_bounded_context(
+                "你好世界",
+                track_language="zh",
+            ),
+            "zh",
+        )
+        self.assertIsNone(
+            asr_language_hint_for_bounded_context(
+                "hello world",
+                track_language="zh",
+            )
         )
 
 

@@ -126,7 +126,7 @@ timing_review_count  # legacy unresolved total，不是人工队列
 
 v1.2.10 通过版本隔离开关启用 split-line guard，历史 policy 的显式入口保持可复现。它不再把一个 canonical line onset 重复授予映射到该行的多个 editor cues。span 首 cue 可继续使用 line onset；内部 cue 只有在合并后的 editor 文本与 canonical token stream 精确一致、且内部边界正好落在严格后移、仍处于该 canonical line 内的可靠 token boundary 时，才使用对应 token onset。否则输出 `segmentation_internal_boundary_unvalidated` 且不生成 timing proposal。
 
-## 4. Pro v1.2.5
+## 4. Pro v1.2.6
 
 ### 4.1 先只计划，不读 audio
 
@@ -140,7 +140,7 @@ python scripts/v4_pro_selective.py `
   --plan-out "output/<任务>/<任务>_PRO_PLAN.json"
 ```
 
-Pro v1.2.5 必须读取**当前 Smart v1.2.10 policy** 产出的 `smart-1.1` report。旧 Smart report 即使 schema 相同，只要 policy id 不是当前版本，也会要求重新跑 Smart。
+Pro v1.2.6 必须读取**当前 Smart v1.2.10 policy** 产出的 `smart-1.1` report。旧 Smart report 即使 schema 相同，只要 policy id 不是当前版本，也会要求重新跑 Smart。
 
 reason-aware routing：
 
@@ -168,11 +168,13 @@ region_count
 acoustic_region_count
 planned_mix_audio_ms_unmerged / merged
 planned_acoustic_mix_audio_ms_unmerged / merged
+asr_language_hint_counts
+asr_force_auto_detect_count
 ```
 
-`--max-jobs` 在当前 Pro v1.2.5 中约束 **primary unresolved cues**。Smart 的 `timing_high_value_pro_candidate_positions` 先获得预算优先级；其后再按 actionable/text、strong-vs-weak local model 与 `|Smart shift|` 排序。该优先级不改变完整 manual queue。Shadow competitor 不消耗 primary budget。
+`--max-jobs` 在当前 Pro v1.2.6 中约束 **primary unresolved cues**。Smart 的 `timing_high_value_pro_candidate_positions` 先获得预算优先级；其后再按 actionable/text、strong-vs-weak local model 与 `|Smart shift|` 排序。该优先级不改变完整 manual queue。Shadow competitor 不消耗 primary budget。
 
-`asr_language_hint=auto` 表示“没有具体 override”，不会再遮蔽 canonical-local routing。显式 `zh/en/ko/ja` source language 下，单一局部语言可传给 ASR；mixed/unknown 或 source language 本身为 auto 时继续使用 backend auto-detect，不从 Han/Latin script 静态猜语言。
+`asr_language_hint=auto` 表示“没有具体 override”。当前 planner 只有在 canonical-local language 与显式 `zh/en/ko/ja` source language 一致时才固定 ASR；局部 code-switch 与整首语言冲突、mixed/unknown、或 source language 本身为 auto 时写入 `asr_force_auto_detect=true` 并继续 backend auto-detect，不从 Han/Latin script 静态猜语言。原因是 Pro 的宽 timing-search window 可能包含相邻歌词，不能把单行 script 误当成整段音频语言。
 
 source window 仍优先使用逐字 timing；否则利用下一 canonical onset；最后一行使用 bounded fallback。除此之外，任何 acoustic source window 都必须满足：
 
@@ -228,7 +230,7 @@ decision artifact 分离 text/timing 两轴，列出 `high_priority_manual_revie
 --asr-out "output/<任务>/<任务>_PRO_ASR.json"
 ```
 
-语言按当前 canonical line 路由：中文歌纯英文 rap -> `en`；code-switch -> auto；韩/日 pure line -> `ko/ja`。
+语言路由以 bounded-window 安全为准：local line 与已知 source language 一致才固定 `zh/en/ko/ja`；中文歌纯英文 rap、其他跨 source-language 的 code-switch、mixed/unknown -> `asr_force_auto_detect=true`。
 
 ### 4.6 External forced alignment
 
@@ -305,4 +307,4 @@ Public CI 能验证 deterministic policy、最终 overlap guard、soft BPM seman
 
 `python scripts/v4_smart_repair.py --help` 与 `python scripts/v4_pro_selective.py --help` 现在会自行把 repository root 加入 import path，正式文档中的直接入口不要求调用者额外设置 `PYTHONPATH`。
 
-当前 Pro v1.2.5 的 `--max-jobs` 是 **primary unresolved-cue budget**。Shadow boundary competitors 只附着于已经选中的 primary，属于 additive evidence；`plan.config.max_jobs` 对外报告调用者请求的 primary budget，内部完整 candidate-pool 扩池不是公开预算语义。
+当前 Pro v1.2.6 的 `--max-jobs` 是 **primary unresolved-cue budget**。Shadow boundary competitors 只附着于已经选中的 primary，属于 additive evidence；`plan.config.max_jobs` 对外报告调用者请求的 primary budget，内部完整 candidate-pool 扩池不是公开预算语义。Acoustic schema 1.4 同时记录 slope 与 source-start 搜索边界；任一 optimum 命中/接近边界时都不得参与 timing fusion。

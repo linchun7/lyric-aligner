@@ -84,6 +84,8 @@ def _job_language_hint(job: dict[str, Any], canonical_text: str | None) -> str |
     Explicit mixed/unknown markers likewise keep backend auto-detection open.
     """
 
+    if bool(job.get("asr_force_auto_detect", False)):
+        return None
     planner_hint = str(job.get("asr_language_hint") or "").strip().lower()
     concrete_hint = _language_hint(planner_hint)
     if concrete_hint is not None:

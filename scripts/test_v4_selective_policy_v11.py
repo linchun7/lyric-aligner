@@ -9,6 +9,7 @@ from unittest.mock import patch
 import numpy as np
 
 from lyric_aligner.alignment.local_acoustic_v11 import (
+    _source_search_metadata,
     _slope_search_metadata,
     execute_region_source_match_jobs,
 )
@@ -165,6 +166,9 @@ class SelectivePolicyV11Tests(unittest.TestCase):
         )
         self.assertIn("mix_asr", primary_by_cue[1]["requested_capabilities"])
         self.assertIn("source_forced_alignment", primary_by_cue[1]["requested_capabilities"])
+        self.assertEqual(primary_by_cue[1]["asr_language_hint"], "en")
+        self.assertFalse(primary_by_cue[1]["asr_force_auto_detect"])
+        self.assertEqual(plan["summary"]["asr_force_auto_detect_count"], 0)
         self.assertEqual(competitor[0]["source_ordinal"], 1)
         self.assertEqual(competitor[0]["boundary_role"], "next_source")
         self.assertEqual(plan["summary"]["acoustic_region_count"], 1)
@@ -172,6 +176,24 @@ class SelectivePolicyV11Tests(unittest.TestCase):
         self.assertLess(
             plan["summary"]["planned_acoustic_mix_audio_ms_merged"],
             plan["summary"]["planned_acoustic_mix_audio_ms_unmerged"],
+        )
+
+        cross_language_plan = build_selective_repair_plan_v11(
+            smart_report=self._smart_report(),
+            cues=cues,
+            canonical=canonical,
+            language_by_source={0: "zh", 1: "zh"},
+        )
+        cross_language_job = next(
+            job
+            for job in cross_language_plan["jobs"]
+            if not job.get("shadow_evidence_only") and int(job["cue_ordinal"]) == 1
+        )
+        self.assertEqual(cross_language_job["asr_language_hint"], "auto")
+        self.assertTrue(cross_language_job["asr_force_auto_detect"])
+        self.assertEqual(
+            cross_language_plan["summary"]["asr_force_auto_detect_count"],
+            1,
         )
 
     def test_max_jobs_is_applied_after_reason_aware_value_ranking(self) -> None:
@@ -414,7 +436,7 @@ class SelectivePolicyV11Tests(unittest.TestCase):
         self.assertEqual(sum(path == mix for path in calls), 1)
         self.assertEqual(extract.call_count, 1 + len(acoustic_jobs))
         self.assertEqual(result["job_count"], len(acoustic_jobs))
-        self.assertEqual(result["schema_version"], "1.3")
+        self.assertEqual(result["schema_version"], "1.4")
         self.assertFalse(result["automatic_timing_change_allowed"])
         self.assertFalse(result["automatic_text_change_allowed"])
         self.assertFalse(result["timing_mutation_performed"])
@@ -422,6 +444,7 @@ class SelectivePolicyV11Tests(unittest.TestCase):
             self.assertTrue(row["local_match_gate_passed"])
             self.assertTrue(row["timing_fusion_evidence_eligible"])
             self.assertFalse(row["slope_search_boundary_hit"])
+            self.assertFalse(row["source_search_boundary_hit"])
             self.assertLess(row["slope_search_min"], row["estimated_slope"])
             self.assertGreater(row["slope_search_max"], row["estimated_slope"])
             self.assertEqual(row["local_match_status"], "gate_passed_unadjudicated")
@@ -445,6 +468,19 @@ class SelectivePolicyV11Tests(unittest.TestCase):
         )
         self.assertEqual(minimum, 0.94)
         self.assertEqual(maximum, 1.06)
+        self.assertTrue(boundary_hit)
+
+    def test_source_search_endpoint_is_diagnostic_only(self) -> None:
+        minimum, maximum, boundary_hit = _source_search_metadata(
+            source_window_start_ms=20_000,
+            source_duration_seconds=12.0,
+            query_duration_seconds=5.0,
+            estimated_slope=1.0,
+            matched_source_start_seconds=0.128,
+            boundary_margin_seconds=0.25,
+        )
+        self.assertEqual(minimum, 20_000)
+        self.assertEqual(maximum, 27_000)
         self.assertTrue(boundary_hit)
 
 

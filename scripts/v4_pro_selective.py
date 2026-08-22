@@ -189,7 +189,7 @@ def _forced_bindings(
                 track_id=source_names[source_ordinal],
                 artist="Smart Pro",
                 title=source_names[source_ordinal],
-                version_id="smart-pro-v1.2.5",
+                version_id="smart-pro-v1.2.6",
                 nominal_start_ms=0,
                 middle_cut="unknown",
                 language_profile=str(languages.get(source_ordinal, "auto") or "auto"),

@@ -20,7 +20,7 @@ from lyric_aligner.alignment.local_acoustic_match import (
 )
 from lyric_aligner.audio.features import extract_harmonic_features, retrieve_coarse_window
 
-LOCAL_ACOUSTIC_V11_SCHEMA_VERSION = "1.3"
+LOCAL_ACOUSTIC_V11_SCHEMA_VERSION = "1.4"
 
 
 def _window(row: Mapping[str, Any], key: str) -> tuple[int, int]:
@@ -90,6 +90,36 @@ def _slope_search_metadata(
         or float(estimated_slope) >= maximum - boundary_margin
     )
     return minimum, maximum, boundary_hit
+
+
+def _source_search_metadata(
+    *,
+    source_window_start_ms: int,
+    source_duration_seconds: float,
+    query_duration_seconds: float,
+    estimated_slope: float,
+    matched_source_start_seconds: float,
+    boundary_margin_seconds: float,
+) -> tuple[int, int, bool]:
+    """Describe the valid local source-start interval for the winning slope."""
+
+    relative_min = 0.0
+    relative_max = max(
+        0.0,
+        float(source_duration_seconds)
+        - float(query_duration_seconds) * float(estimated_slope),
+    )
+    boundary_hit = (
+        float(matched_source_start_seconds)
+        <= relative_min + float(boundary_margin_seconds)
+        or float(matched_source_start_seconds)
+        >= relative_max - float(boundary_margin_seconds)
+    )
+    return (
+        source_window_start_ms + int(round(relative_min * 1000.0)),
+        source_window_start_ms + int(round(relative_max * 1000.0)),
+        boundary_hit,
+    )
 
 
 def _default_loader(path: Path, *, sr: int, start_ms: int, end_ms: int) -> np.ndarray:
@@ -240,7 +270,19 @@ def execute_region_source_match_jobs(
                 float(best.estimated_slope),
                 step=slope_step,
             )
-            timing_fusion_eligible = reliable and not slope_boundary_hit
+            source_search_min_ms, source_search_max_ms, source_boundary_hit = (
+                _source_search_metadata(
+                    source_window_start_ms=source_start_ms,
+                    source_duration_seconds=source_features.duration_seconds,
+                    query_duration_seconds=local_mix_end - local_mix_start,
+                    estimated_slope=float(best.estimated_slope),
+                    matched_source_start_seconds=float(best.source_start),
+                    boundary_margin_seconds=config.source_boundary_margin_seconds,
+                )
+            )
+            timing_fusion_eligible = (
+                reliable and not slope_boundary_hit and not source_boundary_hit
+            )
             acoustic_shift = (
                 None if editor_start is None else predicted_mix_start_ms - int(editor_start)
             )
@@ -258,6 +300,9 @@ def execute_region_source_match_jobs(
                     "slope_search_min": round(slope_min, 6),
                     "slope_search_max": round(slope_max, 6),
                     "slope_search_boundary_hit": slope_boundary_hit,
+                    "source_search_min_ms": source_search_min_ms,
+                    "source_search_max_ms": source_search_max_ms,
+                    "source_search_boundary_hit": source_boundary_hit,
                     "fused_score": round(float(best.fused_score), 6),
                     "chroma_score": round(float(best.chroma_score), 6),
                     "mfcc_score": round(float(best.mfcc_score), 6),
@@ -277,8 +322,8 @@ def execute_region_source_match_jobs(
                     "timing_fusion_evidence_status": (
                         "eligible_bounded_interior_optimum"
                         if timing_fusion_eligible
-                        else "diagnostic_boundary_limited"
-                        if reliable and slope_boundary_hit
+                        else "diagnostic_search_boundary_limited"
+                        if reliable and (slope_boundary_hit or source_boundary_hit)
                         else "retrieval_gate_failed"
                     ),
                     # Legacy alias retained for artifact readers.  New Pro

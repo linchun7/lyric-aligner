@@ -149,6 +149,24 @@ class V4AsrExecutorTests(unittest.TestCase):
             )
             self.assertEqual(fake.calls[0][1]["language"], "en")
 
+    def test_planner_force_auto_wins_over_cross_language_local_hint(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            audio = Path(temporary) / "mix.wav"
+            audio.write_bytes(b"fake")
+            plan = self.plan()
+            plan["jobs"][0]["language_profile"] = "zh"
+            plan["jobs"][0]["asr_language_hint"] = "auto"
+            plan["jobs"][0]["asr_force_auto_detect"] = True
+            fake = FakeModel()
+            execute_faster_whisper_jobs(
+                audio_path=audio,
+                plan=plan,
+                canonical_text_by_job_id={"job-1": "hello world"},
+                config=FasterWhisperExecutionConfig(model_id="test-model"),
+                model_factory=lambda *args, **kwargs: fake,
+            )
+            self.assertIsNone(fake.calls[0][1]["language"])
+
     def test_auto_job_hint_uses_local_chinese_canonical_language(self):
         with tempfile.TemporaryDirectory() as temporary:
             audio = Path(temporary) / "mix.wav"
