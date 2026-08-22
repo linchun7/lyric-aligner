@@ -15,6 +15,113 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+      - name: Build PR70 documentation artifact
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          updates = {
+              "references/v4-change-record.md": r'''
+
+## 2026-08-22 — Max render/release authority fail-closed closeout
+
+Deep review of the post-#68 Max path found two product-authority gaps after reconstruction itself had become more permissive at bounded terminal coverage. First, a canonical timeline may correctly omit lines that fall beyond proven coarse projection authority; those omitted lines must never disappear silently and still yield a normal final render. Second, the current `v4_render.py` composes canonical timeline lines directly into subtitle cues, while the product contract explicitly states that canonical LRC line breaks are grouping/onset evidence rather than final subtitle segmentation authority.
+
+This closeout changes no reconstruction, transition, acoustic, ASR, forced-alignment, Smart or Pro threshold. It only narrows downstream authority:
+
+- `timeline/composer.py` rejects any canonical timeline whose `projection_coverage.authority_omitted_line_count` is positive; malformed/negative omission counts also fail closed. A partial-prefix timeline remains valid upstream evidence but cannot silently become a rendered subtitle with missing canonical content.
+- The existing canonical-line renderer remains available for structural/evaluation output, but now reports `publish_ready=false`, `segmentation_authority=canonical_line_evaluation_only`, and `release_blocked_reason=editor_cue_reconciliation_required` in QA/stdout/artifact evidence.
+- `v4_validate_release.py` requires exactly one bound `final_render` artifact and additionally requires `normalized_config.segmentation_authority=editor_reconciled`. Missing, canonical-line, or unknown segmentation authority blocks V4 release even when hashes, task fingerprint, algorithm version and review state are otherwise valid.
+- Clearing unrelated transition/cut review cannot implicitly grant segmentation authority. A reviewed run may become evaluation-renderable, but production release remains blocked until a real editor-cue reconciliation artifact exists and is consumed by a future production renderer.
+
+Public synthetic regression covers omitted projection lines, malformed coverage metadata, evaluation-only renderer semantics, exact final-file binding, missing/unknown segmentation authority, and the reviewed-run path. No private lyrics/audio/cue/timestamp data is embedded in tests.
+''',
+              "references/v4-status.md": r'''
+
+## 2026-08-22 Max production-authority safety status
+
+Max reconstruction and review stages may now reach `ready_for_render`, but that state means **ready for structural/evaluation rendering**, not production subtitle release. The current renderer still composes canonical timeline lines directly, so it does not yet satisfy the repository rule that trusted editor cue topology is the default subtitle segmentation authority.
+
+Current contract:
+
+```text
+reconstruction/review ready_for_render
+    -> canonical-line evaluation render is allowed
+    -> QA.publish_ready = false
+    -> segmentation_authority = canonical_line_evaluation_only
+    -> V4 release validator rejects
+
+future editor-cue reconciliation
+    -> must prove/retain editor cue ownership with explicit evidence lineage
+    -> production renderer may declare segmentation_authority = editor_reconciled
+    -> only then may V4 release proceed
+```
+
+Projection coverage is also release-safe end to end: if bounded terminal coarse recovery causes any canonical line to be omitted because it lies outside proven projection authority, `compose_canonical_timelines()` now refuses to render that timeline. The omitted suffix may remain useful diagnostic evidence, but silent content loss cannot become a normal final subtitle.
+
+Therefore current Max should be treated as a strong reconstruction/evidence engine with an evaluation renderer, **not yet a fully closed production subtitle path**. The next architecture step is an Editor-Cue Reconciliation evaluation bridge; transition threshold tuning is not the current blocker.
+''',
+              "references/v4-runtime-guide.md": r'''
+
+## Max evaluation render vs production release — 2026-08-22 safety contract
+
+`scripts/v4_render.py` currently renders canonical timelines for evaluation/QA only. A successful command can still write `FINAL.srt`, audit CSV and QA JSON, but success no longer means that file is production-release eligible.
+
+Expected current output semantics:
+
+```text
+publish_ready = false
+segmentation_authority = canonical_line_evaluation_only
+release_blocked_reason = editor_cue_reconciliation_required
+```
+
+The renderer also fails before writing a normal final cue stream when a timeline reports `projection_coverage.authority_omitted_line_count > 0`; rerun/remap/rebuild that occurrence rather than accepting a subtitle with silently omitted canonical lines.
+
+Running `scripts/v4_validate_release.py` on the current canonical-line evaluation render is expected to fail with a segmentation-authority error. This is intentional. Do not bypass the gate by editing the artifact or relabeling the render. V4 release requires a bound final-render artifact with:
+
+```text
+normalized_config.segmentation_authority = editor_reconciled
+```
+
+That value must be produced by a future renderer that actually consumes a validated Editor-Cue Reconciliation artifact. Resolving transition/cut/overlap review alone does not create this authority.
+''',
+              "references/v4-implementation.md": r'''
+
+## Max segmentation authority boundary — 2026-08-22
+
+The Max pipeline now distinguishes three independent concepts that must not be collapsed:
+
+1. **projection authority** — whether Source-to-Mix evidence permits a canonical line/token to receive a projected mix time;
+2. **review completeness** — whether transition/cut/overlap/reconstruction issues have been resolved sufficiently for evaluation rendering;
+3. **subtitle segmentation authority** — whether final cue topology is justified under the product rule that editor segmentation is the strong default prior and canonical LRC line breaks are not final cue boundaries.
+
+`projection_coverage.authority_omitted_line_count > 0` blocks timeline composition. This is a hard content-integrity contract: an unproven suffix may not be reintroduced by extrapolation and may not be silently dropped from a rendered final stream.
+
+The current `v4_render.py` is explicitly a canonical-line **evaluation renderer**. Its artifacts declare `segmentation_authority=canonical_line_evaluation_only` and `publish_ready=false`. The release validator independently requires `segmentation_authority=editor_reconciled`; artifact/hash integrity, a `ready_for_render` run, or completed human transition review cannot substitute for that contract.
+
+A future Editor-Cue Reconciliation stage must be a first-class lineage-bearing artifact. At minimum it must bind the exact editor/source SRT, canonical timeline/occurrence identity, and any token/word/audio boundary evidence used to rebut an editor boundary. Default behavior is to retain editor cue topology; canonical owns text/order. Only stronger independent boundary evidence may repartition cue ownership. The first implementation should remain evaluation-only and report per editor cue `resolved`, `still_review`, `rebutted`, or `not_evaluable` before any production materializer is allowed to emit `editor_reconciled` authority.
+''',
+          }
+
+          for raw_path, addition in updates.items():
+              path = Path(raw_path)
+              text = path.read_text(encoding="utf-8")
+              marker = addition.strip().splitlines()[0]
+              if marker not in text:
+                  path.write_text(text.rstrip() + "\n" + addition.rstrip() + "\n", encoding="utf-8")
+          PY
+      - name: Upload PR70 documentation artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: pr70-authority-docs
+          path: |
+            references/v4-change-record.md
+            references/v4-status.md
+            references/v4-runtime-guide.md
+            references/v4-implementation.md
+          if-no-files-found: error
+          retention-days: 1
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
