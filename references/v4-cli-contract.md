@@ -20,11 +20,23 @@ all output paths are pairwise distinct
 - 即使 `lyrics_dir/new-output.json` 之类目标文件事先不存在，只要位于受保护 input directory 下也必须拒绝；
 - 这样 artifact writer 既不能覆盖已有输入，也不能通过新增文件静默改变目录递归哈希，使刚验证过的 task manifest 立即失效。
 
-会动态生成多个子文件的 materializer 还必须证明**整棵 output tree 与输入双向不相交**：output tree 不得位于 protected input directory 内，任何 protected input file/directory 也不得位于 output tree 内。输入 run payload 中声明的全部 `*_path` lineage 在首次 `mkdir`、子进程或 materialization 前都视为 protected input，即使该路径当前不存在。
+会动态生成多个子文件的 materializer/orchestrator 还必须证明**整棵 output tree 与输入双向不相交**：output tree 不得位于 protected input directory 内，任何 protected input file/directory 也不得位于 output tree 内。输入 run payload 中声明的全部 `*_path` lineage 在首次 `mkdir`、子进程或 materialization 前都视为 protected input，即使该路径当前不存在。
 
 路径保护只负责 ownership/safety，不改变 artifact identity、timing、text、review 或 release authority。
 
 ## 2. 当前 Max 必经 CLI
+
+### `v4_run.py` / `v4_run_optimized.py` / `v4_run_legacy.py`
+
+三条 public production orchestration entrypoint 都必须在第一次 filesystem mutation 前证明 `--out-dir` 的整棵 tree ownership：
+
+- canonical `v4_run.py` 必须在 `OutputRunLock` 创建 output directory 或 `.v4-run.lock` 前检查；
+- direct optimized entrypoint 必须在 `cache/`、verified-input session、stage directory 创建前检查；
+- direct legacy entrypoint 必须在 stage directories 创建前检查；
+- task manifest、所有 manifest-bound input roots/subtrees，以及显式 `--profile`、`--language-map`、`--middle-cut-map`、`--lyric-role-map` 都属于 protected inputs；
+- output tree 位于任一 protected input 内，或 output tree 反向包含 protected input，都必须 fail closed。
+
+Legacy/optimized 原 orchestration implementation 以 blob-identical `_v4_run_*_impl.txt` internal source resource 保存，由安全 public wrapper 在 preflight 后加载。internal resource 不是受支持 CLI，也不得作为绕过 preflight 的第二入口。该拆分不改变 orchestration algorithm、monkey-patch compatibility、readiness 或 release authority。
 
 ### `v4_review.py`
 
@@ -116,9 +128,10 @@ Release/evaluation authority 不能依赖 Python 的宽松强制转换。
 
 - task directory member 会进入 protected path 集合；
 - output 指向 task input directory 下一个尚不存在的新文件时同样被拒绝；
-- materializer output tree 不能包住 direct/lineage input，也不能位于 task input subtree；
+- run/materializer output tree 不能包住 direct/lineage input，也不能位于 task input subtree；
+- canonical / optimized / legacy 三个 run entrypoint 的 unsafe output collision 必须在任何 output directory、lock、cache/session 或 stage write 前失败；
 - materializer collision 在原实现首次写入前失败，被保护输入字节不变；
-- `--help` 与正常 cut/overlap/combined E2E 不因安全 wrapper 退化；
+- `--help` 与正常 run/cut/overlap/combined E2E 不因安全 wrapper 退化；
 - review template/apply 的碰撞不会改变被保护输入字节；
 - release manifest 碰撞不会改变被保护输入字节；
 - malformed review/rebuild/render authority count 被拒绝；
