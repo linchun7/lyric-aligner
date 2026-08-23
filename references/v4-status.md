@@ -117,7 +117,9 @@ exact QA.publish_ready                                = true
 
 artifact evidence 或 QA 只要仍有非空 `release_blocked_reason`，release 也必须失败。不能出现“config 已 production，但 evidence/QA 仍 evaluation-only”的半升级状态。
 
-没有这组一致 authority 时，production release 必须失败。人工清完 transition/cut/overlap review 也不能自动获得该 authority。
+但三层字段一致本身仍不是 production authority provenance。当前仓库尚无可授予 `editor_reconciled` 的 production reconciliation/materialization contract，因此 `v4_validate_release.py` 在完成上述一致性检查后仍设置显式 fail-closed sentinel：**任何 V4 production release 继续被阻断，直到 first-class production reconciliation artifact 与其 exact lineage contract 正式实现并由 validator 验证。** 手工构造一致字段不能绕过这道 blocker。
+
+人工清完 transition/cut/overlap review、artifact hash 完整或 run 已 `ready_for_render` 都不能自动获得该 authority。
 
 ### 5.4 Editor-Cue Reconciliation evaluation bridge
 
@@ -133,11 +135,13 @@ scripts/v4_editor_cue_reconcile.py
 逐 editor cue 状态：
 
 ```text
-resolved       -> canonical interval(s) 完整落入唯一 editor cue，且同 cue 内 canonical material 不互相 overlap
-still_review   -> canonical 跨 editor boundary、落入多个重叠 editor cue，或同 editor cue 内 canonical material overlap
+resolved       -> canonical interval(s) 完整落入唯一 editor cue，且不与任何其他 editor cue 相交；同 cue 内 canonical material 也不互相 overlap
+still_review   -> canonical 跨 editor boundary、虽有唯一完整 owner 但仍与重叠 neighbor 相交、落入多个重叠 editor cue，或同 editor cue 内 canonical material overlap
 rebutted       -> schema 保留；首版不自动产生
 not_evaluable  -> 没有 canonical temporal evidence
 ```
+
+因此“唯一 containment”不再单独足以 resolved：若 canonical interval 完整落入 A、但同时与重叠 B 有任何正长度交集，仍按 `canonical_interval_crosses_editor_boundary` 留在 review，避免产生假 `full_topology_candidate`。
 
 输出 stage：
 
@@ -147,7 +151,7 @@ segmentation_authority = editor_reconciliation_evaluation_only
 production_authority_granted = false
 ```
 
-`full_topology_candidate=true` 也**不**等于 production authority。它只表示在当前 evaluation render 下，所有 canonical cue 可以不改变 editor cue topology 地获得唯一 ownership，并且 editor SRT 文件时间顺序单调。若 editor file order 有时间回退，单 cue 诊断仍保留，但 `full_topology_candidate=false`。
+`full_topology_candidate=true` 也**不**等于 production authority。它只表示在当前 evaluation render 下，所有 canonical cue 可以不改变 editor cue topology 地获得唯一且无额外交叠的 ownership，并且 editor SRT 文件时间顺序单调。若 editor file order 有时间回退，单 cue 诊断仍保留，但 `full_topology_candidate=false`。
 
 因此当前 Max 应描述为：**强 reconstruction/evidence engine + canonical evaluation renderer + editor-topology reconciliation evaluator；production subtitle path 仍未闭环。** 下一步必须先用私有任务验证 evaluator 的 coverage/review 分布，再设计真正可授予 `editor_reconciled` 的 materialization contract；不能直接把 evaluation result 改名为 production authority。
 
@@ -179,6 +183,18 @@ Release/reconciliation 对 `review_candidate_count` 要求真正 JSON integer `0
 
 Legacy/optimized orchestration implementation blob 保持不变，仅由安全 public wrapper 在 preflight 后进入。该 gate 不改变算法或任何 readiness/release authority；它只阻止 run orchestration 自己污染已经 fingerprint 的输入树。
 
+### 5.7 Primary-stage writer ownership safety
+
+`v4_resolve_assets.py`、`v4_coarse_align.py`、`v4_fine_align.py`、`v4_probe_transition.py` 即使脱离 orchestrator 被直接调用，也必须在原实现第一次 artifact/cache write 前证明 filesystem ownership：
+
+- task manifest、manifest-bound subtree、direct upstream/config inputs 均受保护；
+- upstream JSON 中递归声明的所有 `*_path` lineage 也进入 protected inputs；
+- `--out` / `--artifact-out` 必须彼此不同且不得覆盖受保护输入；
+- coarse 的显式 `--feature-cache-dir` 与由 `primary/transitions` output 自动推导出的默认 `cache/features` 都按动态 writable tree 处理，必须与 protected inputs 双向不相交；
+- 四条 public CLI 继续通过 blob-identical internal implementation resource 执行，不改变 asset resolution、coarse/Fine、transition 或 readiness 算法。
+
+Public regression 同时覆盖 direct CLI 首次写入前失败、recursive lineage collision、显式 cache tree、默认推导 cache tree和 pairwise output collision。
+
 ## 6. Legacy Partial Timeline Repair
 
 旧 P1–P5 bridge 继续固定：
@@ -202,10 +218,11 @@ Public CI 必须继续证明：
 - Max bounded terminal coverage 只缩小/记录 authority，不扩张；
 - omitted canonical lines 不能静默 render；
 - canonical-line Max output 不能通过 production release gate；
-- production release 的 final-render config/evidence/exact QA authority 必须一致；
-- reconciliation evaluator 不移动 editor boundaries、不自动产生 `rebutted`、不授予 production authority；
+- production release 的 final-render config/evidence/exact QA authority 必须一致，但当前仍必须被 production reconciliation materializer sentinel 阻断；
+- reconciliation evaluator 不移动 editor boundaries、不自动产生 `rebutted`、不授予 production authority；唯一 containment 若还有额外 overlapping editor intersection 也必须保持 review；
 - Max artifact writers/materializers 不覆盖 task/upstream/lineage inputs，动态 output tree 不得包住输入；
 - canonical / optimized / legacy 三个 run entrypoint 在 output tree 与 task/config inputs 相交时必须在首次写入前失败；
+- resolve/coarse/Fine/transition direct CLI 必须保护 recursive `*_path` lineage，coarse 默认推导 cache tree 也必须双向检查；
 - malformed release/evaluation QA types fail closed；
 - artifact/task/version/hash lineage 完整；
 - Python/ASR environment 与 legacy regressions 不回归。
