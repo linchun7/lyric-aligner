@@ -138,6 +138,44 @@ CLI 安全契约集中到 `references/v4-cli-contract.md`，并加入文档同�
 
 该修复不改变 review decisions、cut/overlap detection、mapping、timeline reconstruction、render/release authority；只防止 materializer 在取得不安全 filesystem ownership 后再开始写入。
 
+## 2026-08-23 — V4 orchestration output-tree ownership gate
+
+最终 P0/P1 收口扫描发现，顶层 `v4_run.py` 会在证明 output-tree ownership 之前进入 `OutputRunLock`，而 direct `v4_run_optimized.py` / `v4_run_legacy.py` 也会先创建 cache/session/stage 目录。若 `--out-dir` 落入已 fingerprint 的 task input subtree，这些 orchestration 写入本身就可能先污染受保护输入。
+
+本轮把同一双向 output-tree gate 前移到三条公开 run entrypoint 的第一次写操作之前：保护 task manifest、所有 manifest-bound input roots/subtrees，以及显式 profile/language/middle-cut/lyric-role config inputs；output tree 既不能位于这些输入内，也不能反向包住它们。canonical `v4_run.py` 必须在创建 `.v4-run.lock` 前完成检查，direct optimized/legacy entrypoint 也必须在 cache/session/stage `mkdir` 前完成检查。
+
+为避免安全修复混入 orchestration 算法 diff，legacy 与 optimized 原实现继续以 blob-identical internal source resource 保存：
+
+```text
+legacy    a20afb27ca7030033e86618cebea6414eea36ceb
+optimized c7838ac50ab2b2202ee93bda5bd22801ec5d8d9a
+```
+
+公开 regression 必须覆盖 canonical / optimized / legacy 三种直接调用，在 unsafe output 位于 fingerprinted input subtree 时证明输出目录和 `.v4-run.lock` 均未被创建；同时覆盖 output tree 反向包住 task inputs 和显式 config input 的情况。该变更只收紧 filesystem ownership，不改变 alignment、evidence、render、release authority 或 Smart/Pro 策略。
+
+## 2026-08-23 — V4 primary-stage writer ownership gate
+
+继续从 production orchestrator 向下枚举真实 child process 后，确认 `v4_resolve_assets.py`、`v4_coarse_align.py`、`v4_fine_align.py`、`v4_probe_transition.py` 仍可被直接执行，并在没有 ownership preflight 的情况下写 `--out` / `--artifact-out`；coarse 还会写显式或由 production layout 推导出的 feature-cache tree。仅保护顶层 run 因而不足以阻止 direct stage CLI 污染已 fingerprint 的 task input 或 upstream lineage。
+
+本轮把相同 fail-closed ownership contract 放到四条 public stage entrypoint 的原实现首次 write 之前：
+
+- task manifest、全部 manifest-bound input roots/subtrees 与 direct upstream/config inputs 均受保护；
+- TrackAssets/coarse 等 JSON 输入中递归声明的 `*_path` provenance 也进入 protected input 集合；
+- `--out` 与 `--artifact-out` 必须 pairwise distinct，且不得覆盖/进入 protected input；
+- coarse `--feature-cache-dir`（包括默认推导 cache）按动态 output tree 处理，与 protected inputs 双向不相交；
+- 普通 `--out`/`--artifact-out` 只拥有各自文件，不把合法 stage artifact 共处的整个父目录误判成 writer-owned tree。
+
+为避免安全修复混入 asset/coarse/Fine/transition 算法变化，四份 production implementation 直接复用原 Git blob：
+
+```text
+resolve_assets    162b1d9dfc25b3ae2e5995d0e790c47dbcc931f8
+coarse_align      735c9aa1a98607953206aedbe1264f7680b5c145
+fine_align        005ba2744ba299ded2eed4c7ee7a8c9511448706
+probe_transition  eabf2b2f10f67d1057adab992b395ee562a1f8c4
+```
+
+Public regression 使用 generic synthetic task，直接调用四条 CLI，证明 unsafe output 在任何 stage artifact 被创建前即失败；另覆盖 coarse cache 进入/包住 task input 以及两个固定输出重合。该修复不改变 TrackAsset resolution、Source-to-Mix、Fine、transition score/margin、TimeWarp、readiness 或 release authority。
+
 ## 冻结与回滚
 
 Smart/Pro production freeze tag 继续固定在：

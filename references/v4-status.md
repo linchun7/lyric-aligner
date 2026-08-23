@@ -167,6 +167,18 @@ Max 下一步实际会使用的 review/materializer/render/reconciliation/releas
 
 Release/reconciliation 对 `review_candidate_count` 要求真正 JSON integer `0`；render eligibility 的 review/cut/overlap/combined count 同样不能靠 Python coercion。完整 CLI 规则见 `references/v4-cli-contract.md`。
 
+### 5.6 Production orchestration output-tree safety
+
+`v4_run.py`、`v4_run_optimized.py` 与 `v4_run_legacy.py` 现在也受同一 output-tree ownership contract 约束，而且检查发生在 orchestration 的第一次写操作之前：
+
+- canonical `v4_run.py` 在 `OutputRunLock` 创建 output directory / `.v4-run.lock` 前检查；
+- direct optimized entrypoint 在 `cache/`、verified-input session 或 stage directory 创建前检查；
+- direct legacy entrypoint 在 `assets/primary/transitions/timelines` 创建前检查；
+- task manifest、全部 manifest-bound input roots/subtrees，以及显式 profile/language/middle-cut/lyric-role config 都是 protected inputs；
+- `--out-dir` 不得位于 protected input 内，也不得反向包住 protected input。
+
+Legacy/optimized orchestration implementation blob 保持不变，仅由安全 public wrapper 在 preflight 后进入。该 gate 不改变算法或任何 readiness/release authority；它只阻止 run orchestration 自己污染已经 fingerprint 的输入树。
+
 ## 6. Legacy Partial Timeline Repair
 
 旧 P1–P5 bridge 继续固定：
@@ -193,6 +205,7 @@ Public CI 必须继续证明：
 - production release 的 final-render config/evidence/exact QA authority 必须一致；
 - reconciliation evaluator 不移动 editor boundaries、不自动产生 `rebutted`、不授予 production authority；
 - Max artifact writers/materializers 不覆盖 task/upstream/lineage inputs，动态 output tree 不得包住输入；
+- canonical / optimized / legacy 三个 run entrypoint 在 output tree 与 task/config inputs 相交时必须在首次写入前失败；
 - malformed release/evaluation QA types fail closed；
 - artifact/task/version/hash lineage 完整；
 - Python/ASR environment 与 legacy regressions 不回归。
