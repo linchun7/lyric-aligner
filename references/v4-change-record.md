@@ -176,6 +176,17 @@ probe_transition  eabf2b2f10f67d1057adab992b395ee562a1f8c4
 
 Public regression 使用 generic synthetic task，直接调用四条 CLI，证明 unsafe output 在任何 stage artifact 被创建前即失败；另覆盖 coarse cache 进入/包住 task input 以及两个固定输出重合。该修复不改变 TrackAsset resolution、Source-to-Mix、Fine、transition score/margin、TimeWarp、readiness 或 release authority。
 
+## 2026-08-23 — Post-#75 independent safety review closeout
+
+对已经合入的 #73/#74/#75 公开安全链重新做独立 code review 后，确认没有新的 P0，但发现一个会影响 private Max evaluation 的 false-ready 边界和一个 future production release provenance 缺口，并补齐两项 regression coverage：
+
+- Editor-Cue Reconciliation 原先只要 canonical interval 被唯一 editor cue 完整包含就立即 `resolved`。若它同时与另一个重叠 editor cue 有正长度交集，会错误跳过 boundary review，并可能形成假 `full_topology_candidate=true`。现在只有“唯一完整 containment 且 intersections 精确等于该唯一 owner”才可 resolved；存在额外交叠时统一按 `canonical_interval_crosses_editor_boundary` 留在 `still_review`。
+- #73 的 final-render config/evidence/exact-QA 三层一致性仍保留，但它只证明自声明字段内部一致，并不能证明 `editor_reconciled` 来自正式 production reconciliation provenance。仓库当前没有 production reconciliation/materialization contract，因此 `v4_validate_release.py` 在完成三层一致性验证后继续通过显式 sentinel 阻断所有 V4 production release。未来只有在 first-class production reconciliation artifact 及其 exact lineage contract 正式实现后，才能用真实 provenance validator 替换该 sentinel。
+- primary-stage writer regression 新增 recursive upstream `*_path` collision，证明 lineage 不是只保护 JSON 文件本身；
+- coarse regression 新增“不传 `--feature-cache-dir`”场景，证明由 `primary/transitions` output 自动推导的默认 `cache/features` 也执行双向 ownership 检查。
+
+该 closeout 不改变 Smart/Pro、Max Source-to-Mix/Fine/transition/cut/overlap 算法，也不授予新的 production authority。它只减少 evaluation false-ready，并把“production materializer 尚未实现”从文档事实提升为 release validator 的显式 fail-closed 状态。
+
 ## 冻结与回滚
 
 Smart/Pro production freeze tag 继续固定在：
