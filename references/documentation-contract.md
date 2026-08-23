@@ -132,3 +132,18 @@ subtitle segmentation authority
 - future Editor-Cue Reconciliation 必须是 first-class、fingerprinted、lineage-bearing artifact，并绑定 exact editor/source SRT、canonical occurrence/timeline identity 及任何用于推翻 editor boundary 的更强证据。
 
 这些规则是 release contract，不是可通过降低 acoustic/transition threshold 绕过的 calibration 参数。
+
+## 8. Artifact-writer filesystem ownership contract（2026-08-23）
+
+生产/evaluation CLI 对 output path 或 output tree 的所有权也属于 contract，而不是普通参数校验。只要 writer 能创建 lock/cache/session/stage/artifact，就必须在**第一次 filesystem mutation 之前**证明写入目标与 task/upstream provenance 不冲突。
+
+当前 Max contract 要求：
+
+- task manifest 与 manifest-bound file/directory subtree 是 protected inputs；
+- 直接 CLI upstream/config input 以及 payload 中声明的 `*_path` lineage 也是 protected inputs；
+- 单文件 outputs 必须彼此不同且不得落入 protected input directory；
+- 动态 output/cache tree 必须与 protected inputs 双向不相交：既不能进入输入，也不能反向包住输入；
+- canonical/optimized/legacy orchestration 以及 resolve-assets/coarse/Fine/transition direct stage entrypoint 都必须在原实现首次写入前执行同一 fail-closed ownership preflight；
+- 为证明安全修复没有混入算法变化，可以把原 implementation 以 blob-identical internal source resource 保存，但该 resource 不能成为绕过 public preflight 的第二个支持入口。
+
+该 filesystem ownership contract 不授予新的 timing、text、review、segmentation 或 release authority；它只保证通过 task fingerprint / upstream lineage 验证后的证据不会被后续 writer 自己污染。具体 CLI 级不变量与 regression 见 `references/v4-cli-contract.md`。
