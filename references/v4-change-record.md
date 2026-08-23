@@ -87,7 +87,7 @@ segmentation_authority = editor_reconciliation_evaluation_only
 production_authority_granted = false
 ```
 
-即使 `full_topology_candidate=true`、所有 editor cue 均为 `resolved`，也只代表“现有 editor topology 与 canonical render 在结构上可兼容”的评估结果；它不修改 `v4_render.py`、不生成生产 SRT、不改变 `v4_validate_release.py`，也绝不等价于 `editor_reconciled`。
+即使 `full_topology_candidate=true`、所有 editor cue 均为 `resolved`，也只代表“现有 editor topology 与 canonical render 在结构上可兼容”的评估结果；它不修改 `v4_render.py`、不生成 production SRT、不改变 `v4_validate_release.py`，也绝不等价于 `editor_reconciled`。
 
 额外记录 `editor_file_order_monotonic`。若 source SRT 文件顺序存在时间回退，单 cue 诊断仍保留，但 `full_topology_candidate=false`，避免复杂 reorder 在首版被误当成已闭环 production segmentation。
 
@@ -124,6 +124,19 @@ CLI 安全契约集中到 `references/v4-cli-contract.md`，并加入文档同�
 - 任一层缺失、evaluation-only、not-publish-ready 或彼此矛盾都不能进入 release manifest。
 
 当前 canonical-line renderer 和 reconciliation evaluator 均继续是 evaluation-only，因此行为保持 blocked；本变更只保证未来 production materializer 必须在 config/evidence/QA 三层形成一致、可审计的 authority contract。
+
+## 2026-08-23 — Max cut/overlap/combined materializer output-tree safety
+
+继续审查 review 后的 Max writer chain 时发现，`v4_rebuild_cut.py`、`v4_recompose_overlap.py`、`v4_compose_materializations.py` 会在 `--out-dir` 动态创建 Fine/mapping/timeline artifact，但此前没有像 review/render/release 一样的 output-tree ownership gate。错误的 `--out-dir` 可包住 task input 或已存在的 coarse/Fine/transition/timeline provenance，并在后续 `mkdir`/子进程/materialization 时污染或覆盖输入。
+
+本轮只改变 CLI 文件所有权边界，不改变 materializer 算法：
+
+- output tree 与所有 protected input 双向不相交；
+- task input subtree、直接 run/artifact、TrackAssets，以及输入 payload 中递归声明的全部 `*_path` lineage 都在首次 `mkdir`/子进程/write 前保护；
+- 三条公开 `v4_*.py` 变成薄安全 entrypoint；原 cut/overlap/combined implementation 以 blob-identical `_v4_*_impl.txt` internal source resource 保存，由通过 preflight 的 wrapper 以非 `__main__` 名称加载，不暴露第二个 `v4_*_impl.py` CLI；
+- `--help` 保持原行为，原 E2E 仍实际执行相同实现 blob。
+
+该修复不改变 review decisions、cut/overlap detection、mapping、timeline reconstruction、render/release authority；只防止 materializer 在取得不安全 filesystem ownership 后再开始写入。
 
 ## 冻结与回滚
 
