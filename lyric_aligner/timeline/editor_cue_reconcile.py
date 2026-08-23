@@ -166,11 +166,11 @@ def evaluate_editor_cue_reconciliation(
     """Evaluate canonical cue ownership under unchanged editor cue topology.
 
     A canonical cue is structurally resolved only when its complete rendered
-    interval is contained by exactly one editor cue.  Crossing an editor boundary
-    or fitting inside more than one overlapping editor cue is intentionally left
-    for review.  Canonical cues assigned to the same editor cue must also be
-    mutually non-overlapping; otherwise one editor cue would silently flatten
-    concurrent canonical material.
+    interval is contained by exactly one editor cue and it intersects no other
+    editor cue. Crossing an editor boundary or fitting inside more than one
+    overlapping editor cue is intentionally left for review. Canonical cues
+    assigned to the same editor cue must also be mutually non-overlapping;
+    otherwise one editor cue would silently flatten concurrent canonical material.
     """
 
     if not editor_cues:
@@ -198,7 +198,7 @@ def evaluate_editor_cue_reconciliation(
             if _intersects(editor, canonical)
         ]
 
-        if len(containers) == 1:
+        if len(containers) == 1 and intersections == containers:
             assignments[containers[0]].append(canonical)
             continue
 
