@@ -176,6 +176,56 @@ class V4PrimaryStageOutputPathSafetyTests(unittest.TestCase):
                     stage="coarse_align",
                 )
 
+    def test_coarse_default_cache_tree_is_checked(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            fixture = self._fixture(temporary)
+            run_root = Path(temporary) / "run"
+            track_assets = run_root / "cache" / "features" / "track_assets.json"
+            track_assets.parent.mkdir(parents=True)
+            track_assets.write_text("{}\n", encoding="utf-8")
+            out = run_root / "primary" / "coarse.json"
+            artifact_out = Path(temporary) / "safe" / "coarse.artifact.json"
+
+            with self.assertRaisesRegex(
+                ValueError,
+                "materialization tree contains input cli_track_assets",
+            ):
+                validate_primary_stage_writer_from_argv(
+                    [
+                        "--task-manifest", str(fixture["manifest"]),
+                        "--mix-audio", str(fixture["mix_audio"]),
+                        "--track-assets", str(track_assets),
+                        "--asset-artifact", str(fixture["asset_artifact"]),
+                        "--out", str(out),
+                        "--artifact-out", str(artifact_out),
+                    ],
+                    stage="coarse_align",
+                )
+
+    def test_recursive_declared_lineage_paths_are_protected(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            fixture = self._fixture(temporary)
+            declared = Path(temporary) / "declared" / "protected.json"
+            declared.parent.mkdir(parents=True)
+            fixture["track_assets"].write_text(
+                json.dumps({"nested": {"source_path": str(declared)}}) + "\n",
+                encoding="utf-8",
+            )
+            artifact_out = Path(temporary) / "safe" / "coarse.artifact.json"
+
+            with self.assertRaisesRegex(
+                ValueError,
+                "collides with input cli_track_assets.nested.source_path",
+            ):
+                validate_primary_stage_writer_from_argv(
+                    [
+                        *self._base_args(fixture)["v4_coarse_align.py"],
+                        "--out", str(declared),
+                        "--artifact-out", str(artifact_out),
+                    ],
+                    stage="coarse_align",
+                )
+
     def test_primary_stage_outputs_must_be_pairwise_distinct(self):
         with tempfile.TemporaryDirectory() as temporary:
             fixture = self._fixture(temporary)
