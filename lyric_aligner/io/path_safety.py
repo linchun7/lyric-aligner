@@ -27,10 +27,7 @@ def validate_separate_artifact_paths(
     task manifest after verification.
     """
 
-    resolved_inputs = {
-        label: _resolved(path)
-        for label, path in inputs.items()
-    }
+    resolved_inputs = {label: _resolved(path) for label, path in inputs.items()}
     resolved_outputs = {
         label: _resolved(path)
         for label, path in outputs.items()
@@ -69,5 +66,38 @@ def validate_separate_artifact_paths(
                 f"outputs {', '.join(sorted(output_labels))} share the same path: {path}"
             )
 
+    if collisions:
+        raise PathCollisionError("; ".join(collisions))
+
+
+def validate_artifact_output_tree(
+    *,
+    inputs: Mapping[str, Path],
+    output_dir: Path,
+    outputs: Mapping[str, Path | None] | None = None,
+) -> None:
+    """Require one materialization tree to be disjoint from every protected input.
+
+    ``validate_separate_artifact_paths`` prevents an output from overwriting an
+    input or being created inside an existing input directory. Materializers also
+    create dynamic descendants below ``output_dir``; therefore the tree itself
+    must not contain any protected input path. Direct outputs may live inside the
+    output tree, but still may not collide with protected inputs or each other.
+    """
+
+    direct_outputs = dict(outputs or {})
+    validate_separate_artifact_paths(
+        inputs=inputs,
+        outputs={**direct_outputs, "materialization_tree": output_dir},
+    )
+
+    tree = _resolved(output_dir)
+    collisions: list[str] = []
+    for label, path in inputs.items():
+        resolved = _resolved(path)
+        if resolved != tree and resolved.is_relative_to(tree):
+            collisions.append(
+                f"materialization tree contains input {label}: {resolved}"
+            )
     if collisions:
         raise PathCollisionError("; ".join(collisions))

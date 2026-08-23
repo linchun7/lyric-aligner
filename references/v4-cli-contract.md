@@ -20,6 +20,8 @@ all output paths are pairwise distinct
 - 即使 `lyrics_dir/new-output.json` 之类目标文件事先不存在，只要位于受保护 input directory 下也必须拒绝；
 - 这样 artifact writer 既不能覆盖已有输入，也不能通过新增文件静默改变目录递归哈希，使刚验证过的 task manifest 立即失效。
 
+会动态生成多个子文件的 materializer 还必须证明**整棵 output tree 与输入双向不相交**：output tree 不得位于 protected input directory 内，任何 protected input file/directory 也不得位于 output tree 内。输入 run payload 中声明的全部 `*_path` lineage 在首次 `mkdir`、子进程或 materialization 前都视为 protected input，即使该路径当前不存在。
+
 路径保护只负责 ownership/safety，不改变 artifact identity、timing、text、review 或 release authority。
 
 ## 2. 当前 Max 必经 CLI
@@ -31,6 +33,12 @@ all output paths are pairwise distinct
 `apply` 还必须保护 review decisions 输入；reviewed run 与 review artifact 两个输出也不得同路径。
 
 人工 review 的 allowed actions、issue identity 和 replay semantics 不因路径保护改变。
+
+### `v4_rebuild_cut.py` / `v4_recompose_overlap.py` / `v4_compose_materializations.py`
+
+三条 review 后 materializer 在任何目录创建、Fine 子进程或 JSON materialization 前必须完成 output-tree preflight，保护 task inputs/subtrees、直接 run/artifact 与 TrackAssets 输入，以及输入 payload 中递归声明的全部 `*_path` provenance。
+
+公开 `v4_*.py` 是唯一支持的 CLI entrypoint。原 materializer 算法 source 以 blob-identical 的 `_v4_*_impl.txt` internal resource 保存，由通过 preflight 的 wrapper 以非 `__main__` 名称加载；这些 resource 不是 CLI、不得直接执行。这个拆分只把安全 guard 放到原实现第一次写入之前，不改变 cut/overlap/combined 算法。
 
 ### `v4_render.py`
 
@@ -108,6 +116,9 @@ Release/evaluation authority 不能依赖 Python 的宽松强制转换。
 
 - task directory member 会进入 protected path 集合；
 - output 指向 task input directory 下一个尚不存在的新文件时同样被拒绝；
+- materializer output tree 不能包住 direct/lineage input，也不能位于 task input subtree；
+- materializer collision 在原实现首次写入前失败，被保护输入字节不变；
+- `--help` 与正常 cut/overlap/combined E2E 不因安全 wrapper 退化；
 - review template/apply 的碰撞不会改变被保护输入字节；
 - release manifest 碰撞不会改变被保护输入字节；
 - malformed review/rebuild/render authority count 被拒绝；

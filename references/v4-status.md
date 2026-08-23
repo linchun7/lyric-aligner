@@ -153,17 +153,19 @@ production_authority_granted = false
 
 ### 5.5 Artifact-writer path safety
 
-Max 下一步实际会使用的 review/render/reconciliation/release CLI 现在共享同一输入所有权 contract：
+Max 下一步实际会使用的 review/materializer/render/reconciliation/release CLI 共享 fail-closed 输入所有权 contract：
 
-- task manifest 与所有 manifest-bound files 都是 protected inputs；directory input 会展开到每个 fingerprinted 文件成员；
+- task manifest 与所有 manifest-bound files 都是 protected inputs；directory input 保护整棵 subtree；
 - review 保护 run/run artifact/decisions；
+- cut/overlap/combined materializer 在首次 `mkdir`、Fine 子进程或 write 前保护直接输入及 run payload 递归声明的全部 `*_path` lineage；`--out-dir` 与这些输入必须双向不相交；
+- materializer 的公开 `v4_*.py` 是唯一支持的 CLI entrypoint；原算法 blob 以 `_v4_*_impl.txt` internal source resource 保存并由安全 wrapper 加载，不作为第二套 CLI；
 - render 额外保护 TrackAssets/asset artifact，以及 run 实际读取的每个 canonical timeline/timeline artifact；四个 render outputs 必须彼此不同；
 - reconciliation 保护 canonical evaluation SRT/audit/QA/final-render artifact；
 - release manifest 不能覆盖 final SRT/audit/QA、upstream artifact 或任一 task input。
 
-所有 collision 在第一次 materialization 前 fail closed。该机制只保护文件 ownership，不改变 review、timing、text、segmentation 或 release authority。
+所有 collision 在第一次 materialization 前 fail closed。该机制只保护文件 ownership，不改变 review、cut/overlap、timing、text、segmentation 或 release authority。
 
-Release/reconciliation 对 `review_candidate_count` 也要求真正 JSON integer `0`；bool/float/string/null 不再通过 Python coercion 冒充“无 review”。完整 CLI 规则见 `references/v4-cli-contract.md`。
+Release/reconciliation 对 `review_candidate_count` 要求真正 JSON integer `0`；render eligibility 的 review/cut/overlap/combined count 同样不能靠 Python coercion。完整 CLI 规则见 `references/v4-cli-contract.md`。
 
 ## 6. Legacy Partial Timeline Repair
 
@@ -190,7 +192,7 @@ Public CI 必须继续证明：
 - canonical-line Max output 不能通过 production release gate；
 - production release 的 final-render config/evidence/exact QA authority 必须一致；
 - reconciliation evaluator 不移动 editor boundaries、不自动产生 `rebutted`、不授予 production authority；
-- Max artifact writers 不覆盖 task/upstream inputs，多个 outputs 不允许同路径；
+- Max artifact writers/materializers 不覆盖 task/upstream/lineage inputs，动态 output tree 不得包住输入；
 - malformed release/evaluation QA types fail closed；
 - artifact/task/version/hash lineage 完整；
 - Python/ASR environment 与 legacy regressions 不回归。
