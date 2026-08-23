@@ -97,7 +97,7 @@ CI 对 PR 的完整 base..head diff 做检查，不只看最后一个 commit。
 - 在 change record 写“update docs”但不描述实质变化；
 - 修改阈值/默认模型但不改变 calibration profile identity；
 - 代码先合并、后续再补文档；
-- 用 `skip`, `ignore`, commit message 或 PR label 绕过文档契约。
+- 用 `skip`, `ignore`, commit message 或 PR label 绕过 CI。
 
 如确有纯内部重构不应触发契约，应调整 `validate_docs_contract.py` 的组件分类规则并同步更新本文件，而不是临时跳过 CI。
 
@@ -125,11 +125,11 @@ subtitle segmentation authority
 - `ready_for_render` 只表示 reconstruction/review 足以进入 renderer，不自动代表 production publish；
 - canonical LRC line break 不是 final subtitle cue segmentation authority；
 - 当前 canonical-line renderer 必须显式声明 `segmentation_authority=canonical_line_evaluation_only` 与 `publish_ready=false`；
-- V4 production release 只有在绑定的 final-render artifact 明确声明 `segmentation_authority=editor_reconciled` 时才可继续；
-- production final-render 的 `normalized_config`、artifact `evidence` 与其 exact hash-bound QA 必须对 `editor_reconciled` / `publish_ready` 保持一致；任一层仍为 evaluation-only、not-publish-ready 或带 `release_blocked_reason` 时必须 fail closed；
+- V4 production release 的 final-render `normalized_config`、artifact `evidence` 与 exact hash-bound QA 必须对 `editor_reconciled` / `publish_ready` 保持一致；任一层仍为 evaluation-only、not-publish-ready 或带 `release_blocked_reason` 时必须 fail closed；
+- 上述三层一致只是 production authority 的必要条件，不是来源证明。当前仓库尚无可授予 `editor_reconciled` 的 production reconciliation/materialization artifact contract，因此 release validator 必须在一致性检查后继续 fail closed；自声明字段不能替代 first-class reconciliation provenance；
+- 只有未来 first-class production Editor-Cue Reconciliation artifact 能绑定 exact editor/source SRT、canonical occurrence/timeline identity、source render identity 及任何用于推翻 editor boundary 的更强证据，并被 release validator 验证后，才允许移除当前 production-release sentinel；
 - transition/cut/overlap 人工 review 完成、artifact hash 完整、或 run 已 `ready_for_render` 都不能替代 editor reconciliation authority；
-- `projection_coverage.authority_omitted_line_count > 0` 属于内容完整性 blocker：unproven canonical suffix 不得被 extrapolation 恢复普通 timing authority，也不得被静默丢弃后继续 final render；
-- future Editor-Cue Reconciliation 必须是 first-class、fingerprinted、lineage-bearing artifact，并绑定 exact editor/source SRT、canonical occurrence/timeline identity 及任何用于推翻 editor boundary 的更强证据。
+- `projection_coverage.authority_omitted_line_count > 0` 属于内容完整性 blocker：unproven canonical suffix 不得被 extrapolation 恢复普通 timing authority，也不得被静默丢弃后继续 final render。
 
 这些规则是 release contract，不是可通过降低 acoustic/transition threshold 绕过的 calibration 参数。
 
