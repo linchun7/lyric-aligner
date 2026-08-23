@@ -105,6 +105,24 @@ class EditorCueReconciliationTests(unittest.TestCase):
             "ambiguous_overlapping_editor_ownership",
         )
 
+    def test_unique_container_with_extra_overlap_stays_review(self):
+        result = evaluate_editor_cue_reconciliation(
+            [
+                Cue(1, 0, 5000, "primary owner"),
+                Cue(2, 4000, 8000, "overlapping neighbor"),
+            ],
+            [canonical(1, 3500, 4500, "partially overlaps neighbor")],
+        )
+        self.assertEqual(result["status_counts"]["still_review"], 2)
+        self.assertEqual(result["canonical_assigned_count"], 0)
+        self.assertEqual(result["canonical_unassigned_count"], 1)
+        self.assertEqual(
+            result["canonical_unassigned"][0]["reason"],
+            "canonical_interval_crosses_editor_boundary",
+        )
+        self.assertEqual(result["canonical_unassigned"][0]["editor_positions"], [1, 2])
+        self.assertFalse(result["full_topology_candidate"])
+
     def test_overlapping_canonical_material_inside_one_editor_cue_stays_review(self):
         result = evaluate_editor_cue_reconciliation(
             [Cue(1, 0, 6000, "one editor cue")],
