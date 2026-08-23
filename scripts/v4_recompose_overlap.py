@@ -7,6 +7,7 @@ import argparse
 import runpy
 import sys
 from pathlib import Path
+from typing import Any
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 if str(REPOSITORY_ROOT) not in sys.path:
@@ -21,17 +22,33 @@ from task_contract import load_task_manifest, verify_manifest_inputs
 
 
 _IMPL_PATH = Path(__file__).with_name("_v4_recompose_overlap_impl.txt")
+_IMPL_NAMESPACE: dict[str, Any] | None = None
+
+
+def _implementation_namespace() -> dict[str, Any]:
+    global _IMPL_NAMESPACE
+    if _IMPL_NAMESPACE is None:
+        _IMPL_NAMESPACE = runpy.run_path(
+            str(_IMPL_PATH),
+            run_name="_lyric_aligner_v4_recompose_overlap_impl",
+        )
+    return _IMPL_NAMESPACE
 
 
 def _implementation_main() -> int:
-    namespace = runpy.run_path(
-        str(_IMPL_PATH),
-        run_name="_lyric_aligner_v4_recompose_overlap_impl",
-    )
-    implementation = namespace.get("main")
+    implementation = _implementation_namespace().get("main")
     if not callable(implementation):
         raise RuntimeError("overlap materializer implementation has no main()")
     return int(implementation())
+
+
+def _effective_boundary_mapping(*args, **kwargs):
+    """Compatibility forwarding for the tested overlap lineage helper."""
+
+    implementation = _implementation_namespace().get("_effective_boundary_mapping")
+    if not callable(implementation):
+        raise RuntimeError("overlap materializer implementation has no boundary helper")
+    return implementation(*args, **kwargs)
 
 
 def _preflight(argv: list[str]) -> None:
