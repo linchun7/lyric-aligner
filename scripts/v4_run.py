@@ -11,6 +11,7 @@ ROOT = SCRIPTS.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from lyric_aligner.io.run_output_path_safety import validate_run_output_tree_from_argv
 from lyric_aligner.pipeline.run_lock import OutputRunLock, OutputRunLockError
 
 
@@ -43,7 +44,16 @@ def _out_dir_from_argv(argv: list[str]) -> Path | None:
 
 
 def main() -> int:
-    out_dir = _out_dir_from_argv(sys.argv[1:])
+    argv = sys.argv[1:]
+    if any(flag in argv for flag in ("-h", "--help")):
+        return _OPTIMIZED.main()
+    try:
+        validate_run_output_tree_from_argv(argv)
+    except (OSError, ValueError) as exc:
+        print(f"v4_run.py: error: {exc}", file=sys.stderr)
+        return 2
+
+    out_dir = _out_dir_from_argv(argv)
     if out_dir is None:
         return _OPTIMIZED.main()
     try:
