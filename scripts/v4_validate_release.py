@@ -26,6 +26,22 @@ from task_contract import load_task_manifest, verify_manifest_inputs
 _REQUIRED_V4_SEGMENTATION_AUTHORITY = "editor_reconciled"
 
 
+def _require_v4_production_editor_reconciliation_materializer() -> None:
+    """Keep V4 release closed until production reconciliation lineage exists.
+
+    The current repository has only the evaluation-only editor reconciliation
+    stage. Three self-consistent ``editor_reconciled`` declarations in a final
+    render are therefore not sufficient provenance for production authority.
+    This sentinel must be replaced by validation of a first-class production
+    reconciliation/materialization artifact when that contract is implemented.
+    """
+
+    raise ValueError(
+        "v4 release blocked: production editor reconciliation materializer contract "
+        "is not implemented; editor_reconciled self-declaration is not release authority"
+    )
+
+
 def _load_upstream_artifacts(paths: list[Path], *, fingerprint: str) -> tuple[tuple[str, ...], dict]:
     ids: list[str] = []
     profile_ids: set[str] = set()
@@ -239,6 +255,7 @@ def main() -> int:
                 report=args.report,
                 qa_json=args.qa_json,
             )
+            _require_v4_production_editor_reconciliation_materializer()
         else:
             profile_id = upstream_metadata["calibration_profile_id"] or None
             profile_version = upstream_metadata["calibration_profile_version"] or None
