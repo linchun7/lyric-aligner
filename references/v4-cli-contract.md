@@ -111,11 +111,13 @@ segmentation_authority = editor_reconciliation_evaluation_only
 production_authority_granted = false
 ```
 
+单个 canonical interval 只有在**恰好一个** editor cue 完整包含它、并且它与任何其他 editor cue 都没有正长度交集时才可归该唯一 owner 并标 `resolved`。若虽有唯一完整 owner、但同时与重叠 neighbor 相交，必须按 `canonical_interval_crosses_editor_boundary` 留在 `still_review`；不能因为 `len(containers)==1` 就跳过额外交叠检查，也不能由此产生假 `full_topology_candidate=true`。
+
 ### `v4_validate_release.py`
 
 release manifest 不得覆盖 task manifest/任一 task input、final SRT、audit CSV、QA JSON 或任何 upstream artifact。
 
-V4 release 只有在唯一 exact final-render artifact 的 production authority **三层一致**时才可继续：
+唯一 exact final-render artifact 的 production authority 三层一致是 V4 release 的**必要条件，但当前不是充分条件**：
 
 ```text
 normalized_config.segmentation_authority = editor_reconciled
@@ -127,7 +129,9 @@ exact QA.publish_ready                    = true
 
 artifact evidence 或 exact QA 任何一处仍有非空 `release_blocked_reason` 时必须 fail closed。不能只把 `normalized_config` 改成 production authority，而让 evidence/QA 仍保持 evaluation-only；这种半升级状态不得生成 release manifest。
 
-之后仍需通过既有 exact SRT/audit/QA hash binding、task fingerprint、algorithm version、calibration profile 与 release QA 完整检查。路径保护和三层一致性检查都不创造新的 segmentation authority；它们只验证真正的 production materializer 是否给出了完整一致的证据。
+当前仓库没有可授予 `editor_reconciled` 的 production reconciliation/materialization artifact contract。因此即使上述字段完全一致、exact SRT/audit/QA hash binding、task fingerprint、algorithm version 与 calibration profile 全部通过，`v4_validate_release.py` 仍必须通过显式 sentinel 阻断 V4 production release。自声明字段一致不能替代 first-class production provenance。未来只有在 production reconciliation artifact、exact editor/source SRT binding、canonical/timeline lineage 与必要更强 boundary evidence 的正式 contract 实现后，才能用真实 provenance validation 替换该 sentinel。
+
+路径保护、三层一致性与当前 sentinel 都不创造新的 segmentation authority；它们只防止未被证明的 production authority 被 release gate 接受。
 
 ## 3. JSON 类型必须 fail closed
 
@@ -152,14 +156,16 @@ Release/evaluation authority 不能依赖 Python 的宽松强制转换。
 - run/materializer output tree 不能包住 direct/lineage input，也不能位于 task input subtree；
 - canonical / optimized / legacy 三个 run entrypoint 的 unsafe output collision 必须在任何 output directory、lock、cache/session 或 stage write 前失败；
 - resolve/coarse/fine/transition direct CLI 的 unsafe output collision 必须在 stage artifact 写入前失败；
-- coarse feature-cache tree 不能进入或反向包含 task/upstream inputs；
+- primary-stage JSON 中递归声明的 `*_path` lineage 必须进入 protected input 集合；
+- coarse 显式 feature-cache tree 和由 `--out` 自动推导的默认 `cache/features` 都不能进入或反向包含 task/upstream inputs；
 - primary-stage `--out` 与 `--artifact-out` 必须 pairwise distinct；
 - materializer collision 在原实现首次写入前失败，被保护输入字节不变；
 - `--help` 与正常 run/asset/coarse/fine/transition/cut/overlap/combined E2E 不因安全 wrapper 退化；
 - review template/apply 的碰撞不会改变被保护输入字节；
 - release manifest 碰撞不会改变被保护输入字节；
 - malformed review/rebuild/render authority count 被拒绝；
-- final-render config/evidence/QA authority 任一层不一致时 release 被拒绝；
-- 正常 render/review/release/evaluation 路径不因 guard 产生 false positive。
+- final-render config/evidence/QA authority 任一层不一致时 release 被拒绝；即使三层一致，production reconciliation materializer sentinel 仍阻断当前 V4 release；
+- reconciliation 中“唯一完整 owner + 额外 overlapping editor intersection”必须保持 `still_review`，不能形成 `full_topology_candidate` 假阳性；
+- 正常 render/review/evaluation 路径不因 guard 产生 false positive。
 
 真实歌曲名、歌词、cue、timestamp、audio 或私有路径不得进入本文件或公开测试。
