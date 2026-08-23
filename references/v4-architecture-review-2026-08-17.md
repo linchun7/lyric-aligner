@@ -393,3 +393,29 @@ production_authority_granted = false
 ```
 
 因此该 stage 可以安全用于真实私有任务统计 resolved/review/not-evaluable 分布，而不会提前打开 production release gate。复杂 non-monotonic editor file order 也不会被首版静默接受为闭环：单 cue 诊断保留，但 `full_topology_candidate=false`。
+
+## 17. 2026-08-23 Post-#75 reconciliation / release authority ownership closeout
+
+独立复核确认，Editor-Cue Reconciliation 的“唯一 owner”必须同时满足两个条件，而不能只看完整 containment：
+
+```text
+exactly one editor cue fully contains the canonical interval
+AND
+that canonical interval has no positive-length intersection with any other editor cue
+```
+
+因此 canonical interval 即使完整落入 A，只要还与重叠 neighbor B 有正长度交集，也不能由 A 单独宣称 ownership；该 interval 必须保持 `canonical_interval_crosses_editor_boundary` / `still_review`。这一规则属于 reconciliation evaluation 的职责边界，防止重叠 editor topology 产生假 `full_topology_candidate=true`，但仍不授予任何 boundary mutation 权限。
+
+Production release 的职责边界也进一步明确：final-render `normalized_config`、artifact `evidence` 与 exact hash-bound QA 对 `editor_reconciled` / `publish_ready=true` 的一致性只是**必要条件**。这些字段是 final-render 自声明，不能自行证明 production reconciliation provenance。
+
+当前仓库只有：
+
+```text
+editor_cue_reconciliation_evaluation
+segmentation_authority = editor_reconciliation_evaluation_only
+production_authority_granted = false
+```
+
+尚不存在可授予 `editor_reconciled` 的 production reconciliation/materialization artifact contract。因而 V4 release validator 必须在完成三层一致性、exact hash binding、task/version/profile 检查后继续 fail closed；当前显式 production-release sentinel 代表“authority owner 尚未实现”，不是临时 calibration flag。
+
+未来解除 sentinel 时，不得仅增加一个布尔字段或改名 evaluation artifact。必须先实现 first-class、fingerprinted、lineage-bearing production reconciliation/materialization artifact，并让 release validator验证它与 exact editor/source SRT、source final-render artifact、canonical occurrence/timeline identity 以及任何用于 rebut editor boundary 的更强 token/word/audio evidence之间的正式 lineage。只有该 stage 才能成为 `editor_reconciled` production authority 的真源。
