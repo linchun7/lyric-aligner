@@ -26,6 +26,7 @@ class V4ReleaseLineageTests(unittest.TestCase):
         outputs=None,
         name: str | None = None,
         extra_config: dict | None = None,
+        evidence: dict | None = None,
     ) -> Path:
         if outputs is None:
             output = root / f"{name or stage}.json"
@@ -41,12 +42,20 @@ class V4ReleaseLineageTests(unittest.TestCase):
                 "calibration_profile_version": profile_version,
                 **(extra_config or {}),
             },
+            evidence=evidence,
         )
         path = root / f"{name or stage}.artifact.json"
         path.write_text(json.dumps(payload), encoding="utf-8")
         return path
 
-    def final_files(self, root: Path):
+    def final_files(
+        self,
+        root: Path,
+        *,
+        qa_segmentation_authority: str = "editor_reconciled",
+        qa_publish_ready: bool = True,
+        qa_release_blocked_reason: str = "",
+    ):
         final_srt = root / "FINAL.srt"
         report = root / "FINAL.csv"
         qa = root / "FINAL.qa.json"
@@ -55,7 +64,16 @@ class V4ReleaseLineageTests(unittest.TestCase):
             encoding="utf-8",
         )
         report.write_text("start_ms,end_ms,text\n1000,2000,line\n", encoding="utf-8")
-        qa.write_text("{}", encoding="utf-8")
+        qa.write_text(
+            json.dumps(
+                {
+                    "segmentation_authority": qa_segmentation_authority,
+                    "publish_ready": qa_publish_ready,
+                    "release_blocked_reason": qa_release_blocked_reason,
+                }
+            ),
+            encoding="utf-8",
+        )
         return final_srt, report, qa
 
     def final_render_artifact(
@@ -65,11 +83,27 @@ class V4ReleaseLineageTests(unittest.TestCase):
         name="render",
         algorithm_version=__version__,
         segmentation_authority="editor_reconciled",
+        evidence_segmentation_authority: str | None = None,
+        evidence_publish_ready: bool = True,
+        evidence_release_blocked_reason: str = "",
+        qa_segmentation_authority: str = "editor_reconciled",
+        qa_publish_ready: bool = True,
+        qa_release_blocked_reason: str = "",
     ):
-        final_srt, report, qa = self.final_files(root)
+        final_srt, report, qa = self.final_files(
+            root,
+            qa_segmentation_authority=qa_segmentation_authority,
+            qa_publish_ready=qa_publish_ready,
+            qa_release_blocked_reason=qa_release_blocked_reason,
+        )
         extra_config = {}
         if segmentation_authority is not None:
             extra_config["segmentation_authority"] = segmentation_authority
+        evidence_authority = (
+            segmentation_authority
+            if evidence_segmentation_authority is None
+            else evidence_segmentation_authority
+        )
         artifact = self.artifact(
             root,
             stage="final_render",
@@ -83,6 +117,11 @@ class V4ReleaseLineageTests(unittest.TestCase):
                 ("qa_json", qa),
             ),
             extra_config=extra_config,
+            evidence={
+                "segmentation_authority": evidence_authority,
+                "publish_ready": evidence_publish_ready,
+                "release_blocked_reason": evidence_release_blocked_reason,
+            },
         )
         return artifact, final_srt, report, qa
 
@@ -116,7 +155,7 @@ class V4ReleaseLineageTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "task fingerprint"):
                 _load_upstream_artifacts([artifact], fingerprint="d" * 64)
 
-    def test_final_render_binding_accepts_exact_materialized_files(self):
+    def test_final_render_binding_accepts_consistent_production_authority(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             artifact, final_srt, report, qa = self.final_render_artifact(root)
@@ -170,6 +209,91 @@ class V4ReleaseLineageTests(unittest.TestCase):
                     qa_json=qa,
                 )
 
+    def test_final_render_binding_rejects_evidence_authority_mismatch(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            artifact, final_srt, report, qa = self.final_render_artifact(
+                root,
+                evidence_segmentation_authority="canonical_line_evaluation_only",
+            )
+            with self.assertRaisesRegex(ValueError, "artifact evidence does not confirm"):
+                _validate_final_render_binding(
+                    [artifact],
+                    fingerprint=FINGERPRINT,
+                    algorithm_version=__version__,
+                    final_srt=final_srt,
+                    report=report,
+                    qa_json=qa,
+                )
+
+    def test_final_render_binding_rejects_evidence_not_publish_ready(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            artifact, final_srt, report, qa = self.final_render_artifact(
+                root,
+                evidence_publish_ready=False,
+            )
+            with self.assertRaisesRegex(ValueError, "artifact evidence is not publish_ready"):
+                _validate_final_render_binding(
+                    [artifact],
+                    fingerprint=FINGERPRINT,
+                    algorithm_version=__version__,
+                    final_srt=final_srt,
+                    report=report,
+                    qa_json=qa,
+                )
+
+    def test_final_render_binding_rejects_qa_authority_mismatch(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            artifact, final_srt, report, qa = self.final_render_artifact(
+                root,
+                qa_segmentation_authority="canonical_line_evaluation_only",
+            )
+            with self.assertRaisesRegex(ValueError, "final render QA does not confirm"):
+                _validate_final_render_binding(
+                    [artifact],
+                    fingerprint=FINGERPRINT,
+                    algorithm_version=__version__,
+                    final_srt=final_srt,
+                    report=report,
+                    qa_json=qa,
+                )
+
+    def test_final_render_binding_rejects_qa_not_publish_ready(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            artifact, final_srt, report, qa = self.final_render_artifact(
+                root,
+                qa_publish_ready=False,
+            )
+            with self.assertRaisesRegex(ValueError, "final render QA is not publish_ready"):
+                _validate_final_render_binding(
+                    [artifact],
+                    fingerprint=FINGERPRINT,
+                    algorithm_version=__version__,
+                    final_srt=final_srt,
+                    report=report,
+                    qa_json=qa,
+                )
+
+    def test_final_render_binding_rejects_remaining_release_blocker(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            artifact, final_srt, report, qa = self.final_render_artifact(
+                root,
+                evidence_release_blocked_reason="still_blocked",
+            )
+            with self.assertRaisesRegex(ValueError, "still records a release_blocked_reason"):
+                _validate_final_render_binding(
+                    [artifact],
+                    fingerprint=FINGERPRINT,
+                    algorithm_version=__version__,
+                    final_srt=final_srt,
+                    report=report,
+                    qa_json=qa,
+                )
+
     def test_final_render_binding_rejects_modified_srt(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -204,6 +328,11 @@ class V4ReleaseLineageTests(unittest.TestCase):
                     ("qa_json", qa),
                 ),
                 extra_config={"segmentation_authority": "editor_reconciled"},
+                evidence={
+                    "segmentation_authority": "editor_reconciled",
+                    "publish_ready": True,
+                    "release_blocked_reason": "",
+                },
             )
             with self.assertRaisesRegex(ValueError, "exactly one final_render"):
                 _validate_final_render_binding(

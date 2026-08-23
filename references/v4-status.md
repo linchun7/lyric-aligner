@@ -105,13 +105,19 @@ release_blocked_reason = editor_cue_reconciliation_required
 
 `ready_for_render` 只表示 reconstruction/review 已足以生成结构/评估输出，**不等于 publish_ready**。
 
-V4 release validator 必须看到唯一、hash-bound 的 final-render artifact 明确声明：
+V4 release validator 必须看到唯一、hash-bound 的 final-render artifact 明确声明 `editor_reconciled`，并且 production authority 必须在三层一致：
 
 ```text
-segmentation_authority = editor_reconciled
+final_render.normalized_config.segmentation_authority = editor_reconciled
+final_render.evidence.segmentation_authority          = editor_reconciled
+final_render.evidence.publish_ready                   = true
+exact QA.segmentation_authority                       = editor_reconciled
+exact QA.publish_ready                                = true
 ```
 
-没有这个 authority 时，production release 必须失败。人工清完 transition/cut/overlap review 也不能自动获得该 authority。
+artifact evidence 或 QA 只要仍有非空 `release_blocked_reason`，release 也必须失败。不能出现“config 已 production，但 evidence/QA 仍 evaluation-only”的半升级状态。
+
+没有这组一致 authority 时，production release 必须失败。人工清完 transition/cut/overlap review 也不能自动获得该 authority。
 
 ### 5.4 Editor-Cue Reconciliation evaluation bridge
 
@@ -182,6 +188,7 @@ Public CI 必须继续证明：
 - Max bounded terminal coverage 只缩小/记录 authority，不扩张；
 - omitted canonical lines 不能静默 render；
 - canonical-line Max output 不能通过 production release gate；
+- production release 的 final-render config/evidence/exact QA authority 必须一致；
 - reconciliation evaluator 不移动 editor boundaries、不自动产生 `rebutted`、不授予 production authority；
 - Max artifact writers 不覆盖 task/upstream inputs，多个 outputs 不允许同路径；
 - malformed release/evaluation QA types fail closed；

@@ -89,7 +89,7 @@ production_authority_granted = false
 
 即使 `full_topology_candidate=true`、所有 editor cue 均为 `resolved`，也只代表“现有 editor topology 与 canonical render 在结构上可兼容”的评估结果；它不修改 `v4_render.py`、不生成生产 SRT、不改变 `v4_validate_release.py`，也绝不等价于 `editor_reconciled`。
 
-额外记录 `editor_file_order_monotonic`。若 source SRT 文件顺序存在时间回退，单 cue 结果仍可供诊断，但 `full_topology_candidate=false`，避免复杂 reorder 在首版被误当成已闭环 production segmentation。
+额外记录 `editor_file_order_monotonic`。若 source SRT 文件顺序存在时间回退，单 cue 诊断仍保留，但 `full_topology_candidate=false`，避免复杂 reorder 在首版被误当成已闭环 production segmentation。
 
 Public synthetic regression 覆盖唯一包含、1 editor cue 承载多条非重叠 canonical cue、跨边界、重叠 editor ambiguity、canonical overlap、无 evidence、非单调 file order、audit identity，以及 CLI 对 source render authority / QA / artifact lineage 的 fail-closed 检查。
 
@@ -111,6 +111,20 @@ Public synthetic regression 覆盖唯一包含、1 editor cue 承载多条非重
 
 CLI 安全契约集中到 `references/v4-cli-contract.md`，并加入文档同步 owner 集合。
 
+## 2026-08-23 — Max release authority consistency hardening
+
+继续复核 production release gate 时发现：`v4_validate_release.py` 已要求 `final_render.normalized_config.segmentation_authority=editor_reconciled`，但没有同时验证同一个 final-render artifact 的 `evidence` 与其 hash-bound QA 是否声明相同 production authority。若未来 materializer 产生内部自相矛盾的 artifact，单看 config 可能形成 false-ready。
+
+本轮只收紧 release consistency，不新增任何 production authority：
+
+- final-render `normalized_config.segmentation_authority` 仍必须是 `editor_reconciled`；
+- final-render `evidence.segmentation_authority` 也必须是 `editor_reconciled`，且 `evidence.publish_ready=true`；
+- exact hash-bound QA 同样必须声明 `segmentation_authority=editor_reconciled` 与 `publish_ready=true`；
+- artifact evidence 或 QA 仍携带非空 `release_blocked_reason` 时 release fail closed；
+- 任一层缺失、evaluation-only、not-publish-ready 或彼此矛盾都不能进入 release manifest。
+
+当前 canonical-line renderer 和 reconciliation evaluator 均继续是 evaluation-only，因此行为保持 blocked；本变更只保证未来 production materializer 必须在 config/evidence/QA 三层形成一致、可审计的 authority contract。
+
 ## 冻结与回滚
 
 Smart/Pro production freeze tag 继续固定在：
@@ -120,4 +134,4 @@ prod-smart-v1.2.5-pro-v1.1.4-20260821
 56841c40d6a90101efe1da568e2d5c2e5e67a0a2
 ```
 
-Max #68/#70 与后续 reconciliation evaluation / CLI safety maintenance 不移动该 tag，不改变冻结 Smart/Pro 的行为。回滚依赖 Git commit/tag + artifact lineage，不维护第二套静默 fallback。
+Max #68/#70 与后续 reconciliation evaluation / CLI safety / release consistency maintenance 不移动该 tag，不改变冻结 Smart/Pro 的行为。回滚依赖 Git commit/tag + artifact lineage，不维护第二套静默 fallback。

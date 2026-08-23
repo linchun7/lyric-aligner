@@ -87,7 +87,7 @@ def _validate_final_render_binding(
     report: Path,
     qa_json: Path,
 ) -> str:
-    """Require one exact final render with production-safe segmentation authority."""
+    """Require one exact final render with internally consistent production authority."""
 
     matches: list[tuple[Path, dict]] = []
     for path in paths:
@@ -125,6 +125,43 @@ def _validate_final_render_binding(
         raise ValueError(
             "v4 release blocked: final render has no editor-reconciled segmentation "
             "authority; canonical-line rendering is evaluation-only"
+        )
+
+    evidence = payload.get("evidence")
+    if not isinstance(evidence, dict):
+        raise ValueError("final_render artifact has invalid evidence")
+    if str(evidence.get("segmentation_authority") or "").strip() != (
+        _REQUIRED_V4_SEGMENTATION_AUTHORITY
+    ):
+        raise ValueError(
+            "v4 release blocked: final_render artifact evidence does not confirm "
+            "editor-reconciled segmentation authority"
+        )
+    if evidence.get("publish_ready") is not True:
+        raise ValueError(
+            "v4 release blocked: final_render artifact evidence is not publish_ready"
+        )
+    if str(evidence.get("release_blocked_reason") or "").strip():
+        raise ValueError(
+            "v4 release blocked: final_render artifact evidence still records a "
+            "release_blocked_reason"
+        )
+
+    qa = json.loads(qa_json.read_text(encoding="utf-8-sig"))
+    if not isinstance(qa, dict):
+        raise ValueError("final render QA must contain a JSON object")
+    if str(qa.get("segmentation_authority") or "").strip() != (
+        _REQUIRED_V4_SEGMENTATION_AUTHORITY
+    ):
+        raise ValueError(
+            "v4 release blocked: final render QA does not confirm editor-reconciled "
+            "segmentation authority"
+        )
+    if qa.get("publish_ready") is not True:
+        raise ValueError("v4 release blocked: final render QA is not publish_ready")
+    if str(qa.get("release_blocked_reason") or "").strip():
+        raise ValueError(
+            "v4 release blocked: final render QA still records a release_blocked_reason"
         )
     return str(payload["artifact_id"])
 
