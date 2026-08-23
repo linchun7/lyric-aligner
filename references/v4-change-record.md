@@ -138,6 +138,21 @@ CLI 安全契约集中到 `references/v4-cli-contract.md`，并加入文档同�
 
 该修复不改变 review decisions、cut/overlap detection、mapping、timeline reconstruction、render/release authority；只防止 materializer 在取得不安全 filesystem ownership 后再开始写入。
 
+## 2026-08-23 — V4 orchestration output-tree ownership gate
+
+最终 P0/P1 收口扫描发现，顶层 `v4_run.py` 会在证明 output-tree ownership 之前进入 `OutputRunLock`，而 direct `v4_run_optimized.py` / `v4_run_legacy.py` 也会先创建 cache/session/stage 目录。若 `--out-dir` 落入已 fingerprint 的 task input subtree，这些 orchestration 写入本身就可能先污染受保护输入。
+
+本轮把同一双向 output-tree gate 前移到三条公开 run entrypoint 的第一次写操作之前：保护 task manifest、所有 manifest-bound input roots/subtrees，以及显式 profile/language/middle-cut/lyric-role config inputs；output tree 既不能位于这些输入内，也不能反向包住它们。canonical `v4_run.py` 必须在创建 `.v4-run.lock` 前完成检查，direct optimized/legacy entrypoint 也必须在 cache/session/stage `mkdir` 前完成检查。
+
+为避免安全修复混入 orchestration 算法 diff，legacy 与 optimized 原实现继续以 blob-identical internal source resource 保存：
+
+```text
+legacy    a20afb27ca7030033e86618cebea6414eea36ceb
+optimized c7838ac50ab2b2202ee93bda5bd22801ec5d8d9a
+```
+
+公开 regression 必须覆盖 canonical / optimized / legacy 三种直接调用，在 unsafe output 位于 fingerprinted input subtree 时证明输出目录和 `.v4-run.lock` 均未被创建；同时覆盖 output tree 反向包住 task inputs 和显式 config input 的情况。该变更只收紧 filesystem ownership，不改变 alignment、evidence、render、release authority 或 Smart/Pro 策略。
+
 ## 冻结与回滚
 
 Smart/Pro production freeze tag 继续固定在：
