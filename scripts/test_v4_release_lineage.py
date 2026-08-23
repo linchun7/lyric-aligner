@@ -7,6 +7,7 @@ from lyric_aligner import __version__
 from lyric_aligner.contracts.artifacts import build_artifact_manifest
 from v4_validate_release import (
     _load_upstream_artifacts,
+    _require_v4_production_editor_reconciliation_materializer,
     _validate_final_render_binding,
 )
 
@@ -155,7 +156,7 @@ class V4ReleaseLineageTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "task fingerprint"):
                 _load_upstream_artifacts([artifact], fingerprint="d" * 64)
 
-    def test_final_render_binding_accepts_consistent_production_authority(self):
+    def test_final_render_binding_accepts_consistent_production_authority_fields(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             artifact, final_srt, report, qa = self.final_render_artifact(root)
@@ -168,6 +169,13 @@ class V4ReleaseLineageTests(unittest.TestCase):
                 qa_json=qa,
             )
             self.assertTrue(artifact_id)
+
+    def test_v4_release_stays_closed_without_production_reconciliation_materializer(self):
+        with self.assertRaisesRegex(
+            ValueError,
+            "production editor reconciliation materializer contract is not implemented",
+        ):
+            _require_v4_production_editor_reconciliation_materializer()
 
     def test_final_render_binding_rejects_canonical_only_segmentation(self):
         with tempfile.TemporaryDirectory() as directory:
