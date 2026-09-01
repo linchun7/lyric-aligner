@@ -163,6 +163,26 @@ def _bucket_mean(values: np.ndarray, start: int, end: int) -> float:
     return float(np.mean(subset)) if subset.size else 0.0
 
 
+def _bucket_inlier_mean(
+    values: np.ndarray,
+    inliers: np.ndarray,
+    start: int,
+    end: int,
+) -> float:
+    """Measure positional drift from robust-fit inliers without hiding empty buckets."""
+
+    subset = values[start:end]
+    subset_inliers = inliers[start:end]
+    if not subset.size:
+        return 0.0
+    selected = subset[subset_inliers]
+    if selected.size:
+        return float(np.mean(selected))
+    # No inlier supports this positional region. Keep the full-bucket drift so
+    # the region remains fail-closed instead of looking artificially clean.
+    return float(np.mean(subset))
+
+
 def _feature_agreement(rows: list[AlignmentAnchor]) -> tuple[dict[str, float], int]:
     names = sorted({name for row in rows for name in row.feature_scores})
     summary: dict[str, float] = {}
@@ -185,9 +205,9 @@ def _diagnostics(
     absolute = np.abs(residual)
     count = len(rows)
     third = max(1, count // 3)
-    early = _bucket_mean(residual, 0, third)
-    middle = _bucket_mean(residual, third, min(count, third * 2))
-    late = _bucket_mean(residual, min(count, third * 2), count)
+    early = _bucket_inlier_mean(residual, inliers, 0, third)
+    middle = _bucket_inlier_mean(residual, inliers, third, min(count, third * 2))
+    late = _bucket_inlier_mean(residual, inliers, min(count, third * 2), count)
     agreement, independent = _feature_agreement(rows)
     return MappingDiagnostics(
         anchor_count=count,

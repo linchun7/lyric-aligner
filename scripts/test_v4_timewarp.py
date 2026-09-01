@@ -90,6 +90,24 @@ class V4TimeWarpTests(unittest.TestCase):
             "declared_middle_cut_candidate",
         )
 
+    def test_leading_retrieval_outliers_do_not_create_false_drift_block(self):
+        points = []
+        for index in range(46):
+            mix = float(index * 3)
+            source = 7.0 + 1.10 * mix
+            if index == 0:
+                source += 5.0
+            elif index == 1:
+                source += 2.5
+            points.append((mix, source))
+
+        result = select_timewarp(anchors(points))
+
+        self.assertEqual(result["selection"], "AFFINE_ACCEPTED")
+        diagnostics = result["mapping"]["diagnostics"]
+        self.assertEqual(diagnostics["inlier_count"], 44)
+        self.assertLess(diagnostics["drift_span"], 0.30)
+
     def test_piecewise_requires_independent_feature_support(self):
         points = [
             (0, 0),

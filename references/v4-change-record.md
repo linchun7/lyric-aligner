@@ -182,6 +182,12 @@ Public regression 使用 generic synthetic task，直接调用四条 CLI，证�
 
 修复只改变 run orchestration 的 CLI 浮点序列化：`--mix-start/--mix-end` 使用 Python round-trip float representation，不调整 coarse/Fine/TimeWarp 阈值、mapping 逻辑或任何 authority。新增 generic synthetic regression，专门覆盖“固定 6 位格式会向上越过 terminal duration”的情况；真实任务名称、音频时长和时间戳不进入 public test。
 
+## 2026-09-01 — Max TimeWarp drift diagnostics honor robust inliers
+
+真实私有任务进一步暴露出一个通用诊断一致性问题：robust TimeWarp fitting 已经通过 inlier mask 排除 gross retrieval outlier，但 early/middle/late drift diagnostics 原先仍对全部 residual 直接求位置桶均值。这样已被 robust fit 明确认定为 outlier 的少量错误 retrieval 仍会二次进入 drift authority gate，可能阻断一个其余 inlier 高覆盖、低残差且速率稳定的 affine mapping。
+
+修复不改变 robust inlier threshold、drift threshold、piecewise threshold、feature threshold 或 cut authority。位置 drift 现在优先仅由对应桶内 robust inlier residual 计算；如果一个位置桶完全没有 inlier，则退回该桶全部 residual，继续 fail closed，不把无证据区域伪装成零 drift。新增 generic synthetic regression：仅前部少量 gross outlier、其余连续 anchors 保持稳定 affine 时，不应因为已排除 outlier 再次触发 false drift block。真实任务名称、时间戳、BPM 和音频数据不进入 public regression。
+
 ## 冻结与回滚
 
 Smart/Pro production freeze tag 继续固定在：
