@@ -129,7 +129,7 @@ subtitle segmentation authority
 - production final-render 的 `normalized_config`、artifact `evidence` 与其 exact hash-bound QA 必须对 `editor_reconciled` / `publish_ready` 保持一致；任一层仍为 evaluation-only、not-publish-ready 或带 `release_blocked_reason` 时必须 fail closed；
 - transition/cut/overlap 人工 review 完成、artifact hash 完整、或 run 已 `ready_for_render` 都不能替代 editor reconciliation authority；
 - `projection_coverage.authority_omitted_line_count > 0` 属于内容完整性 blocker：unproven canonical suffix 不得被 extrapolation 恢复普通 timing authority，也不得被静默丢弃后继续 final render；
-- future Editor-Cue Reconciliation 必须是 first-class、fingerprinted、lineage-bearing artifact，并绑定 exact editor/source SRT、canonical occurrence/timeline identity 及任何用于推翻 editor boundary 的更强证据。
+- Editor-Cue Reconciliation 必须是 first-class、fingerprinted、lineage-bearing artifact，并绑定 exact editor/source SRT、canonical occurrence/timeline identity 及任何用于推翻 editor topology 的证据；production topology rebuttal 只允许在 reconciliation 证明至少一条完整 timed canonical cue 与任何 immutable editor cue 都无时间交集时发生，普通 boundary crossing 不够。materializer 还必须验证 reconciliation 计数闭合、editor file order 单调、所有 canonical audit 行均有受支持的显式 timing，并保持 source evaluation SRT/audit exact byte-identical；只有新的 QA/final-render artifact 可授予 `editor_reconciled`。
 
 这些规则是 release contract，不是可通过降低 acoustic/transition threshold 绕过的 calibration 参数。
 

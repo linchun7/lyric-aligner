@@ -373,4 +373,21 @@ production_authority_granted = false
 - `not_evaluable`：没有 canonical temporal evidence；
 - `rebutted`：schema 保留，但首版不会自动产生。
 
-`full_topology_candidate=true` 也不能直接进入 release；它不是 `editor_reconciled`。当前 `v4_validate_release.py` 仍会拒绝 canonical evaluation render。下一步先在私有任务上统计 resolved/review/not-evaluable 分布，再决定 production materialization contract 与是否需要 token/word/audio boundary rebuttal。
+`full_topology_candidate=true` 仍不能直接进入 release；它不是 `editor_reconciled`。对于另一类经 evaluation 明确证明 editor topology 不完整的任务，可使用 `v4_materialize_editor_reconciled.py` 的窄 rebuttal path：必须存在至少一个 `canonical_unassigned.reason=no_editor_temporal_overlap` witness，editor file order 必须单调，reconciliation 内部 assigned/unassigned/status 计数必须闭合，而且 canonical audit 的每一行必须来自 `line_lrc / enhanced_lrc / qrc_word_timing` 显式 timing。普通跨 editor boundary 不能单独触发 rebuttal。
+
+```powershell
+python scripts/v4_materialize_editor_reconciled.py `
+  --task-manifest <task_manifest.json> `
+  --evaluation-srt <canonical_eval.srt> `
+  --report <canonical_eval.audit.csv> `
+  --qa-json <canonical_eval.qa.json> `
+  --render-artifact <canonical_eval.artifact.json> `
+  --reconciliation <editor_reconciliation.json> `
+  --reconciliation-artifact <editor_reconciliation.artifact.json> `
+  --final-srt <FINAL.srt> `
+  --final-report <FINAL.audit.csv> `
+  --final-qa <FINAL.qa.json> `
+  --artifact-out <FINAL.render.artifact.json>
+```
+
+成功时 final SRT/audit 与 canonical evaluation 逐字节一致；只有 QA 与新的 `final_render` artifact 获得 production authority。新 artifact 必须记录 source evaluation render、reconciliation artifact、rebuttal witness count 与 timing-format counts，且三层 production authority 均为 `editor_reconciled` / `publish_ready=true`。随后仍必须正常运行 `v4_validate_release.py`；release validator 没有 topology-rebuttal 特例。

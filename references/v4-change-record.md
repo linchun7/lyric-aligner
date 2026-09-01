@@ -215,6 +215,14 @@ Public regression 全部使用 generic synthetic fixtures，覆盖英文制作 c
 
 Public regression 使用 synthetic timeline/review fixtures，覆盖窄 overlap 子区间越界拒绝、错误 action 拒绝、内部极短 cue 邻接重平衡、clipped leading sliver 省略、无足够 donor capacity 时继续阻断；并复跑 timeline composer、review decisions、overlap recomposition、projection/render guard 与 overlap end-to-end。真实任务歌曲、歌词、时间戳与音频不进入 public test。
 
+## 2026-09-02 — Editor topology rebuttal production materializer
+
+私有长混剪的 Editor-Cue Reconciliation 实测表明，某些 editor SRT 并不是可保真的完整 cue topology：canonical timed stream 中会出现与任何 editor cue 都没有时间交集的歌词。此时若强制“不移动/不新增 editor cue”，会必然丢失 canonical truth。项目因此新增 `scripts/v4_materialize_editor_reconciled.py`，但只开放一个窄、可证明的 production rebuttal path。
+
+materializer 必须消费 exact hash-bound canonical evaluation render 与 `editor_cue_reconciliation_evaluation`，要求 editor file order 单调、`full_topology_candidate=false`、至少一个 `no_editor_temporal_overlap` witness、reconciliation assigned/unassigned/status 计数闭合，并且 canonical audit 全部来自 `line_lrc / enhanced_lrc / qrc_word_timing` 显式 timing。普通 `canonical_interval_crosses_editor_boundary` 不能单独触发 rebuttal。成功时 final SRT/audit 与 evaluation SRT/audit exact byte-identical；只有新 QA 与新 `final_render` artifact 获得 `editor_reconciled` / `publish_ready=true`，原 evaluation artifact 保持不变。
+
+Release gate 没有增加例外：production final-render 的 normalized config、artifact evidence 与 exact QA 仍必须三层一致，之后仍由 `v4_validate_release.py` 正常验证。Synthetic regression 覆盖成功 materialize→release、仅 boundary-crossing 继续阻断、unsupported timing format 阻断、reconciliation 内部计数不闭合时阻断；同时复跑 editor reconciliation CLI、release lineage、overlap E2E 与 projection/render guard。真实任务内容不进入 public tests。
+
 ## 冻结与回滚
 
 Smart/Pro production freeze tag 继续固定在：
