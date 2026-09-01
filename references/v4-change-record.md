@@ -206,6 +206,15 @@ Public regression 全部使用 generic synthetic fixtures，覆盖英文制作 c
 
 兼容性：合法歌词与既有中文 metadata 规则保持不变；受影响的只是此前误进入 canonical truth 的明确 provider metadata。回滚点为本变更前 Git commit；Max artifact 继续通过 `git_commit` + task fingerprint 区分 lineage，算法版本不因这次 parser hardening 单独改号。
 
+## 2026-09-02 — Narrow confirmed-overlap interval + minimum-duration cue repair
+
+私有 Max 成品链路暴露出两个通用下游问题，均在不降低既有门槛的前提下收紧处理：
+
+- transition review 的 `confirmed_overlap` 原先只能把整个候选 review interval 视为重组区。候选窗口通常刻意较宽，用它直接物化会把没有双源证据的前后片段一并扩成 overlap。现在 review decision 可选携带 `confirmed_interval=[start,end]`，且必须严格包含于原候选区间；未提供时保持旧行为。`resolved_clear` 等其他 action 不能携带该字段。这样 reviewer 可把宽候选缩到证据实际支持的 crossfade 子区间，不改变 transition detector 本身的 score/margin/ambiguity 阈值。
+- canonical timeline 偶尔会产生低于 renderer `minimum_cue_duration_ms` 的极短 cue。renderer 不降低全局 250 ms 门槛，而是先利用真实相邻空白扩展；仍不足时，只在相邻 cue 保持同一最小时长的前提下重分配边界。若邻居没有足够 temporal capacity 仍 fail closed。若歌词主体起点位于 occurrence authority window 之外、只剩不足最小时长的 clipped leading fragment，则省略该残片而不是显示闪字；confirmed-overlap recomposition 仍可在有证据时重新引入对应内容。
+
+Public regression 使用 synthetic timeline/review fixtures，覆盖窄 overlap 子区间越界拒绝、错误 action 拒绝、内部极短 cue 邻接重平衡、clipped leading sliver 省略、无足够 donor capacity 时继续阻断；并复跑 timeline composer、review decisions、overlap recomposition、projection/render guard 与 overlap end-to-end。真实任务歌曲、歌词、时间戳与音频不进入 public test。
+
 ## 冻结与回滚
 
 Smart/Pro production freeze tag 继续固定在：

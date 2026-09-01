@@ -151,7 +151,7 @@ class V4TimelineComposerTests(unittest.TestCase):
         with self.assertRaisesRegex(TimelineComposeError, "confirmed-overlap evidence"):
             compose_canonical_timelines([left, right], config=CONFIG)
 
-    def test_too_short_cue_blocks_instead_of_extending_through_next_line(self):
+    def test_short_cue_uses_available_gap_before_borrowing_from_next_line(self):
         payload = timeline(
             "occ-1",
             1,
@@ -176,7 +176,113 @@ class V4TimelineComposerTests(unittest.TestCase):
                 },
             ],
         )
-        with self.assertRaisesRegex(TimelineComposeError, "too short"):
+        cues = compose_canonical_timelines([payload], config=CONFIG)
+        self.assertEqual((cues[0].start_ms, cues[0].end_ms), (850, 1100))
+        self.assertEqual(cues[1].start_ms, 1100)
+        self.assertEqual(cues[0].end_basis, "minimum_duration_rebalanced")
+
+
+    def test_internal_short_cue_rebalances_both_neighbor_boundaries(self):
+        payload = timeline(
+            "occ-1",
+            1,
+            0,
+            5000,
+            [
+                {
+                    "canonical_line_index": 0,
+                    "text": "previous",
+                    "mix_start_ms": 1000,
+                    "mix_end_ms": 2000,
+                    "timing_format": "line_lrc",
+                    "end_basis": "next_line_start",
+                },
+                {
+                    "canonical_line_index": 1,
+                    "text": "burst",
+                    "mix_start_ms": 2000,
+                    "mix_end_ms": 2074,
+                    "timing_format": "line_lrc",
+                    "end_basis": "next_line_start",
+                },
+                {
+                    "canonical_line_index": 2,
+                    "text": "following",
+                    "mix_start_ms": 2074,
+                    "mix_end_ms": 3200,
+                    "timing_format": "line_lrc",
+                    "end_basis": "next_line_start",
+                },
+            ],
+        )
+        cues = compose_canonical_timelines([payload], config=CONFIG)
+        self.assertEqual((cues[1].start_ms, cues[1].end_ms), (1912, 2162))
+        self.assertEqual(cues[0].end_ms, 1912)
+        self.assertEqual(cues[2].start_ms, 2162)
+        self.assertTrue(all(cue.end_ms - cue.start_ms >= 250 for cue in cues))
+
+    def test_clipped_leading_fragment_below_minimum_is_omitted(self):
+        payload = timeline(
+            "occ-1",
+            1,
+            5000,
+            10000,
+            [
+                {
+                    "canonical_line_index": 0,
+                    "text": "mostly outside",
+                    "mix_start_ms": 4800,
+                    "mix_end_ms": 5100,
+                    "timing_format": "line_lrc",
+                    "end_basis": "next_line_start",
+                },
+                {
+                    "canonical_line_index": 1,
+                    "text": "inside",
+                    "mix_start_ms": 5200,
+                    "mix_end_ms": 6500,
+                    "timing_format": "line_lrc",
+                    "end_basis": "next_line_start",
+                },
+            ],
+        )
+        cues = compose_canonical_timelines([payload], config=CONFIG)
+        self.assertEqual([cue.text for cue in cues], ["inside"])
+
+    def test_short_cue_stays_blocked_when_neighbors_cannot_donate(self):
+        payload = timeline(
+            "occ-1",
+            1,
+            0,
+            1000,
+            [
+                {
+                    "canonical_line_index": 0,
+                    "text": "previous",
+                    "mix_start_ms": 0,
+                    "mix_end_ms": 250,
+                    "timing_format": "line_lrc",
+                    "end_basis": "next_line_start",
+                },
+                {
+                    "canonical_line_index": 1,
+                    "text": "too short",
+                    "mix_start_ms": 250,
+                    "mix_end_ms": 300,
+                    "timing_format": "line_lrc",
+                    "end_basis": "next_line_start",
+                },
+                {
+                    "canonical_line_index": 2,
+                    "text": "following",
+                    "mix_start_ms": 300,
+                    "mix_end_ms": 550,
+                    "timing_format": "line_lrc",
+                    "end_basis": "next_line_start",
+                },
+            ],
+        )
+        with self.assertRaisesRegex(TimelineComposeError, "cannot safely donate"):
             compose_canonical_timelines([payload], config=CONFIG)
 
 

@@ -222,6 +222,44 @@ def _decision_action(item: dict[str, Any]) -> tuple[str | None, str]:
     return action, rationale
 
 
+def _confirmed_interval_for_decision(
+    item: dict[str, Any],
+    issue: dict[str, Any],
+    *,
+    action: str,
+) -> tuple[float, float] | None:
+    decision = item.get("decision")
+    if not isinstance(decision, dict):
+        return None
+    raw = decision.get("confirmed_interval")
+    if raw is None:
+        return _candidate_interval(issue) if action == "confirmed_overlap" else None
+    if action != "confirmed_overlap":
+        raise ReviewDecisionError(
+            "confirmed_interval is only valid with confirmed_overlap"
+        )
+    if not isinstance(raw, list) or len(raw) != 2:
+        raise ReviewDecisionError("confirmed_interval must contain [start, end]")
+    try:
+        start = float(raw[0])
+        end = float(raw[1])
+    except (TypeError, ValueError) as exc:
+        raise ReviewDecisionError("confirmed_interval contains invalid coordinates") from exc
+    if start < 0 or end <= start:
+        raise ReviewDecisionError("confirmed_interval is invalid")
+    candidate = _candidate_interval(issue)
+    if candidate is None:
+        raise ReviewDecisionError(
+            "confirmed_interval requires a transition candidate interval"
+        )
+    epsilon = 1e-6
+    if start < candidate[0] - epsilon or end > candidate[1] + epsilon:
+        raise ReviewDecisionError(
+            "confirmed_interval must stay inside the reviewed candidate interval"
+        )
+    return start, end
+
+
 def _annotate_transition(
     transitions: list[dict[str, Any]],
     issue: dict[str, Any],
@@ -335,6 +373,11 @@ def apply_review_template(
             )
 
         action, rationale = _decision_action(item)
+        confirmed_interval = (
+            None
+            if action is None
+            else _confirmed_interval_for_decision(item, current, action=action)
+        )
         if action is None:
             continue
         if action not in expected_actions:
@@ -354,6 +397,8 @@ def apply_review_template(
         if interval is not None:
             record["interval_start"] = interval[0]
             record["interval_end"] = interval[1]
+        if action == "confirmed_overlap" and confirmed_interval is not None:
+            record["confirmed_interval"] = [confirmed_interval[0], confirmed_interval[1]]
         applied.append(record)
 
         if current["kind"] in _TRANSITION_KINDS:
@@ -374,7 +419,7 @@ def apply_review_template(
                     "requires_recomposition": True,
                 }
                 if interval is not None:
-                    updated["confirmed_interval"] = [interval[0], interval[1]]
+                    updated["confirmed_interval"] = [confirmed_interval[0], confirmed_interval[1]]
                 active[issue_id] = updated
         elif current["kind"] == "timewarp":
             active[issue_id] = {

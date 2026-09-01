@@ -217,5 +217,46 @@ class V4ReviewDecisionTests(unittest.TestCase):
             )
 
 
+    def test_confirmed_overlap_can_narrow_to_reviewed_subinterval(self):
+        run = run_with(transition_issue(start=9.0, end=11.0))
+        template = build_review_template(run, base_run_artifact_id=BASE_ARTIFACT)
+        template["review_items"][0]["decision"] = {
+            "action": "confirmed_overlap",
+            "rationale": "Only the measured crossfade portion contains both sources.",
+            "confirmed_interval": [9.4, 10.2],
+        }
+        reviewed = apply_review_template(
+            run,
+            template,
+            base_run_artifact_id=BASE_ARTIFACT,
+        )
+        [issue] = reviewed["issues"]
+        self.assertEqual(issue["confirmed_interval"], [9.4, 10.2])
+        [record] = reviewed["review_resolution"]["applied_decisions"]
+        self.assertEqual(record["confirmed_interval"], [9.4, 10.2])
+
+    def test_confirmed_overlap_subinterval_cannot_escape_candidate(self):
+        run = run_with(transition_issue(start=9.0, end=11.0))
+        template = build_review_template(run, base_run_artifact_id=BASE_ARTIFACT)
+        template["review_items"][0]["decision"] = {
+            "action": "confirmed_overlap",
+            "rationale": "Invalid broader interval.",
+            "confirmed_interval": [8.9, 10.2],
+        }
+        with self.assertRaisesRegex(ReviewDecisionError, "inside the reviewed candidate interval"):
+            apply_review_template(run, template, base_run_artifact_id=BASE_ARTIFACT)
+
+    def test_resolved_clear_rejects_confirmed_interval(self):
+        run = run_with(transition_issue(start=9.0, end=11.0))
+        template = build_review_template(run, base_run_artifact_id=BASE_ARTIFACT)
+        template["review_items"][0]["decision"] = {
+            "action": "resolved_clear",
+            "rationale": "Only one source is active.",
+            "confirmed_interval": [9.4, 10.2],
+        }
+        with self.assertRaisesRegex(ReviewDecisionError, "only valid with confirmed_overlap"):
+            apply_review_template(run, template, base_run_artifact_id=BASE_ARTIFACT)
+
+
 if __name__ == "__main__":
     unittest.main()
