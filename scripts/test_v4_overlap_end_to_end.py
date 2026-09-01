@@ -254,13 +254,14 @@ class V4OverlapEndToEndTests(unittest.TestCase):
                     coarse_artifact,
                 )
 
-            start, end = 9.0, 11.5
+            candidate_start, candidate_end = 9.0, 11.5
+            confirmed_start, confirmed_end = 9.4, 10.8
             candidate_id = transition_candidate_id(
                 "cross_track_overlap_candidate",
                 left_binding.occurrence_id,
                 right_binding.occurrence_id,
-                start,
-                end,
+                candidate_start,
+                candidate_end,
             )
             transition_payload = {
                 "schema_version": "1.1",
@@ -280,8 +281,8 @@ class V4OverlapEndToEndTests(unittest.TestCase):
                             "candidate_id": candidate_id,
                             "type": "cross_track_overlap_candidate",
                             "status": "review",
-                            "start": start,
-                            "end": end,
+                            "start": candidate_start,
+                            "end": candidate_end,
                             "occurrences": [
                                 left_binding.occurrence_id,
                                 right_binding.occurrence_id,
@@ -349,9 +350,9 @@ class V4OverlapEndToEndTests(unittest.TestCase):
                         "issue_id": issue_id,
                         "left_occurrence_id": left_binding.occurrence_id,
                         "right_occurrence_id": right_binding.occurrence_id,
-                        "interval_start": start,
-                        "interval_end": end,
-                        "confirmed_interval": [start, end],
+                        "interval_start": candidate_start,
+                        "interval_end": candidate_end,
+                        "confirmed_interval": [confirmed_start, confirmed_end],
                         "status": "confirmed",
                         "decision_action": "confirmed_overlap",
                         "requires_recomposition": True,

@@ -126,8 +126,8 @@ def _validate_candidate(
     candidate = matches[0]
     start_ms = int(round(float(candidate["start"]) * 1000.0))
     end_ms = int(round(float(candidate["end"]) * 1000.0))
-    if (start_ms, end_ms) != (region.start_ms, region.end_ms):
-        raise ValueError("confirmed overlap interval differs from transition evidence")
+    if region.start_ms < start_ms or region.end_ms > end_ms:
+        raise ValueError("confirmed overlap interval escapes transition evidence")
     result_pair = {
         str(result.get("left_occurrence_id") or ""),
         str(result.get("right_occurrence_id") or ""),
