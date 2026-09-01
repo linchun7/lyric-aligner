@@ -238,6 +238,21 @@ def merge_primary_with_overlap_lines(
         )
     )
     region_rows = list(regions)
+    coverage = result.get("projection_coverage")
+    if coverage is not None:
+        if not isinstance(coverage, dict):
+            raise OverlapRecompositionError("primary timeline has invalid projection_coverage")
+        if str(coverage.get("status") or "") == "bounded_terminal_disconnect":
+            try:
+                authority_end_ms = int(coverage["mix_end_ms"])
+            except (KeyError, TypeError, ValueError) as exc:
+                raise OverlapRecompositionError(
+                    "primary timeline has invalid bounded projection authority"
+                ) from exc
+            if any(region.end_ms > authority_end_ms for region in region_rows):
+                raise OverlapRecompositionError(
+                    "confirmed overlap extends beyond primary timeline projection authority"
+                )
     if region_rows:
         base_start = min(base_start, *(region.start_ms for region in region_rows))
         base_end = max(base_end, *(region.end_ms for region in region_rows))

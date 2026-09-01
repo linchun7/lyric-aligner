@@ -79,7 +79,7 @@ class V4OverlapEndToEndTests(unittest.TestCase):
             left_lrc = lyrics_dir / "Artist A - Left Song.lrc"
             left_lrc.write_text(
                 "[00:08.00]left before\n"
-                "[00:10.20]left overlap\n"
+                "[00:09.20]left overlap\n"
                 "[00:12.00]left after\n",
                 encoding="utf-8",
             )
@@ -225,11 +225,15 @@ class V4OverlapEndToEndTests(unittest.TestCase):
                     "canonical_selection_sha256": binding.canonical_selection_sha256,
                     "upstream_asset_artifact_id": assets_artifact["artifact_id"],
                     "result": {
-                        "windows": [{"ambiguous": False}],
+                        "windows": [{"ambiguous": True}],
+                        "path": [],
                         "timewarp": {
+                            "mapping": None,
+                            "selection": "NOT_REQUESTED",
+                            "escalated": False,
+                            "discontinuities": [],
                             "blocked": False,
-                            "selection": "AFFINE_ACCEPTED",
-                            "mapping": mapping,
+                            "reason": "transition activity consumes retrieval windows, not a continuous TimeWarp",
                         },
                     },
                 }
@@ -419,6 +423,19 @@ class V4OverlapEndToEndTests(unittest.TestCase):
             self.assertEqual(recomposed["status"], "ready_for_render")
             self.assertEqual(recomposed["issues"], [])
             self.assertEqual(len(recomposed["confirmed_overlap_regions"]), 1)
+            [confirmed_region] = recomposed["confirmed_overlap_regions"]
+            self.assertEqual(
+                (confirmed_region["start_ms"], confirmed_region["end_ms"]),
+                (9400, 10800),
+            )
+            self.assertTrue(
+                all(
+                    value == "retrieval_only"
+                    for value in recomposed["transitions"][0][
+                        "overlap_boundary_evidence"
+                    ].values()
+                )
+            )
             self.assertTrue(all(row.get("overlap_recomposed") for row in recomposed["occurrences"]))
 
             final_srt = root / "FINAL.srt"

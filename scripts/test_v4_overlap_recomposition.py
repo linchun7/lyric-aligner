@@ -126,6 +126,30 @@ class V4OverlapRecompositionTests(unittest.TestCase):
         cross = merged["lines"][1]
         self.assertEqual(cross["mix_end_ms"], 11000)
 
+    def test_merge_refuses_window_extension_beyond_bounded_projection_authority(self):
+        region = ConfirmedOverlapRegion(
+            candidate_id="candidate-1",
+            left_occurrence_id="left",
+            right_occurrence_id="right",
+            start_ms=9000,
+            end_ms=11000,
+        )
+        primary = timeline(
+            "left",
+            "track-left",
+            1,
+            0,
+            10000,
+            [line(0, "bounded", 9000, 10000)],
+        )["result"]
+        primary["projection_coverage"] = {
+            "status": "bounded_terminal_disconnect",
+            "mix_end_ms": 10000,
+            "authority_omitted_line_count": 0,
+        }
+        with self.assertRaisesRegex(OverlapRecompositionError, "projection authority"):
+            merge_primary_with_overlap_lines(primary, (), regions=[region])
+
     def test_composer_allows_only_overlap_fully_inside_confirmed_region(self):
         config = RenderConfig()
         left = timeline(

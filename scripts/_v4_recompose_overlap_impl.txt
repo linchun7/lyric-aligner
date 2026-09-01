@@ -27,15 +27,10 @@ from lyric_aligner.pipeline.context import build_pipeline_context
 from lyric_aligner.timeline.overlap import (
     ConfirmedOverlapRegion,
     OverlapRecompositionError,
-    clip_projected_result_to_region,
     merge_primary_with_overlap_lines,
     region_from_issue,
 )
-from lyric_aligner.timeline.projector import (
-    ProjectionWindow,
-    effective_timewarp,
-    project_binding_timeline,
-)
+from lyric_aligner.timeline.projector import effective_timewarp
 from task_contract import load_task_manifest, resolve_manifest_record, verify_manifest_inputs
 
 
@@ -136,24 +131,19 @@ def _validate_candidate(
         raise ValueError("confirmed overlap occurrence pair differs from transition evidence")
 
 
-def _effective_boundary_mapping(
+
+def _validated_boundary_coarse(
     *,
-    task_manifest: Path,
-    mix_audio: Path,
-    track_assets: Path,
-    asset_artifact: Path,
     coarse_path: Path,
     coarse_artifact_path: Path,
-    out_dir: Path,
     side: str,
-    git_commit: str,
     fingerprint: str,
     required_upstreams: set[str],
     expected_occurrence_id: str,
     expected_track_id: str,
     expected_canonical_selection_sha256: str,
     expected_asset_artifact_id: str,
-) -> tuple[dict, list[str], str]:
+) -> tuple[dict, dict, str]:
     coarse, coarse_artifact = _validate_stage(
         payload_path=coarse_path,
         artifact_path=coarse_artifact_path,
@@ -180,6 +170,72 @@ def _effective_boundary_mapping(
     }
     if expected_asset_artifact_id not in coarse_upstreams:
         raise ValueError(f"{side} boundary coarse artifact is not derived from TrackAssets")
+    return coarse, coarse_artifact, coarse_artifact_id
+
+
+def _boundary_activity_provenance(
+    *,
+    coarse_path: Path,
+    coarse_artifact_path: Path,
+    side: str,
+    fingerprint: str,
+    required_upstreams: set[str],
+    expected_occurrence_id: str,
+    expected_track_id: str,
+    expected_canonical_selection_sha256: str,
+    expected_asset_artifact_id: str,
+) -> tuple[str, str]:
+    coarse, _artifact, coarse_artifact_id = _validated_boundary_coarse(
+        coarse_path=coarse_path,
+        coarse_artifact_path=coarse_artifact_path,
+        side=side,
+        fingerprint=fingerprint,
+        required_upstreams=required_upstreams,
+        expected_occurrence_id=expected_occurrence_id,
+        expected_track_id=expected_track_id,
+        expected_canonical_selection_sha256=expected_canonical_selection_sha256,
+        expected_asset_artifact_id=expected_asset_artifact_id,
+    )
+    result = coarse.get("result")
+    if not isinstance(result, dict):
+        raise ValueError(f"{side} boundary coarse has no result")
+    windows = result.get("windows")
+    if not isinstance(windows, list) or not windows:
+        raise ValueError(f"{side} boundary coarse has no retrieval evidence")
+    timewarp = result.get("timewarp")
+    selection = str(timewarp.get("selection") or "") if isinstance(timewarp, dict) else ""
+    evidence_mode = "retrieval_only" if selection == "NOT_REQUESTED" else "legacy_boundary_coarse"
+    return coarse_artifact_id, evidence_mode
+
+def _effective_boundary_mapping(
+    *,
+    task_manifest: Path,
+    mix_audio: Path,
+    track_assets: Path,
+    asset_artifact: Path,
+    coarse_path: Path,
+    coarse_artifact_path: Path,
+    out_dir: Path,
+    side: str,
+    git_commit: str,
+    fingerprint: str,
+    required_upstreams: set[str],
+    expected_occurrence_id: str,
+    expected_track_id: str,
+    expected_canonical_selection_sha256: str,
+    expected_asset_artifact_id: str,
+) -> tuple[dict, list[str], str]:
+    coarse, coarse_artifact, coarse_artifact_id = _validated_boundary_coarse(
+        coarse_path=coarse_path,
+        coarse_artifact_path=coarse_artifact_path,
+        side=side,
+        fingerprint=fingerprint,
+        required_upstreams=required_upstreams,
+        expected_occurrence_id=expected_occurrence_id,
+        expected_track_id=expected_track_id,
+        expected_canonical_selection_sha256=expected_canonical_selection_sha256,
+        expected_asset_artifact_id=expected_asset_artifact_id,
+    )
 
     fine: dict | None = None
     fine_artifact_id = ""
@@ -309,7 +365,6 @@ def main() -> int:
 
         out_dir = args.out_dir.resolve()
         out_dir.mkdir(parents=True, exist_ok=True)
-        overlap_lines_by_occurrence: dict[str, list[dict]] = {}
         regions_by_occurrence: dict[str, list[ConfirmedOverlapRegion]] = {}
         provenance_by_occurrence: dict[str, set[str]] = {}
         processed_issue_ids: set[str] = set()
@@ -340,8 +395,6 @@ def main() -> int:
             _validate_candidate(transition_payload, region)
             all_new_upstreams.add(transition_artifact_id)
 
-            region_dir = out_dir / _safe(region.candidate_id)
-            region_dir.mkdir(parents=True, exist_ok=True)
             used_boundary_coarse_ids: set[str] = set()
             for side, occurrence_id in (
                 ("left", region.left_occurrence_id),
@@ -356,16 +409,10 @@ def main() -> int:
                 binding = context.binding_by_occurrence_id.get(occurrence_id)
                 if binding is None:
                     raise ValueError("confirmed overlap occurrence is missing from TrackAssets")
-                mapping, mapping_upstreams, mapping_source = _effective_boundary_mapping(
-                    task_manifest=args.task_manifest,
-                    mix_audio=mix_audio,
-                    track_assets=args.track_assets,
-                    asset_artifact=args.asset_artifact,
+                coarse_artifact_id, evidence_mode = _boundary_activity_provenance(
                     coarse_path=coarse_path,
                     coarse_artifact_path=coarse_artifact_path,
-                    out_dir=region_dir,
                     side=side,
-                    git_commit=args.git_commit,
                     fingerprint=fingerprint,
                     required_upstreams=review_upstreams,
                     expected_occurrence_id=occurrence_id,
@@ -375,27 +422,19 @@ def main() -> int:
                     ),
                     expected_asset_artifact_id=asset_artifact_id,
                 )
-                coarse_artifact_id = mapping_upstreams[0]
                 if coarse_artifact_id not in transition_upstreams:
                     raise ValueError(
                         f"transition artifact is not upstream-bound to {side} boundary coarse"
                     )
                 used_boundary_coarse_ids.add(coarse_artifact_id)
-                projected = project_binding_timeline(
-                    binding,
-                    mapping,
-                    window=ProjectionWindow(region.start_ms, region.end_ms),
-                )
-                clipped = clip_projected_result_to_region(projected, region)
-                overlap_lines_by_occurrence.setdefault(occurrence_id, []).extend(clipped)
                 regions_by_occurrence.setdefault(occurrence_id, []).append(region)
                 provenance = provenance_by_occurrence.setdefault(occurrence_id, set())
-                provenance.update(mapping_upstreams)
+                provenance.add(coarse_artifact_id)
                 provenance.add(transition_artifact_id)
-                all_new_upstreams.update(mapping_upstreams)
-                transition.setdefault("overlap_mapping_sources", {})[
+                all_new_upstreams.add(coarse_artifact_id)
+                transition.setdefault("overlap_boundary_evidence", {})[
                     region.candidate_id + ":" + side
-                ] = mapping_source
+                ] = evidence_mode
             if len(used_boundary_coarse_ids) != 2:
                 raise ValueError("confirmed overlap requires two distinct boundary coarse artifacts")
             processed_issue_ids.add(region.issue_id)
@@ -406,7 +445,7 @@ def main() -> int:
         new_timeline_artifact_ids: list[str] = []
         for occurrence in recomposed_occurrences:
             occurrence_id = str(occurrence.get("occurrence_id") or "")
-            if occurrence_id not in overlap_lines_by_occurrence:
+            if occurrence_id not in regions_by_occurrence:
                 continue
             timeline_path = Path(str(occurrence.get("timeline_path") or ""))
             timeline_artifact_path = Path(
@@ -442,7 +481,7 @@ def main() -> int:
                 raise ValueError("primary timeline canonical selection mismatch")
             merged_result = merge_primary_with_overlap_lines(
                 primary_result,
-                overlap_lines_by_occurrence[occurrence_id],
+                (),
                 regions=regions_by_occurrence[occurrence_id],
             )
 
@@ -456,7 +495,7 @@ def main() -> int:
                 "calibration_profile_id": context.calibration_profile_id,
                 "occurrence_id": occurrence_id,
                 "track_id": binding.track_id,
-                "mapping_source": "confirmed_overlap_recomposition",
+                "mapping_source": "confirmed_overlap_primary_timeline_extension",
                 "confirmed_overlap_regions": [
                     region.to_dict() for region in regions_by_occurrence[occurrence_id]
                 ],
@@ -551,7 +590,7 @@ def main() -> int:
             evidence={
                 "status": recomposed_run["status"],
                 "confirmed_overlap_region_count": len(confirmed_regions),
-                "recomposed_occurrence_count": len(overlap_lines_by_occurrence),
+                "recomposed_occurrence_count": len(regions_by_occurrence),
                 "remaining_issue_count": len(remaining_issues),
             },
         )
@@ -572,7 +611,7 @@ def main() -> int:
                 "algorithm_version": __version__,
                 "status": recomposed_run["status"],
                 "confirmed_overlap_regions": len(confirmed_regions),
-                "recomposed_occurrences": len(overlap_lines_by_occurrence),
+                "recomposed_occurrences": len(regions_by_occurrence),
                 "remaining_issues": len(remaining_issues),
                 "artifact_id": recomposed_artifact["artifact_id"],
                 "run": str(args.out),
