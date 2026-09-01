@@ -136,9 +136,9 @@ def _coarse_command(
         str(artifact_out),
     ]
     if mix_start is not None:
-        command.extend(["--mix-start", f"{mix_start:.6f}"])
+        command.extend(["--mix-start", repr(float(mix_start))])
     if mix_end is not None:
-        command.extend(["--mix-end", f"{mix_end:.6f}"])
+        command.extend(["--mix-end", repr(float(mix_end))])
     if purpose != "primary_timewarp":
         command.extend(["--purpose", purpose])
     if git_commit:

@@ -176,6 +176,12 @@ probe_transition  eabf2b2f10f67d1057adab992b395ee562a1f8c4
 
 Public regression 使用 generic synthetic task，直接调用四条 CLI，证明 unsafe output 在任何 stage artifact 被创建前即失败；另覆盖 coarse cache 进入/包住 task input 以及两个固定输出重合。该修复不改变 TrackAsset resolution、Source-to-Mix、Fine、transition score/margin、TimeWarp、readiness 或 release authority。
 
+## 2026-09-01 — Max terminal interval float serialization fix
+
+真实私有任务暴露出一个通用 orchestration 边界 bug：production plan 的最后一个 occurrence 会把 `primary_end` 设为 exact mix duration，但 `_coarse_command()` 原先固定格式化为 6 位小数。若 duration 在第 7 位小数触发向上舍入，序列化后的 `--mix-end` 会极小幅超过真实音频长度，随后被 coarse 的严格 `mix_end > mix_duration` gate 正确拒绝为 `invalid occurrence mix interval`。
+
+修复只改变 run orchestration 的 CLI 浮点序列化：`--mix-start/--mix-end` 使用 Python round-trip float representation，不调整 coarse/Fine/TimeWarp 阈值、mapping 逻辑或任何 authority。新增 generic synthetic regression，专门覆盖“固定 6 位格式会向上越过 terminal duration”的情况；真实任务名称、音频时长和时间戳不进入 public test。
+
 ## 冻结与回滚
 
 Smart/Pro production freeze tag 继续固定在：
