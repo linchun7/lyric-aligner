@@ -188,6 +188,24 @@ Public regression 使用 generic synthetic task，直接调用四条 CLI，证�
 
 修复不改变 robust inlier threshold、drift threshold、piecewise threshold、feature threshold 或 cut authority。位置 drift 现在优先仅由对应桶内 robust inlier residual 计算；如果一个位置桶完全没有 inlier，则退回该桶全部 residual，继续 fail closed，不把无证据区域伪装成零 drift。新增 generic synthetic regression：仅前部少量 gross outlier、其余连续 anchors 保持稳定 affine 时，不应因为已排除 outlier 再次触发 false drift block。真实任务名称、时间戳、BPM 和音频数据不进入 public regression。
 
+## 2026-09-01 — Canonical timed-credit / instrument-section filtering hardening
+
+真实生产任务暴露出 canonical LRC 预处理的一个通用内容完整性缺口：已有中文制作信息过滤较完整，但英文 timed credits（publisher、instrument/session performer、recording/mixing/mastering、Dolby Atmos 等）仍可能被 TrackAsset/canonical parser 当作歌词；另外，provider 偶尔会把仅由多个乐器名称组成的纯器乐段落标签写成普通时间行。这两类非歌词文本如果进入 canonical timeline，会污染后续 Max render/reconciliation，即使声学 mapping 本身正确也无法产出可信字幕。
+
+本轮只收紧共享 canonical metadata grammar，不改变 source-to-mix、TimeWarp、Fine、transition、cue segmentation 或 release authority：
+
+- 中英文 metadata 继续走同一 `is_metadata_text()` 真源，TrackAsset lyric-role preflight 与 canonical parser 保持一致；
+- 英文 credit 只按明确的 production-role grammar 过滤，例如 publisher、`<role> by:` / `<role>:`、recording/mixing/mastering/Dolby Atmos 工程字段；
+- 无冒号的 `mixed/mastered/recorded at ...` 仅在后文包含明显 studio/mastering/recording 场所语法时过滤，避免误删普通歌词如 `Mixed at midnight ...`；
+- 裸纯器乐标签只在整行由两个及以上乐器名称通过 `and` / `&` / `/` / `+` 连接时过滤，不因普通歌词中出现 bass/drums/guitar 等词而删除；
+- explicit TrackAsset selection 仍不能把已判定为 metadata 的行重新引入 canonical truth。
+
+Public regression 全部使用 generic synthetic fixtures，覆盖英文制作 credits、multi-instrument section marker，以及 instrument/credit-like 普通歌词的反例。相关 canonical / lyric-role / asset-resolver / text-repair + 文档版本 identity 回归共 67 项通过；真实任务仅用于 private QA，不把曲名、歌词、人员、时间戳或音频事实写入 public algorithm/test。
+
+同轮审计还发现当前权威 `v4-status.md` / `v4-runtime-guide.md` 曾标为 `4.0.0a9`，但当前 HEAD、`origin/main`、运行时 `__version__` 与真实 artifact 均为 `4.0.0a8`。Git 历史证明 a9 曾存在于一个未进入当前主线的 transition-activity 条件化提交，而当前 legacy/optimized 实现也没有该 a9 行为，因此本轮把**当前权威文档**纠回真实 a8，历史 archive 保持不变；新增 generic identity regression，要求两份权威文档的主线版本始终等于 `lyric_aligner.__version__`，防止后续再次漂移。
+
+兼容性：合法歌词与既有中文 metadata 规则保持不变；受影响的只是此前误进入 canonical truth 的明确 provider metadata。回滚点为本变更前 Git commit；Max artifact 继续通过 `git_commit` + task fingerprint 区分 lineage，算法版本不因这次 parser hardening 单独改号。
+
 ## 冻结与回滚
 
 Smart/Pro production freeze tag 继续固定在：

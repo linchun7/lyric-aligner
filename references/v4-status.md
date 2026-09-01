@@ -1,7 +1,7 @@
 # Lyric Aligner v4 当前实施状态
 
-更新日期：2026-08-23  
-主线算法版本：`4.0.0a9`
+更新日期：2026-09-01
+主线算法版本：`4.0.0a8`
 
 > PR #70 前的完整状态说明已无损归档到 `references/archive/2026-08-22-pre-max-authority-v4-status.md`。P3 前状态见 `references/archive/2026-08-19-pre-p3-v4-status.md`。生产基线见 `references/production-requirements.md`；Smart / Pro 细节见 `references/smart-pro-v1-1.md`。
 
@@ -20,7 +20,8 @@ Max      -> Full V4 Alignment
 - LRC 行换行不是最终 subtitle cue segmentation authority；
 - Jianying/editor timing 与 cue boundary 是强但可推翻的先验；
 - 只有更强的 token/word/audio boundary evidence 才能推翻可信 editor segmentation；
-- Higher mode 可以增加证据、减少 review，但不能在没有更强反证时破坏 lower-mode 已安全成立的 text / cue ownership / timing。
+- Higher mode 可以增加证据、减少 review，但不能在没有更强反证时破坏 lower-mode 已安全成立的 text / cue ownership / timing；
+- Canonical truth 构建前会过滤明确的 timed provider metadata：中英文制作/工程 credits 与严格的 multi-instrument section marker 不能进入 canonical text/order；普通含 instrument/credit-like 词汇的歌词仍保留，explicit selection 也不能把已判定 metadata 的行重新引入。
 
 ## 2. Standard
 

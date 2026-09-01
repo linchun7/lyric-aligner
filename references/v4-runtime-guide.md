@@ -1,7 +1,7 @@
 # Lyric Aligner v4 生产运行手册
 
-更新：2026-08-23  
-主线算法版本：`4.0.0a9`
+更新：2026-09-01
+主线算法版本：`4.0.0a8`
 
 > 真实生产 workload 与产品设计基线见 `references/production-requirements.md`；Smart / Pro v1.1 设计细节见 `references/smart-pro-v1-1.md`。
 

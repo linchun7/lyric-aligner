@@ -121,6 +121,56 @@ class CanonicalMetadataGroupsV120Tests(unittest.TestCase):
             ["监制不住心里的想念", "出品一场自己的故事"],
         )
 
+    def test_english_production_credits_are_not_lyrics(self) -> None:
+        lines = self._parse(
+            "[00:01.00]Original publisher: Example Publishing\n"
+            "[00:01.10]Guitar by: Example Player\n"
+            "[00:01.20]Background Vocals by: Example Singer\n"
+            "[00:01.25]Tenor and Bari Alto Sax: Example Player\n"
+            "[00:01.30]Vocal arrangement by: Example Producer\n"
+            "[00:01.40]Recorded by: Example Engineer at Example Studio\n"
+            "[00:01.50]Mixed by: Example Mixer\n"
+            "[00:01.60]Mix Engineer: Example Engineer\n"
+            "[00:01.70]Mastered by: Example Mastering Engineer\n"
+            "[00:01.80]Mixed in Dolby Atmos by: Example Mixer\n"
+            "[00:01.90]Mixed at Example Studios, Example City\n"
+            "[00:05.00]Actual lyric line\n"
+        )
+        self.assertEqual([item.text for item in lines], ["Actual lyric line"])
+
+    def test_bare_multi_instrument_section_marker_is_not_lyric(self) -> None:
+        lines = self._parse(
+            "[00:01.00]Bass and Drums\n"
+            "[00:02.00]Guitar / Piano\n"
+            "[00:03.00]Actual lyric line\n"
+        )
+        self.assertEqual([item.text for item in lines], ["Actual lyric line"])
+
+    def test_instrument_words_inside_lyric_prose_are_retained(self) -> None:
+        lines = self._parse(
+            "[00:01.00]Bass and drums shake the room\n"
+            "[00:02.00]I hear the guitar tonight\n"
+        )
+        self.assertEqual(
+            [item.text for item in lines],
+            ["Bass and drums shake the room", "I hear the guitar tonight"],
+        )
+
+    def test_credit_like_words_without_credit_grammar_are_retained(self) -> None:
+        lines = self._parse(
+            "[00:01.00]Produced by love and carried by time\n"
+            "[00:02.00]Mixed emotions keep me awake\n"
+            "[00:03.00]Mixed at midnight with you\n"
+        )
+        self.assertEqual(
+            [item.text for item in lines],
+            [
+                "Produced by love and carried by time",
+                "Mixed emotions keep me awake",
+                "Mixed at midnight with you",
+            ],
+        )
+
     def test_explicit_selection_cannot_reintroduce_metadata(self) -> None:
         with self.assertRaisesRegex(CanonicalLyricError, "metadata/blank"):
             self._parse(
