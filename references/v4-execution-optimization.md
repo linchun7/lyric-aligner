@@ -74,9 +74,9 @@ Dependency order is unchanged:
 
 Each stage writes unique formal output paths. The existing source-feature cache uses temporary files plus atomic `os.replace`, so concurrent same-source cache misses cannot expose a partially written cache file.
 
-## 4. Authoritative core remains unchanged
+## 4. Authoritative production semantics remain shared
 
-The historical production orchestration implementation is retained as `scripts/v4_run_legacy.py`. The public `scripts/v4_run.py` entrypoint routes through `scripts/v4_run_optimized.py`, which prestages execution work and then invokes that unchanged core.
+The serial production semantics are retained in `scripts/v4_run_legacy.py`. The public `scripts/v4_run.py` entrypoint routes through `scripts/v4_run_optimized.py`, which prestages reusable/parallel execution work and then follows the same authoritative production semantics. Optimized and legacy entrypoints share production-plan rules such as conservative `content_end`; execution optimization must not create a lower-accuracy or different-authority result.
 
 The core still performs the original deterministic processing order for:
 

@@ -139,6 +139,10 @@ artifact evidence 或 exact QA 任何一处仍有非空 `release_blocked_reason`
 
 之后仍需通过既有 exact SRT/audit/QA hash binding、task fingerprint、algorithm version、calibration profile 与 release QA 完整检查。路径保护和三层一致性检查都不创造新的 segmentation authority；它们只验证真正的 production materializer 是否给出了完整一致的证据。
 
+### `v4_audit_final.py`
+
+该 CLI 是 diagnostic-only writer，不生成 artifact 或 production authority。它要求 final SRT/audit exact binding 与 publish-ready QA，读取同 task run 的 authoritative timeline windows、`content_end` 和 confirmed-overlap regions；输出 JSON 不得覆盖 task input、run/final/report/QA，也不得覆盖 run 递归声明的任何 `*_path` lineage input。结构错误包括非单调 final file order、非正 cue、occurrence-window/content-end 越界、same-occurrence overlap 与没有 exact confirmed region 覆盖的 cross-occurrence overlap。长/极端驻留只是 warning，不自动阻断 release；该诊断也不能替代 `v4_validate_release.py`。
+
 ## 3. JSON 类型必须 fail closed
 
 Release/evaluation authority 不能依赖 Python 的宽松强制转换。

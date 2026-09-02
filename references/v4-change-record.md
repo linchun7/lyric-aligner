@@ -235,6 +235,18 @@ Release gate 没有增加例外：production final-render 的 normalized config�
 
 Display stage 生成新的、hash-bound 的 `stage=final_render` production artifact，并以上一层 production final-render 为 upstream；既有 `v4_validate_release.py` 不增加任何例外，发布时仍要求 exactly one final-render 与三层 `editor_reconciled` / `publish_ready=true` authority 一致。Public regression 只使用 synthetic lyrics，验证强脏词窄打码、expected-text mismatch / 非 high-confidence / unmatched override fail-closed、start/identity 冻结、极端未知 end 只缩不伸、`open_end` 不受影响，以及 display materialization 后仍能通过原 release validator。真实歌词与真实任务 timing 审计只保存在 private task policy/QA。
 
+## 2026-09-02 — Trailing digital-zero content extent + recoverable editor file order
+
+真实长混剪导出暴露了两个与声学阈值无关的通用边界。第一，容器末尾可能附带数百秒纯数字零；若仍把物理 duration 作为最后 occurrence 的搜索终点，会无意义扩大 terminal window。新增 `lyric_aligner/audio/content_extent.py`：只在尾部 digital-zero run 至少 30 秒时把 `content_end` 缩到最后一个非零样本之后，普通 fade/近静音/底噪全部保留；`mix_duration` 继续作为物理 provenance。production plan 只用 `content_end` 限制最后 occurrence 与 end clamp。Public regression 覆盖长数字零尾、短零尾不裁、content_end 不得早于 nominal start/超过物理 duration。
+
+第二，editor SRT 偶尔只是文件块顺序错位，而各 cue 的真实时间区间并不重叠。Reconciliation 现在同时记录原始 `editor_file_order_monotonic` 与窄 `editor_file_order_recoverable_nonoverlap_reordering`：只有每一个相邻 inversion 都满足 `right.end_ms <= left.start_ms` 才可恢复；任一 inversion 时间重叠仍 fail closed。Topology rebuttal materializer 可接受这类明确非重叠的文件顺序错误，但 `full_topology_candidate` 仍要求原始 file order 单调。Public regression 覆盖 recoverable inversion 与 overlapping inversion 拒绝，避免把“文件行顺序错误”误当成“时间 topology 冲突”。
+
+## 2026-09-02 — Read-only final candidate audit
+
+多次私有任务验收重复实现了相同的 final SRT 几何检查，因此抽出 `lyric_aligner/qa/final_candidate_audit.py` 与 `scripts/v4_audit_final.py`。该工具 strictly diagnostic-only：不写 production artifact、不修改字幕、不授予 authority；在 exact SRT/report + publish-ready QA 基础上，从同 task run/timeline 读取 occurrence windows、`content_end` 与 confirmed-overlap regions，统一检查 final file order、非正 cue、occurrence/content-end 越界、same-occurrence overlap 与未确认 cross-occurrence overlap，并报告短 cue/长驻留分布。长驻留只告警；已确认 overlap 只有 cue 交集完整落入同 TrackOccurrence pair 的 confirmed region 才合法。
+
+Audit output 也受 fail-closed path ownership 保护：task/direct 输入以及 run 递归声明的所有 `*_path` lineage（包括实际 timeline）都不能被 `--out` 覆盖。Synthetic core regression 覆盖 clean candidate、window 越界、confirmed/unconfirmed overlap、same-occurrence overlap、长驻留 warning、非单调 final order 与 count mismatch；真实 production final 另做 private smoke，证明通用 audit 可直接替代任务专属结构审计。
+
 ## 冻结与回滚
 
 Smart/Pro production freeze tag 继续固定在：

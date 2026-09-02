@@ -275,6 +275,8 @@ Smart/Pro 解决不了、或整体 timeline 本来就不可信时再运行完整
 
 正式 `scripts/v4_run.py` 会按职责调用 coarse CLI：primary occurrence 使用默认 `--purpose primary_timewarp`；shared-boundary 双侧 activity probe 使用 `--purpose transition_activity`。后者只产出完整 retrieval windows，不产出 Source-to-Mix mapping；不要把 `NOT_REQUESTED` 的 transition coarse artifact 手工接到 Fine 或 timeline projection。purpose 已进入 artifact fingerprint，恢复运行时不得跨 purpose 复用。
 
+Max orchestration 会另外记录物理 `mix_duration` 与保守 `content_end`。`content_end` 只会在音频尾部存在至少 30 秒**解码后逐样本精确为 0**的 digital-zero run 时缩短；普通淡出、近静音、底噪或弱信号不会被当成空白。该边界只限制最后一个 occurrence 的 production window/terminal clamp，物理文件时长仍保留作 provenance。这样可避免导出文件尾部的大段数字静音把最后一首搜索区间错误扩到容器末尾，同时不引入主观 silence threshold。
+
 当独立、已验证的同曲 reference audio 能证明 Max primary mapping 在局部重复段失真时，可在 overlap/cut review 已完全闭合之后使用 `scripts/v4_retime_reference.py` 做窄 reference retime。普通平移/插入使用单调 `segments`；reference 本身存在明确删除/拼接时必须使用 `retained_segments` 明示每个保留 reference interval 与 target start，删除区内 canonical cue 会被丢弃，跨切点 cue 只裁剪到实际存活音频。一个 cue 若在两个保留段都存活会 fail closed，不自动猜分段。reference task fingerprint、canonical selection、reference/target audio SHA、source overlap artifact 与 retime spec 都必须进入 lineage。不要用搜索半径不足、最佳点贴搜索边界或无强相关锚点的窄 lag scan 推断全曲平移；这类结果只能作为 diagnostic，必须扩大搜索范围或直接建立结构证据。
 
 ## 7. Legacy Partial Timeline Repair
@@ -300,7 +302,12 @@ Smart/Pro 不借用 P9/P4 authority，也不会反向提升旧 chain。
 5. Pro 只处理 bounded regions，按原因选择 acoustic / ASR / forced
 6. Pro evidence 当前仍不自动写 timing
 7. broad untrusted / complex structure / Pro 无法收敛 -> Max
-8. 永远保留原输入，写独立 outputs/artifacts；路径碰撞必须 fail closed
+8. Max review/cut/overlap 闭合后先生成 canonical evaluation render
+9. 通过 Editor-Cue Reconciliation 获得可证明的 production segmentation authority；不满足 gate 则继续 review，不手改 artifact
+10. 如需平台展示修订，再运行 task-bound display policy
+11. 运行 `v4_audit_final.py` 做只读 final geometry/presentation QA
+12. 最后运行 `v4_validate_release.py`；只有 release manifest ready 才作为正式交付
+13. 永远保留原输入，写独立 outputs/artifacts；路径碰撞必须 fail closed
 ```
 
 ## 9. 验证边界
@@ -333,7 +340,7 @@ Running `scripts/v4_validate_release.py` on the current canonical-line evaluatio
 normalized_config.segmentation_authority = editor_reconciled
 ```
 
-That value must be produced by a future renderer that actually consumes a validated Editor-Cue Reconciliation artifact. Resolving transition/cut/overlap review alone does not create this authority.
+That value must be produced by a validated production materializer that consumes Editor-Cue Reconciliation evidence. The current narrow topology-rebuttal path is `v4_materialize_editor_reconciled.py`; a future preserve-topology materializer is still required for `full_topology_candidate=true`. Resolving transition/cut/overlap review alone does not create this authority.
 
 ## 10. Editor-Cue Reconciliation evaluation — 2026-08-23
 
@@ -375,7 +382,7 @@ production_authority_granted = false
 - `not_evaluable`：没有 canonical temporal evidence；
 - `rebutted`：schema 保留，但首版不会自动产生。
 
-`full_topology_candidate=true` 仍不能直接进入 release；它不是 `editor_reconciled`。对于另一类经 evaluation 明确证明 editor topology 不完整的任务，可使用 `v4_materialize_editor_reconciled.py` 的窄 rebuttal path：必须存在至少一个 `canonical_unassigned.reason=no_editor_temporal_overlap` witness，editor file order 必须单调，reconciliation 内部 assigned/unassigned/status 计数必须闭合，而且 canonical audit 的每一行必须来自 `line_lrc / enhanced_lrc / qrc_word_timing` 显式 timing。普通跨 editor boundary 不能单独触发 rebuttal。
+`full_topology_candidate=true` 仍不能直接进入 release；它不是 `editor_reconciled`。对于另一类经 evaluation 明确证明 editor topology 不完整的任务，可使用 `v4_materialize_editor_reconciled.py` 的窄 rebuttal path：必须存在至少一个 `canonical_unassigned.reason=no_editor_temporal_overlap` witness，reconciliation 内部 assigned/unassigned/status 计数必须闭合，而且 canonical audit 的每一行必须来自 `line_lrc / enhanced_lrc / qrc_word_timing` 显式 timing。editor SRT 文件顺序通常必须单调；若存在逆序，只有当**每一个相邻逆序对在时间上完全不重叠**（逆序后的 cue 已在前一个 cue 开始前结束）时，evaluation 才会显式记录 `editor_file_order_recoverable_nonoverlap_reordering=true`，rebuttal materializer 才可接受该可恢复文件顺序。任何时间重叠的逆序仍 fail closed；`full_topology_candidate` 本身仍要求原始 editor file order 单调。普通跨 editor boundary 不能单独触发 rebuttal。
 
 ```powershell
 python scripts/v4_materialize_editor_reconciled.py `
@@ -419,3 +426,9 @@ python scripts/v4_apply_display_policy.py `
 ```
 
 该阶段生成一个新的、仍为 `stage=final_render` 的 hash-bound production artifact，并以上一层 production render 为 upstream。发布时只把**新的 display final-render artifact**交给 `v4_validate_release.py`，因此现有“exactly one final_render”与三层 `editor_reconciled` authority gate 不需要任何例外。
+
+### Final candidate audit（推荐，release 前最后一层只读 QA）
+
+`scripts/v4_audit_final.py` 是 diagnostic-only 检查，不生成 production artifact，也不授予 timing/text/segmentation/release authority。它要求 final SRT 与 audit CSV exact binding、QA 已 publish-ready，并从同 task 的 run/timeline 读取 authoritative occurrence windows、`content_end` 与已确认 overlap regions；`--out` 不能覆盖 task/direct/run 声明的任何输入路径。
+
+它统一报告 cue duration 分布、<500 ms 短 cue、>6 s 长驻留、>=8 s 极端驻留、final file order、occurrence-window containment、content-end 越界，以及 cue overlap。长驻留只作为 presentation warning，不自动判错；跨 occurrence overlap 只有在交集完整落入该 pair 的 confirmed-overlap region 时才允许，同 occurrence overlap 或未确认 cross-track overlap 都是 structural error。命令返回 `0` 表示结构检查通过（可以仍有 warning），返回 `2` 表示发现 structural error。该检查不能替代 `v4_validate_release.py`；推荐顺序是 production/display materialization -> `v4_audit_final.py` -> `v4_validate_release.py`。

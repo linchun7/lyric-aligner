@@ -84,6 +84,8 @@ Max 是 heavy fallback，用于整体 timeline/mapping 不可信、复杂 cut/ov
 
 Shared-boundary transition activity 使用 retrieval-only purpose，保留完整 windows 但不生成 TimeWarp。该机制不确认 transition/outro/cut/overlap，也不改变 transition review threshold。
 
+Max run 同时区分物理 `mix_duration` 与保守 `content_end`。只有尾部至少 30 秒解码样本**精确为数字 0**时，`content_end` 才缩到最后一个非零样本之后；普通 fade/近静音/底噪不会被裁掉。该值只约束最后 occurrence 的 production interval/terminal clamp，完整容器时长继续保留作 provenance。
+
 ### 5.2 Projection/content-integrity gate
 
 若 canonical timeline 报告：
@@ -150,7 +152,7 @@ production_authority_granted = false
 
 `full_topology_candidate=true` 仍**不**等于 production authority。它只表示在当前 evaluation render 下，所有 canonical cue 可以不改变 editor cue topology 地获得唯一 ownership，并且 editor SRT 文件时间顺序单调；保留 editor topology 的 production materializer 仍需独立实现。
 
-私有长混剪验证暴露了另一类可严格证明的情况：editor SRT 可能只是稀疏/错误识别出来的时间子集，存在完整 timed canonical cue 与任何 editor cue 都没有时间交集。此时“不移动/不新增 editor cue”与“canonical lyric 完整性”在逻辑上不能同时成立。`v4_materialize_editor_reconciled.py` 因此只增加一个窄 production path：它必须消费 exact hash-bound canonical evaluation render + `editor_cue_reconciliation_evaluation`；要求 editor file order 单调、`full_topology_candidate=false`、至少一个 `no_editor_temporal_overlap` canonical witness、reconciliation assigned/unassigned/status 计数闭合，并且最终 audit 每一行都来自显式 timed `line_lrc / enhanced_lrc / qrc_word_timing`。满足这些条件时，reconciliation 结论为全局 `rebutted`，exact canonical SRT/audit 可被提升为 `editor_reconciled` production segmentation；否则继续 fail closed。
+私有长混剪验证暴露了另一类可严格证明的情况：editor SRT 可能只是稀疏/错误识别出来的时间子集，存在完整 timed canonical cue 与任何 editor cue 都没有时间交集。此时“不移动/不新增 editor cue”与“canonical lyric 完整性”在逻辑上不能同时成立。`v4_materialize_editor_reconciled.py` 因此只增加一个窄 production path：它必须消费 exact hash-bound canonical evaluation render + `editor_cue_reconciliation_evaluation`；要求 `full_topology_candidate=false`、至少一个 `no_editor_temporal_overlap` canonical witness、reconciliation assigned/unassigned/status 计数闭合，并且最终 audit 每一行都来自显式 timed `line_lrc / enhanced_lrc / qrc_word_timing`。editor file order 正常情况下仍要求单调；若存在相邻逆序，只有所有 inversion 都满足 `right.end_ms <= left.start_ms`、即文件顺序错位但时间区间互不重叠时，evaluation 才标记 `editor_file_order_recoverable_nonoverlap_reordering=true`，rebuttal materializer 才可继续。任一逆序存在时间重叠仍 fail closed；`full_topology_candidate` 仍只允许单调文件顺序。满足这些条件时，reconciliation 结论为全局 `rebutted`，exact canonical SRT/audit 可被提升为 `editor_reconciled` production segmentation；否则继续 fail closed。
 
 该 materializer 不修改 canonical text/timing，也不把普通 `canonical_interval_crosses_editor_boundary` 当成 topology rebuttal 证据。它生成新的 production QA/final-render artifact，并在 `normalized_config`、artifact `evidence` 与 exact QA 三层同时声明 `editor_reconciled` / `publish_ready=true`；原 canonical evaluation artifact 仍保持 evaluation-only。`v4_validate_release.py` 不做例外处理，仍按既有三层 production-authority contract 验证。
 
@@ -189,6 +191,10 @@ Production timing/segmentation authority 与 viewer-facing presentation 现在�
 Canonical lyric 继续作为文字/顺序 evidence truth，不因平台敏感词处理或模型高置信 typo 修订而被覆盖。显式模型修订必须 task-bound，并精确绑定 `occurrence_id + track_id + canonical_line_index + expected_text`；只有 `confidence=high` 才可 materialize，原文不匹配、override 未命中或命中不唯一均 fail closed。输出 audit 同时保留 canonical/display 两层文字、source/display start/end 与 policy/reviewer/reason provenance。
 
 内置 `strong_profanity_v1` 只自动处理明确强脏词（例如 `fuck/fucking -> f*`）。语境相关词如 `sexy`、`shot`、`bullet`、`kill`、`damn` 不自动改写，必须经模型/人工语境判断。`trim_extreme_unknown_end_v1` 只接受 `source_end_basis=next_line_start`，且 `max_display_hold_ms` 必须严格小于 source-duration trigger；`open_end` 和显式 timing 不可被该规则改写。display stage 生成新的 hash-bound `final_render`，继续保持三层 `editor_reconciled` / `publish_ready=true`，随后仍由原 `v4_validate_release.py` 正常验收；release gate 不增加例外。
+
+### 5.8 Diagnostic final-candidate audit
+
+新增 `lyric_aligner/qa/final_candidate_audit.py` + `scripts/v4_audit_final.py`，把此前各私有任务重复做的成品结构审计抽成通用只读 QA。它不会生成 production artifact、不会修改 SRT、不会授予任何 authority；只在 SRT/report exact binding 与 publish-ready QA 基础上检查 final file order、cue duration 分布、occurrence-window containment、`content_end`、以及 same/cross-occurrence overlap。跨 occurrence overlap 必须完整位于 run 已物化的 confirmed-overlap region 才允许；长驻留只产生 presentation warning。audit output 同样受 task/direct/run-declared `*_path` 输入保护，不能覆盖实际 timeline 等 lineage input。
 
 ## 6. Legacy Partial Timeline Repair
 
