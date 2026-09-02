@@ -74,7 +74,13 @@ Dependency order is unchanged:
 
 Each stage writes unique formal output paths. The existing source-feature cache uses temporary files plus atomic `os.replace`, so concurrent same-source cache misses cannot expose a partially written cache file.
 
-## 4. Authoritative production semantics remain shared
+## 4. Bounded mix decode
+
+Coarse and Fine acoustic stages decode only the current requested mix interval plus a fixed 2-second context margin instead of treating the full mix as their working waveform. This reduces repeated I/O and RAM pressure on long projects without changing retrieval windows, source features, candidate pools, TimeWarp thresholds, review policy, or artifact authority.
+
+Compressed containers can report a physical duration a few samples beyond what the decoder returns at the exact tail. A bounded decode may clamp to the real decodable end only when the requested interval itself reaches the physical tail and the shortfall is at most 5 ms, while preserving the historical one-sample rounding tolerance. Mid-file short reads, larger terminal shortfalls, and decodes that do not cover the requested interval remain hard failures. Missing tail audio is never zero-padded into timing authority.
+
+## 5. Authoritative production semantics remain shared
 
 The serial production semantics are retained in `scripts/v4_run_legacy.py`. The public `scripts/v4_run.py` entrypoint routes through `scripts/v4_run_optimized.py`, which prestages reusable/parallel execution work and then follows the same authoritative production semantics. Optimized and legacy entrypoints share production-plan rules such as conservative `content_end`; execution optimization must not create a lower-accuracy or different-authority result.
 
@@ -91,7 +97,7 @@ Timeline output is intentionally rebuilt on every run rather than cross-run cach
 
 The optimizer does not create a lower-accuracy fast mode.
 
-## 5. Disposable observability
+## 6. Disposable observability
 
 Each successful optimized invocation writes:
 

@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import math
 import sys
 from pathlib import Path
 
@@ -16,6 +15,7 @@ if str(REPOSITORY_ROOT) not in sys.path:
 import librosa
 
 from lyric_aligner import __version__
+from lyric_aligner.audio.bounded_mix import load_bounded_mix
 from lyric_aligner.audio.fine_alignment import refine_coarse_mapping, should_run_fine_alignment
 from lyric_aligner.config import calibration_overrides
 from lyric_aligner.contracts.artifacts import atomic_write_json, build_artifact_manifest, validate_artifact_output, validate_upstream_artifact
@@ -64,29 +64,6 @@ def _mix_window_bounds(coarse: dict) -> tuple[float, float]:
     if start < 0 or end <= start:
         raise ValueError("coarse retrieval windows have invalid mix interval")
     return start, end
-
-
-def _load_bounded_mix(
-    path: Path,
-    *,
-    sr: int,
-    mix_start: float,
-    mix_end: float,
-    full_mix_duration: float,
-) -> tuple[object, float]:
-    decode_start = max(0.0, mix_start - MIX_DECODE_PADDING_SECONDS)
-    decode_end = min(full_mix_duration, mix_end + MIX_DECODE_PADDING_SECONDS)
-    audio, _ = librosa.load(
-        path,
-        sr=sr,
-        mono=True,
-        offset=decode_start,
-        duration=max(0.0, decode_end - decode_start),
-    )
-    required_samples = int(math.ceil((mix_end - decode_start) * sr))
-    if len(audio) + 1 < required_samples:
-        raise ValueError("bounded mix decode ended before requested fine interval")
-    return audio, decode_start
 
 
 def main() -> int:
@@ -175,13 +152,16 @@ def main() -> int:
             mix_start, mix_end = _mix_window_bounds(coarse)
             if mix_end > mix_duration + 1e-6:
                 raise ValueError("coarse retrieval windows exceed mix duration")
-            mix_audio, mix_audio_start = _load_bounded_mix(
+            bounded_mix = load_bounded_mix(
                 args.mix_audio,
                 sr=sr,
                 mix_start=mix_start,
                 mix_end=mix_end,
                 full_mix_duration=mix_duration,
+                padding_seconds=MIX_DECODE_PADDING_SECONDS,
             )
+            mix_audio = bounded_mix.audio
+            mix_audio_start = bounded_mix.decode_start
             source_audio, _ = librosa.load(source_path, sr=sr, mono=True)
         else:
             mix_audio = []

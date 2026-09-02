@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import math
 import sys
 from pathlib import Path
 
@@ -16,6 +15,7 @@ if str(REPOSITORY_ROOT) not in sys.path:
 import librosa
 
 from lyric_aligner import __version__
+from lyric_aligner.audio.bounded_mix import load_bounded_mix
 from lyric_aligner.audio.coarse_mapper import build_coarse_timewarp
 from lyric_aligner.audio.feature_cache import FeatureCacheSpec, load_feature_bundle, save_feature_bundle
 from lyric_aligner.audio.features import extract_harmonic_features
@@ -34,29 +34,6 @@ def _default_interval(bindings, binding, mix_duration: float) -> tuple[float, fl
     start = float(binding.nominal_start_ms) / 1000.0
     end = float(ordered[position + 1].nominal_start_ms) / 1000.0 if position + 1 < len(ordered) else mix_duration
     return max(0.0, start), min(mix_duration, end)
-
-
-def _load_bounded_mix(
-    path: Path,
-    *,
-    sr: int,
-    mix_start: float,
-    mix_end: float,
-    full_mix_duration: float,
-) -> tuple[object, float]:
-    decode_start = max(0.0, mix_start - MIX_DECODE_PADDING_SECONDS)
-    decode_end = min(full_mix_duration, mix_end + MIX_DECODE_PADDING_SECONDS)
-    audio, _ = librosa.load(
-        path,
-        sr=sr,
-        mono=True,
-        offset=decode_start,
-        duration=max(0.0, decode_end - decode_start),
-    )
-    required_samples = int(math.ceil((mix_end - decode_start) * sr))
-    if len(audio) + 1 < required_samples:
-        raise ValueError("bounded mix decode ended before requested occurrence interval")
-    return audio, decode_start
 
 
 def _default_feature_cache_dir(out_path: Path) -> Path | None:
@@ -181,13 +158,17 @@ def main() -> int:
         mix_end = default_end if args.mix_end is None else args.mix_end
         if mix_start < 0 or mix_end > mix_duration or mix_end <= mix_start:
             raise ValueError("invalid occurrence mix interval")
-        mix_audio, mix_audio_start = _load_bounded_mix(
+        bounded_mix = load_bounded_mix(
             args.mix_audio,
             sr=sr,
             mix_start=mix_start,
             mix_end=mix_end,
             full_mix_duration=mix_duration,
+            padding_seconds=MIX_DECODE_PADDING_SECONDS,
         )
+        mix_audio = bounded_mix.audio
+        mix_audio_start = bounded_mix.decode_start
+        mix_end = bounded_mix.effective_mix_end
         feature_cache_dir = args.feature_cache_dir or _default_feature_cache_dir(args.out)
         source_feature_bundle, cache_status = _source_features(
             source_path,

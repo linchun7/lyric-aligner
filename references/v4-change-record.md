@@ -24,6 +24,12 @@ ASR / forced -> auxiliary acoustic evidence
 
 ---
 
+## 2026-09-03 — Max a12 bounded mix decode closeout
+
+真实长音频任务暴露出 coarse/Fine 子阶段仍会围绕当前 occurrence 反复解码远大于实际检索窗口的 mix 区间，并且压缩容器在物理文件尾端可能出现少量“声明时长略长于实际可解码样本”的 short-read。`4.0.0a12` 将 coarse/Fine 的 mix 输入统一改为 conservative bounded decode：只解码当前检索区间加固定 2 秒上下文，不改变 source feature、candidate pool、coarse/Fine/TimeWarp 阈值或 review/release authority。
+
+尾端 short-read 只在请求本身已经到达物理文件尾、且缺失不超过 5ms（另保留历史 one-sample rounding tolerance）时允许 clamp 到真实可解码终点；中段 short-read、超过容差的尾差、没有覆盖请求区间的 decode 仍 hard fail。调用方必须继续使用真实 `effective_mix_end`，不得用零填充或虚构尾部 timing。新增 synthetic regression 覆盖小尾差、mid-file short-read、大尾差和 one-sample compatibility；coarse/Fine/end-to-end/interval/content-end 回归保持原语义。
+
 ## 2026-09-03 — Max a11 reference-retime renderer source-stage closeout
 
 真实 KPOP200 再次验证了 a10 的 direct-review reference-retime 入口本身可用，但 renderer 在验证 `reference_retime` run 后仍无条件把 materialization source 当成 `overlap_recomposition`，导致合法的 `review_resolution -> reference_retime -> render` lineage 被错误要求提供不存在的 overlap metadata。`4.0.0a11` 只修正这一处 renderer 分支：reference-retimed run 后续 materialization validation 现在使用已在 reference-retime metadata 中严格验证过的 `source_run_stage`；review 来源不再虚构 overlap lineage，overlap 来源仍执行原有 overlap metadata / artifact identity 校验。coarse/Fine/TimeWarp、review decisions、retained-segment 映射、cut/overlap 判定、render composition 和 release gate 均未改变。新增 source-stage regression，review/overlap 两条路径都显式覆盖。
