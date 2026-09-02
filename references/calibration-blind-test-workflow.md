@@ -270,3 +270,13 @@ overlap_event_recall             = 0.000000
 Fine-anchored multiscale transition diagnostic 曾作为第一个 B 候选，仅在 calibration 上验证。结果 2/2 已确认真实 overlap 都被错误建议为 sequential clear，构成不可接受的 false-clear。随后追加 aligned dual-source STFT/NNLS mixture-gain 可行性检查，clear 与 overlap 的分数区间仍明显重叠，不能形成安全阈值。
 
 因此该候选未进入 production/public code，blind prediction/metrics 仍未触碰。后续不得通过继续堆相同 retrieval 分数/阈值来自动 clear transition；必须切换到独立结构证据或维持人工 review。任何新 candidate 仍只能读取 calibration，必须先完成 calibration evaluation + selection lock，之后才允许首次 materialize blind predictions。
+
+### 11.3 第二个 B 候选：fresh blind gate 失败
+
+第二个 candidate 改用 prepared stem 作为 same-track splice 的独立结构证据。真实 calibration 中 candidate 在不改变 SRT/QA 的前提下把唯一已标注 cut 的 precision/recall 从 `0/0` 提升到 `1/1`，因此通过 calibration policy 并锁定 public revision `1dbf82b`。
+
+随后方法学审计发现：r2 manifest 的原 blind case 结构标签已被人工查看，即使 blind prediction/QA/metrics 当时未生成，该 split 也已不再满足严格 blind 定义。原 4 个 r2 blind case 因此永久 quarantine，不能用于 official gate。
+
+为恢复真正的 blind，r3 在 candidate selection **之前**使用 commit-locked deterministic generator 固定 8 个未见 synthetic structural case，并写入独立 blind-truth lock；candidate blind prediction 在 selection 之后才首次 materialize。预先锁定的 blind policy 要求 timing/text/review 零回归、cut precision=1.0、cut recall>=0.75。最终 gate 返回 `passed=false`：candidate 的 cut precision/recall 均为 `0`，其它受控指标无回归。
+
+该 blind 结果出现后禁止继续针对 blind 调 threshold、fixture 或 selection policy。prepared-stem candidate 因此被淘汰并从 public code 撤回；private r3 lock/selection/evaluation/gate 继续保存为审计证据。

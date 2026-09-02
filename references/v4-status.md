@@ -206,7 +206,7 @@ r2 calibration aggregate 为 `unit_f1=0.999221`、`line_exact_f1=0.999167`、`cu
 
 首个 transition Fine-anchored 多尺度自动降噪候选已在 calibration 阶段淘汰：2/2 已确认真实 overlap 均被错误建议为 sequential clear；进一步加入 aligned dual-source STFT/NNLS mixture-gain 证据后，clear 与 overlap 的分数仍明显重叠，无法形成安全阈值。该实验未进入 production/public code，也未触碰 blind。后续不得通过继续堆同源 retrieval 阈值来自动 clear transition；新 candidate 应由 r2 calibration 的结构事件 error breakdown 驱动。
 
-第二个 candidate 改用用户工作流中可选的 prepared stem 做 same-track splice 正诊断。calibration 已验证：无需人工 lag，能够自动发现一例约 6 秒 source-offset handoff，并通过双源 waveform 回归给出 crossover；private A/B 在 SRT/QA 完全不变的前提下使 `cut_precision/recall` 从 `0/0` 提升为 `1/1`，crossover 相对 production truth 误差 170 ms，三个真实 calibration 负例均未产生 splice 正证据。该能力产品化时保持 `diagnostic_only=true`、`production_authority_granted=false`，负结果统一为 inconclusive，不能自动 clear。blind 仍未 materialize/读取；正式 selection 必须绑定 public commit 后重新执行 calibration。
+第二个 candidate 使用用户工作流中的 prepared stem 做 same-track splice 正诊断。它在真实 calibration 上能自动发现一例约 6 秒 source-offset handoff，并把 `cut_precision/recall` 从 `0/0` 提升到 `1/1`，因此曾以 commit `1dbf82b` 进入 public candidate。随后发现原 r2 blind manifest 的结构标签已经在人工审计时暴露，原 4 个 blind case 被永久降级为 quarantine，不再用于正式 gate；重新锁定的 r3 fresh blind 在 candidate selection 前固定 8 个未见 synthetic structural case，并在 prediction materialize 后首次执行 gate。结果 candidate 在 fresh blind 上 `cut_precision=0`、`cut_recall=0`，未达到预先设定的 precision=1.0 / recall>=0.75 门禁。按 blind 纪律不再针对该结果调阈值，prepared-stem public core/CLI/test 撤回；private A/B 证据保留用于避免重复走同一路线。
 
 ## 6. Legacy Partial Timeline Repair
 
