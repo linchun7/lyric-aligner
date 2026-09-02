@@ -73,6 +73,7 @@ def init_task(
     lyrics_dir: Path,
     bpm_changes: Path | None = None,
     source_audio_dir: Path | None = None,
+    mix_content_extent: Path | None = None,
 ) -> dict[str, str]:
     name = task_name(name)
     if source_srt.suffix.lower() != ".srt":
@@ -94,6 +95,7 @@ def init_task(
         lyrics_dir=lyrics_dir,
         bpm_changes=bpm_changes,
         source_audio_dir=source_audio_dir,
+        mix_content_extent=mix_content_extent,
     )
     if manifest_path.exists():
         existing = load_task_manifest(manifest_path)
@@ -152,6 +154,7 @@ def main() -> int:
     parser.add_argument("--lyrics-dir", required=True, type=Path)
     parser.add_argument("--bpm-changes", type=Path)
     parser.add_argument("--source-audio-dir", type=Path)
+    parser.add_argument("--mix-content-extent", type=Path)
     parser.add_argument("--root", default=Path("."), type=Path)
     args = parser.parse_args()
     try:
@@ -165,6 +168,9 @@ def main() -> int:
             bpm_changes=args.bpm_changes.resolve() if args.bpm_changes else None,
             source_audio_dir=(
                 args.source_audio_dir.resolve() if args.source_audio_dir else None
+            ),
+            mix_content_extent=(
+                args.mix_content_extent.resolve() if args.mix_content_extent else None
             ),
         )
     except (OSError, ValueError) as exc:

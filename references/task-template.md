@@ -45,7 +45,9 @@ python scripts/init_task.py `
   --source-audio-dir "private/任务名/input/source-audio"
 ```
 
-可选项不存在时不要传。之后所有生产命令都传同一个：
+可选项不存在时不要传。若 QA 已证明主节目结束后存在 detached export tail，可另外提供 fingerprint-bound 的 `--mix-content-extent "private/任务名/input/mix_content_extent.json"`；该 JSON 只允许缩短自动 `content_end`，必须绑定同一 mix audio SHA，并保留原始音频文件/物理时长。
+
+之后所有生产命令都传同一个：
 
 ```text
 --task-manifest private/<任务名>/qa/task_manifest.json

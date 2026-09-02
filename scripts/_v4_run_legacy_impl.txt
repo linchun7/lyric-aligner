@@ -22,7 +22,7 @@ if str(REPOSITORY_ROOT) not in sys.path:
     sys.path.insert(0, str(REPOSITORY_ROOT))
 
 from lyric_aligner import __version__
-from lyric_aligner.audio.content_extent import detect_audio_content_extent
+from lyric_aligner.audio.content_extent import apply_content_end_override, detect_audio_content_extent
 from lyric_aligner.audio.cuts import discontinuity_candidate_id
 from lyric_aligner.audio.fine_alignment import should_run_fine_alignment
 from lyric_aligner.contracts.artifacts import (
@@ -288,6 +288,13 @@ def main() -> int:
             verify_asset_files=True,
         )
         extent = detect_audio_content_extent(mix_audio)
+        extent_record = manifest["inputs"].get("mix_content_extent")
+        if extent_record is not None:
+            extent = apply_content_end_override(
+                extent,
+                resolve_manifest_record(args.task_manifest, extent_record),
+                expected_audio_sha256=str(manifest["inputs"]["audio"]["sha256"]),
+            )
         plan = build_production_plan(
             context.bindings,
             mix_duration=extent.full_duration,

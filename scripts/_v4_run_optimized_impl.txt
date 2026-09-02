@@ -16,7 +16,7 @@ for value in (str(ROOT), str(SCRIPTS)):
         sys.path.insert(0, value)
 
 import task_contract
-from lyric_aligner.audio.content_extent import detect_audio_content_extent
+from lyric_aligner.audio.content_extent import apply_content_end_override, detect_audio_content_extent
 from lyric_aligner.audio.fine_alignment import should_run_fine_alignment
 from lyric_aligner.contracts.verification_session import (
     clear_verified_input_session,
@@ -225,6 +225,13 @@ def prestage(a: argparse.Namespace) -> VerifiedStageRunner:
     assets_payload, artifact_payload = CORE._validate_asset_output(assets, asset_artifact)
     context = fast_context(expected_task_fingerprint=fingerprint, track_assets_payload=assets_payload, asset_artifact=artifact_payload, verify_asset_files=True)
     extent = detect_audio_content_extent(mix)
+    extent_record = manifest["inputs"].get("mix_content_extent")
+    if extent_record is not None:
+        extent = apply_content_end_override(
+            extent,
+            task_contract.resolve_manifest_record(a.task_manifest, extent_record),
+            expected_audio_sha256=str(manifest["inputs"]["audio"]["sha256"]),
+        )
     plan = build_production_plan(
         context.bindings,
         mix_duration=extent.full_duration,

@@ -1,7 +1,7 @@
 # Lyric Aligner v4 生产运行手册
 
 更新：2026-09-03
-主线算法版本：`4.0.0a12`
+主线算法版本：`4.0.0a13`
 
 > 真实生产 workload 与产品设计基线见 `references/production-requirements.md`；Smart / Pro v1.1 设计细节见 `references/smart-pro-v1-1.md`。
 
@@ -276,6 +276,8 @@ Smart/Pro 解决不了、或整体 timeline 本来就不可信时再运行完整
 正式 `scripts/v4_run.py` 会按职责调用 coarse CLI：primary occurrence 使用默认 `--purpose primary_timewarp`；shared-boundary 双侧 activity probe 使用 `--purpose transition_activity`。后者只产出完整 retrieval windows，不产出 Source-to-Mix mapping；不要把 `NOT_REQUESTED` 的 transition coarse artifact 手工接到 Fine 或 timeline projection。purpose 已进入 artifact fingerprint，恢复运行时不得跨 purpose 复用。
 
 Max orchestration 会另外记录物理 `mix_duration` 与保守 `content_end`。`content_end` 只会在音频尾部存在至少 30 秒**解码后逐样本精确为 0**的 digital-zero run 时缩短；普通淡出、近静音、底噪或弱信号不会被当成空白。该边界只限制最后一个 occurrence 的 production window/terminal clamp，物理文件时长仍保留作 provenance。这样可避免导出文件尾部的大段数字静音把最后一首搜索区间错误扩到容器末尾，同时不引入主观 silence threshold。
+
+`4.0.0a13` 起，若 QA 已证明主节目结束后存在 detached export tail，例如先出现很长的 exact-zero gap、随后只剩短小孤立音频残片，可把 `mix_content_extent` JSON 作为**可选 task input**写入 task fingerprint。初始化时使用 `--mix-content-extent <json>`；JSON 必须声明 `schema_version=mix-content-extent-1.0`、与 task audio 完全一致的 SHA-256、正且有限的 `content_end_seconds` 与非空 `reason`。override 只能把自动 `content_end` 往前缩，任何延长都会 fail closed；原始 mix、物理时长与 SHA 均保留，不允许通过预裁音频绕过 provenance。没有该 input 的任务行为完全不变。
 
 当独立、已验证的同曲 reference audio 能证明 Max primary mapping 在局部重复段失真时，可在 overlap/cut review 已完全闭合之后使用 `scripts/v4_retime_reference.py` 做窄 reference retime。普通平移/插入使用单调 `segments`；reference 本身存在明确删除/拼接时必须使用 `retained_segments` 明示每个保留 reference interval 与 target start，删除区内 canonical cue 会被丢弃，跨切点 cue 只裁剪到实际存活音频。一个 cue 若在两个保留段都存活会 fail closed，不自动猜分段。reference task fingerprint、canonical selection、reference/target audio SHA、source resolved-run artifact 与 retime spec 都必须进入 lineage。`4.0.0a10` 起，无 confirmed overlap 的任务只要 `review_resolution` 已完全闭合（`ready_for_render`、issues 为空、非 legacy fallback），即可直接作为 reference-retime source；存在 overlap 时仍必须先完成原有 `overlap_recomposition`。`4.0.0a11` 起 renderer 也按 reference-retime metadata 中已验证的 `source_run_stage` 继续对应 materialization 校验，不再把 direct-review reference-retime 错当成 overlap run。两条路径都显式绑定 source review artifact，不允许绕过 review authority。不要用搜索半径不足、最佳点贴搜索边界或无强相关锚点的窄 lag scan 推断全曲平移；这类结果只能作为 diagnostic，必须扩大搜索范围或直接建立结构证据。
 

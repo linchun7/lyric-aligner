@@ -1,7 +1,7 @@
 # Lyric Aligner v4 当前实施状态
 
 更新日期：2026-09-03
-主线算法版本：`4.0.0a12`
+主线算法版本：`4.0.0a13`
 
 > PR #70 前的完整状态说明已无损归档到 `references/archive/2026-08-22-pre-max-authority-v4-status.md`。P3 前状态见 `references/archive/2026-08-19-pre-p3-v4-status.md`。生产基线见 `references/production-requirements.md`；Smart / Pro 细节见 `references/smart-pro-v1-1.md`。
 
@@ -85,6 +85,8 @@ Max 是 heavy fallback，用于整体 timeline/mapping 不可信、复杂 cut/ov
 Shared-boundary transition activity 使用 retrieval-only purpose，保留完整 windows 但不生成 TimeWarp。该机制不确认 transition/outro/cut/overlap，也不改变 transition review threshold。
 
 Max run 同时区分物理 `mix_duration` 与保守 `content_end`。只有尾部至少 30 秒解码样本**精确为数字 0**时，`content_end` 才缩到最后一个非零样本之后；普通 fade/近静音/底噪不会被裁掉。该值只约束最后 occurrence 的 production interval/terminal clamp，完整容器时长继续保留作 provenance。
+
+`4.0.0a13` 起，若任务存在经过 QA 明确证明的 detached export tail（例如主节目结束后出现长数字零区间，再出现短小孤立音频残片），可把 `mix_content_extent` JSON 作为可选 task input 纳入 fingerprint。该 override 必须绑定同一 audio SHA、提供非空 reason，并且**只能缩短**自动 `content_end`，不能延长；未提供该输入的任务保持原自动判定。该机制保留原音频文件与物理时长，不通过复制/截短 mix 绕过 provenance。
 
 `4.0.0a12` 起 coarse/Fine 只解码当前请求的 mix interval 加 2 秒上下文，而不是把长 mix 作为完整工作波形。压缩容器到达物理尾端时，若实际可解码终点与声明终点只差不超过 5ms，可保守 clamp 到真实终点；中段 short-read、更大的尾差以及未覆盖请求区间的 decode 仍 hard fail。该优化不改变 retrieval window、candidate pool、TimeWarp、review 或 release authority。
 

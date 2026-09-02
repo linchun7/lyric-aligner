@@ -119,6 +119,7 @@ def build_task_manifest(
     lyrics_dir: Path,
     bpm_changes: Path | None = None,
     source_audio_dir: Path | None = None,
+    mix_content_extent: Path | None = None,
 ) -> dict[str, Any]:
     if not project.strip():
         raise ValueError("project must be non-empty")
@@ -130,6 +131,8 @@ def build_task_manifest(
         "bpm_changes": input_record(bpm_changes, root),
         "source_audio_dir": input_record(source_audio_dir, root),
     }
+    if mix_content_extent is not None:
+        inputs["mix_content_extent"] = input_record(mix_content_extent, root)
     fingerprint = canonical_json_sha256(fingerprint_payload(project, inputs))
     return {
         "schema_version": TASK_SCHEMA_VERSION,
@@ -187,7 +190,7 @@ def validate_task_manifest_schema(payload: Any) -> list[str]:
         issues.append("task manifest inputs must be an object")
         return issues
     required_roles = {"source_srt", "audio", "song_list", "lyrics_dir"}
-    supported_roles = required_roles | {"bpm_changes", "source_audio_dir"}
+    supported_roles = required_roles | {"bpm_changes", "source_audio_dir", "mix_content_extent"}
     unexpected_roles = sorted(set(inputs) - supported_roles)
     if unexpected_roles:
         issues.append(

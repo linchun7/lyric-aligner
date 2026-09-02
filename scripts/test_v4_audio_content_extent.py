@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import tempfile
 import unittest
 import wave
@@ -7,7 +8,7 @@ from array import array
 from pathlib import Path
 
 from lyric_aligner.assets.bindings import CanonicalOriginal, ResolvedAssetBinding
-from lyric_aligner.audio.content_extent import detect_audio_content_extent
+from lyric_aligner.audio.content_extent import AudioContentExtent, apply_content_end_override, detect_audio_content_extent
 from lyric_aligner.pipeline.production import ProductionPlanError, build_production_plan
 
 
@@ -60,6 +61,52 @@ class AudioContentExtentTests(unittest.TestCase):
             extent = detect_audio_content_extent(path, min_trailing_digital_silence_seconds=30.0)
             self.assertFalse(extent.trimmed)
             self.assertAlmostEqual(extent.content_end, extent.full_duration, places=6)
+
+    def test_explicit_content_end_override_may_only_shorten_and_binds_audio_sha(self):
+        with tempfile.TemporaryDirectory() as td:
+            override = Path(td) / "extent.json"
+            override.write_text(
+                json.dumps(
+                    {
+                        "schema_version": "mix-content-extent-1.0",
+                        "audio_sha256": "a" * 64,
+                        "content_end_seconds": 72.5,
+                        "reason": "detached tail after long digital silence",
+                    }
+                ),
+                encoding="utf-8",
+            )
+            extent = apply_content_end_override(
+                AudioContentExtent(100.0, 100.0, 0.0, False),
+                override,
+                expected_audio_sha256="a" * 64,
+            )
+            self.assertAlmostEqual(extent.full_duration, 100.0)
+            self.assertAlmostEqual(extent.content_end, 72.5)
+            self.assertTrue(extent.trimmed)
+
+    def test_explicit_content_end_override_rejects_extension_and_audio_mismatch(self):
+        with tempfile.TemporaryDirectory() as td:
+            override = Path(td) / "extent.json"
+            override.write_text(
+                json.dumps(
+                    {
+                        "schema_version": "mix-content-extent-1.0",
+                        "audio_sha256": "b" * 64,
+                        "content_end_seconds": 101.0,
+                        "reason": "bad override",
+                    }
+                ),
+                encoding="utf-8",
+            )
+            extent = AudioContentExtent(100.0, 100.0, 0.0, False)
+            with self.assertRaisesRegex(ValueError, "audio_sha256"):
+                apply_content_end_override(extent, override, expected_audio_sha256="a" * 64)
+            payload = json.loads(override.read_text(encoding="utf-8"))
+            payload["audio_sha256"] = "a" * 64
+            override.write_text(json.dumps(payload), encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "may only shorten"):
+                apply_content_end_override(extent, override, expected_audio_sha256="a" * 64)
 
     def test_effective_content_end_only_limits_last_occurrence_and_end_clamp(self):
         plan = build_production_plan(

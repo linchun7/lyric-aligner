@@ -24,6 +24,12 @@ ASR / forced -> auxiliary acoustic evidence
 
 ---
 
+## 2026-09-03 — Max a13 explicit detached-tail content extent closeout
+
+走路带风120真实任务暴露出自动 trailing-zero content extent 的边界：主节目在 `2727.582s` 结束，随后连续 `279.594s` 为逐样本 exact digital zero，但文件在 `3007.176s` 后又包含约 `6.526s` 的孤立音频残片。因为物理文件末端并非完整 trailing zero，旧自动规则必须保守保留整个容器，进而把最后 occurrence 错误扩到 50 分钟附近并在空白区产生 coarse disconnect。
+
+`4.0.0a13` 不扩大自动 silence/island 推断，而是增加可选、fingerprint-bound 的 `mix_content_extent` task input。该 JSON 必须绑定同一 task audio SHA、使用 `mix-content-extent-1.0` schema、提供正且有限的 `content_end_seconds` 和非空 reason，并且只能把自动 `content_end` 往前缩；任何延长、SHA 不一致、schema/数值异常都 fail closed。原 mix 文件、SHA 与物理 `mix_duration` 保持不变。optimized/legacy Max runner 共享同一 override 语义；无该 input 的任务完全保持 a12 行为。新增 task-fingerprint 与 shorten-only/SHA-binding regression。
+
 ## 2026-09-03 — Max a12 bounded mix decode closeout
 
 真实长音频任务暴露出 coarse/Fine 子阶段仍会围绕当前 occurrence 反复解码远大于实际检索窗口的 mix 区间，并且压缩容器在物理文件尾端可能出现少量“声明时长略长于实际可解码样本”的 short-read。`4.0.0a12` 将 coarse/Fine 的 mix 输入统一改为 conservative bounded decode：只解码当前检索区间加固定 2 秒上下文，不改变 source feature、candidate pool、coarse/Fine/TimeWarp 阈值或 review/release authority。
