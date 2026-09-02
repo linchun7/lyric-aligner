@@ -206,6 +206,9 @@ def main() -> int:
                 "canonical_unassigned_count": result["canonical_unassigned_count"],
                 "status_counts": result["status_counts"],
                 "editor_file_order_monotonic": result["editor_file_order_monotonic"],
+                "editor_file_order_recoverable_nonoverlap_reordering": result[
+                    "editor_file_order_recoverable_nonoverlap_reordering"
+                ],
                 "full_topology_candidate": result["full_topology_candidate"],
                 "production_authority_granted": False,
                 "segmentation_authority": SEGMENTATION_AUTHORITY,

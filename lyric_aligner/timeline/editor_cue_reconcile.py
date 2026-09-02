@@ -287,6 +287,15 @@ def evaluate_editor_cue_reconciliation(
         right.start_ms >= left.start_ms
         for left, right in zip(editor_cues, editor_cues[1:])
     )
+    order_inversions = [
+        (left, right)
+        for left, right in zip(editor_cues, editor_cues[1:])
+        if right.start_ms < left.start_ms
+    ]
+    editor_file_order_recoverable_nonoverlap_reordering = (
+        editor_file_order_monotonic
+        or all(right.end_ms <= left.start_ms for left, right in order_inversions)
+    )
     assigned_count = sum(len(rows) for rows in assignments.values())
     full_topology_candidate = (
         status_counts["resolved"] == len(editor_cues)
@@ -316,6 +325,9 @@ def evaluate_editor_cue_reconciliation(
         "canonical_unassigned_count": len(unassigned),
         "status_counts": status_counts,
         "editor_file_order_monotonic": editor_file_order_monotonic,
+        "editor_file_order_recoverable_nonoverlap_reordering": (
+            editor_file_order_recoverable_nonoverlap_reordering
+        ),
         "full_topology_candidate": full_topology_candidate,
         "global_issues": global_issues,
         "editor_cues": editor_rows,

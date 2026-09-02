@@ -144,7 +144,20 @@ class EditorCueReconciliationTests(unittest.TestCase):
         )
         self.assertEqual(result["status_counts"]["resolved"], 2)
         self.assertFalse(result["editor_file_order_monotonic"])
+        self.assertTrue(result["editor_file_order_recoverable_nonoverlap_reordering"])
         self.assertIn("editor_file_order_nonmonotonic", result["global_issues"])
+        self.assertFalse(result["full_topology_candidate"])
+
+    def test_nonmonotonic_overlapping_editor_pair_is_not_recoverable(self):
+        result = evaluate_editor_cue_reconciliation(
+            [
+                Cue(1, 4000, 6000, "later first"),
+                Cue(2, 3000, 5000, "earlier overlapping second"),
+            ],
+            [canonical(1, 4200, 4500, "ambiguous")],
+        )
+        self.assertFalse(result["editor_file_order_monotonic"])
+        self.assertFalse(result["editor_file_order_recoverable_nonoverlap_reordering"])
         self.assertFalse(result["full_topology_candidate"])
 
     def test_audit_builder_requires_exact_render_identity(self):

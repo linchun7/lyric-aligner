@@ -178,8 +178,15 @@ def _validate_reconciliation(
         raise ValueError("editor reconciliation result authority mismatch")
     if result.get("production_authority_granted") is not False:
         raise ValueError("editor reconciliation result unexpectedly grants production authority")
-    if result.get("editor_file_order_monotonic") is not True:
-        raise ValueError("editor topology rebuttal requires monotonic editor file order")
+    editor_file_order_monotonic = result.get("editor_file_order_monotonic") is True
+    editor_file_order_recoverable = (
+        result.get("editor_file_order_recoverable_nonoverlap_reordering") is True
+    )
+    if not (editor_file_order_monotonic or editor_file_order_recoverable):
+        raise ValueError(
+            "editor topology rebuttal requires monotonic editor file order or only "
+            "non-overlapping recoverable file-order inversions"
+        )
     if result.get("full_topology_candidate") is not False:
         raise ValueError(
             "topology-rebuttal materializer is only for incomplete editor topology; "

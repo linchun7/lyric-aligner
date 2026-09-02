@@ -49,6 +49,7 @@ class V4EditorTopologyRebuttalMaterializerTests(unittest.TestCase):
         *,
         gap_witness: bool,
         timing_format: str = "line_lrc",
+        recoverable_nonmonotonic: bool = False,
     ) -> dict:
         task_root = root / "private" / "generic-topology-rebuttal"
         input_dir = task_root / "input"
@@ -68,6 +69,8 @@ class V4EditorTopologyRebuttalMaterializerTests(unittest.TestCase):
                 Cue(2, 1600, 2200, "canonical missing topology"),
                 Cue(3, 3200, 3800, "canonical beta"),
             ]
+            if recoverable_nonmonotonic:
+                editor_cues = [editor_cues[1], editor_cues[0]]
         else:
             editor_cues = [
                 Cue(10, 0, 1000, "editor alpha"),
@@ -316,6 +319,26 @@ class V4EditorTopologyRebuttalMaterializerTests(unittest.TestCase):
             )
             self.assertEqual(release.returncode, 0, msg=release.stderr)
             self.assertEqual(json.loads(release.stdout)["release_status"], "ready")
+
+    def test_recoverable_nonoverlap_file_reordering_materializes_with_gap_witness(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            fixture = self.build_fixture(
+                root,
+                gap_witness=True,
+                recoverable_nonmonotonic=True,
+            )
+            reconciliation = json.loads(
+                fixture["reconciliation"].read_text(encoding="utf-8")
+            )["result"]
+            self.assertFalse(reconciliation["editor_file_order_monotonic"])
+            self.assertTrue(
+                reconciliation["editor_file_order_recoverable_nonoverlap_reordering"]
+            )
+
+            result = run_command(self.materialize_command(fixture, root / "production"))
+            self.assertEqual(result.returncode, 0, msg=result.stderr)
+            self.assertTrue(json.loads(result.stdout)["production_authority_granted"])
 
     def test_crossing_boundary_without_gap_witness_remains_blocked(self):
         with tempfile.TemporaryDirectory() as temporary:
