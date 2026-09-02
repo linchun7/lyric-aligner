@@ -335,6 +335,9 @@ def detect_discontinuities(
         mix_delta = right.mix_time - left.mix_time
         source_delta = right.source_time - left.source_time
         if source_delta < 0:
+            backward_jump = abs(source_delta)
+            if backward_jump < min_excess_source_jump:
+                continue
             candidates.append(
                 DiscontinuityCandidate(
                     type="backward_source_jump",
@@ -344,8 +347,8 @@ def detect_discontinuities(
                     source_before=left.source_time,
                     source_after=right.source_time,
                     observed_rate=source_delta / mix_delta,
-                    excess_source_jump=abs(source_delta),
-                    reason="source timeline moved backward; reorder is not enabled by default",
+                    excess_source_jump=backward_jump,
+                    reason="source timeline moved backward beyond the structural jump threshold; reorder is not enabled by default",
                 )
             )
             continue

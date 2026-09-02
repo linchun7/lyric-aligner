@@ -1,6 +1,6 @@
 import unittest
 
-from lyric_aligner.audio.timewarp import AlignmentAnchor, select_timewarp
+from lyric_aligner.audio.timewarp import AlignmentAnchor, detect_discontinuities, select_timewarp
 
 
 def anchors(points, *, features=True):
@@ -107,6 +107,21 @@ class V4TimeWarpTests(unittest.TestCase):
         diagnostics = result["mapping"]["diagnostics"]
         self.assertEqual(diagnostics["inlier_count"], 44)
         self.assertLess(diagnostics["drift_span"], 0.30)
+
+    def test_small_backward_jitter_below_structural_threshold_is_ignored(self):
+        rows = anchors([(0, 0), (3, 3.3), (6, 3.05)])
+        self.assertEqual(
+            detect_discontinuities(rows, min_excess_source_jump=1.5),
+            [],
+        )
+
+    def test_large_backward_jump_still_blocks_as_reorder(self):
+        rows = anchors([(0, 0), (3, 3.3), (6, 1.0)])
+        result = detect_discontinuities(rows, min_excess_source_jump=1.5)
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0].type, "backward_source_jump")
+        self.assertEqual(result[0].status, "block")
+        self.assertGreaterEqual(result[0].excess_source_jump, 1.5)
 
     def test_piecewise_requires_independent_feature_support(self):
         points = [

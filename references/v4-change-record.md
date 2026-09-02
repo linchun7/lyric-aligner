@@ -255,6 +255,12 @@ Private r2 calibration 显示 raw Max 普通歌词 timing/text 已接近 product
 
 按照 blind-test 纪律，不允许在看到该结果后继续调 threshold 或 fixture 以挽救 candidate。因此 public prepared-stem core/CLI/test 被撤回，项目继续维持现有 Max review/recomposition authority；private calibration/blind 产物保留为负证据。该结论只说明当前实现缺乏已证明的泛化能力，不否定 prepared stem 在特定人工复核中的辅助价值。
 
+## 2026-09-02 — a9：抑制亚阈值 backward retrieval jitter 的假结构阻断
+
+真实华语男声190 a8 复跑暴露了一个 TimeWarp 判定不对称：forward source jump 只有在超过连续速率包络且 `excess_source_jump >= min_excess_source_jump` 时才升级为结构 discontinuity，但 backward source jump 原实现对任何负 delta 都直接 block。结果两个整体 affine/Fine 质量良好的 occurrence 仅因尾部低-margin ambiguous retrieval 出现 96 ms / 276 ms 小幅回摆，就整首进入 `AFFINE_WITH_DISCONTINUITY_REVIEW`。
+
+a9 让 backward jump 与已有结构阈值使用同一最小幅度语义：`abs(source_delta) < min_excess_source_jump` 视为局部 retrieval jitter，不生成 discontinuity；达到或超过阈值的 backward reorder 仍保持 fail-closed block。默认阈值继续为 1.5 秒，没有修改 calibration profile、forward cut envelope、piecewise selection 或 review authority。Public regression 覆盖亚阈值 backward jitter 被忽略，以及 >=1.5 秒 backward jump 继续阻断。
+
 ## 冻结与回滚
 
 Smart/Pro production freeze tag 继续固定在：
