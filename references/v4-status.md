@@ -196,6 +196,12 @@ Canonical lyric 继续作为文字/顺序 evidence truth，不因平台敏感词
 
 新增 `lyric_aligner/qa/final_candidate_audit.py` + `scripts/v4_audit_final.py`，把此前各私有任务重复做的成品结构审计抽成通用只读 QA。它不会生成 production artifact、不会修改 SRT、不会授予任何 authority；只在 SRT/report exact binding 与 publish-ready QA 基础上检查 final file order、cue duration 分布、occurrence-window containment、`content_end`、以及 same/cross-occurrence overlap。跨 occurrence overlap 必须完整位于 run 已物化的 confirmed-overlap region 才允许；长驻留只产生 presentation warning。audit output 同样受 task/direct/run-declared `*_path` 输入保护，不能覆盖实际 timeline 等 lineage input。
 
+### 5.9 Private calibration baseline
+
+2026-09-02 已冻结第一版真实 private Max benchmark baseline：`4.0.0a8` / commit `7d663a12a052c5c367c5f63aaca419755f63fc8a`，共 8 个 opaque case（4 calibration / 4 blind_test），8 个 source_group 严格隔离。当前只执行了 calibration baseline；blind prediction/QA 尚未 materialize，也未读取任何 blind 指标。首次 calibration aggregate 为 `unit_f1=0.991304`、`boundary_mae_ms=97.697`、`boundary_p95_ms=566.0`，已确认的 cut/overlap 事件 precision/recall 均为 1.0。`line_exact_f1=0.783370` 受 reference 与 production canonical cue split/merge segmentation 差异显著影响，后续不得把该单项指标直接解释为整体正确率。
+
+下一阶段算法改动必须先在 calibration 上形成独立 candidate，再经 policy selection lock 后才允许首次生成 blind predictions。当前工程优先级因此从继续堆 Max 声学模块转为：用 calibration error breakdown 驱动 candidate，优先验证 transition Fine-anchored diagnostic 是否能降低 review density，同时保持现有 timing/cut/overlap 非回归。
+
 ## 6. Legacy Partial Timeline Repair
 
 旧 P1–P5 bridge 继续固定：

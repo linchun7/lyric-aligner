@@ -241,3 +241,24 @@ cut_boundary_within_500ms_rate
 8. 根据 blind error breakdown 决定下一工程优先级。
 
 只有第 7 步完成后，才有资格讨论“准确率提升了多少”。
+
+### 11.1 2026-09-02 首次 private baseline 已执行
+
+当前 `4.0.0a8` / commit `7d663a12a052c5c367c5f63aaca419755f63fc8a` 已建立第一版私有 benchmark：8 个 opaque case，4 个 calibration、4 个 blind_test，8 个 source_group 完全隔离。blind prediction/QA 尚未 materialize，blind 指标也未读取；baseline lock 明确记录 `blind_predictions_materialized=false` / `blind_metrics_observed=false`。
+
+首次 calibration aggregate（仅公开 aggregate，不含歌词/逐 case 私有证据）：
+
+```text
+unit_f1                  = 0.991304
+sequence_wer             = 0.015886
+line_exact_f1            = 0.783370
+boundary_mae_ms          = 97.697
+boundary_p95_ms          = 566.000
+onset_p95_ms             = 386.400
+offset_p95_ms            = 700.600
+cut_precision/recall     = 1.0 / 1.0
+overlap event P/R        = 1.0 / 1.0
+publish_ready_rate       = 1.0
+```
+
+`line_exact_f1` 不能单独解释为 timing/text 正确率：当前 reference 与 production canonical 在部分 case 存在已知 cue split/merge segmentation 差异，因此必须和 `unit_f1`、split/merge error、boundary 分布一起看。下一步 candidate 工程只能读取 calibration；必须先完成 candidate calibration + selection lock，之后才允许首次 materialize blind predictions。
