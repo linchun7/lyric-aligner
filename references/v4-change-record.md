@@ -223,6 +223,18 @@ materializer 必须消费 exact hash-bound canonical evaluation render 与 `edit
 
 Release gate 没有增加例外：production final-render 的 normalized config、artifact evidence 与 exact QA 仍必须三层一致，之后仍由 `v4_validate_release.py` 正常验证。Synthetic regression 覆盖成功 materialize→release、仅 boundary-crossing 继续阻断、unsupported timing format 阻断、reconciliation 内部计数不闭合时阻断；同时复跑 editor reconciliation CLI、release lineage、overlap E2E 与 projection/render guard。真实任务内容不进入 public tests。
 
+## 2026-09-02 — Production display policy / model-reviewed presentation layer
+
+真实成品复核确认需要把“canonical lyric truth”与“平台最终展示”严格分层：规范歌词可能包含高置信 typo/标点问题，同时平台发布还可能要求把明确强脏词做显示打码；line-LRC 又只有行起点，少数歌词会被 `next_line_start` 被动拉成极端长挂字幕。这些展示修订都不应回写 canonical text/order truth，也不重新推导 Max/Fine mapping 或 segmentation authority。
+
+本轮新增 `lyric_aligner/text/display_policy.py` 与 `scripts/v4_apply_display_policy.py`。display stage 只允许消费已经 `editor_reconciled`、`publish_ready=true` 的 production final-render，并冻结 cue count/number/start、occurrence、track 与 canonical-line identity。显式模型修订必须绑定 exact task fingerprint 与 `occurrence_id + track_id + canonical_line_index + expected_text`，只有 `confidence=high` 才可 materialize；expected text 不一致、override 未命中或命中不唯一均 fail closed。输出 audit 同时保存 `canonical_text` / `display_text`、source/display start/end、policy identity、reviewer 与 reason，并重新计算 viewer-facing `text_sha256/cue_id`。
+
+新增窄 `strong_profanity_v1` 自动显示 profile：明确强脏词（例如 `fuck/fucking`）按首字母加星号显示为 `f*`，但 canonical 原文保持不变。`sexy`、`shot`、`bullet`、`trigger`、`fire`、`kill`、`damn` 等语境相关歌词不会自动改写，需模型/人工按具体上下文判断，避免过度净化。
+
+同一 display policy 还可显式启用 `trim_extreme_unknown_end_v1`：只接受 `source_end_basis=next_line_start`，只在源 duration 达到 integer trigger 后，把 viewer-facing end shorten-only 为 `start + max_display_hold_ms`；max hold 必须严格小于 trigger。start 永不移动、end 永不延长，`open_end` 与显式 timing authority 不受影响，原 source timing 必须保存在 audit 中。这是对“未知 end 的展示上限”建模，不把它冒充 vocal-end 检测。
+
+Display stage 生成新的、hash-bound 的 `stage=final_render` production artifact，并以上一层 production final-render 为 upstream；既有 `v4_validate_release.py` 不增加任何例外，发布时仍要求 exactly one final-render 与三层 `editor_reconciled` / `publish_ready=true` authority 一致。Public regression 只使用 synthetic lyrics，验证强脏词窄打码、expected-text mismatch / 非 high-confidence / unmatched override fail-closed、start/identity 冻结、极端未知 end 只缩不伸、`open_end` 不受影响，以及 display materialization 后仍能通过原 release validator。真实歌词与真实任务 timing 审计只保存在 private task policy/QA。
+
 ## 冻结与回滚
 
 Smart/Pro production freeze tag 继续固定在：

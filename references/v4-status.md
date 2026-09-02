@@ -1,6 +1,6 @@
 # Lyric Aligner v4 当前实施状态
 
-更新日期：2026-09-01
+更新日期：2026-09-02
 主线算法版本：`4.0.0a8`
 
 > PR #70 前的完整状态说明已无损归档到 `references/archive/2026-08-22-pre-max-authority-v4-status.md`。P3 前状态见 `references/archive/2026-08-19-pre-p3-v4-status.md`。生产基线见 `references/production-requirements.md`；Smart / Pro 细节见 `references/smart-pro-v1-1.md`。
@@ -181,6 +181,14 @@ Release/reconciliation 对 `review_candidate_count` 要求真正 JSON integer `0
 - `--out-dir` 不得位于 protected input 内，也不得反向包住 protected input。
 
 Legacy/optimized orchestration implementation blob 保持不变，仅由安全 public wrapper 在 preflight 后进入。该 gate 不改变算法或任何 readiness/release authority；它只阻止 run orchestration 自己污染已经 fingerprint 的输入树。
+
+### 5.7 Production display policy
+
+Production timing/segmentation authority 与 viewer-facing presentation 现在明确分层。`scripts/v4_apply_display_policy.py` 只消费已经 `editor_reconciled`、`publish_ready=true` 的 production final-render；cue count/number/start、occurrence identity、track identity 与 canonical line identity 全部冻结。默认不改 timing；只有显式启用 `trim_extreme_unknown_end_v1` 时，允许对 `next_line_start` 推导出的极端长未知 end 做 shorten-only display trim，绝不延长 end 或移动 start。
+
+Canonical lyric 继续作为文字/顺序 evidence truth，不因平台敏感词处理或模型高置信 typo 修订而被覆盖。显式模型修订必须 task-bound，并精确绑定 `occurrence_id + track_id + canonical_line_index + expected_text`；只有 `confidence=high` 才可 materialize，原文不匹配、override 未命中或命中不唯一均 fail closed。输出 audit 同时保留 canonical/display 两层文字、source/display start/end 与 policy/reviewer/reason provenance。
+
+内置 `strong_profanity_v1` 只自动处理明确强脏词（例如 `fuck/fucking -> f*`）。语境相关词如 `sexy`、`shot`、`bullet`、`kill`、`damn` 不自动改写，必须经模型/人工语境判断。`trim_extreme_unknown_end_v1` 只接受 `source_end_basis=next_line_start`，且 `max_display_hold_ms` 必须严格小于 source-duration trigger；`open_end` 和显式 timing 不可被该规则改写。display stage 生成新的 hash-bound `final_render`，继续保持三层 `editor_reconciled` / `publish_ready=true`，随后仍由原 `v4_validate_release.py` 正常验收；release gate 不增加例外。
 
 ## 6. Legacy Partial Timeline Repair
 

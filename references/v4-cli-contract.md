@@ -111,6 +111,16 @@ segmentation_authority = editor_reconciliation_evaluation_only
 production_authority_granted = false
 ```
 
+### `v4_apply_display_policy.py`
+
+Display-policy materializer 只能消费已获得 `editor_reconciled`、`publish_ready=true` 且无 `release_blocked_reason` 的 exact production final-render。它不得改变 cue count/number/start、occurrence/track/canonical-line identity；viewer-facing text 可以按 policy 改写。timing 默认完全冻结；只有 `trim_extreme_unknown_end_v1` 可以 shorten-only 修改 end，绝不允许延长 end 或移动 start。
+
+显式模型 override 必须绑定 task fingerprint 与 `occurrence_id + track_id + canonical_line_index + expected_text`，且明确 `confidence=high`。expected text 不匹配、override 未命中/重复命中、policy task identity 不一致均必须 fail closed。自动敏感词 profile 只允许窄 strong-profanity 规则；语境相关词不能由该 profile 自动删除或替换。
+
+`trim_extreme_unknown_end_v1` 的 `source_end_basis` 只允许 `next_line_start`；`source_duration_at_least_ms` / `max_display_hold_ms` 必须是真正 JSON integer，且 max hold 必须严格小于 trigger。满足 gate 时新 end 只能等于 `start + max_display_hold_ms`；`open_end`、显式 end authority 与未达到 trigger 的 cue 必须保持原 end。
+
+输出 audit 必须保留 canonical 原文及其 hash，以及原始 source start/end；同时把 `text/start_ms/end_ms` 绑定到最终 display 值，记录 display timing change reason，并重算 `text_sha256` / `cue_id`。该阶段生成新的唯一 `final_render` artifact，以上一层 production final-render 为 upstream；release 时只提交新的 display final-render，现有 exactly-one-final-render contract 不变。
+
 ### `v4_validate_release.py`
 
 release manifest 不得覆盖 task manifest/任一 task input、final SRT、audit CSV、QA JSON 或任何 upstream artifact。

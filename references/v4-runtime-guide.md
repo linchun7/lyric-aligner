@@ -391,3 +391,29 @@ python scripts/v4_materialize_editor_reconciled.py `
 ```
 
 成功时 final SRT/audit 与 canonical evaluation 逐字节一致；只有 QA 与新的 `final_render` artifact 获得 production authority。新 artifact 必须记录 source evaluation render、reconciliation artifact、rebuttal witness count 与 timing-format counts，且三层 production authority 均为 `editor_reconciled` / `publish_ready=true`。随后仍必须正常运行 `v4_validate_release.py`；release validator 没有 topology-rebuttal 特例。
+
+### Production display policy（可选，production authority 之后）
+
+已获得 `editor_reconciled` / `publish_ready=true` 的 production render 如需做平台展示处理，可再运行 `scripts/v4_apply_display_policy.py`。该阶段不重新推导歌词时间轴：cue 数量、编号、开始时间、occurrence、track 与 canonical line identity 必须完全保持不变。viewer-facing 文本可以按下面的严格规则改写；结束时间只允许在显式启用 `trim_extreme_unknown_end_v1` 时**缩短**，禁止延长、禁止移动开始时间。
+
+显式模型修订通过 task-bound `display-text-policy-1.0` JSON 提供；每条 override 必须绑定 `occurrence_id + track_id + canonical_line_index + expected_text`，并明确 `confidence=high`、reviewer 与 reason。源 SRT 文本与 `expected_text` 不完全一致、override 未命中或命中不唯一时均 fail closed。模型修订不得回写 canonical lyric truth。
+
+`strong_profanity_v1` 是窄自动打码 profile，只处理明确强脏词，例如 `fuck/fucking -> f*`；`sexy`、`shot`、`bullet`、`kill`、`damn` 等语境相关词不会自动改写，必须由模型/人工语境审查决定。
+
+可选 `timing_policy.mode=trim_extreme_unknown_end_v1` 只解决 line-LRC 没有真实 vocal-end、被 `next_line_start` 被动拉长的极端挂字幕：`source_end_basis` 只能是 `next_line_start`；只有源 duration 达到 policy 阈值时才允许把显示 end 缩到 `start + max_display_hold_ms`，且 `max_display_hold_ms` 必须小于触发阈值。`open_end`、显式 word timing、普通短/中等 duration 均不受该规则影响。输出 audit 必须同时保留 source/display start/end、`canonical_text` / `display_text`、policy identity、reviewer 与 change reasons，并重新计算 final `text_sha256/cue_id`。
+
+```powershell
+python scripts/v4_apply_display_policy.py `
+  --task-manifest <task_manifest.json> `
+  --source-srt <production.srt> `
+  --source-report <production.audit.csv> `
+  --source-qa <production.qa.json> `
+  --source-render-artifact <production.render.artifact.json> `
+  --display-policy <display_text_policy.json> `
+  --final-srt <DISPLAY_FINAL.srt> `
+  --final-report <DISPLAY_FINAL.audit.csv> `
+  --final-qa <DISPLAY_FINAL.qa.json> `
+  --artifact-out <DISPLAY_FINAL.render.artifact.json>
+```
+
+该阶段生成一个新的、仍为 `stage=final_render` 的 hash-bound production artifact，并以上一层 production render 为 upstream。发布时只把**新的 display final-render artifact**交给 `v4_validate_release.py`，因此现有“exactly one final_render”与三层 `editor_reconciled` authority gate 不需要任何例外。
