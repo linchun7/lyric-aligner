@@ -198,9 +198,15 @@ Canonical lyric 继续作为文字/顺序 evidence truth，不因平台敏感词
 
 ### 5.9 Private calibration baseline
 
-2026-09-02 已冻结第一版真实 private Max benchmark baseline：`4.0.0a8` / commit `7d663a12a052c5c367c5f63aaca419755f63fc8a`，共 8 个 opaque case（4 calibration / 4 blind_test），8 个 source_group 严格隔离。当前只执行了 calibration baseline；blind prediction/QA 尚未 materialize，也未读取任何 blind 指标。首次 calibration aggregate 为 `unit_f1=0.991304`、`boundary_mae_ms=97.697`、`boundary_p95_ms=566.0`，已确认的 cut/overlap 事件 precision/recall 均为 1.0。`line_exact_f1=0.783370` 受 reference 与 production canonical cue split/merge segmentation 差异显著影响，后续不得把该单项指标直接解释为整体正确率。
+2026-09-02 首轮 r1 private benchmark 已用于验证 workflow，但随后确认其 reference/prediction authority 混合了旧人工 segmentation 与已人工闭合 production 结果，因此只保留为 exploratory history，不再用于正式 candidate selection。
 
-下一阶段算法改动必须先在 calibration 上形成独立 candidate，再经 policy selection lock 后才允许首次生成 blind predictions。当前工程优先级因此从继续堆 Max 声学模块转为：用 calibration error breakdown 驱动 candidate，优先验证 transition Fine-anchored diagnostic 是否能降低 review density，同时保持现有 timing/cut/overlap 非回归。
+正式基线已升级为 `2026-09-02-r2-auto`：仍为 8 个 opaque case（4 calibration / 4 blind_test）、8 个 source_group 严格隔离，但 reference 固定为已验收 pre-display production SRT，prediction 固定为 raw `v4_run` per-occurrence timeline 按 authoritative occurrence window 物化，禁止应用人工 review、overlap recomposition、reference-retime、editor reconciliation 或 display override。该 baseline 已生成独立 lock；blind prediction/QA 仍未 materialize，blind metrics 仍未读取。
+
+r2 calibration aggregate 为 `unit_f1=0.999221`、`line_exact_f1=0.999167`、`cue_text_exact_match_rate=1.0`、`boundary_mae_ms=17.982`、`boundary_p95_ms=6.0`。4/4 calibration case 的 raw Max SRT 基本已与 production truth 重合，但每个 case 仍保留 1 个 review candidate，`publish_ready_rate=0`；该 calibration 中被人工确认的结构事件在 raw Max 阶段仍有 `cut_recall=0` / `overlap_recall=0`。因此当前主要瓶颈已从普通歌词 timing 转为结构事件与 review authority。
+
+首个 transition Fine-anchored 多尺度自动降噪候选已在 calibration 阶段淘汰：2/2 已确认真实 overlap 均被错误建议为 sequential clear；进一步加入 aligned dual-source STFT/NNLS mixture-gain 证据后，clear 与 overlap 的分数仍明显重叠，无法形成安全阈值。该实验未进入 production/public code，也未触碰 blind。后续不得通过继续堆同源 retrieval 阈值来自动 clear transition；新 candidate 应由 r2 calibration 的结构事件 error breakdown 驱动。
+
+第二个 candidate 改用用户工作流中可选的 prepared stem 做 same-track splice 正诊断。calibration 已验证：无需人工 lag，能够自动发现一例约 6 秒 source-offset handoff，并通过双源 waveform 回归给出 crossover；private A/B 在 SRT/QA 完全不变的前提下使 `cut_precision/recall` 从 `0/0` 提升为 `1/1`，crossover 相对 production truth 误差 170 ms，三个真实 calibration 负例均未产生 splice 正证据。该能力产品化时保持 `diagnostic_only=true`、`production_authority_granted=false`，负结果统一为 inconclusive，不能自动 clear。blind 仍未 materialize/读取；正式 selection 必须绑定 public commit 后重新执行 calibration。
 
 ## 6. Legacy Partial Timeline Repair
 

@@ -247,6 +247,14 @@ Display stage 生成新的、hash-bound 的 `stage=final_render` production arti
 
 Audit output 也受 fail-closed path ownership 保护：task/direct 输入以及 run 递归声明的所有 `*_path` lineage（包括实际 timeline）都不能被 `--out` 覆盖。Synthetic core regression 覆盖 clean candidate、window 越界、confirmed/unconfirmed overlap、same-occurrence overlap、长驻留 warning、非单调 final order 与 count mismatch；真实 production final 另做 private smoke，证明通用 audit 可直接替代任务专属结构审计。
 
+## 2026-09-02 — Optional prepared-stem same-track splice diagnostic
+
+Private r2 calibration 显示 raw Max 普通歌词 timing/text 已接近 production truth，但同曲内部手工 splice 仍可能被单一 Fine source trajectory 吞掉。新增 `lyric_aligner/audio/prepared_stem.py` 与 `scripts/v4_diagnose_prepared_stem.py`，允许在用户显式提供某 occurrence 的剪辑前调速/预处理单曲 stem 时，额外扫描 stem-to-mix lag modes，并用局部双源 waveform OLS 验证两个 source-offset hypothesis 是否在同一首歌内部发生真实交叉。
+
+该能力严格 diagnostic-only：prepared stem 不替代 canonical source audio，不进入默认 `v4_run`，不修改 coarse/Fine/TimeWarp/timeline/review，也不授予 segmentation/timing/release authority。只有 `splice_supported=true` 是正证据；负结果固定为 `status=inconclusive` 与 `negative_result_is_clear_authority=false`，不能自动 clear cut/transition review。输出 hash-bind mix/stem 与 config，并禁止覆盖输入音频。
+
+Calibration-only A/B 在保持 prediction SRT/QA 完全不变时，把一例已验收 same-track splice 的 `cut_precision/recall` 从 `0/0` 提升到 `1/1`，自动 crossover 与 production truth 相差 170 ms；三个真实 calibration 负例均未产生 splice 正证据。Synthetic regression 同时覆盖双 lag crossfade 正例、单 lag 负例与无效 config fail-closed。该工具不声称解决 cross-track overlap；后者仍保持 review authority。
+
 ## 冻结与回滚
 
 Smart/Pro production freeze tag 继续固定在：

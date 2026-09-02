@@ -432,3 +432,9 @@ python scripts/v4_apply_display_policy.py `
 `scripts/v4_audit_final.py` 是 diagnostic-only 检查，不生成 production artifact，也不授予 timing/text/segmentation/release authority。它要求 final SRT 与 audit CSV exact binding、QA 已 publish-ready，并从同 task 的 run/timeline 读取 authoritative occurrence windows、`content_end` 与已确认 overlap regions；`--out` 不能覆盖 task/direct/run 声明的任何输入路径。
 
 它统一报告 cue duration 分布、<500 ms 短 cue、>6 s 长驻留、>=8 s 极端驻留、final file order、occurrence-window containment、content-end 越界，以及 cue overlap。长驻留只作为 presentation warning，不自动判错；跨 occurrence overlap 只有在交集完整落入该 pair 的 confirmed-overlap region 时才允许，同 occurrence overlap 或未确认 cross-track overlap 都是 structural error。命令返回 `0` 表示结构检查通过（可以仍有 warning），返回 `2` 表示发现 structural error。该检查不能替代 `v4_validate_release.py`；推荐顺序是 production/display materialization -> `v4_audit_final.py` -> `v4_validate_release.py`。
+
+### Prepared-stem same-track splice diagnostic（可选、按需）
+
+当生产工作流保留了某首歌在进入最终 mix 前的调速/预处理单曲 stem，可使用 `scripts/v4_diagnose_prepared_stem.py` 做同曲内部 splice/crossfade 的额外结构诊断。该 stem 不替代 canonical source audio，也不改变 coarse/Fine/TimeWarp；CLI 只在用户显式提供 `mix + prepared stem + occurrence interval` 时运行，并把两份音频 SHA、参数、lag-mode 与双源回归证据写入 diagnostic artifact。
+
+该诊断只有 `splice_supported=true` 可以作为“存在 same-track splice”的正证据；`splice_supported=false` 的状态固定为 `inconclusive`，明确 `negative_result_is_clear_authority=false`，不能被解释为“证明无 splice”，更不能自动清除 transition/cut review。当前能力只覆盖 prepared-stem same-track splice，不声称解决 cross-track overlap。它是 on-demand 诊断，不加入默认 `v4_run`，避免没有 stem 的项目增加运行成本或 authority 复杂度。

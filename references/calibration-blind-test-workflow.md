@@ -242,23 +242,31 @@ cut_boundary_within_500ms_rate
 
 只有第 7 步完成后，才有资格讨论“准确率提升了多少”。
 
-### 11.1 2026-09-02 首次 private baseline 已执行
+### 11.1 2026-09-02 private baseline 演进
 
-当前 `4.0.0a8` / commit `7d663a12a052c5c367c5f63aaca419755f63fc8a` 已建立第一版私有 benchmark：8 个 opaque case，4 个 calibration、4 个 blind_test，8 个 source_group 完全隔离。blind prediction/QA 尚未 materialize，blind 指标也未读取；baseline lock 明确记录 `blind_predictions_materialized=false` / `blind_metrics_observed=false`。
+第一版 r1 benchmark（8 个 opaque case，4 calibration / 4 blind_test，8 个 source_group 完全隔离）验证了 split-isolated workflow 与 blind 禁读机制，但后续审计确认其 reference/prediction authority 混用了旧人工 segmentation 与已人工闭合 production 结果。r1 因此仅保留为 exploratory history，不再用于正式 candidate selection。
 
-首次 calibration aggregate（仅公开 aggregate，不含歌词/逐 case 私有证据）：
+正式 baseline 升级为 `2026-09-02-r2-auto`。case/source_group 划分不变，但 authority 改为：reference = 已验收 pre-display production SRT；prediction = raw `v4_run` per-occurrence timeline 按 occurrence authority window 物化，不应用人工 review、overlap recomposition、reference-retime、editor reconciliation 或 display override。`mix_end_ms=null` 按 renderer 的 5 秒 open-line 语义处理后再做 occurrence clamp。r2 已生成独立 baseline lock，仍明确记录 `blind_predictions_materialized=false` / `blind_metrics_observed=false`。
+
+r2 calibration aggregate（仅公开 aggregate，不含歌词/逐 case私有证据）：
 
 ```text
-unit_f1                  = 0.991304
-sequence_wer             = 0.015886
-line_exact_f1            = 0.783370
-boundary_mae_ms          = 97.697
-boundary_p95_ms          = 566.000
-onset_p95_ms             = 386.400
-offset_p95_ms            = 700.600
-cut_precision/recall     = 1.0 / 1.0
-overlap event P/R        = 1.0 / 1.0
-publish_ready_rate       = 1.0
+unit_f1                          = 0.999221
+sequence_wer                     = 0.001560
+line_exact_f1                    = 0.999167
+cue_text_exact_match_rate        = 1.000000
+boundary_mae_ms                  = 17.982
+boundary_p95_ms                  = 6.000
+review_candidates_per_10_min     = 1.739130
+publish_ready_rate               = 0.000000
+cut_recall                       = 0.000000
+overlap_event_recall             = 0.000000
 ```
 
-`line_exact_f1` 不能单独解释为 timing/text 正确率：当前 reference 与 production canonical 在部分 case 存在已知 cue split/merge segmentation 差异，因此必须和 `unit_f1`、split/merge error、boundary 分布一起看。下一步 candidate 工程只能读取 calibration；必须先完成 candidate calibration + selection lock，之后才允许首次 materialize blind predictions。
+这说明 calibration 范围内普通歌词 timing/text 已非常接近 production truth，主要剩余差距是结构事件与 review authority，而不是继续压低普通 cue timing 误差。
+
+### 11.2 首个 B 候选已在 calibration 淘汰
+
+Fine-anchored multiscale transition diagnostic 曾作为第一个 B 候选，仅在 calibration 上验证。结果 2/2 已确认真实 overlap 都被错误建议为 sequential clear，构成不可接受的 false-clear。随后追加 aligned dual-source STFT/NNLS mixture-gain 可行性检查，clear 与 overlap 的分数区间仍明显重叠，不能形成安全阈值。
+
+因此该候选未进入 production/public code，blind prediction/metrics 仍未触碰。后续不得通过继续堆相同 retrieval 分数/阈值来自动 clear transition；必须切换到独立结构证据或维持人工 review。任何新 candidate 仍只能读取 calibration，必须先完成 calibration evaluation + selection lock，之后才允许首次 materialize blind predictions。
