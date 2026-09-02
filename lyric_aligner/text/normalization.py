@@ -10,6 +10,7 @@ from collections.abc import Iterable
 # early in a file. Both ASCII and full-width Chinese colons are accepted.
 META_RE = re.compile(
     r"^(?:"
+    r"\[(?:ar|al|ti|by|offset|length|re|ve|au)\s*[:：][^\]]*\]\s*$|"
     r"\[?by\s*[:：]|"
     r"(?:作词|作曲|编曲|词|曲|制作人|人声采样|版权|发行|混音|母带|企划|出品人|"
     r"监制|和声编写|和声|录音师|录音棚|音频编辑|统筹|宣传发行|出品方|出品|"

@@ -41,12 +41,14 @@ class TransitionPlan:
 @dataclass(frozen=True)
 class ProductionPlan:
     mix_duration: float
+    content_end: float
     occurrences: tuple[OccurrencePlan, ...]
     transitions: tuple[TransitionPlan, ...]
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "mix_duration": self.mix_duration,
+            "content_end": self.content_end,
             "occurrences": [item.to_dict() for item in self.occurrences],
             "transitions": [item.to_dict() for item in self.transitions],
         }
@@ -56,12 +58,18 @@ def build_production_plan(
     bindings: Iterable[ResolvedAssetBinding],
     *,
     mix_duration: float,
+    content_end: float | None = None,
     transition_margin_seconds: float,
 ) -> ProductionPlan:
     """Build primary and shared-boundary search intervals for one real task."""
 
     if mix_duration <= 0:
         raise ProductionPlanError("mix_duration must be positive")
+    effective_content_end = mix_duration if content_end is None else float(content_end)
+    if effective_content_end <= 0 or effective_content_end > mix_duration:
+        raise ProductionPlanError(
+            "content_end must be positive and no greater than mix_duration"
+        )
     if transition_margin_seconds <= 0:
         raise ProductionPlanError("transition_margin_seconds must be positive")
 
@@ -74,17 +82,17 @@ def build_production_plan(
         raise ProductionPlanError("TrackOccurrence IDs must be unique")
 
     starts = [float(item.nominal_start_ms) / 1000.0 for item in ordered]
-    if starts[0] < 0 or starts[0] >= mix_duration:
-        raise ProductionPlanError("first nominal start is outside the mix")
+    if starts[0] < 0 or starts[0] >= effective_content_end:
+        raise ProductionPlanError("first nominal start is outside effective mix content")
     if any(right < left for left, right in zip(starts, starts[1:])):
         raise ProductionPlanError("nominal starts must be non-decreasing")
-    if any(start >= mix_duration for start in starts):
-        raise ProductionPlanError("a nominal start is outside the mix")
+    if any(start >= effective_content_end for start in starts):
+        raise ProductionPlanError("a nominal start is outside effective mix content")
 
     occurrences: list[OccurrencePlan] = []
     for index, binding in enumerate(ordered):
         start = starts[index]
-        end = starts[index + 1] if index + 1 < len(starts) else mix_duration
+        end = starts[index + 1] if index + 1 < len(starts) else effective_content_end
         if end <= start:
             raise ProductionPlanError(
                 f"occurrence {binding.occurrence_id} has no positive primary interval"
@@ -103,7 +111,7 @@ def build_production_plan(
         boundary = starts[index + 1]
         search_start, search_end = transition_search_interval(
             boundary,
-            mix_duration=mix_duration,
+            mix_duration=effective_content_end,
             margin_seconds=transition_margin_seconds,
         )
         transitions.append(
@@ -118,6 +126,7 @@ def build_production_plan(
 
     return ProductionPlan(
         mix_duration=mix_duration,
+        content_end=effective_content_end,
         occurrences=tuple(occurrences),
         transitions=tuple(transitions),
     )

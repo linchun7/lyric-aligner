@@ -15,8 +15,8 @@ for value in (str(ROOT), str(SCRIPTS)):
     if value not in sys.path:
         sys.path.insert(0, value)
 
-import librosa
 import task_contract
+from lyric_aligner.audio.content_extent import detect_audio_content_extent
 from lyric_aligner.audio.fine_alignment import should_run_fine_alignment
 from lyric_aligner.contracts.verification_session import (
     clear_verified_input_session,
@@ -224,7 +224,13 @@ def prestage(a: argparse.Namespace) -> VerifiedStageRunner:
 
     assets_payload, artifact_payload = CORE._validate_asset_output(assets, asset_artifact)
     context = fast_context(expected_task_fingerprint=fingerprint, track_assets_payload=assets_payload, asset_artifact=artifact_payload, verify_asset_files=True)
-    plan = build_production_plan(context.bindings, mix_duration=float(librosa.get_duration(path=str(mix))), transition_margin_seconds=context.profile.transition.search_margin_seconds)
+    extent = detect_audio_content_extent(mix)
+    plan = build_production_plan(
+        context.bindings,
+        mix_duration=extent.full_duration,
+        content_end=extent.content_end,
+        transition_margin_seconds=context.profile.transition.search_margin_seconds,
+    )
 
     primary: dict[str, tuple[Path, Path]] = {}
     commands = []

@@ -21,9 +21,8 @@ REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 if str(REPOSITORY_ROOT) not in sys.path:
     sys.path.insert(0, str(REPOSITORY_ROOT))
 
-import librosa
-
 from lyric_aligner import __version__
+from lyric_aligner.audio.content_extent import detect_audio_content_extent
 from lyric_aligner.audio.cuts import discontinuity_candidate_id
 from lyric_aligner.audio.fine_alignment import should_run_fine_alignment
 from lyric_aligner.contracts.artifacts import (
@@ -288,10 +287,11 @@ def main() -> int:
             asset_artifact=asset_artifact_payload,
             verify_asset_files=True,
         )
-        mix_duration = float(librosa.get_duration(path=str(mix_audio)))
+        extent = detect_audio_content_extent(mix_audio)
         plan = build_production_plan(
             context.bindings,
-            mix_duration=mix_duration,
+            mix_duration=extent.full_duration,
+            content_end=extent.content_end,
             transition_margin_seconds=(
                 context.profile.transition.search_margin_seconds
             ),
