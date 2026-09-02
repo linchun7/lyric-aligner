@@ -21,6 +21,14 @@ class V4ProfileContractTests(unittest.TestCase):
             self.assertEqual(loaded.profile_id, DEFAULT_V4_PROFILE.profile_id)
             self.assertEqual(loaded.to_dict(), DEFAULT_V4_PROFILE.to_dict())
 
+    def test_default_coarse_candidate_pools_are_profiled(self):
+        self.assertEqual(DEFAULT_V4_PROFILE.coarse.primary_candidate_pool_size, 64)
+        self.assertEqual(DEFAULT_V4_PROFILE.coarse.transition_candidate_pool_size, 8)
+        payload = DEFAULT_V4_PROFILE.to_dict()
+        payload["coarse"]["primary_candidate_pool_size"] = 1
+        with self.assertRaises(CalibrationProfileError):
+            profile_from_dict(payload)
+
     def test_profile_identity_changes_when_calibration_changes(self):
         changed = replace(DEFAULT_V4_PROFILE, fine=replace(DEFAULT_V4_PROFILE.fine, min_margin=0.02))
         self.assertNotEqual(changed.profile_id, DEFAULT_V4_PROFILE.profile_id)

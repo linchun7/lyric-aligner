@@ -27,6 +27,8 @@ class CoarseAlignmentConfig:
     window_seconds: float = 6.0
     step_seconds: float = 3.0
     candidate_step_seconds: float = 0.75
+    primary_candidate_pool_size: int = 64
+    transition_candidate_pool_size: int = 8
     slope_minimum: float = 0.65
     slope_maximum: float = 1.80
     slope_step: float = 0.10
@@ -100,7 +102,7 @@ class RenderConfig:
 class V4CalibrationProfile:
     """All tunable v4 production-bootstrap values with one profile identity."""
 
-    profile_version: str = "production-bootstrap-2026-08-17-a7"
+    profile_version: str = "production-bootstrap-2026-09-02-a8"
     asset_resolver: AssetResolverConfig = field(default_factory=AssetResolverConfig)
     coarse: CoarseAlignmentConfig = field(default_factory=CoarseAlignmentConfig)
     fine: FineAlignmentConfig = field(default_factory=FineAlignmentConfig)
@@ -220,6 +222,10 @@ def validate_profile(profile: V4CalibrationProfile) -> None:
         raise CalibrationProfileError("coarse slope range is invalid")
     if profile.coarse.slope_step <= 0:
         raise CalibrationProfileError("coarse.slope_step must be positive")
+    if profile.coarse.primary_candidate_pool_size < 2:
+        raise CalibrationProfileError("coarse.primary_candidate_pool_size must be >= 2")
+    if profile.coarse.transition_candidate_pool_size < 2:
+        raise CalibrationProfileError("coarse.transition_candidate_pool_size must be >= 2")
     if profile.transition.search_margin_seconds <= 0:
         raise CalibrationProfileError("transition.search_margin_seconds must be positive")
     if profile.transition.min_overlap_seconds <= 0:

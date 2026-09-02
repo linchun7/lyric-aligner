@@ -154,6 +154,11 @@ def main() -> int:
         window_seconds = defaults.window_seconds if args.window_seconds is None else args.window_seconds
         step_seconds = defaults.step_seconds if args.step_seconds is None else args.step_seconds
         candidate_step_seconds = defaults.candidate_step_seconds if args.candidate_step_seconds is None else args.candidate_step_seconds
+        candidate_pool_size = (
+            defaults.primary_candidate_pool_size
+            if args.purpose == "primary_timewarp"
+            else defaults.transition_candidate_pool_size
+        )
         overrides = calibration_overrides(defaults, {
             "sr": sr,
             "hop_length": hop_length,
@@ -207,6 +212,7 @@ def main() -> int:
             window_seconds=window_seconds,
             step_seconds=step_seconds,
             candidate_step_seconds=candidate_step_seconds,
+            candidate_pool_size=candidate_pool_size,
             slope_minimum=defaults.slope_minimum,
             slope_maximum=defaults.slope_maximum,
             slope_step=defaults.slope_step,
@@ -247,6 +253,7 @@ def main() -> int:
             "window_seconds": window_seconds,
             "step_seconds": step_seconds,
             "candidate_step_seconds": candidate_step_seconds,
+            "candidate_pool_size": candidate_pool_size,
             "slope_minimum": defaults.slope_minimum,
             "slope_maximum": defaults.slope_maximum,
             "slope_step": defaults.slope_step,

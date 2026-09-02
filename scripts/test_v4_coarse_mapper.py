@@ -134,6 +134,58 @@ class V4CoarseMapperTests(unittest.TestCase):
             },
         )
 
+    def test_candidate_pool_size_is_forwarded_and_reported(self):
+        centers = iter([4.0, 6.0, 8.0, 10.0, 12.0, 14.0])
+        seen_top_k = []
+
+        def fake_retrieve(_mix, _source, *, mix_start, mix_end, top_k, **_kwargs):
+            seen_top_k.append(top_k)
+            return retrieval((mix_start + mix_end) / 2.0, next(centers))
+
+        features = FeatureBundle(
+            sr=SR,
+            hop_length=512,
+            duration_seconds=24.0,
+            chroma=np.ones((12, 10), dtype=np.float32),
+            mfcc=np.ones((12, 10), dtype=np.float32),
+        )
+        with (
+            patch(
+                "lyric_aligner.audio.coarse_mapper.extract_harmonic_features",
+                return_value=features,
+            ),
+            patch(
+                "lyric_aligner.audio.coarse_mapper.retrieve_coarse_window",
+                side_effect=fake_retrieve,
+            ),
+        ):
+            result = build_coarse_timewarp(
+                np.zeros(14 * SR, dtype=np.float32),
+                np.zeros(24 * SR, dtype=np.float32),
+                sr=SR,
+                mix_start=0.0,
+                mix_end=14.0,
+                feature_hop_length=512,
+                window_seconds=4.0,
+                step_seconds=2.0,
+                candidate_pool_size=64,
+            )
+
+        self.assertEqual(seen_top_k, [64] * 6)
+        self.assertEqual(result["feature_config"]["candidate_pool_size"], 64)
+        self.assertEqual(len(result["path"]), 6)
+
+    def test_candidate_pool_size_fails_closed_below_two(self):
+        with self.assertRaisesRegex(ValueError, "candidate_pool_size"):
+            build_coarse_timewarp(
+                np.zeros(8 * SR, dtype=np.float32),
+                np.zeros(8 * SR, dtype=np.float32),
+                sr=SR,
+                mix_start=0.0,
+                mix_end=8.0,
+                candidate_pool_size=1,
+            )
+
     def test_transition_activity_keeps_all_windows_without_requesting_timewarp(self):
         centers = iter([4.0, 6.0, 8.0, 10.0, 1.0, 1.5])
 

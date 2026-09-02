@@ -214,6 +214,7 @@ def build_coarse_timewarp(
     window_seconds: float = 6.0,
     step_seconds: float = 3.0,
     candidate_step_seconds: float = 0.75,
+    candidate_pool_size: int = 8,
     slope_minimum: float = 0.65,
     slope_maximum: float = 1.80,
     slope_step: float = 0.10,
@@ -231,6 +232,8 @@ def build_coarse_timewarp(
 ) -> dict[str, Any]:
     if sr <= 0:
         raise ValueError("sample rate must be positive")
+    if candidate_pool_size < 2:
+        raise ValueError("candidate_pool_size must be >= 2")
     buffer_start = float(mix_audio_start)
     if buffer_start < 0:
         raise ValueError("mix_audio_start must be non-negative")
@@ -280,6 +283,7 @@ def build_coarse_timewarp(
             slopes=slopes,
             bpm_prior=bpm_prior,
             candidate_step_seconds=candidate_step_seconds,
+            top_k=candidate_pool_size,
             min_score=min_score,
             min_margin=min_margin,
         )
@@ -353,6 +357,7 @@ def build_coarse_timewarp(
             "window_seconds": window_seconds,
             "step_seconds": step_seconds,
             "candidate_step_seconds": candidate_step_seconds,
+            "candidate_pool_size": candidate_pool_size,
         },
         "slope_search": {
             "minimum": slope_minimum,
