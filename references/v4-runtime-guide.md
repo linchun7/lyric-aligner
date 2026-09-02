@@ -1,7 +1,7 @@
 # Lyric Aligner v4 生产运行手册
 
 更新：2026-09-02
-主线算法版本：`4.0.0a9`
+主线算法版本：`4.0.0a10`
 
 > 真实生产 workload 与产品设计基线见 `references/production-requirements.md`；Smart / Pro v1.1 设计细节见 `references/smart-pro-v1-1.md`。
 
@@ -277,7 +277,7 @@ Smart/Pro 解决不了、或整体 timeline 本来就不可信时再运行完整
 
 Max orchestration 会另外记录物理 `mix_duration` 与保守 `content_end`。`content_end` 只会在音频尾部存在至少 30 秒**解码后逐样本精确为 0**的 digital-zero run 时缩短；普通淡出、近静音、底噪或弱信号不会被当成空白。该边界只限制最后一个 occurrence 的 production window/terminal clamp，物理文件时长仍保留作 provenance。这样可避免导出文件尾部的大段数字静音把最后一首搜索区间错误扩到容器末尾，同时不引入主观 silence threshold。
 
-当独立、已验证的同曲 reference audio 能证明 Max primary mapping 在局部重复段失真时，可在 overlap/cut review 已完全闭合之后使用 `scripts/v4_retime_reference.py` 做窄 reference retime。普通平移/插入使用单调 `segments`；reference 本身存在明确删除/拼接时必须使用 `retained_segments` 明示每个保留 reference interval 与 target start，删除区内 canonical cue 会被丢弃，跨切点 cue 只裁剪到实际存活音频。一个 cue 若在两个保留段都存活会 fail closed，不自动猜分段。reference task fingerprint、canonical selection、reference/target audio SHA、source overlap artifact 与 retime spec 都必须进入 lineage。不要用搜索半径不足、最佳点贴搜索边界或无强相关锚点的窄 lag scan 推断全曲平移；这类结果只能作为 diagnostic，必须扩大搜索范围或直接建立结构证据。
+当独立、已验证的同曲 reference audio 能证明 Max primary mapping 在局部重复段失真时，可在 overlap/cut review 已完全闭合之后使用 `scripts/v4_retime_reference.py` 做窄 reference retime。普通平移/插入使用单调 `segments`；reference 本身存在明确删除/拼接时必须使用 `retained_segments` 明示每个保留 reference interval 与 target start，删除区内 canonical cue 会被丢弃，跨切点 cue 只裁剪到实际存活音频。一个 cue 若在两个保留段都存活会 fail closed，不自动猜分段。reference task fingerprint、canonical selection、reference/target audio SHA、source resolved-run artifact 与 retime spec 都必须进入 lineage。`4.0.0a10` 起，无 confirmed overlap 的任务只要 `review_resolution` 已完全闭合（`ready_for_render`、issues 为空、非 legacy fallback），即可直接作为 reference-retime source；存在 overlap 时仍必须先完成原有 `overlap_recomposition`。两条路径都显式绑定 source review artifact，不允许绕过 review authority。不要用搜索半径不足、最佳点贴搜索边界或无强相关锚点的窄 lag scan 推断全曲平移；这类结果只能作为 diagnostic，必须扩大搜索范围或直接建立结构证据。
 
 ## 7. Legacy Partial Timeline Repair
 

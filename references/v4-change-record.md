@@ -24,6 +24,12 @@ ASR / forced -> auxiliary acoustic evidence
 
 ---
 
+## 2026-09-02 — Max a10 direct-review reference-retime closeout
+
+真实 KPOP200 复跑暴露出一个 production contract 缺口：任务没有 confirmed overlap，13 个 transition review 已全部闭合，但历史 waveform + lyric context 已确认单曲内部存在 source cut，需要用 `retained_segments` 删除 cut gap 内 canonical event 并截断跨 cut cue。现有 `v4_retime_reference.py` 的映射能力已经能正确完成该操作，却把 source stage 硬性限制为 `overlap_recomposition`，迫使无-overlap任务先制造一个没有语义的 overlap stage。
+
+`4.0.0a10` 只扩展 lineage 入口，不修改 retained-segment 映射、coarse/Fine/TimeWarp、cut/overlap 判定或 release gate：reference-retime source stage 允许 `review_resolution` 或原有 `overlap_recomposition`。直接从 review 进入时仍要求 source run `ready_for_render`、issues 为空、非 legacy，并把 source run artifact 自身作为 source review artifact；overlap 路径仍校验 overlap metadata 的 source-review identity。`v4_render.py` 同步按两种 source stage fail-closed 验证，未知 stage、review identity 不一致仍拒绝。新增 source-stage contract regression，原 overlap/reference-retime/release/path-safety 回归保持通过。
+
 ## 2026-08-22 — Max coarse terminal coverage / transition activity closeout (#68)
 
 Full V4 primary coarse 可在已证明至少三个连续 anchors、且不可连接区域只位于结构上有界的 terminal suffix 时保留 proven prefix 并继续 TimeWarp；leading/interior disconnect、超限 suffix、证据不足仍 fail closed。coarse artifact 记录 `path_coverage` 与 excluded terminal centers；Fine 只消费与 proven path 对齐的 prefix。

@@ -122,19 +122,31 @@ def main() -> int:
 
         source_run = _load(args.run)
         source_artifact = _load(args.run_artifact)
+        source_run_stage = str(source_artifact.get("stage") or "")
+        source_run_role = {
+            "review_resolution": "v4_reviewed_run",
+            "overlap_recomposition": "v4_recomposed_run",
+        }.get(source_run_stage)
+        if source_run_role is None:
+            raise ValueError(
+                "reference retime requires a review_resolution or overlap_recomposition source run"
+            )
         source_run_id = _validate_artifact(
             source_artifact,
             fingerprint=target_fp,
-            stage="overlap_recomposition",
-            role="v4_recomposed_run",
+            stage=source_run_stage,
+            role=source_run_role,
             output_path=args.run,
         )
         source_config = source_artifact.get("normalized_config")
         if not isinstance(source_config, dict):
-            raise ValueError("source overlap artifact has invalid normalized_config")
-        source_review_artifact_id = str(source_config.get("source_review_artifact_id") or "")
-        if not source_review_artifact_id:
-            raise ValueError("source overlap artifact is missing source_review_artifact_id")
+            raise ValueError("source artifact has invalid normalized_config")
+        if source_run_stage == "review_resolution":
+            source_review_artifact_id = source_run_id
+        else:
+            source_review_artifact_id = str(source_config.get("source_review_artifact_id") or "")
+            if not source_review_artifact_id:
+                raise ValueError("source overlap artifact is missing source_review_artifact_id")
         if source_run.get("algorithm_version") != __version__:
             raise ValueError("source run algorithm version mismatch")
         if source_run.get("task_fingerprint_sha256") != target_fp:
@@ -317,7 +329,7 @@ def main() -> int:
                 break
         retimed_run["reference_retime"] = {
             "source_run_artifact_id": source_run_id,
-            "source_run_stage": "overlap_recomposition",
+            "source_run_stage": source_run_stage,
             "source_review_artifact_id": source_review_artifact_id,
             "reference_task_fingerprint_sha256": reference_fp,
             "reference_timeline_artifact_id": reference_timeline_id,
@@ -337,7 +349,7 @@ def main() -> int:
             normalized_config={
                 **context.artifact_config(),
                 "source_run_artifact_id": source_run_id,
-                "source_run_stage": "overlap_recomposition",
+                "source_run_stage": source_run_stage,
                 "source_review_artifact_id": source_review_artifact_id,
                 "reference_task_fingerprint_sha256": reference_fp,
                 "reference_timeline_artifact_id": reference_timeline_id,

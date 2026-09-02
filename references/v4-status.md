@@ -1,7 +1,7 @@
 # Lyric Aligner v4 当前实施状态
 
 更新日期：2026-09-02
-主线算法版本：`4.0.0a9`
+主线算法版本：`4.0.0a10`
 
 > PR #70 前的完整状态说明已无损归档到 `references/archive/2026-08-22-pre-max-authority-v4-status.md`。P3 前状态见 `references/archive/2026-08-19-pre-p3-v4-status.md`。生产基线见 `references/production-requirements.md`；Smart / Pro 细节见 `references/smart-pro-v1-1.md`。
 
@@ -191,6 +191,8 @@ Production timing/segmentation authority 与 viewer-facing presentation 现在�
 Canonical lyric 继续作为文字/顺序 evidence truth，不因平台敏感词处理或模型高置信 typo 修订而被覆盖。显式模型修订必须 task-bound，并精确绑定 `occurrence_id + track_id + canonical_line_index + expected_text`；只有 `confidence=high` 才可 materialize，原文不匹配、override 未命中或命中不唯一均 fail closed。输出 audit 同时保留 canonical/display 两层文字、source/display start/end 与 policy/reviewer/reason provenance。
 
 内置 `strong_profanity_v1` 只自动处理明确强脏词（例如 `fuck/fucking -> f*`）。语境相关词如 `sexy`、`shot`、`bullet`、`kill`、`damn` 不自动改写，必须经模型/人工语境判断。`trim_extreme_unknown_end_v1` 只接受 `source_end_basis=next_line_start`，且 `max_display_hold_ms` 必须严格小于 source-duration trigger；`open_end` 和显式 timing 不可被该规则改写。display stage 生成新的 hash-bound `final_render`，继续保持三层 `editor_reconciled` / `publish_ready=true`，随后仍由原 `v4_validate_release.py` 正常验收；release gate 不增加例外。
+
+`4.0.0a10` 补齐无-overlap confirmed-cut 的正式 reference-retime 路径：`scripts/v4_retime_reference.py` 仍只接受已完全 resolved、`ready_for_render`、非 legacy 的 source run，但 source stage 可为 `review_resolution` 或原有 `overlap_recomposition`。直接从 `review_resolution` 进入时，source review artifact 必须就是 source run artifact 自身；从 overlap 进入时仍验证 overlap metadata 中的 source-review identity。renderer 同样按两种 lineage 分支校验，retained-segment 的删行/截断/fail-closed 语义不变。
 
 ### 5.8 Diagnostic final-candidate audit
 

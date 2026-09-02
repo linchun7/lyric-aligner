@@ -331,14 +331,25 @@ def _validate_reference_retime_metadata(
     source_run_id = str(metadata.get("source_run_artifact_id") or "")
     if not source_run_id or source_run_id not in upstreams:
         raise ValueError("reference retime is not upstream-bound to its source run")
-    if str(metadata.get("source_run_stage") or "") != "overlap_recomposition":
-        raise ValueError("reference retime currently requires an overlap_recomposition source run")
+    source_run_stage = str(metadata.get("source_run_stage") or "")
+    if source_run_stage not in {"review_resolution", "overlap_recomposition"}:
+        raise ValueError(
+            "reference retime requires a review_resolution or overlap_recomposition source run"
+        )
     source_review_id = str(metadata.get("source_review_artifact_id") or "")
-    overlap_metadata = run.get("overlap_recomposition")
-    if not source_review_id or not isinstance(overlap_metadata, dict):
-        raise ValueError("reference retime is missing source overlap/review lineage")
-    if str(overlap_metadata.get("source_review_artifact_id") or "") != source_review_id:
-        raise ValueError("reference retime source-review identity differs from overlap metadata")
+    if not source_review_id:
+        raise ValueError("reference retime is missing source review lineage")
+    if source_run_stage == "review_resolution":
+        if source_review_id != source_run_id:
+            raise ValueError(
+                "reference retime review_resolution source must identify itself as source review artifact"
+            )
+    else:
+        overlap_metadata = run.get("overlap_recomposition")
+        if not isinstance(overlap_metadata, dict):
+            raise ValueError("reference retime is missing source overlap lineage")
+        if str(overlap_metadata.get("source_review_artifact_id") or "") != source_review_id:
+            raise ValueError("reference retime source-review identity differs from overlap metadata")
     reference_fp = str(metadata.get("reference_task_fingerprint_sha256") or "")
     reference_timeline_id = str(metadata.get("reference_timeline_artifact_id") or "")
     spec_sha = str(metadata.get("retime_spec_sha256") or "")
@@ -364,7 +375,7 @@ def _validate_reference_retime_metadata(
     config = _artifact_config(artifact, label="reference-retime artifact")
     expected = {
         "source_run_artifact_id": source_run_id,
-        "source_run_stage": "overlap_recomposition",
+        "source_run_stage": source_run_stage,
         "source_review_artifact_id": source_review_id,
         "reference_task_fingerprint_sha256": reference_fp,
         "reference_timeline_artifact_id": reference_timeline_id,
