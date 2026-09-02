@@ -394,6 +394,13 @@ def _validate_reference_retime_metadata(
     return metadata, timeline_ids
 
 
+def _reference_retime_materialization_stage(metadata: dict) -> str:
+    source_stage = str(metadata.get("source_run_stage") or "")
+    if source_stage not in {"review_resolution", "overlap_recomposition"}:
+        raise ValueError("reference retime has unsupported materialization source stage")
+    return source_stage
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--task-manifest", required=True, type=Path)
@@ -458,7 +465,7 @@ def main() -> int:
                 reference_retime_metadata,
                 expected_reference_retime_timeline_ids,
             ) = _validate_reference_retime_metadata(run, run_artifact, run_upstreams)
-            materialization_stage = "overlap_recomposition"
+            materialization_stage = _reference_retime_materialization_stage(reference_retime_metadata)
 
         if run_stage == "review_resolution":
             _validate_review_only(run, run_artifact, run_upstreams)

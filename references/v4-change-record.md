@@ -24,6 +24,10 @@ ASR / forced -> auxiliary acoustic evidence
 
 ---
 
+## 2026-09-03 — Max a11 reference-retime renderer source-stage closeout
+
+真实 KPOP200 再次验证了 a10 的 direct-review reference-retime 入口本身可用，但 renderer 在验证 `reference_retime` run 后仍无条件把 materialization source 当成 `overlap_recomposition`，导致合法的 `review_resolution -> reference_retime -> render` lineage 被错误要求提供不存在的 overlap metadata。`4.0.0a11` 只修正这一处 renderer 分支：reference-retimed run 后续 materialization validation 现在使用已在 reference-retime metadata 中严格验证过的 `source_run_stage`；review 来源不再虚构 overlap lineage，overlap 来源仍执行原有 overlap metadata / artifact identity 校验。coarse/Fine/TimeWarp、review decisions、retained-segment 映射、cut/overlap 判定、render composition 和 release gate 均未改变。新增 source-stage regression，review/overlap 两条路径都显式覆盖。
+
 ## 2026-09-02 — Max a10 direct-review reference-retime closeout
 
 真实 KPOP200 复跑暴露出一个 production contract 缺口：任务没有 confirmed overlap，13 个 transition review 已全部闭合，但历史 waveform + lyric context 已确认单曲内部存在 source cut，需要用 `retained_segments` 删除 cut gap 内 canonical event 并截断跨 cut cue。现有 `v4_retime_reference.py` 的映射能力已经能正确完成该操作，却把 source stage 硬性限制为 `overlap_recomposition`，迫使无-overlap任务先制造一个没有语义的 overlap stage。

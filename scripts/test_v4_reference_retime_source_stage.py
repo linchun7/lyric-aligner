@@ -1,6 +1,9 @@
 import unittest
 
-from scripts.v4_render import _validate_reference_retime_metadata
+from scripts.v4_render import (
+    _reference_retime_materialization_stage,
+    _validate_reference_retime_metadata,
+)
 
 
 def payload(source_stage: str, source_run_id: str, source_review_id: str):
@@ -39,6 +42,9 @@ class ReferenceRetimeSourceStageTests(unittest.TestCase):
             run, artifact, upstreams
         )
         self.assertEqual(metadata["source_run_stage"], "review_resolution")
+        self.assertEqual(
+            _reference_retime_materialization_stage(metadata), "review_resolution"
+        )
         self.assertEqual(timeline_ids, {"retimed-timeline"})
 
     def test_review_resolution_must_identify_itself_as_review_artifact(self):
@@ -59,6 +65,9 @@ class ReferenceRetimeSourceStageTests(unittest.TestCase):
             run, artifact, upstreams
         )
         self.assertEqual(metadata["source_run_stage"], "overlap_recomposition")
+        self.assertEqual(
+            _reference_retime_materialization_stage(metadata), "overlap_recomposition"
+        )
         self.assertEqual(timeline_ids, {"retimed-timeline"})
 
     def test_unknown_source_stage_fails_closed(self):
