@@ -1,48 +1,149 @@
 # 多语言字幕算法升级路线
 
-## 当前状态：v3.9
+更新：2026-09-03
 
-v3.9 在 v3.8 第一批 P0 基础上新增：
+## 当前状态
 
-- 中段剪切候选的精确复核闭环；未经 `review-audio-edits` 处理的候选阻止后续构建。
-- 普通 LRC、Enhanced LRC 和常见 QRC 词级时间解析。词级时间只辅助整行起止和映射，终稿仍为逐行 SRT。
-- 保守的连续单调分段变速映射，覆盖两段固定速度与渐变加减速；不可靠路径不自动启用。
-- 双曲首尾叠唱检测与发布阻断；仅任务级确认的两个曲目和精确区间允许新增重叠逐行 cue。
-- 多次中段剪切、短剪切、曲首裁切、文字级歌词覆盖与可复现局部覆盖。
+当前产品路径：
 
-已延续的 P0 能力：
+```text
+Standard -> Text Repair V2.1
+Smart    -> Sequence Reconciliation + Anchor Timeline Repair v1.2.10
+Pro      -> Selective Audio Repair v1.2.6
+Max      -> Full V4 Alignment 4.0.0a14
+```
 
-- 多语言 ASR 作业支持 `zh`、`en`、`ko`、`ja`、`mixed`，统一记录任务指纹、音频哈希、模型、设备、词级与片段级时间戳。
-- `validate_korean_asr.py` 保留为兼容入口；新入口为 `validate_multilingual_asr.py`。
-- 中、英、韩、日和混合语言使用不同证据阈值与边界单位。
-- 英文支持缩写与连字符归一化；中文以汉字为主要单位，可选拼音证据；韩文以音节/短词为单位；日文统一全半角、平假名与片假名。
-- 安装 `requirements-language.txt` 后可启用中文拼音和日文汉字读音。未安装日文读音层时，含汉字片段禁止自动获得高置信。
-- 所有产物绑定 schema 2.0 任务指纹，任一输入变化都会阻止复用。
-- 发布门槛要求所有风险候选归零。
+普通 canonical text/order 与 Source-to-Mix timing 已经不是主要瓶颈。正式 private calibration 当前达到：
 
-歌曲级语言是默认值，`mixed` 作业允许 ASR 自动检测。下一步应继续增加句内脚本分段，让 `ko+en`、`ja+en`、`zh+en` 的证据分别校准。
+```text
+unit_f1                   = 0.999221
+line_exact_f1             = 0.999167
+cue_text_exact_match_rate = 1.0
+boundary_mae_ms           = 17.982
+boundary_p95_ms           = 6.0
+```
 
-## P0 剩余工作：建立量化基线
+因此后续优化重点从“继续压普通 timing 毫秒误差”转向：
 
-1. 使用 `references/dataset-protocol.md` 建立按歌曲、艺人和版本隔离的 train、calibration、blind_test。
-2. 用 `scripts/evaluate_dataset.py` 测量歌词单位 F1、cue 完全匹配率、边界 MAE/P95、剪切 precision/recall、复核候选密度和运行效率。
-3. 用 calibration 集重新拟合各语言的自动、复核、拒绝阈值；当前 v3.9 阈值是保守初始值，不应被表述成已完成统计校准。
+1. 运行语义可复现；
+2. cut / overlap / same-track splice / reorder 等结构事件；
+3. review 到 production release 的自动编排；
+4. 只有在上述稳定后再做性能 A/B。
 
-## P1：提升难段自动正确率
+## P0：生产运行可复现性
 
-1. LRC 输入分类：继续识别原文、翻译、罗马音和注音，检查重复时间戳、缺行和异常跳跃；v3.9 已支持两类词级时间，但仍不能永远假定同时间戳第一行就是原文。
-2. 多特征音频映射：结合人声特征、chroma、节拍和 onset；强 click 场景降低节拍器对人声边界的影响。
-3. 可选人声分离与特征缓存，降低伴奏相似和重复副歌造成的假锚点。
-4. 多模型证据仲裁：ASR、波形、LRC 顺序和编辑器 cue 相互独立评分；证据冲突时拒绝自动发布。
-5. 剪切点模型从候选检测升级到有标注的 precision/recall 评估。
+`4.0.0a14` 已引入 task-local `v4_run_config.json`，绑定 Full V4 的：
 
-## P2：降低运行与维护成本
+```text
+profile
+language_map
+middle_cut_map
+lyric_role_map
+```
 
-1. 按混剪、SRT、LRC、原曲和模型哈希做歌曲级增量缓存。
-2. 验证“重跑一首歌不得改变其他歌曲”的确定性。
-3. 每条字幕记录证据组合和最低置信来源，而不是只给总分。
-4. 大型授权媒体使用 Git LFS 或独立私有 dataset 仓库；源码仓库只保留代码、协议和脱敏合成 fixture。
+三个 public Max run entrypoint 自动发现并验证该配置。配置内容变化、task fingerprint 不匹配、手工 CLI 参数漂移都 fail closed。
 
-## 关于 100%
+P0 后续验收目标：
 
-不能承诺所有音频都达到数学意义的 100%。重叠人声、极短发声、错误歌词源、版本不一致和不可逆混音可能没有唯一答案。可实现的成熟目标是：高比例自动正确、自动识别证据冲突、自动阻止不确定结果发布，并把剩余人工核实压缩到少量真正不可辨片段。
+- 现有代表性 private task 完成 run-config 迁移；
+- “只给 task manifest + out-dir”即可重放与既有生产语义一致的 raw Max；
+- semantic config 不再只存在于聊天、临时命令或人工记忆；
+- raw task fingerprint 与 semantic run-config identity 分层但都可审计；
+- 不把 workers/cache/resume 等执行策略误当成 semantic identity。
+
+## P1：结构事件 benchmark 与新证据
+
+当前 raw Max 普通歌词已接近 production truth，但 calibration 中结构事件仍可能保留 review，历史自动候选的 blind 泛化也未达到门槛。
+
+下一轮 benchmark 必须把结构类型单独建模：
+
+```text
+hard_cut
+same_track_splice
+cross_track_crossfade
+true_overlap
+sequential_transition
+piecewise_rate
+source_reorder
+silence_island / detached_tail
+```
+
+原则：
+
+- 真实项目仅用于 private calibration / blind；
+- public regression 使用 generic synthetic fixture；
+- case/group 在 candidate selection 前锁定；
+- fresh blind 失败后不得针对结果继续调同一 candidate threshold；
+- precision / false-auto 优先于减少 review。
+
+优先研究**正交证据**，而不是继续堆同源 retrieval score：
+
+1. 可选 editor/NLE retained-segment / edit-decision evidence；
+2. independent change-point / source-offset discontinuity evidence；
+3. word/token timing 对结构边界的独立支持；
+4. prepared stem 仅作为辅助诊断，除非新的 fresh blind 重新证明泛化。
+
+历史 prepared-stem candidate 已在 fresh blind 失败并撤回，不能因为 calibration 个例表现好就重新进入 production。
+
+## P2：生产 orchestrator
+
+当前 authority 分层是正确的，但人工需要串联：
+
+```text
+run
+-> review
+-> cut/overlap materialization
+-> reference-retime（若有独立证据）
+-> evaluation render
+-> reconciliation
+-> production materialization
+-> display policy
+-> audit
+-> release validation
+```
+
+目标不是合并这些 authority，而是提供一个单一 orchestration state machine：
+
+- 每一步仍消费/产生现有正式 artifact；
+- 遇到 review 自动停在可操作任务单；
+- review 完成后可从 exact artifact identity 继续；
+- 不允许 orchestrator 通过跳过 stage 获得 authority；
+- 最终输出唯一 production FINAL + release manifest。
+
+## P3：性能与成本
+
+功能与可复现入口稳定后，再做严格 A/B：
+
+- same machine；
+- same task / run config；
+- same workers；
+- clean cache 与 warm resume 分开；
+- wall time、decoded seconds、peak RAM、stage execution count 分开测。
+
+现有 a12 bounded mix decode 已减少长 mix 重复解码，但不能在不同 worker/cache 条件下宣称具体百分比提升。
+
+优先级仍是“普通任务尽量停在 Smart/Pro”，而不是让每个任务都进入 Max 再微优化几秒。
+
+## 多语言继续方向
+
+多语言本身不是难度标签。继续保持：
+
+- 中文、英文、韩文、日文、mixed 的 canonical normalization 与 language hint 分层；
+- Enhanced LRC/QRC word timing 能保留就保留；
+- 同 timestamp 多行无法唯一判断 original 时 fail closed；
+- `lyric_role_map` 只指定 canonical original，不自动猜 translation/romanization；
+- code-switch/mixed/unknown 的 ASR language 保持 local/auto 策略，避免错误整曲固定语言。
+
+## 项目上限
+
+只有最终 mix + source song + line-LRC + imperfect editor SRT 时，某些复杂结构在信息上可能没有唯一答案。成熟目标不是宣称“所有输入 100% 无人工”，而是：
+
+```text
+ordinary regions -> highly automatic
+hard structural regions -> small, precise review queue
+all automatic changes -> evidence + lineage
+uncertain cases -> blocked rather than silent error
+production FINAL -> exact release authority
+```
+
+如果未来可稳定获得 editor/NLE edit decisions 或可靠 word-level canonical timing，项目上限会明显提高，因为一部分当前必须反推的结构问题会变成直接事实输入。

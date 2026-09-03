@@ -1,120 +1,228 @@
-# 音乐混剪精校字幕：任务调用模板
+# 音乐混剪歌词字幕：当前任务模板
 
-## 版本与 QA
+更新：2026-09-03
+当前产品路径：`Standard -> Smart -> Pro -> Max`
+当前 Max 主线版本：`4.0.0a14`
 
-新任务默认使用算法 `v3.9`。运行前确认 `scripts/redo_karaoke_pipeline.py` 的 `ALGORITHM_VERSION` 为 `3.9`，并为任务创建 schema 2.0 的 `task_manifest.json`。
+本文件只描述当前生产入口。历史 v3.9/`redo_karaoke_pipeline.py` 仍保留用于回归与历史兼容，但不再是新任务默认生产路径。
 
-`publish_ready=true` 表示所有已知结构错误和高、中、低风险候选均已清零；它不是未经测量的绝对正确率。物理不可辨、歌词源冲突或版本不一致时，系统必须阻止发布，而不是猜测。
+## 1. 先选择模式
 
-## 每次需要准备的文件
+- **Standard**：现有剪映/Jianying timing 可信，只修 canonical 歌词文字；不读 audio，不改 cue timing。
+- **Smart**：普通生产默认主力。大部分 timing 可信，只有少量可疑 cue；优先 0-audio。
+- **Pro**：只处理 Smart unresolved 的局部区域；使用 bounded acoustic / ASR / forced evidence，不做无证据的自动 timing write-back。
+- **Max**：整体 timeline 不可信、复杂 cut/overlap/reorder、重复段身份困难，或 Smart/Pro 无法安全收敛时使用 Full V4。
 
-必须提供：
+外文、韩文、日文不是自动进入 Max 的条件。
 
-1. 混剪音频：WAV、FLAC、MP3 或 M4A。
-2. 编辑器导出的 SRT；不要先手工清洗。
-3. 歌曲清单：`分:秒 歌手 - 歌名`。
-4. 规范原语言 LRC 目录。
+## 2. 新任务需要准备的输入
 
-若有 Enhanced LRC 或 QRC 逐字/逐词时间，可一并提供。它只用于辅助校正整行起止和映射，正式 SRT 仍是逐行字幕。
+至少准备：
 
-完整波形流程还需要：
+1. 编辑器导出的 source SRT；
+2. 最终混剪音频；
+3. 歌曲清单：`分:秒 歌手 - 歌名`；
+4. canonical lyrics 目录；
+5. Max/Pro 需要 acoustic evidence 时提供对应原曲/source audio。
 
-5. 每首原曲音频，版本尽量与混剪一致。
+可选但有价值：
 
-强烈建议：
+- BPM / exact stretch ratio；
+- Enhanced LRC / QRC word timing；
+- 已知语言信息；
+- 已知 middle cut、特殊版本、旁白、口播；
+- QA 已证明的 detached export tail `mix_content_extent.json`；
+- 已确认的语言、middle-cut、同时间戳 lyric-role 等任务级语义配置。
 
-6. BPM 变化清单。
-7. 每首歌或片段的语言：`zh`、`en`、`ko`、`ja`、`mixed`。
-8. 已知剪切、旁白、口播、版本差异和项目帧率。
-9. 同一输入版本的既有覆盖、回归案例或终稿。
+不要预先生成 ASR JSON、timeline artifact、audit 或 QA；这些由流程产生。
 
-不需要预先准备 ASR JSON、对齐 JSON、审计 CSV 或 QA JSON；这些由流程生成。
+## 3. 初始化任务
 
-## 初始化
+建议目录：
 
-先把输入放入 `private/<任务名>/input/`，然后运行：
+```text
+private/<任务>/
+├─ input/
+│  ├─ source.srt
+│  ├─ mix.wav
+│  ├─ songs.txt
+│  ├─ bpm.txt                 # optional
+│  ├─ lyrics/
+│  ├─ source-audio/           # Pro/Max acoustic path
+│  └─ mix_content_extent.json # optional, QA-proven only
+└─ qa/
+```
+
+初始化：
 
 ```powershell
 python scripts/init_task.py `
-  --task "任务名" `
-  --source-srt "private/任务名/input/source.srt" `
-  --audio "private/任务名/input/mix.wav" `
-  --song-list "private/任务名/input/songs.txt" `
-  --lyrics-dir "private/任务名/input/lyrics" `
-  --bpm-changes "private/任务名/input/bpm.txt" `
-  --source-audio-dir "private/任务名/input/source-audio"
+  --task "<任务>" `
+  --source-srt "private/<任务>/input/source.srt" `
+  --audio "private/<任务>/input/mix.wav" `
+  --song-list "private/<任务>/input/songs.txt" `
+  --lyrics-dir "private/<任务>/input/lyrics" `
+  --bpm-changes "private/<任务>/input/bpm.txt" `
+  --source-audio-dir "private/<任务>/input/source-audio"
 ```
 
-可选项不存在时不要传。若 QA 已证明主节目结束后存在 detached export tail，可另外提供 fingerprint-bound 的 `--mix-content-extent "private/任务名/input/mix_content_extent.json"`；该 JSON 只允许缩短自动 `content_end`，必须绑定同一 mix audio SHA，并保留原始音频文件/物理时长。
+不存在的可选参数不要传。
 
-之后所有生产命令都传同一个：
+`init_task.py` 会创建并绑定：
 
 ```text
---task-manifest private/<任务名>/qa/task_manifest.json
+private/<任务>/qa/task_manifest.json
+private/<任务>/qa/v4_run_config.json
+private/<任务>/qa/<任务>_manual_overrides.json
+private/<任务>/qa/<任务>_regression_cases.json
 ```
 
-旧 QA 必须运行 `scripts/migrate_task.py`；不要手工添加几个字段冒充迁移，也不要让生产命令接受 legacy 文件。
+`task_manifest.json` 绑定原始任务输入；`v4_run_config.json` 单独绑定会改变 Full V4 语义但可能后补的配置文件。两者职责不能混淆。
 
-## 输入格式
+## 4. Max 语义配置：不要再靠命令行记忆
 
-歌曲清单：
+`4.0.0a14` 起，任务级：
 
 ```text
-00:00 Artist A - Song A
-02:56 Artist B - Song B
-05:52 Artist C - Song C
+private/<任务>/qa/v4_run_config.json
 ```
 
-BPM 清单：
+绑定以下可选语义输入：
 
 ```text
-Artist A - Song A 126-130 -
-Artist B - Song B 120-130 -
+profile
+language_map
+middle_cut_map
+lyric_role_map
 ```
 
-第一个数字为原曲 BPM，第二个为混剪 BPM。不确定时留空，不要猜。
+新任务可在 `init_task.py` 初始化时直接提供：
 
-ASR 作业：
-
-```json
-{
-  "schema_version": "1.0",
-  "jobs": [
-    {
-      "id": "opaque-window-id",
-      "track": "Song A",
-      "start": 12.0,
-      "end": 25.0,
-      "language": "mixed",
-      "language_mode": "detect"
-    }
-  ]
-}
+```powershell
+python scripts/init_task.py ... `
+  --language-map "private/<任务>/qa/language_map.json" `
+  --middle-cut-map "private/<任务>/qa/middle_cut_map.json" `
+  --lyric-role-map "private/<任务>/qa/lyric_role_map.json"
 ```
 
-## 复用边界
+旧任务或后续新增/调整语义配置时，使用：
 
-- 可跨任务复用：v3.9 通用程序、语言 profile、QA 规则、同版本规范 LRC 和原曲。
-- 中段剪切候选必须经 `review-audio-edits` 写入 reviewed alignment 后才能继续。
-- 两首歌交接候选先用 `_cross_track_overlap_reviews` 确认或拒绝；确有叠唱时分别保留两条逐行字幕，并用 `_confirmed_overlap_intervals` 限定允许的重叠范围，不得自动拼成一行。
-- 只能在完整任务指纹一致时复用：cue 覆盖、毫秒边界、确认剪切、确认遗漏和回归案例。
-- 新混剪即使歌单相同，也必须重新计算波形映射。
-- 用户或模型确认的新结论必须写回任务级 QA，不得只留在对话记录。
-- 重跑一首歌不得改变其他歌曲；应以回归案例和数据集指标验证。
+```powershell
+python scripts/init_v4_run_config.py `
+  --task-manifest "private/<任务>/qa/task_manifest.json" `
+  --language-map "private/<任务>/qa/language_map.json" `
+  --lyric-role-map "private/<任务>/qa/lyric_role_map.json" `
+  --replace
+```
 
-## 多语言边界
+`--replace` 只用于有意识的整份配置迁移。已有配置与新输入不同但未显式 `--replace` 时必须失败；使用它时，未再次指定的语义项会变为 `null`，所以需要把仍要保留的语义项一并写出。
 
-- 英文按词、缩写和连字符单位检查。
-- 中文按汉字，拼音只作为可选辅助证据。
-- 韩文按音节或短词，并可结合罗马音与 ASR。
-- 日文统一假名；含汉字时需要读音层。缺少 `pykakasi` 时不得自动标高置信。
-- 混合语言用 `mixed`，并保守提高自动阈值。
+只要 `v4_run_config.json` 存在，三个 public Max run entrypoint 会自动发现、校验并使用它。调用者不需要、也不应该继续手抄四个语义 CLI 参数。若仍显式传入，路径必须与配置完全一致；配置记录 `null` 时临时塞入新 map 也会 fail closed。
 
-## 交付标准
+该 config 记录自己的 `run_config_fingerprint_sha256`；正式 asset artifact 仍记录实际 `profile/language/middle-cut/lyric-role` SHA，所以生产 lineage 继续由真实语义文件身份而非调用者记忆决定。
 
-- `<任务名>_FINAL.srt`：唯一正式字幕。
-- `<任务名>_FINAL_QA.json`：机器验收结果。
-- `<任务名>_FINAL_审计.csv`：逐 cue 来源和证据。
-- `issues=[]`、`passed=true`、`fully_reviewed=true`、`publish_ready=true`、`review_candidate_count=0`。
+## 5. 日常生产入口
 
-授权真实数据可用于私有训练、阈值校准和盲测。按 `references/dataset-protocol.md` 划分数据，不把大量未配对歌词文本误当成边界训练集，也不把原始素材提交到普通源码树。
+### Standard
+
+```powershell
+python scripts/v4_text_repair.py ...
+```
+
+冻结 cue count / number / start / end，只修 canonical text/order。
+
+### Smart
+
+```powershell
+python scripts/v4_smart_repair.py ...
+```
+
+当前 Smart 为 v1.2.10。普通“大部分时间轴正确”的任务应先走这里。
+
+### Pro
+
+```powershell
+python scripts/v4_pro_selective.py ...
+```
+
+当前 Pro 为 v1.2.6，只处理 Smart unresolved 的 bounded regions。
+
+### Max
+
+```powershell
+python scripts/v4_run.py `
+  --task-manifest "private/<任务>/qa/task_manifest.json" `
+  --out-dir "output/<任务>/v4" `
+  --git-commit "<当前 clean HEAD>"
+```
+
+默认 workers=2；`--workers 1..4` 只影响执行调度，不属于语义配置。`--no-resume` 也只是执行策略，不改变 production truth。
+
+若任务有 `v4_run_config.json`，上述最简命令会自动携带正确 semantic config。
+
+## 6. Max 后处理与正式发布
+
+Raw Max 的 `review_required` 是正常的 fail-closed 状态。需要按实际问题依次闭合：
+
+```text
+v4_run
+-> review
+-> cut / overlap materialization（如有）
+-> reference-retime（仅有独立证据时）
+-> canonical evaluation render
+-> editor-cue reconciliation
+-> production materialization
+-> optional display policy
+-> final candidate audit
+-> release validation
+```
+
+`ready_for_render` 不等于 `publish_ready`。
+
+正式 FINAL 至少要求：
+
+```text
+passed = true
+structurally_valid = true
+fully_reviewed = true
+publish_ready = true
+review_candidate_count = 0
+segmentation_authority = editor_reconciled
+release_blocked_reason = ""
+```
+
+并由 `v4_validate_release.py` 验证唯一 hash-bound final-render artifact 的 config/evidence/QA authority 三层一致。
+
+## 7. 多语言与 lyric-role
+
+Canonical lyric 永远是最终文字/顺序 truth；同 timestamp 多行不能靠“第一行”猜 original。
+
+无法唯一确认时：
+
+1. 优先换成干净 canonical LRC；
+2. 必须保留多行时使用任务级 `lyric_role_map.json`；
+3. 把该 map 写入 `v4_run_config.json`；
+4. 不降低 role threshold，不把真实歌曲特例写入通用代码。
+
+详见 `references/v4-lyric-role-overrides.md`。
+
+## 8. 重跑与复用边界
+
+- 新 mix 即使歌单相同，也必须重新建立任务指纹与 acoustic mapping；
+- 原始任务输入变化后，旧 manifest/QA 不得继续复用；
+- semantic config 文件内容变化后，旧 `v4_run_config.json` 必须拒绝运行，需有意识迁移；
+- cache/resume 只能在 task、algorithm、git、runtime、upstream identity 都满足契约时复用；
+- 真实人工/模型结论必须写回 task-local QA/config，不得只留在聊天记录；
+- 不允许为了“通过”直接编辑 artifact 或降低 fail-closed threshold。
+
+## 9. 交付判断
+
+生产结果的目标不是声称数学意义 100%，而是：自动部分有证据、不可证明部分明确 review、最终 release 不存在已知 silent blocker。
+
+当前权威说明：
+
+- `references/production-requirements.md`
+- `references/v4-status.md`
+- `references/v4-runtime-guide.md`
+- `references/v4-cli-contract.md`
+- `references/v4-change-record.md`

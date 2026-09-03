@@ -34,6 +34,9 @@ all output paths are pairwise distinct
 - direct optimized entrypoint 必须在 `cache/`、verified-input session、stage directory 创建前检查；
 - direct legacy entrypoint 必须在 stage directories 创建前检查；
 - task manifest、所有 manifest-bound input roots/subtrees，以及显式 `--profile`、`--language-map`、`--middle-cut-map`、`--lyric-role-map` 都属于 protected inputs；
+- `4.0.0a14` 起，若 task-local `qa/v4_run_config.json` 存在，三个 public run entrypoint 必须在任何 output mutation 前自动发现并验证它；该 config 自身也属于 direct protected input；
+- run config 绑定 exact task fingerprint，并记录 `profile/language_map/middle_cut_map/lyric_role_map` 的 path/size/SHA；缺失 semantic CLI 由 wrapper 自动展开，显式 CLI 与 config 不一致、绑定文件变化或 config-null 角色被临时填入时 fail closed；
+- wrapper-only `--run-config` 只用于 preflight/auto-expansion，ownership gate 完成后必须从 argv 移除，再进入原 production parser；不存在 run config 的 legacy task 保持旧显式 flag 兼容；
 - output tree 位于任一 protected input 内，或 output tree 反向包含 protected input，都必须 fail closed。
 
 Legacy/optimized 原 orchestration implementation 以 blob-identical `_v4_run_*_impl.txt` internal source resource 保存，由安全 public wrapper 在 preflight 后加载。internal resource 不是受支持 CLI，也不得作为绕过 preflight 的第二入口。该拆分不改变 orchestration algorithm、monkey-patch compatibility、readiness 或 release authority。
@@ -165,6 +168,7 @@ Release/evaluation authority 不能依赖 Python 的宽松强制转换。
 - output 指向 task input directory 下一个尚不存在的新文件时同样被拒绝；
 - run/materializer output tree 不能包住 direct/lineage input，也不能位于 task input subtree；
 - canonical / optimized / legacy 三个 run entrypoint 的 unsafe output collision 必须在任何 output directory、lock、cache/session 或 stage write 前失败；
+- task-local run config 必须自动展开已绑定 semantic inputs；文件内容变更、task mismatch、CLI/config drift 与 config-null 临时注入必须在 output write 前失败；
 - resolve/coarse/fine/transition direct CLI 的 unsafe output collision 必须在 stage artifact 写入前失败；
 - coarse feature-cache tree 不能进入或反向包含 task/upstream inputs；
 - primary-stage `--out` 与 `--artifact-out` 必须 pairwise distinct；

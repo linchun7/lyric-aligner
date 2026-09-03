@@ -77,7 +77,7 @@ LRC line break != subtitle cue boundary authority
 python scripts/v4_smart_repair.py ...
 ```
 
-Smart v1.2.5 仍然不读音频。它从 Standard/Text Repair V2.1 的安全文字结果开始；v1.2.4 的全部 timing 行为保持冻结，v1.2.5 只在最终 timing decisions 已确定后增加 A-bounded text-only recovery：
+Smart v1.2.10 仍然不读音频。它从 Standard/Text Repair V2.1 的安全文字结果开始，并通过版本化 wrapper 累积 A-bounded text recovery、actionable-review 修正、CJK cast proof 与 split-line guard；当前 selector 只通过 `smart_current` facade 暴露：
 
 ```text
 shared canonical parser conservative role/metadata filtering
@@ -409,7 +409,7 @@ references/v4-change-record.md
 20. 所有实质性更新必须同步 owning docs；CI 不通过不得合并。
 21. Runtime snapshot / doctor / family evaluator 都是可复现与诊断层，不改变 timing authority；没有独立 blind-test 结果不得把 auxiliary family 提升为自动 timing/release authority。
 22. **Standard/Text Repair V2.1 只在时间轴明确冻结时使用。** 它可处理错字、漏字、多字以及 bounded 1↔N / N↔1 / N↔N 断句差异；任何情况下都不得改变 cue 数、编号或 timing。
-23. **Smart v1.2.5 是普通“多数 timing 正确、少数 timing 可疑”任务的默认入口。** 不得把原曲 LRC/source absolute time 直接覆盖到 edited mix；必须经 rate/anchor model；A-bounded 只在 v1.2.4 final timing 冻结后做 text-only recovery。
+23. **当前 Smart v1.2.10 是普通“多数 timing 正确、少数 timing 可疑”任务的默认入口。** 不得把原曲 LRC/source absolute time 直接覆盖到 edited mix；必须经 rate/anchor model；A-bounded 仍只在基础 timing plan 冻结后做 text-only recovery，后续版本化 wrapper 不得重新建立 timing authority。
 24. **Pro 只能处理当前 Smart unresolved 的 bounded regions。** 不得无理由重扫已被 Smart 验证的正常 cue；当前仍不得自动 timing writeback。
 25. **永远不覆盖原始输入。** Standard/Smart/Pro/Max 都写独立 outputs/artifacts；Smart/Pro CLI 的路径碰撞必须 fail closed。
 26. **Higher mode 必须保持能力单调性。** 没有更强独立证据时，不得退化 lower-mode 已安全成立的 text、cue ownership/display segmentation 或 timing。
@@ -556,6 +556,8 @@ python scripts/v4_doctor.py ... --require lineage
 ```
 
 新任务没有任何 formal artifact 时，doctor 的 lineage requirement 可等第一个 run artifact 生成后再启用；中断恢复或已有产物时必须优先验证现有 payload/artifact lineage。具体配对参数见 `references/v4-runtime-guide.md`。
+
+`4.0.0a14` 起，新任务同时拥有 task-local `qa/v4_run_config.json`，用于绑定 `profile / language_map / middle_cut_map / lyric_role_map`。只要该文件存在，三个 public Max run entrypoint 会在任何 output mutation 前自动发现、验证并展开这些语义输入；不要再依赖人工记住对应 CLI flags。旧任务用 `scripts/init_v4_run_config.py` 显式迁移，语义变化必须 `--replace`。workers/resume/out-dir 不属于 semantic config。
 
 ### 5. Max Reconstruction / Review / Materialization / Evidence / Render
 

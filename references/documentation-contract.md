@@ -147,3 +147,19 @@ subtitle segmentation authority
 - 为证明安全修复没有混入算法变化，可以把原 implementation 以 blob-identical internal source resource 保存，但该 resource 不能成为绕过 public preflight 的第二个支持入口。
 
 该 filesystem ownership contract 不授予新的 timing、text、review、segmentation 或 release authority；它只保证通过 task fingerprint / upstream lineage 验证后的证据不会被后续 writer 自己污染。具体 CLI 级不变量与 regression 见 `references/v4-cli-contract.md`。
+
+## 9. Task-local semantic run configuration contract（2026-09-03）
+
+Raw task fingerprint 与后补 semantic run configuration 必须分层记录。`task_manifest.json` 继续绑定原始任务输入；`qa/v4_run_config.json` 绑定 `profile / language_map / middle_cut_map / lyric_role_map` 等会改变 Full V4 asset-resolution 语义、但可能在任务初始化后才确认的文件。
+
+当前 contract：
+
+- run config 必须绑定 exact task fingerprint，并记录每个非空 semantic input 的 repository-relative path、size、SHA-256；
+- config 自身使用独立 deterministic `run_config_fingerprint_sha256`，不能靠文件名代表语义身份；
+- 新任务默认生成 run config；旧任务迁移语义变化必须显式确认，不允许重复 init 暗中改配置；
+- public Max run entrypoint 必须在任何 output mutation 前自动发现/验证 task-local config；显式 CLI 与 config 漂移、配置文件内容变化或 task identity 不一致均 fail closed；
+- run config 自身属于 protected input，不能被 output tree 覆盖；
+- workers、resume、out-dir 等执行策略不进入 semantic config；
+- formal asset artifact 仍必须记录实际 profile/map SHA，run config 不能替代 downstream production lineage。
+
+任何新增/删除 semantic role、修改 run-config schema、改变自动发现/迁移行为，均属于 D 类 schema/contract 变化，必须同步 `v4-change-record`、`v4-status` 和 implementation/workflow owner 文档。

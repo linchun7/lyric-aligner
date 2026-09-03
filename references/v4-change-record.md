@@ -24,6 +24,14 @@ ASR / forced -> auxiliary acoustic evidence
 
 ---
 
+## 2026-09-03 — Max a14 task-local semantic run configuration
+
+真实回归验收暴露出一个与 alignment threshold 无关的可复现性缺口：旧任务的 `language_map / middle_cut_map / lyric_role_map / profile` 虽然会被 asset artifact 分别记录 SHA，但调用者仍可能在另一次 `v4_run.py` 中漏传某个 CLI 参数，从而让“同一 task manifest”在没有显式迁移动作的情况下进入不同 asset-resolution 语义。典型表现是已固定语言的任务因漏传 map 回到 `auto`，或更严格的同时间戳 lyric-role preflight 因漏传 role map 重新 BLOCK。
+
+`4.0.0a14` 新增 task-local `qa/v4_run_config.json`（schema `v4-run-config-1.0`），与 raw-input `task_manifest.json` 分层。它绑定 exact task fingerprint，并记录 `profile / language_map / middle_cut_map / lyric_role_map` 每个非空文件的 repository-relative path、size 与 SHA-256，同时计算独立 `run_config_fingerprint_sha256`。`init_task.py` 默认创建该配置；旧任务可用 `scripts/init_v4_run_config.py` 建立/迁移，已有语义变化必须显式 `--replace`。
+
+canonical `v4_run.py`、direct optimized、direct legacy 三个 public run entrypoint 都会在第一次 output mutation 前自动发现并验证 task-local config，再把缺失 semantic flags 展开给原 production parser。显式 CLI 与 config 漂移、绑定文件变更、task fingerprint 不匹配、config 为 null 却临时增加新语义输入全部 fail closed；没有 run config 的 legacy task 保持旧 CLI 兼容。run config 本身也进入 output-tree protected inputs。该变更不修改 TrackAsset 选择算法、coarse/Fine/TimeWarp、transition/review/release threshold；正式 asset artifact 仍以实际 semantic file SHA 记录 lineage。
+
 ## 2026-09-03 — Max a13 explicit detached-tail content extent closeout
 
 走路带风120真实任务暴露出自动 trailing-zero content extent 的边界：主节目在 `2727.582s` 结束，随后连续 `279.594s` 为逐样本 exact digital zero，但文件在 `3007.176s` 后又包含约 `6.526s` 的孤立音频残片。因为物理文件末端并非完整 trailing zero，旧自动规则必须保守保留整个容器，进而把最后 occurrence 错误扩到 50 分钟附近并在空白区产生 coarse disconnect。

@@ -32,6 +32,8 @@ v4 默认采用 fail-closed 原则：同一 LRC 时间戳如果存在多条歌�
 private/<任务>/qa/lyric_role_map.json
 ```
 
+`4.0.0a14` 起，Full V4 生产运行还应把该文件绑定进同目录的 `v4_run_config.json`。新任务可直接用 `init_task.py --lyric-role-map ...`；旧任务使用 `scripts/init_v4_run_config.py --task-manifest ... --lyric-role-map ... --replace` 做有意识迁移。只要 run config 存在，`v4_run.py` 会自动展开该 map，不再依赖调用者每次手写 `--lyric-role-map`。
+
 格式：
 
 ```json

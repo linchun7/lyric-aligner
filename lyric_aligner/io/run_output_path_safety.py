@@ -17,12 +17,14 @@ class RunOutputPathSafetyError(ValueError):
 _PATH_FLAGS = (
     "--task-manifest",
     "--out-dir",
+    "--run-config",
     "--profile",
     "--language-map",
     "--middle-cut-map",
     "--lyric-role-map",
 )
 _DIRECT_INPUT_FLAGS = (
+    "--run-config",
     "--profile",
     "--language-map",
     "--middle-cut-map",

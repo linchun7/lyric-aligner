@@ -91,6 +91,17 @@ class TaskInitializationTests(unittest.TestCase):
             )
             self.assertTrue((root / "private/sample-task/input").is_dir())
             self.assertTrue((root / "output/sample-task").is_dir())
+            run_config = json.loads(
+                Path(result["v4_run_config"]).read_text(encoding="utf-8")
+            )
+            self.assertEqual(run_config["schema_version"], "v4-run-config-1.0")
+            self.assertEqual(
+                run_config["task_fingerprint_sha256"],
+                manifest["task_fingerprint_sha256"],
+            )
+            self.assertTrue(
+                all(value is None for value in run_config["semantic_inputs"].values())
+            )
             self.assertEqual(manifest["schema_version"], TASK_SCHEMA_VERSION)
             self.assertEqual(
                 manifest["inputs"]["source_srt"]["sha256"],
@@ -116,6 +127,29 @@ class TaskInitializationTests(unittest.TestCase):
 
             preserved = json.loads(overrides_path.read_text(encoding="utf-8"))
             self.assertTrue(preserved["preserve"])
+
+    def test_init_task_preserves_existing_semantic_run_config_when_not_repeated(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            paths = create_task_inputs(root)
+            language_map = root / "private/sample-task/qa/language_map.json"
+            language_map.parent.mkdir(parents=True, exist_ok=True)
+            language_map.write_text('{"synthetic track":"en"}\n', encoding="utf-8")
+            first = init_task(
+                root,
+                "sample-task",
+                **paths,
+                language_map=language_map,
+            )
+            second = init_task(root, "sample-task", **paths)
+            self.assertEqual(
+                first["run_config_fingerprint_sha256"],
+                second["run_config_fingerprint_sha256"],
+            )
+            config = json.loads(
+                Path(second["v4_run_config"]).read_text(encoding="utf-8")
+            )
+            self.assertIsNotNone(config["semantic_inputs"]["language_map"])
 
     def test_any_input_change_rejects_task_reuse(self):
         roles = ("source_srt", "audio", "song_list", "bpm_changes")

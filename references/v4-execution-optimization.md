@@ -2,6 +2,12 @@
 
 This document describes execution-cost optimizations around the authoritative V4 production chain. They do **not** change canonical-text authority, Source-to-Mix timing authority, calibration thresholds, cut/overlap decisions, review policy, timeline semantics, or release gates.
 
+## 0. Semantic run configuration is not an execution optimization
+
+`4.0.0a14` adds task-local `qa/v4_run_config.json` for `profile / language_map / middle_cut_map / lyric_role_map`. Public Max wrappers validate and expand that semantic configuration **before** resume/worker optimization and before output-tree mutation. It is not a cache hint: a bound semantic file that changed content, a task fingerprint mismatch, or CLI/config drift is a hard configuration error rather than a resume miss.
+
+`workers / no-resume / out-dir` remain execution-only controls and are deliberately excluded from the semantic run config. Formal TrackAsset artifacts continue to record the actual semantic-file SHA identities consumed by asset resolution.
+
 ## 1. Safe artifact resume
 
 `python scripts/v4_run.py ...` may reuse existing **coarse**, **fine**, and **transition** stage artifacts only when `--git-commit` is supplied and all reuse checks pass.

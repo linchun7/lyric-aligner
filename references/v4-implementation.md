@@ -59,7 +59,7 @@ Text Repair V2 负责 lexical-first 主文本匹配，包括 bounded 1↔N / N�
 
 严重 ASR 乱码如果 lexical evidence 不够，会进入 review；Smart 可以用独立 sequence/timing/BPM-validated text evidence继续处理，但不得通过降低 Text Repair threshold 来制造更多 false auto。
 
-## 3. Smart / Sequence Reconciliation + Anchor Timeline Repair v1.2.4
+## 3. Smart / Sequence Reconciliation + Anchor Timeline Repair v1.2.10
 
 核心文件：
 
@@ -390,7 +390,7 @@ text_unmapped_review_count
 
 `io/path_safety.py::validate_separate_artifact_paths()` 继续在任何 artifact write 前拒绝 output-input / output-output 路径碰撞。
 
-## 4. Pro / Selective Audio Repair v1.1.1
+## 4. Pro / Selective Audio Repair v1.2.6
 
 Pro 仍是 staged evidence path：
 
@@ -412,7 +412,7 @@ smart_report.schema_version == SMART_SCHEMA_VERSION
 smart_report.policy_id      == SMART_POLICY_ID
 ```
 
-当前 policy 为 v1.2.4；旧 policy report 自动 stale，必须重跑 Smart。
+当前 policy 为 v1.2.10（由 `lyric_aligner.timeline.smart_current` 稳定 facade 选择）；旧 policy report 自动 stale，必须重跑 Smart。
 
 ### 4.2 Reason-aware routing
 
@@ -436,6 +436,16 @@ Pro 只能处理 Smart 明确 unresolved 的 cue；因此 Smart false-ready 不�
 Max 保留 coarse/Fine/cut/transition/overlap/ASR/forced/P9 等完整能力，只处理 broad untrusted timeline 与复杂 source identity。
 
 Max 也必须遵守 segmentation authority：line-LRC 本身不能强迫 final subtitle cue boundary；推翻可信 editor segmentation 需要更强 word/token/audio evidence。
+
+### 5.0 Task-local semantic run configuration
+
+`lyric_aligner/contracts/run_config.py` 负责 `v4-run-config-1.0`。raw `task_manifest.json` 继续只绑定原始任务输入；run config 绑定后补 semantic config：`profile / language_map / middle_cut_map / lyric_role_map`。每个非空角色记录 repository-relative path、size、SHA-256，config 本身绑定 task fingerprint 并生成 deterministic `run_config_fingerprint_sha256`。
+
+`init_task.py` 默认创建 all-null 或指定语义输入的 config；`init_v4_run_config.py` 用于旧任务/后续迁移。已有 config 与新语义不同必须显式 `--replace`，避免“重复运行初始化命令”暗中改变 production semantics。
+
+三个 public Max run wrapper 在进入 output lock/cache/stage write 前运行 `expand_run_config_argv()`，把 config 中非空角色自动展开为原生产 parser 已支持的 flags；wrapper-only `--run-config` 同时进入 output-tree protected inputs，完成 preflight 后由 `strip_run_config_control_argv()` 移除。原 optimized/legacy implementation blob 不需要理解新的 control file。不存在 config 时保留历史显式 flags 行为。
+
+该层不新增 timing/text authority。TrackAsset artifact 仍记录实际 profile/map SHA，因此两个 path 不同但内容/角色相同的 config 在 production evidence 上仍由实际 semantic content 身份决定。
 
 ### 5.1 Canonical role preflight contract
 

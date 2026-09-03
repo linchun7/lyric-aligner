@@ -1,7 +1,7 @@
 # Lyric Aligner v4 生产运行手册
 
 更新：2026-09-03
-主线算法版本：`4.0.0a13`
+主线算法版本：`4.0.0a14`
 
 > 真实生产 workload 与产品设计基线见 `references/production-requirements.md`；Smart / Pro v1.1 设计细节见 `references/smart-pro-v1-1.md`。
 
@@ -272,6 +272,19 @@ Smart 继续 `Affine first`。同一首歌出现少量多 rate 时，先表现�
 ## 6. Max
 
 Smart/Pro 解决不了、或整体 timeline 本来就不可信时再运行完整 Source-to-Mix 主链。Max 不再是普通 timing 修复默认入口。
+
+`4.0.0a14` 起，`init_task.py` 会创建 `private/<任务>/qa/v4_run_config.json`。该文件单独绑定可后补的 `profile / language_map / middle_cut_map / lyric_role_map`，并绑定 exact task fingerprint 与每个非空配置文件的 size/SHA。旧任务可用 `scripts/init_v4_run_config.py` 建立或有意识 `--replace` 迁移配置；`--replace` 是整份配置替换，未再次指定的语义项会变为 `null`。
+
+日常 Max 调用因此只需要：
+
+```powershell
+python scripts/v4_run.py `
+  --task-manifest "private/<任务>/qa/task_manifest.json" `
+  --out-dir "output/<任务>/v4" `
+  --git-commit "<current-clean-HEAD>"
+```
+
+若 sibling `v4_run_config.json` 存在，canonical/optimized/legacy 三个 public run entrypoint 都会在任何 output 写入前自动发现、验证并展开对应 semantic flags。显式 CLI 与 config 不一致、绑定文件内容变化、task fingerprint 不匹配或 config 记录 null 却临时注入新 map 都会 fail closed。不存在 config 的 legacy task 保留旧显式 flags 兼容。workers/no-resume/out-dir 不属于 semantic config。
 
 正式 `scripts/v4_run.py` 会按职责调用 coarse CLI：primary occurrence 使用默认 `--purpose primary_timewarp`；shared-boundary 双侧 activity probe 使用 `--purpose transition_activity`。后者只产出完整 retrieval windows，不产出 Source-to-Mix mapping；不要把 `NOT_REQUESTED` 的 transition coarse artifact 手工接到 Fine 或 timeline projection。purpose 已进入 artifact fingerprint，恢复运行时不得跨 purpose 复用。
 

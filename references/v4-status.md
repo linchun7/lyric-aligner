@@ -1,7 +1,7 @@
 # Lyric Aligner v4 当前实施状态
 
 更新日期：2026-09-03
-主线算法版本：`4.0.0a13`
+主线算法版本：`4.0.0a14`
 
 > PR #70 前的完整状态说明已无损归档到 `references/archive/2026-08-22-pre-max-authority-v4-status.md`。P3 前状态见 `references/archive/2026-08-19-pre-p3-v4-status.md`。生产基线见 `references/production-requirements.md`；Smart / Pro 细节见 `references/smart-pro-v1-1.md`。
 
@@ -70,6 +70,14 @@ Acoustic schema 1.4 同时审计 slope 与 source-start 搜索边界；命中/�
 ## 5. Max — Full V4 Alignment
 
 Max 是 heavy fallback，用于整体 timeline/mapping 不可信、复杂 cut/overlap/reorder 或 Smart/Pro 无法安全收敛的任务。当前 primary chain 包括 TrackAsset、coarse/Fine/TimeWarp、canonical projection、transition/cut/overlap/review 等完整 reconstruction evidence。
+
+### 5.0 a14 task-local semantic run config
+
+`4.0.0a14` 起，新任务由 `init_task.py` 同时创建 `qa/v4_run_config.json`。它不替代 raw-input `task_manifest.json`，而是单独绑定后补且会改变 Max asset-resolution 语义的 `profile / language_map / middle_cut_map / lyric_role_map`。config 自身绑定 exact task fingerprint，并为每个非空语义文件记录 repository-relative path、size 与 SHA-256，再生成独立 `run_config_fingerprint_sha256`。
+
+`v4_run.py`、direct optimized 与 direct legacy 三个 public run entrypoint 都会在第一次 output mutation 前自动发现 task-local config、验证 task/file identity，并把缺失的语义参数展开到既有 production parser。调用者显式参数与 config 路径不一致、config 记录 null 却临时塞入新 map、被绑定文件内容变化或 config 绑定了另一 task 时全部 fail closed。不存在 config 的 legacy task 保持原显式 CLI 兼容；旧任务可用 `scripts/init_v4_run_config.py` 有意识迁移，语义变化必须显式 `--replace`。
+
+该层解决“同一 task 因调用者漏传 language/role map 而得到不同 raw run”的可复现性问题，不修改 Source-to-Mix、Fine、transition、review 或 release threshold。正式 asset artifact 继续记录实际 profile/map SHA，因此 production lineage 仍由真实语义输入身份约束；workers/resume/out-dir/git metadata 属于执行策略，不进入 run config。
 
 ### 5.1 Primary coarse terminal coverage
 

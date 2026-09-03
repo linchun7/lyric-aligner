@@ -5,7 +5,12 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
 from task_contract import (
     build_task_manifest,
@@ -13,6 +18,12 @@ from task_contract import (
     qa_metadata,
     validate_qa_artifact,
     write_json_atomic,
+)
+from lyric_aligner.contracts.run_config import (
+    RUN_CONFIG_FILENAME,
+    build_run_config,
+    load_run_config,
+    write_run_config_atomic,
 )
 
 
@@ -74,6 +85,10 @@ def init_task(
     bpm_changes: Path | None = None,
     source_audio_dir: Path | None = None,
     mix_content_extent: Path | None = None,
+    profile: Path | None = None,
+    language_map: Path | None = None,
+    middle_cut_map: Path | None = None,
+    lyric_role_map: Path | None = None,
 ) -> dict[str, str]:
     name = task_name(name)
     if source_srt.suffix.lower() != ".srt":
@@ -107,6 +122,46 @@ def init_task(
     else:
         write_json_atomic(manifest_path, manifest)
 
+    run_config_path = qa_root / RUN_CONFIG_FILENAME
+    semantic_config_supplied = any(
+        value is not None
+        for value in (profile, language_map, middle_cut_map, lyric_role_map)
+    )
+    if run_config_path.exists():
+        existing_run_config = load_run_config(
+            run_config_path,
+            repository_root=root,
+            expected_task_fingerprint_sha256=str(manifest["task_fingerprint_sha256"]),
+        )
+        if semantic_config_supplied:
+            desired_run_config = build_run_config(
+                root,
+                str(manifest["task_fingerprint_sha256"]),
+                profile=profile,
+                language_map=language_map,
+                middle_cut_map=middle_cut_map,
+                lyric_role_map=lyric_role_map,
+            )
+            if (
+                existing_run_config["run_config_fingerprint_sha256"]
+                != desired_run_config["run_config_fingerprint_sha256"]
+            ):
+                raise ValueError(
+                    "existing v4_run_config.json belongs to different semantic inputs; "
+                    "use scripts/init_v4_run_config.py --replace for an intentional config migration"
+                )
+        effective_run_config = existing_run_config
+    else:
+        effective_run_config = build_run_config(
+            root,
+            str(manifest["task_fingerprint_sha256"]),
+            profile=profile,
+            language_map=language_map,
+            middle_cut_map=middle_cut_map,
+            lyric_role_map=lyric_role_map,
+        )
+        write_run_config_atomic(run_config_path, effective_run_config)
+
     overrides_path = qa_root / f"{name}_manual_overrides.json"
     regression_path = qa_root / f"{name}_regression_cases.json"
     validate_existing_qa(overrides_path, manifest, "manual_overrides")
@@ -139,6 +194,10 @@ def init_task(
         "output": str(output_root),
         "task_manifest": str(manifest_path),
         "task_fingerprint_sha256": str(manifest["task_fingerprint_sha256"]),
+        "v4_run_config": str(run_config_path),
+        "run_config_fingerprint_sha256": str(
+            effective_run_config["run_config_fingerprint_sha256"]
+        ),
         "source_srt_sha256": str(manifest["inputs"]["source_srt"]["sha256"]),
         "manual_overrides": str(overrides_path),
         "regression_cases": str(regression_path),
@@ -155,6 +214,10 @@ def main() -> int:
     parser.add_argument("--bpm-changes", type=Path)
     parser.add_argument("--source-audio-dir", type=Path)
     parser.add_argument("--mix-content-extent", type=Path)
+    parser.add_argument("--profile", type=Path)
+    parser.add_argument("--language-map", type=Path)
+    parser.add_argument("--middle-cut-map", type=Path)
+    parser.add_argument("--lyric-role-map", type=Path)
     parser.add_argument("--root", default=Path("."), type=Path)
     args = parser.parse_args()
     try:
@@ -171,6 +234,14 @@ def main() -> int:
             ),
             mix_content_extent=(
                 args.mix_content_extent.resolve() if args.mix_content_extent else None
+            ),
+            profile=args.profile.resolve() if args.profile else None,
+            language_map=args.language_map.resolve() if args.language_map else None,
+            middle_cut_map=(
+                args.middle_cut_map.resolve() if args.middle_cut_map else None
+            ),
+            lyric_role_map=(
+                args.lyric_role_map.resolve() if args.lyric_role_map else None
             ),
         )
     except (OSError, ValueError) as exc:
