@@ -10,7 +10,7 @@ import shutil
 import sys
 
 
-BASE_MODULES = ("numpy", "scipy", "librosa")
+BASE_MODULES = ("numpy", "scipy", "librosa", "soundfile")
 ASR_MODULES = ("faster_whisper",)
 
 

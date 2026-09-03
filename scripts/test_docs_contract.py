@@ -34,6 +34,29 @@ class DocumentationContractTests(unittest.TestCase):
         )
         self.assertTrue(any("CLI/workflow" in issue for issue in result.issues))
 
+    def test_environment_check_requires_runtime_documentation(self):
+        result = validate_changed_paths(
+            ["scripts/check_environment.py", "references/v4-change-record.md"]
+        )
+        self.assertTrue(any("CLI/workflow" in issue for issue in result.issues))
+
+    def test_requirements_change_requires_runtime_documentation(self):
+        result = validate_changed_paths(
+            ["requirements.txt", "references/v4-change-record.md"]
+        )
+        self.assertTrue(any("CLI/workflow" in issue for issue in result.issues))
+
+    def test_environment_and_requirements_pass_with_runtime_documentation(self):
+        result = validate_changed_paths(
+            [
+                "scripts/check_environment.py",
+                "requirements.txt",
+                "references/v4-change-record.md",
+                "references/v4-runtime-guide.md",
+            ]
+        )
+        self.assertEqual(result.issues, ())
+
     def test_contract_change_requires_contract_documentation(self):
         result = validate_changed_paths(
             [

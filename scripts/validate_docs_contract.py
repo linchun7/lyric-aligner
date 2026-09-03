@@ -60,6 +60,7 @@ def is_substantive(path: str) -> bool:
         "scripts/task_contract.py",
         "scripts/init_task.py",
         "scripts/migrate_task.py",
+        "scripts/check_environment.py",
     }:
         return True
     if path.startswith("requirements") and path.endswith(".txt"):
@@ -78,11 +79,13 @@ def _needs_status(path: str) -> bool:
 def _needs_cli_docs(path: str) -> bool:
     return (
         path.startswith("scripts/v4_")
+        or (path.startswith("requirements") and path.endswith(".txt"))
         or path in {
             "scripts/redo_karaoke_pipeline.py",
             "scripts/task_contract.py",
             "scripts/init_task.py",
             "scripts/migrate_task.py",
+            "scripts/check_environment.py",
         }
     )
 

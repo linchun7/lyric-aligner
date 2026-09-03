@@ -9,6 +9,8 @@ import re
 from pathlib import Path
 from typing import Any
 
+from lyric_aligner.contracts.artifacts import atomic_write_json
+
 
 TASK_SCHEMA_VERSION = "2.0"
 QA_SCHEMA_VERSION = "2.0"
@@ -143,13 +145,7 @@ def build_task_manifest(
 
 
 def write_json_atomic(path: Path, payload: Any) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_name(path.name + ".tmp")
-    temporary.write_text(
-        json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
-        encoding="utf-8",
-    )
-    temporary.replace(path)
+    atomic_write_json(path, payload)
 
 
 def load_task_manifest(path: Path) -> dict[str, Any]:

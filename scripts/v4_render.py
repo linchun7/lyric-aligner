@@ -6,7 +6,9 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import os
 import sys
+import tempfile
 from dataclasses import asdict
 from pathlib import Path
 
@@ -52,14 +54,55 @@ def _format_time(value: int) -> str:
     return f"{hour:02d}:{minute:02d}:{second:02d},{millis:03d}"
 
 
-def _write_srt(path: Path, cues) -> None:
+def _atomic_write_text(path: Path, text: str, *, encoding: str, newline: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
+    fd, temp_name = tempfile.mkstemp(
+        prefix=f".{path.name}.", suffix=".tmp", dir=path.parent
+    )
+    temp_path = Path(temp_name)
+    try:
+        with os.fdopen(fd, "w", encoding=encoding, newline=newline) as handle:
+            handle.write(text)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temp_path, path)
+    except Exception:
+        temp_path.unlink(missing_ok=True)
+        raise
+
+
+def _atomic_write_csv(
+    path: Path,
+    *,
+    fieldnames: list[str],
+    rows: list[dict[str, object]],
+) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, temp_name = tempfile.mkstemp(
+        prefix=f".{path.name}.", suffix=".tmp", dir=path.parent
+    )
+    temp_path = Path(temp_name)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8-sig", newline="") as handle:
+            writer = csv.DictWriter(handle, fieldnames=fieldnames)
+            writer.writeheader()
+            writer.writerows(rows)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temp_path, path)
+    except Exception:
+        temp_path.unlink(missing_ok=True)
+        raise
+
+
+def _write_srt(path: Path, cues) -> None:
     blocks = [
         f"{cue.number}\n{_format_time(cue.start_ms)} --> "
         f"{_format_time(cue.end_ms)}\n{cue.text}"
         for cue in cues
     ]
-    path.write_text(
+    _atomic_write_text(
+        path,
         "\n\n".join(blocks) + "\n",
         encoding="utf-8-sig",
         newline="\n",
@@ -758,7 +801,6 @@ def main() -> int:
         )
         _write_srt(args.final_srt, cues)
 
-        args.report.parent.mkdir(parents=True, exist_ok=True)
         fieldnames = [
             "position",
             "cue_number",
@@ -775,34 +817,33 @@ def main() -> int:
             "cue_id",
             "text_sha256",
         ]
-        with args.report.open("w", encoding="utf-8-sig", newline="") as handle:
-            writer = csv.DictWriter(handle, fieldnames=fieldnames)
-            writer.writeheader()
-            for position, rendered in enumerate(cues, start=1):
-                cue = Cue(
-                    number=rendered.number,
-                    start_ms=rendered.start_ms,
-                    end_ms=rendered.end_ms,
-                    text=rendered.text,
-                )
-                writer.writerow(
-                    {
-                        "position": position,
-                        "cue_number": rendered.number,
-                        "start_ms": rendered.start_ms,
-                        "end_ms": rendered.end_ms,
-                        "text": rendered.text,
-                        "occurrence_id": rendered.occurrence_id,
-                        "track_id": rendered.track_id,
-                        "ordinal": rendered.ordinal,
-                        "canonical_line_index": rendered.canonical_line_index,
-                        "timing_format": rendered.timing_format,
-                        "end_basis": rendered.end_basis,
-                        "task_fingerprint_sha256": fingerprint,
-                        "cue_id": cue_id(position, cue),
-                        "text_sha256": text_sha256(rendered.text),
-                    }
-                )
+        audit_rows: list[dict[str, object]] = []
+        for position, rendered in enumerate(cues, start=1):
+            cue = Cue(
+                number=rendered.number,
+                start_ms=rendered.start_ms,
+                end_ms=rendered.end_ms,
+                text=rendered.text,
+            )
+            audit_rows.append(
+                {
+                    "position": position,
+                    "cue_number": rendered.number,
+                    "start_ms": rendered.start_ms,
+                    "end_ms": rendered.end_ms,
+                    "text": rendered.text,
+                    "occurrence_id": rendered.occurrence_id,
+                    "track_id": rendered.track_id,
+                    "ordinal": rendered.ordinal,
+                    "canonical_line_index": rendered.canonical_line_index,
+                    "timing_format": rendered.timing_format,
+                    "end_basis": rendered.end_basis,
+                    "task_fingerprint_sha256": fingerprint,
+                    "cue_id": cue_id(position, cue),
+                    "text_sha256": text_sha256(rendered.text),
+                }
+            )
+        _atomic_write_csv(args.report, fieldnames=fieldnames, rows=audit_rows)
 
         rebuilt_cut_count = (
             _json_int(

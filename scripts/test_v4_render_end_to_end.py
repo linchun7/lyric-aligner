@@ -4,6 +4,7 @@ import sys
 import tempfile
 import unittest
 import wave
+from unittest import mock
 from pathlib import Path
 
 import numpy as np
@@ -12,6 +13,7 @@ from lyric_aligner import __version__
 from lyric_aligner.contracts.artifacts import build_artifact_manifest
 from lyric_aligner.srt import parse_srt_strict
 from task_contract import build_task_manifest, write_json_atomic
+import v4_render as RENDER
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -355,6 +357,45 @@ class V4RenderEndToEndTests(unittest.TestCase):
                 [cue.text for cue in parse_srt_strict(reviewed_final_srt)],
                 ["alpha line", "beta line", "gamma line"],
             )
+
+
+class V4RenderAtomicWriteTests(unittest.TestCase):
+    def test_atomic_text_replace_failure_preserves_existing_target(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            target = root / "final.srt"
+            original = b"existing-final-srt\n"
+            target.write_bytes(original)
+
+            with mock.patch.object(RENDER.os, "replace", side_effect=OSError("replace failed")):
+                with self.assertRaisesRegex(OSError, "replace failed"):
+                    RENDER._atomic_write_text(
+                        target,
+                        "1\n00:00:00,000 --> 00:00:01,000\nnew\n",
+                        encoding="utf-8-sig",
+                        newline="\n",
+                    )
+
+            self.assertEqual(target.read_bytes(), original)
+            self.assertEqual(list(root.glob(f".{target.name}.*.tmp")), [])
+
+    def test_atomic_csv_replace_failure_preserves_existing_target(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            target = root / "audit.csv"
+            original = b"existing,audit\r\n"
+            target.write_bytes(original)
+
+            with mock.patch.object(RENDER.os, "replace", side_effect=OSError("replace failed")):
+                with self.assertRaisesRegex(OSError, "replace failed"):
+                    RENDER._atomic_write_csv(
+                        target,
+                        fieldnames=["position", "text"],
+                        rows=[{"position": 1, "text": "new"}],
+                    )
+
+            self.assertEqual(target.read_bytes(), original)
+            self.assertEqual(list(root.glob(f".{target.name}.*.tmp")), [])
 
 
 if __name__ == "__main__":

@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Iterable
 
 from lyric_aligner.assets.lyric_roles import inspect_lyric_roles
-from lyric_aligner.contracts.artifacts import sha256_file
+from lyric_aligner.contracts.artifacts import atomic_write_json, sha256_file
 from lyric_aligner.domain import TrackAsset, TrackOccurrence
 from lyric_aligner.io.text import read_task_text
 
@@ -368,8 +368,4 @@ def resolve_assets(
 
 
 def write_assets_manifest(path: Path, payload: dict) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(
-        json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
-        encoding="utf-8",
-    )
+    atomic_write_json(path, payload)

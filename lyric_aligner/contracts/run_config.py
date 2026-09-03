@@ -15,6 +15,8 @@ import re
 from pathlib import Path
 from typing import Any, Sequence
 
+from lyric_aligner.contracts.artifacts import atomic_write_json
+
 RUN_CONFIG_SCHEMA_VERSION = "v4-run-config-1.0"
 RUN_CONFIG_FILENAME = "v4_run_config.json"
 RUN_CONFIG_FLAG = "--run-config"
@@ -335,10 +337,4 @@ def strip_run_config_control_argv(argv: Sequence[str]) -> list[str]:
 
 
 def write_run_config_atomic(path: Path, payload: dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_name(path.name + ".tmp")
-    temporary.write_text(
-        json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
-        encoding="utf-8",
-    )
-    temporary.replace(path)
+    atomic_write_json(path, payload)

@@ -46,11 +46,11 @@ def protected_task_input_paths(
     same maintenance series remain source-compatible; it is deliberately not a
     second root source and is ignored.
 
-    Directory inputs are expanded to every fingerprinted file member because
-    the generic path-collision guard compares concrete paths rather than doing
-    ancestor/descendant checks. Callers are expected to validate the task
-    manifest before invoking this helper; this function still fails closed on
-    malformed records instead of trusting that precondition implicitly.
+    A directory input is itself the protected root. The shared path-safety
+    guard protects the entire subtree of an existing directory input; expanding
+    fingerprinted members additionally keeps exact files visible for precise
+    diagnostics and lineage checks. Callers should validate the task manifest
+    before invoking this helper; malformed records still fail closed.
     """
 
     del repository_root

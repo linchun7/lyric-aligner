@@ -5,6 +5,10 @@
 
 > 真实生产 workload 与产品设计基线见 `references/production-requirements.md`；Smart / Pro v1.1 设计细节见 `references/smart-pro-v1-1.md`。
 
+## 0. 运行环境预检
+
+基础安装：`python -m pip install -r requirements.txt`。预检：`python scripts/check_environment.py --json`。基础 direct modules 包括 `numpy`、`scipy`、`librosa`、`soundfile`，并需要 `ffprobe`。ASR 额外安装 `requirements-asr.txt`，再运行 `python scripts/check_environment.py --asr --json`。
+
 ## 1. 四档模式
 
 ```text

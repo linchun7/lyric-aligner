@@ -63,7 +63,10 @@ class EnvironmentCheckTests(unittest.TestCase):
     def test_base_environment_reports_expected_contract(self):
         result = check_environment()
 
-        self.assertEqual(set(result["modules"]), {"numpy", "scipy", "librosa"})
+        self.assertEqual(
+            set(result["modules"]),
+            {"numpy", "scipy", "librosa", "soundfile"},
+        )
         self.assertEqual(set(result["tools"]), {"ffprobe"})
         self.assertFalse(result["asr_requested"])
 
@@ -290,6 +293,10 @@ class RepositoryContractTests(unittest.TestCase):
         for relative_path in required:
             with self.subTest(relative_path=relative_path):
                 self.assertTrue((REPOSITORY_ROOT / relative_path).is_file())
+
+    def test_base_requirements_declare_direct_soundfile_dependency(self):
+        requirements = (REPOSITORY_ROOT / "requirements.txt").read_text(encoding="utf-8")
+        self.assertRegex(requirements, r"(?m)^soundfile[^\n]*$")
 
     def test_agent_prompt_uses_explicit_skill_name(self):
         metadata = (REPOSITORY_ROOT / "agents/openai.yaml").read_text(

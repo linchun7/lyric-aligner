@@ -353,3 +353,7 @@ prod-smart-v1.2.5-pro-v1.1.4-20260821
 ```
 
 Max #68/#70 与后续 reconciliation evaluation / CLI safety / release consistency maintenance 不移动该 tag，不改变冻结 Smart/Pro 的行为。回滚依赖 Git commit/tag + artifact lineage，不维护第二套静默 fallback。
+
+## 2026-09-03 — 封板维护
+
+补充 runtime base 的 `soundfile` direct dependency 与环境预检文档；加强 docs-contract 对环境脚本和 requirements 变更的防漂移约束；TrackAssets manifest、task manifest/QA JSON 与 task-local run config 统一复用 shared `atomic_write_json()`，消除固定 `.tmp` 的并发竞争；canonical evaluation render 的 SRT/audit CSV 改为同目录临时文件 + `fsync` + `os.replace`，避免中断留下截断正式输出；订正 task-path safety 注释；明确历史 freeze tag 与旧 change-record 的边界。无算法阈值、timing/text/release authority 改动。

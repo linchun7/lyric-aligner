@@ -6,6 +6,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPTS = ROOT / "scripts"
@@ -15,6 +16,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 import task_contract
+from lyric_aligner.contracts import artifacts as ARTIFACTS
 from lyric_aligner.contracts.run_config import (
     RUN_CONFIG_FILENAME,
     build_run_config,
@@ -58,6 +60,27 @@ class V4RunConfigTests(unittest.TestCase):
         language_map = qa_root / "language_map.json"
         language_map.write_text('{"Artist - Song":"en"}\n', encoding="utf-8")
         return repository, manifest_path, language_map
+
+    def test_identity_json_writers_preserve_existing_target_on_replace_failure(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            for name, writer in (
+                ("task.json", task_contract.write_json_atomic),
+                ("run-config.json", write_run_config_atomic),
+            ):
+                with self.subTest(writer=name):
+                    target = root / name
+                    original = b'{"old": true}\n'
+                    target.write_bytes(original)
+                    with mock.patch.object(
+                        ARTIFACTS.os,
+                        "replace",
+                        side_effect=OSError("replace failed"),
+                    ):
+                        with self.assertRaisesRegex(OSError, "replace failed"):
+                            writer(target, {"new": True})
+                    self.assertEqual(target.read_bytes(), original)
+                    self.assertEqual(list(root.glob(f".{target.name}.*.tmp")), [])
 
     def test_task_local_config_auto_expands_and_control_flag_is_stripped(self):
         with tempfile.TemporaryDirectory() as temporary:

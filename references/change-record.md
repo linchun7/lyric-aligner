@@ -1,5 +1,7 @@
 # 变更记录与任务级 QA 文件规范
 
+> 边界：本文件保留 pre-V4/v3.x/QA schema 历史；当前 V4 production 变更统一记录到 `references/v4-change-record.md`。
+
 任务的真实歌词、cue、毫秒时间、原曲和人工结论必须留在 `private/<任务名>/qa/`，不得写入公开 Skill 资源。
 
 ## 全局改动记录模板

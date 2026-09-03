@@ -271,13 +271,17 @@ Public CI 必须继续证明：
 
 真实任务失败模式只能转化成 generic synthetic regression；不得把私有歌曲名、歌词、cue 编号、真实时间戳或音频写入 production algorithm/public tests。
 
-## 8. 冻结 Smart/Pro
+## 8. 历史 Smart/Pro 基线 freeze tag（不代表当前 selector）
 
-Production freeze tag 保持不动：
+当前 production selector 仍为 Smart v1.2.10 / Pro v1.2.6。以下旧 tag 仅作为历史 production baseline，必须保持不动：
 
 ```text
 prod-smart-v1.2.5-pro-v1.1.4-20260821
 56841c40d6a90101efe1da568e2d5c2e5e67a0a2
 ```
 
-后续 Max 工程不得移动或重写该 tag。
+后续 Max 工程不得移动或重写该历史 tag；它不定义当前 Smart/Pro selector。
+
+### 2026-09-03 封板维护结论
+
+本轮封板维护不改变算法阈值、timing/text authority 或 release authority。只补齐 `soundfile` direct dependency 与环境预检，把 TrackAssets、task manifest/QA JSON 与 task-local run config 统一到 shared atomic writer，把 canonical evaluation render 的 SRT/audit CSV 改为中断安全的原子落盘，并订正文档/注释漂移。既有 structural closeout 与消融结论继续有效；除非出现新的真实 production failure 或新的独立 structural truth，不重新打开已经否决的 heuristic 路线。
