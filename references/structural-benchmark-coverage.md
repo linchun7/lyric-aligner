@@ -84,17 +84,24 @@ Compatibility was verified against the frozen r3 calibration and locked blind vi
 
 The candidate has subsequently been promoted only into a read-only production QA bridge. Six real-task regressions preserve the expected topology: 190 reports its independently known mapped-source reorder; Walk120 reports its independently known detached tail; 快乐健走140, KPOP110, KPOP130 and KPOP200 report no structural events. Reorder remains unavailable without a separately hash-bound source/occurrence mapping artifact, and detached-tail evidence does not mutate `content_end`.
 
-Remaining categories are still benchmark-limited:
+Remaining categories are still benchmark-limited. A dedicated truth-discovery pass has now exhausted the strongest candidates in the current corpus without manufacturing truth from Max predictions:
 
-1. add independent `piecewise_rate`, `hard_cut`, and non-crossfade `true_overlap` truth before researching those detectors;
-2. keep r3 and r4 observed blind sets out of future threshold tuning;
-3. keep the current `reorder / detached_tail` promotion diagnostic-only; any future automatic timing/content-end/review authority requires a separate authority design and new regression evidence.
+- `piecewise_rate`: a manually tempo-edited real candidate was compared directly from original audio to the final adjusted stem, without reading Max timeline/Fine/TimeWarp output. All 10 predeclared windows matched reliably; the full reliable local-rate span was only `0.0125`, and the strongest adjacent two-regime split differed by only `0.005`, below the predeclared `0.015` truth threshold. The editing history is real, but this rendered stem does not provide clear benchmark-level multi-regime evidence.
+- `hard_cut`: a historically confirmed source omission was re-audited from the task-bound mix/source audio using a predeclared branch-local waveform test. The audit could not establish stable left/right branch dominance or exclude a material ambiguous dual-support interval, so the omission remains valid production evidence but is not promoted to `hard_cut` truth.
+- non-crossfade `true_overlap`: the only three production `confirmed_overlap` regions in the available real corpus are explicitly classified by their independent review rationales as `crossfade` / `short crossfade`. They therefore remain valid `crossfade` truth and must not be relabeled as `true_overlap`.
+
+Accordingly:
+
+1. do not implement or tune `piecewise_rate`, `hard_cut`, or `true_overlap` detectors against the current corpus;
+2. add new independently authored/editor-confirmed truth before reopening those categories;
+3. keep r3 and r4 observed blind sets out of future threshold tuning;
+4. keep the current `reorder / detached_tail` promotion diagnostic-only; any future automatic timing/content-end/review authority requires a separate authority design and new regression evidence.
 
 ## 6. Current research priority
 
-The next algorithm target should not be chosen by convenience. Priority is determined by production impact and availability of independent truth:
+There is no evidence-supported new structural detector target in the current corpus. The next algorithm work should therefore be event-driven rather than speculative:
 
-1. `piecewise_rate` — important for manually edited songs, but truth must first be frozen independently of Max predictions;
-2. `hard_cut` / non-crossfade `true_overlap` — obtain clean truth cases before detector work;
-3. keep `reorder / detached_tail` at diagnostic QA authority unless new production evidence justifies a separate mutation proposal;
-4. ordinary timing refinement remains lower priority because current calibration timing/text performance is already near saturation.
+1. obtain new independent `piecewise_rate`, `hard_cut`, or non-crossfade `true_overlap` truth before detector research resumes;
+2. keep `reorder / detached_tail` at diagnostic QA authority unless new production evidence justifies a separate mutation proposal;
+3. investigate ordinary timing or topology only when a new real production failure survives the existing QA/review pipeline; current calibration timing/text performance is already near saturation;
+4. otherwise prefer regression, provenance, reproducibility, and release-authority hardening over adding heuristic complexity.

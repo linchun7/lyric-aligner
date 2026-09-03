@@ -24,6 +24,14 @@ ASR / forced -> auxiliary acoustic evidence
 
 ---
 
+## 2026-09-03 — Structural truth-discovery closeout
+
+在 r4 QA bridge 完成后，没有直接继续实现 `piecewise_rate / hard_cut / true_overlap` detector，而是先对当前 real corpus 做独立 truth-discovery。`piecewise_rate` 最强候选使用原曲与最终调速 stem 直接做局部 source↔adjusted rate 测量，不读取 Max timeline/Fine/TimeWarp：10/10 预设窗口均可靠，local-rate 总跨度 `0.0125`，最强相邻两-regime split 仅差 `0.005`，低于预先冻结的 `0.015` truth threshold，因此制作上“手工调 BPM”不能被扩大解释为 benchmark-level piecewise-rate truth。
+
+`hard_cut` 最强候选已有历史人工确认 source omission，但新的 task-bound waveform-only 双 branch audit 在结果读取前固定窗口/步长/rate/score/dominance/dual-support 门槛；执行后稳定左右 dominance、abrupt switch、material-dual-support-absent 四项均未满足，并出现约 `0.40s` ambiguous dual-support。由于同曲重复结构可造成 branch 高相似，这既不证明 crossfade，也不证明 abrupt cut；该 evidence 只保留 confirmed omission 身份，不升级为 hard-cut truth，且不调 threshold 重跑。
+
+`true_overlap` 则核对了当前 real corpus 全部 3 个 production `confirmed_overlap` decision；独立人工 rationale 分别明确写为 `Confirmed crossfade` / `Confirmed short crossfade` / `Confirmed crossfade`。因此它们继续构成 `crossfade` truth，不得为了补 taxonomy 覆盖而重标为 non-crossfade `true_overlap`。结论：当前 corpus 对这三类均仍是 truth gap；在出现新的独立制作/编辑 truth 之前，不实现、不调参对应 detector，研究优先级转为 event-driven real failure、regression/provenance/release-authority hardening。
+
 ## 2026-09-03 — Read-only structural evidence QA bridge
 
 fresh-blind 通过的 `reorder / detached_tail` detector 没有直接进入 Max mutation path，而是先增加 `lyric_aligner/qa/structural_evidence.py` + `scripts/v4_audit_structural.py` 只读生产 QA bridge。输出固定 `authority=diagnostic_only`，同时明确 `automatic_timing_change_allowed=false`、`automatic_content_end_change_allowed=false`、`automatic_review_resolution_allowed=false`、`release_gate_eligible=false`、`publish_ready=false`；发现事件不会改变 production run、review 或 release。

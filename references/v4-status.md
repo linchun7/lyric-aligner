@@ -236,6 +236,8 @@ candidate selection 与 blind policy 均在读取 blind metrics 前冻结；随�
 
 fresh-blind 通过后只提升到新的只读 `scripts/v4_audit_structural.py` QA bridge，而不是直接接入 Max mutation authority。`detached_tail` 可直接对 task-manifest 绑定音频做 diagnostic；`reorder` 必须额外提供 `v4-editor-source-map-1.0`，并要求 `mapping_authority=source_occurrence_verified`、同 task fingerprint、同 editor SRT SHA，以及 repository-relative 的上游 source-mapping artifact path + 现场 SHA 复核；缺 authority 时明确 `not_run_missing_source_mapping_authority`。该 bridge 固定 `diagnostic_only`，并显式禁止 automatic timing/content_end/review resolution、release-gate eligibility 和 publish-ready。真实六项任务回归得到：190 唯一 1 个 reorder、Walk120 唯一 1 个 detached-tail；快乐健走140、KPOP110、KPOP130、KPOP200 均 0 structural event，且无 source map 的任务 reorder 均明确不运行。该结果只建立生产 QA evidence，不授予自动修复 authority。
 
+后续对剩余 `piecewise_rate / hard_cut / true_overlap` 三类做了独立 truth-discovery closeout，结论均是不足以冻结新 truth，而不是继续调 detector。`piecewise_rate` 最强真实候选改用原曲与最终调速 stem 直接比对，完全不读取 Max timeline/Fine/TimeWarp：10/10 预设时间窗可靠，局部 rate 总跨度 `0.0125`，最强相邻两段只差 `0.005`，未达到预先固定的 `0.015` 多-regime truth 门槛。`hard_cut` 最强候选虽有历史人工确认 source omission，但新的 task-bound waveform-only branch audit 无法稳定区分 cut 两侧 source branch，也不能排除约 `0.40s` 的 ambiguous dual-support，因此不把 omission 强行升级为 hard-cut truth。现有真实 `confirmed_overlap` 共 3 处，独立人工 rationale 全部明确为 crossfade/short crossfade，因此继续属于 `crossfade`，不得重标为 non-crossfade `true_overlap`。当前 corpus 因而没有新的 evidence-supported structural detector target；除非获得新的独立制作/编辑 truth 或出现新的真实 production failure，否则优先保持 regression/provenance/release-authority 稳定，不增加结构 heuristic 复杂度。
+
 ## 6. Legacy Partial Timeline Repair
 
 旧 P1–P5 bridge 继续固定：
