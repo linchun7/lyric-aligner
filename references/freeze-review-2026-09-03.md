@@ -28,9 +28,11 @@ Fine/MFCC/Piecewise TimeWarp 算法、Smart immutable version chain、Pro/Max ti
 
 没有新的真实 production failure 或独立 structural truth，不重开已否决 heuristic；diagnostic 不升级 mutation/release authority。封板维护只接受能明确降低错误、漂移、并发/中断损坏或发布误判风险的窄改动。
 
-## 当前验证证据
+## 封板验证证据
 
-- 上一版 clean 隔离提交完整 suite：814/814 OK；该证据早于本轮新增 durability 修复，因此只作为历史基线，不作为最新候选最终验收。
-- 当前 dirty candidate targeted：docs-contract 10/10、repository/environment contract 18/18、TrackAsset resolver 6/6、render 3/3（含两条 replace-failure 故障注入）、run-config 6/6（含 task/run identity writer 故障注入）、compileall、environment preflight、Skill validation 均通过。
-- privacy scan 在清理本轮 8 个 disposable full-suite runner/log 后重新通过：`ok=true, issues=[]`。此前唯一命中来自本轮临时 runner 内的本机绝对路径，不是 tracked source/privacy leak。
-- 封板最终验收必须在包含本轮全部改动的 clean commit 上完成完整 suite、documentation validator、privacy/Skill、`git diff --check`，并在合入主线后确认 `HEAD == origin/main` 且工作树 clean；不以 dirty-tree 或旧候选的绿灯替代这些条件。
+- 上一版 clean 隔离基线完整 suite 为 814/814 OK；它早于本轮新增 durability 修复，只作为历史对照。
+- 最终实现候选 `220bf9e7935a6c8be5eebf8920bd149bb25f05b0` 在 clean detached worktree 上完成完整 suite：817/817 OK（88.194s）。相较 814 基线新增的 3 项正是本轮 durability 故障注入回归：render SRT/CSV replace-failure 两项，以及 task/run identity JSON writer replace-failure 一项。
+- 同一实现候选的 targeted 证据：docs-contract 10/10、repository/environment contract 18/18、TrackAsset resolver 6/6、render 3/3、run-config 6/6、compileall、environment preflight、Skill validation、documentation validator、`git diff --check` 全部通过；privacy 为 `ok=true, issues=[]`。
+- 该候选合入并通过 HTTPS 发布后，又在真实 clean `main` 上重跑完整 suite：817/817 OK（82.102s）；运行前后 `HEAD == origin/main == 220bf9e7935a6c8be5eebf8920bd149bb25f05b0`，工作树均为空。真实 main 上 documentation validator、privacy、Skill、environment 也再次通过。
+- 发布后使用 GitHub API、HTTPS `ls-remote`、本地 `HEAD`、本地 `origin/main` 四重确认远端/本地实现封板点一致。SSH 自定义 host 的 22 端口当时不可用，因此发布使用一次性 HTTPS URL；仓库 `origin` 配置未被修改。
+- 本记录之后如仅发生 documentation-only closeout，不得改变上述实现、测试或 authority 结论；最终 HEAD 仍必须重新满足完整 suite、documentation validator、privacy/Skill、`git diff --check`、`HEAD == origin/main` 与 clean worktree，不能以本段历史绿灯替代最终验收。
