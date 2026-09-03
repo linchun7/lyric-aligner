@@ -24,6 +24,18 @@ ASR / forced -> auxiliary acoustic evidence
 
 ---
 
+## 2026-09-03 — Calibration-only ablation review
+
+完成一轮只使用 calibration truth 的 Max 消融，未读取未观察 blind truth。325 个 coarse windows 上 Chroma-only 与当前 fused top-1 不同 `47/325 (14.46%)`，MFCC-only 不同 `28/325 (8.62%)`，因此双特征融合保留。K110 完整 no-Fine 全链在 composer 层保持 17/17 occurrence 可见 cue identity 完全一致，但 strict calibration reference 评分从 full-Fine 的 boundary MAE/P95 `16.265/7 ms` 退化到 `22.939/25 ms`；文本/行级指标不变。结论：Fine 对 timing tail quality 有明确贡献，本轮否决删除 Fine，也不基于当前有限 corpus 新增 skip/selective gate。
+
+Piecewise TimeWarp 当前缺独立 `piecewise_rate` calibration 正例，不能用“现有样本都选 AFFINE”反推其无用；该能力继续保留。完整实验方法、指标与清理结论见 `references/ablation-review-2026-09-03.md`。
+
+## 2026-09-03 — Legacy diagnostic helper retired
+
+`scripts/karaoke_subtitle_pipeline.py` 的 1569 行 pre-v4 diagnostic/draft 实现已退役。仓库内没有当前代码、测试或权威工作流依赖该实现，且其旧 SRT/LRC/ASR authority 规则与当前 Standard/Smart/Pro/Max contract 不等价；继续保留可执行实现只会形成第二套入口。为避免旧命令静默生成 authority 不明的字幕，文件名保留为 fail-closed 迁移提示：`--help` 展示当前工作流映射，其余调用退出 2。历史实现仍可从 Git history 恢复，不做自动语义转发。
+
+同时统一评估文档入口：`references/dataset-protocol.md` 不再把低层 `evaluate_dataset.py` 展示为生产验收命令，正式 calibration/blind-test 统一指向 `v4_calibration_workflow.py` strict contract；新增 `references/local-artifact-retention.md`，明确本地 `private/output/cache` 的 KEEP / ARCHIVE / REGENERABLE 边界，禁止按版本号或目录新旧直接删除 truth、release 或生产证据。
+
 ## 2026-09-03 — Structural truth-discovery closeout
 
 在 r4 QA bridge 完成后，没有直接继续实现 `piecewise_rate / hard_cut / true_overlap` detector，而是先对当前 real corpus 做独立 truth-discovery。`piecewise_rate` 最强候选使用原曲与最终调速 stem 直接做局部 source↔adjusted rate 测量，不读取 Max timeline/Fine/TimeWarp：10/10 预设窗口均可靠，local-rate 总跨度 `0.0125`，最强相邻两-regime split 仅差 `0.005`，低于预先冻结的 `0.015` truth threshold，因此制作上“手工调 BPM”不能被扩大解释为 benchmark-level piecewise-rate truth。

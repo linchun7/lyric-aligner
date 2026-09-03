@@ -45,13 +45,13 @@
 
 ## 评估
 
-运行：
+正式 calibration / blind-test 验收统一使用 strict workflow：
 
-```powershell
-python scripts/evaluate_dataset.py `
-  --dataset "private/datasets/<名称>/dataset.json" `
-  --out "output/evaluation/<版本>.json"
+```text
+scripts/v4_calibration_workflow.py
 ```
+
+具体 `evaluate / lock / blind` 命令和 split-isolation 规则见 `references/calibration-blind-test-workflow.md`。低层 `evaluate_dataset.py`、`evaluate_calibration_dataset.py`、`calibration_gate.py` 仅保留给内部分析和兼容用途，不作为生产验收入口，也不得绕过 strict contract 直接读取 blind truth 调参。
 
 输出只包含聚合数字和匿名 case id，不包含歌词正文。核心指标包括：歌词单位 precision/recall/F1、cue 文本完全匹配率、边界 MAE/P95、每 10 分钟复核候选数、每音频分钟运行耗时、发布通过率和剪切检测 precision/recall。
 
