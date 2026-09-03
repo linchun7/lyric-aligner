@@ -24,6 +24,14 @@ ASR / forced -> auxiliary acoustic evidence
 
 ---
 
+## 2026-09-03 — Read-only structural evidence QA bridge
+
+fresh-blind 通过的 `reorder / detached_tail` detector 没有直接进入 Max mutation path，而是先增加 `lyric_aligner/qa/structural_evidence.py` + `scripts/v4_audit_structural.py` 只读生产 QA bridge。输出固定 `authority=diagnostic_only`，同时明确 `automatic_timing_change_allowed=false`、`automatic_content_end_change_allowed=false`、`automatic_review_resolution_allowed=false`、`release_gate_eligible=false`、`publish_ready=false`；发现事件不会改变 production run、review 或 release。
+
+`detached_tail` 只读取 task manifest 已绑定音频；`reorder` 只有在调用方显式提供 `v4-editor-source-map-1.0` 且 map 绑定同 task fingerprint、同 editor SRT SHA、`mapping_authority=source_occurrence_verified` 和 repository-relative 上游 source-mapping artifact path + 现场 SHA 校验时才运行。缺少 map 时明确 `not_run_missing_source_mapping_authority`，不会退回 raw-SRT heuristic；map 路径逃逸、artifact 缺失/SHA drift、cue-count/position 异常均 fail closed，上游 mapping artifact 同时进入 output collision protection。
+
+六项真实 production regression：190 使用冻结 Smart `timing_decisions.source_ordinal` 作为 hash-bound mapping authority，仅报告 1 个已知 reorder、0 detached-tail；Walk120 不授予 reorder mapping，但报告 1 个已知 detached-tail；快乐健走140、KPOP110、KPOP130、KPOP200 均报告 0 structural event，且无 mapping authority 的 reorder 全部明确不运行。该阶段只证明 QA evidence 可安全泛化，不授予自动修复 authority。
+
 ## 2026-09-03 — P1 r4 fresh-blind structural detector evidence
 
 在 typed-event metric contract 冻结之后，新增 evaluation-only `lyric_aligner/evaluation/structural_detectors.py`，只研究两个已有独立 truth 的正交结构事实，不接入 production Max authority。`reorder` 不再用“任意 SRT 文件顺序回跳”作为真值，而要求已有 source/occurrence mapping authority 的 editor cue 才能建立/触发 chronology frontier；unmapped overlay/口播不能单独生成 reorder。`detached_tail` 只检测后段长 exact-digital-zero gap 后重新出现的短孤立 active island。
