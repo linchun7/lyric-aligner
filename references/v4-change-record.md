@@ -24,6 +24,14 @@ ASR / forced -> auxiliary acoustic evidence
 
 ---
 
+## 2026-09-03 — P1 structural benchmark taxonomy / reporting contract
+
+结构算法继续研究前先补齐评估层，而不是继续调 ordinary timing threshold。既有 strict calibration / locked blind workflow 保持唯一方法学主线；dataset schema `1.1` 新增可选、truth-side `structural_scenarios`，canonical 类别固定为 `none / hard_cut / same_track_splice / crossfade / true_overlap / sequential_transition / piecewise_rate / reorder / detached_tail`。1.1 未标注 case 只在报表层归入 `structural:unspecified`；显式标签 canonical 排序后进入 ground-truth identity，非法值/重复值/`none` 混用 fail closed。schema `1.0` 不接受该字段，并保持旧 report shape，不新增 structural scope。
+
+公共 metric engine 与 canonical `v4_calibration_workflow.py` 现在都可按 `structural:<scenario>` 输出 aggregate metrics，cut-boundary metrics 同样支持 structural scope；这使后续 calibration policy 能区分不同结构失败类型，同时保持 opaque case IDs / aggregate-only privacy contract。benchmark 专用 `language=synthetic` 仅在 generic metric engine 内映射为 `generic` tokenization，不扩 production language profile。该变化只扩 evaluation metadata/reporting，不修改 Max 算法版本、coarse/Fine/TimeWarp、transition threshold、review 或 release authority。
+
+冻结 r3 兼容回归精确复现 calibration SHA `737e83697f1e577bbf9c8473e21b54ad304c33d1c6f09404fc45abe10853e330` 和 blind SHA `2e9c49321ac3541d2d5f3fdb953ddbdecab1f0c09f3ed80a6249aae83bbdc886`；去掉新增 structural-only report fields 后，历史 calibration / blind evaluation 与新评估递归全等。
+
 ## 2026-09-03 — Max a14 task-local semantic run configuration
 
 真实回归验收暴露出一个与 alignment threshold 无关的可复现性缺口：旧任务的 `language_map / middle_cut_map / lyric_role_map / profile` 虽然会被 asset artifact 分别记录 SHA，但调用者仍可能在另一次 `v4_run.py` 中漏传某个 CLI 参数，从而让“同一 task manifest”在没有显式迁移动作的情况下进入不同 asset-resolution 语义。典型表现是已固定语言的任务因漏传 map 回到 `auto`，或更严格的同时间戳 lyric-role preflight 因漏传 role map 重新 BLOCK。

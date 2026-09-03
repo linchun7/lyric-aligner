@@ -181,5 +181,152 @@ class V4EvaluationProtocolTests(unittest.TestCase):
             self.assertEqual(enriched["overall"]["cut_boundary_mae_ms"], 80.0)
 
 
+    def test_structural_scenarios_are_validated_grouped_and_identity_bound(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            reference, predicted = self._write_case_files(root, "structural")
+            manifest_path = self._manifest(
+                root,
+                [
+                    {
+                        "id": "structural-1",
+                        "split": "calibration",
+                        "language": "en",
+                        "source_group": "song-structural",
+                        "reference_srt": reference.name,
+                        "predicted_srt": predicted.name,
+                        "structural_scenarios": ["hard_cut", "piecewise_rate"],
+                        "expected_cuts": [1000],
+                        "predicted_cuts": [1050],
+                    }
+                ],
+            )
+            payload = load_dataset_manifest(manifest_path)
+            validation = validate_dataset_manifest(
+                manifest_path, payload, require_source_groups=True
+            )
+            self.assertEqual(
+                validation["structural_scenario_counts"],
+                {"hard_cut": 1, "piecewise_rate": 1},
+            )
+            before = dataset_ground_truth_identity(
+                manifest_path, payload, split="calibration"
+            )
+            scopes = cut_boundary_metrics_by_scope(
+                payload, selected_split="calibration"
+            )
+            self.assertIn("structural:hard_cut", scopes)
+            self.assertIn("structural:piecewise_rate", scopes)
+            self.assertEqual(scopes["structural:hard_cut"]["cut_boundary_mae_ms"], 50.0)
+
+            payload["cases"][0]["structural_scenarios"] = [
+                "piecewise_rate",
+                "hard_cut",
+            ]
+            reordered = dataset_ground_truth_identity(
+                manifest_path, payload, split="calibration"
+            )
+            self.assertEqual(
+                before["dataset_ground_truth_sha256"],
+                reordered["dataset_ground_truth_sha256"],
+            )
+
+            payload["cases"][0]["structural_scenarios"] = ["crossfade"]
+            after = dataset_ground_truth_identity(
+                manifest_path, payload, split="calibration"
+            )
+            self.assertNotEqual(
+                before["dataset_ground_truth_sha256"],
+                after["dataset_ground_truth_sha256"],
+            )
+
+    def test_schema_1_0_keeps_legacy_reporting_shape(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            reference, predicted = self._write_case_files(root, "legacy-shape")
+            manifest_path = root / "dataset.json"
+            manifest_path.write_text(
+                json.dumps(
+                    {
+                        "schema_version": "1.0",
+                        "dataset": "legacy",
+                        "cases": [
+                            {
+                                "id": "legacy-shape-1",
+                                "split": "calibration",
+                                "language": "en",
+                                "reference_srt": reference.name,
+                                "predicted_srt": predicted.name,
+                                "expected_cuts": [1000],
+                                "predicted_cuts": [1050],
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            payload = load_dataset_manifest(manifest_path)
+            validation = validate_dataset_manifest(manifest_path, payload)
+            self.assertNotIn("structural_scenario_counts", validation)
+            scopes = cut_boundary_metrics_by_scope(
+                payload, selected_split="calibration"
+            )
+            self.assertFalse(any(key.startswith("structural:") for key in scopes))
+
+    def test_schema_1_0_rejects_structural_metadata(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            reference, predicted = self._write_case_files(root, "old-structural")
+            manifest_path = root / "dataset.json"
+            manifest_path.write_text(
+                json.dumps(
+                    {
+                        "schema_version": "1.0",
+                        "dataset": "legacy",
+                        "cases": [
+                            {
+                                "id": "legacy-1",
+                                "split": "calibration",
+                                "language": "en",
+                                "reference_srt": reference.name,
+                                "predicted_srt": predicted.name,
+                                "structural_scenarios": ["hard_cut"],
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            payload = load_dataset_manifest(manifest_path)
+            with self.assertRaisesRegex(
+                EvaluationProtocolError, "requires dataset schema_version 1.1"
+            ):
+                validate_dataset_manifest(manifest_path, payload)
+
+    def test_structural_none_cannot_be_combined(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            reference, predicted = self._write_case_files(root, "invalid-structural")
+            manifest_path = self._manifest(
+                root,
+                [
+                    {
+                        "id": "invalid-structural",
+                        "split": "calibration",
+                        "language": "en",
+                        "source_group": "song-invalid",
+                        "reference_srt": reference.name,
+                        "predicted_srt": predicted.name,
+                        "structural_scenarios": ["none", "hard_cut"],
+                    }
+                ],
+            )
+            payload = load_dataset_manifest(manifest_path)
+            with self.assertRaisesRegex(EvaluationProtocolError, "cannot be combined"):
+                validate_dataset_manifest(
+                    manifest_path, payload, require_source_groups=True
+                )
+
+
 if __name__ == "__main__":
     unittest.main()

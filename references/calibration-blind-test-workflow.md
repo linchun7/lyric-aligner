@@ -280,3 +280,13 @@ Fine-anchored multiscale transition diagnostic 曾作为第一个 B 候选，仅
 为恢复真正的 blind，r3 在 candidate selection **之前**使用 commit-locked deterministic generator 固定 8 个未见 synthetic structural case，并写入独立 blind-truth lock；candidate blind prediction 在 selection 之后才首次 materialize。预先锁定的 blind policy 要求 timing/text/review 零回归、cut precision=1.0、cut recall>=0.75。最终 gate 返回 `passed=false`：candidate 的 cut precision/recall 均为 `0`，其它受控指标无回归。
 
 该 blind 结果出现后禁止继续针对 blind 调 threshold、fixture 或 selection policy。prepared-stem candidate 因此被淘汰并从 public code 撤回；private r3 lock/selection/evaluation/gate 继续保存为审计证据。
+
+### 11.4 Structural scenario benchmark contract
+
+P1 后续结构算法研究复用同一 calibration / locked blind workflow，不另建第二套 blind framework。dataset schema `1.1` 可为 case 显式声明 evaluation-only `structural_scenarios`；schema `1.0` 不接受该字段。当前 canonical taxonomy 为 `none / hard_cut / same_track_splice / crossfade / true_overlap / sequential_transition / piecewise_rate / reorder / detached_tail`。一个 case 可以属于多个真实结构类别，但 `none` 必须单独出现；未知值、空列表、重复值和非法组合全部 fail closed。
+
+schema `1.1` 中没有显式结构标签的 case 在报表中归入 `structural:unspecified`，但不会把这个默认值写进 ground-truth identity，因此既有 1.1 calibration / blind locks 不被无意义改写；schema `1.0` 保持旧 report shape，不新增 structural scope。只要 1.1 case 显式声明 `structural_scenarios`，该字段就进入 immutable ground-truth identity；标签顺序会 canonical 排序，selection 之后真正增删/替换结构类别仍会改变 SHA，从而被 blind lock 拒绝。
+
+`v4_calibration_workflow.py evaluate` 现在同时输出 `language:<code>` 与 `structural:<scenario>` aggregate groups；cut-boundary metrics 也按 structural scope 聚合，因此 policy 可在不暴露歌词或逐 case 私有证据的前提下对某类结构事件设置 gate。结构标签本身只用于 benchmark 分层，不授予 timing / cut / overlap / release authority，也不得从 candidate prediction 反推 truth。
+
+兼容性验收使用冻结的 r3 fresh-blind artifacts 原样重放：calibration ground-truth SHA 仍为 `737e83697f1e577bbf9c8473e21b54ad304c33d1c6f09404fc45abe10853e330`；blind 必须继续使用当时锁定的 `baseline_r3_blind_eval.dataset.json` evaluation view（其唯一受控转换是 `synthetic -> generic`），ground-truth SHA 仍为 `2e9c49321ac3541d2d5f3fdb953ddbdecab1f0c09f3ed80a6249aae83bbdc886`。去掉新增 structural-only report fields 后，新旧 calibration / blind evaluation 递归全等。

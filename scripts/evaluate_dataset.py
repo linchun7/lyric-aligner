@@ -8,15 +8,21 @@ import difflib
 import json
 import math
 import statistics
+import sys
 from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Any
 
+REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
+if str(REPOSITORY_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPOSITORY_ROOT))
+
+from lyric_aligner.evaluation.structural_scenarios import structural_scenarios
 from language_profiles import boundary_units_for_language, language_code
 from redo_karaoke_pipeline import Cue, normalized_text, parse_srt
 
 
-DATASET_SCHEMA_VERSION = "1.0"
+SUPPORTED_DATASET_SCHEMA_VERSIONS = {"1.0", "1.1"}
 
 
 def safe_divide(numerator: float, denominator: float) -> float:
@@ -38,6 +44,14 @@ def percentile(values: list[float], fraction: float) -> float:
 def resolve_local(base: Path, value: str) -> Path:
     path = Path(value)
     return path.resolve() if path.is_absolute() else (base / path).resolve()
+
+
+def evaluation_language(value: str) -> str:
+    """Map benchmark-only labels onto production-safe tokenization."""
+
+    if value.strip().lower() == "synthetic":
+        return "generic"
+    return language_code(value)
 
 
 def sequence_units(language: str, cues: list[Cue]) -> list[str]:
@@ -292,7 +306,8 @@ def case_metrics(case: dict[str, Any], base: Path) -> dict[str, Any]:
     split = str(case.get("split", "")).strip()
     if split not in {"train", "calibration", "blind_test"}:
         raise ValueError(f"case {case_id} has invalid split {split!r}")
-    language = language_code(str(case.get("language", "")))
+    language = evaluation_language(str(case.get("language", "")))
+    scenarios = list(structural_scenarios(case))
     reference = parse_srt(resolve_local(base, str(case["reference_srt"])))
     predicted = parse_srt(resolve_local(base, str(case["predicted_srt"])))
 
@@ -372,6 +387,7 @@ def case_metrics(case: dict[str, Any], base: Path) -> dict[str, Any]:
         "id": case_id,
         "split": split,
         "language": language,
+        "structural_scenarios": scenarios,
         "reference_cues": len(reference),
         "predicted_cues": len(predicted),
         "paired_cues": len(group_pairs),
@@ -519,18 +535,31 @@ def aggregate(rows: list[dict[str, Any]]) -> dict[str, Any]:
 
 def evaluate_manifest(path: Path) -> dict[str, Any]:
     payload = json.loads(path.read_text(encoding="utf-8-sig"))
-    if not isinstance(payload, dict) or payload.get("schema_version") != DATASET_SCHEMA_VERSION:
-        raise ValueError(f"dataset schema_version must be {DATASET_SCHEMA_VERSION}")
+    if not isinstance(payload, dict):
+        raise ValueError("dataset manifest must be a JSON object")
+    schema_version = str(payload.get("schema_version") or "")
+    if schema_version not in SUPPORTED_DATASET_SCHEMA_VERSIONS:
+        raise ValueError(
+            "dataset schema_version must be one of "
+            + ", ".join(sorted(SUPPORTED_DATASET_SCHEMA_VERSIONS))
+        )
     cases = payload.get("cases")
     if not isinstance(cases, list) or not cases:
         raise ValueError("dataset manifest must contain a non-empty cases list")
+    if schema_version == "1.0" and any(
+        isinstance(case, dict) and "structural_scenarios" in case for case in cases
+    ):
+        raise ValueError("structural_scenarios requires dataset schema_version 1.1")
     rows = [case_metrics(case, path.parent) for case in cases]
     groups: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for row in rows:
         groups[f"split:{row['split']}"] .append(row)
         groups[f"language:{row['language']}"] .append(row)
+        if schema_version == "1.1":
+            for scenario in row["structural_scenarios"]:
+                groups[f"structural:{scenario}"].append(row)
     return {
-        "schema_version": DATASET_SCHEMA_VERSION,
+        "schema_version": schema_version,
         "dataset": str(payload.get("dataset", "private-dataset")),
         "overall": aggregate(rows),
         "groups": {key: aggregate(value) for key, value in sorted(groups.items())},
@@ -539,6 +568,11 @@ def evaluate_manifest(path: Path) -> dict[str, Any]:
                 "id": row["id"],
                 "split": row["split"],
                 "language": row["language"],
+                **(
+                    {"structural_scenarios": row["structural_scenarios"]}
+                    if schema_version == "1.1"
+                    else {}
+                ),
                 "unit_f1": round(row["unit_f1"], 6),
                 "sequence_wer": round(
                     safe_divide(row["unit_edit_distance"], row["unit_reference"]), 6

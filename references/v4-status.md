@@ -222,6 +222,10 @@ r2 calibration aggregate 为 `unit_f1=0.999221`、`line_exact_f1=0.999167`、`cu
 
 第二个 candidate 使用用户工作流中的 prepared stem 做 same-track splice 正诊断。它在真实 calibration 上能自动发现一例约 6 秒 source-offset handoff，并把 `cut_precision/recall` 从 `0/0` 提升到 `1/1`，因此曾以 commit `1dbf82b` 进入 public candidate。随后发现原 r2 blind manifest 的结构标签已经在人工审计时暴露，原 4 个 blind case 被永久降级为 quarantine，不再用于正式 gate；重新锁定的 r3 fresh blind 在 candidate selection 前固定 8 个未见 synthetic structural case，并在 prediction materialize 后首次执行 gate。结果 candidate 在 fresh blind 上 `cut_precision=0`、`cut_recall=0`，未达到预先设定的 precision=1.0 / recall>=0.75 门禁。按 blind 纪律不再针对该结果调阈值，prepared-stem public core/CLI/test 撤回；private A/B 证据保留用于避免重复走同一路线。
 
+P1 结构 benchmark 现在复用上述 strict workflow，并把 case-level 结构真值显式标准化为 `structural_scenarios`。schema `1.1` 支持 `none / hard_cut / same_track_splice / crossfade / true_overlap / sequential_transition / piecewise_rate / reorder / detached_tail`；schema `1.0` 不接受该字段且保持旧 report shape。1.1 显式标签 canonical 排序后进入 ground-truth identity，未标注 1.1 case 只在 report 中归入 `structural:unspecified`，因此不会重写既有锁。strict evaluator 同时输出 `language:*` 与 `structural:*` aggregate scope；这些标签只用于 evaluation/gating，不增加任何生产 timing authority。
+
+冻结 r3 复放继续得到 calibration SHA `737e83697f1e577bbf9c8473e21b54ad304c33d1c6f09404fc45abe10853e330`、blind SHA `2e9c49321ac3541d2d5f3fdb953ddbdecab1f0c09f3ed80a6249aae83bbdc886`；去除新增 structural-only report 字段后，新旧两 split 评估递归全等。后续 detector 研究必须先补足相应 structural calibration/blind truth，再以分类指标证明增益；不得用同一 blind 结果继续调 threshold。
+
 ## 6. Legacy Partial Timeline Repair
 
 旧 P1–P5 bridge 继续固定：

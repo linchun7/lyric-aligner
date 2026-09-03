@@ -48,6 +48,8 @@ class DatasetEvaluationTests(unittest.TestCase):
             self.assertEqual(result["overall"]["unit_f1"], 1.0)
             self.assertEqual(result["overall"]["boundary_mae_ms"], 100.0)
             self.assertEqual(result["overall"]["runtime_per_audio_minute"], 6.0)
+            self.assertFalse(any(key.startswith("structural:") for key in result["groups"]))
+            self.assertNotIn("structural_scenarios", result["cases"][0])
             self.assertNotIn("private synthetic phrase", serialized)
 
     def test_missing_nine_of_ten_lines_is_not_reported_as_perfect_exact_match(self):
@@ -246,6 +248,98 @@ class DatasetEvaluationTests(unittest.TestCase):
             self.assertEqual(overall["overlap_duration_recall"], 0.75)
             self.assertEqual(overall["overlap_iou"], 0.75)
             self.assertEqual(overall["track_attribution_accuracy"], 1.0)
+
+
+    def test_schema_1_1_supports_structural_groups_and_synthetic_language(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            srt = "1\n00:00:01,000 --> 00:00:02,000\nsynthetic cue\n"
+            (root / "r.srt").write_text(srt, encoding="utf-8")
+            (root / "p.srt").write_text(srt, encoding="utf-8")
+            dataset = root / "dataset.json"
+            dataset.write_text(
+                json.dumps(
+                    {
+                        "schema_version": "1.1",
+                        "dataset": "synthetic-structural",
+                        "cases": [
+                            {
+                                "id": "splice",
+                                "split": "blind_test",
+                                "language": "synthetic",
+                                "reference_srt": "r.srt",
+                                "predicted_srt": "p.srt",
+                                "structural_scenarios": ["same_track_splice"],
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            result = evaluate_manifest(dataset)
+            self.assertEqual(result["schema_version"], "1.1")
+            self.assertIn("structural:same_track_splice", result["groups"])
+            self.assertIn("language:generic", result["groups"])
+            self.assertEqual(
+                result["cases"][0]["structural_scenarios"],
+                ["same_track_splice"],
+            )
+
+    def test_schema_1_0_rejects_structural_metadata(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            srt = "1\n00:00:01,000 --> 00:00:02,000\nline\n"
+            (root / "r.srt").write_text(srt, encoding="utf-8")
+            (root / "p.srt").write_text(srt, encoding="utf-8")
+            dataset = root / "dataset.json"
+            dataset.write_text(
+                json.dumps(
+                    {
+                        "schema_version": "1.0",
+                        "cases": [
+                            {
+                                "id": "old-schema",
+                                "split": "blind_test",
+                                "language": "en",
+                                "reference_srt": "r.srt",
+                                "predicted_srt": "p.srt",
+                                "structural_scenarios": ["hard_cut"],
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(ValueError, "requires dataset schema_version 1.1"):
+                evaluate_manifest(dataset)
+
+    def test_invalid_structural_scenario_fails_closed(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            srt = "1\n00:00:01,000 --> 00:00:02,000\nline\n"
+            (root / "r.srt").write_text(srt, encoding="utf-8")
+            (root / "p.srt").write_text(srt, encoding="utf-8")
+            dataset = root / "dataset.json"
+            dataset.write_text(
+                json.dumps(
+                    {
+                        "schema_version": "1.1",
+                        "cases": [
+                            {
+                                "id": "bad-structural",
+                                "split": "blind_test",
+                                "language": "en",
+                                "reference_srt": "r.srt",
+                                "predicted_srt": "p.srt",
+                                "structural_scenarios": ["invented-event"],
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(ValueError, "unsupported structural scenario"):
+                evaluate_manifest(dataset)
 
 
 if __name__ == "__main__":

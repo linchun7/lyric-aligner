@@ -17,6 +17,11 @@ from copy import deepcopy
 from pathlib import Path
 from typing import Any, Iterable
 
+from lyric_aligner.evaluation.structural_scenarios import (
+    StructuralScenarioError,
+    structural_scenarios,
+)
+
 
 EVALUATION_PROTOCOL_VERSION = "1.0"
 SUPPORTED_DATASET_SCHEMAS = {"1.0", "1.1"}
@@ -25,6 +30,14 @@ ALLOWED_SPLITS = {"train", "calibration", "blind_test"}
 
 class EvaluationProtocolError(ValueError):
     """Raised when a calibration/blind dataset violates evaluation contracts."""
+
+
+def _case_structural_scenarios(case: dict[str, Any]) -> tuple[str, ...]:
+    try:
+        return structural_scenarios(case)
+    except StructuralScenarioError as exc:
+        case_id = str(case.get("id") or "<unknown>")
+        raise EvaluationProtocolError(f"dataset case {case_id}: {exc}") from exc
 
 
 def _canonical_sha256(payload: Any) -> str:
@@ -81,11 +94,19 @@ def validate_dataset_manifest(
     if not isinstance(cases, list) or not cases:
         raise EvaluationProtocolError("dataset manifest must contain cases")
 
+    if schema == "1.0" and any(
+        isinstance(case, dict) and "structural_scenarios" in case for case in cases
+    ):
+        raise EvaluationProtocolError(
+            "structural_scenarios requires dataset schema_version 1.1"
+        )
+
     ids: set[str] = set()
     group_splits: dict[str, set[str]] = defaultdict(set)
     source_group_missing = 0
     split_counts: dict[str, int] = defaultdict(int)
     languages: set[str] = set()
+    structural_counts: dict[str, int] = defaultdict(int)
 
     for index, case in enumerate(cases):
         if not isinstance(case, dict):
@@ -104,6 +125,9 @@ def validate_dataset_manifest(
             )
         split_counts[split] += 1
         languages.add(str(case.get("language") or "unknown"))
+        if schema == "1.1":
+            for scenario in _case_structural_scenarios(case):
+                structural_counts[scenario] += 1
 
         reference_value = str(case.get("reference_srt") or "").strip()
         predicted_value = str(case.get("predicted_srt") or "").strip()
@@ -152,6 +176,11 @@ def validate_dataset_manifest(
         "source_group_count": len(group_splits),
         "source_group_missing_count": source_group_missing,
         "source_group_isolation_enforced": source_group_missing == 0,
+        **(
+            {"structural_scenario_counts": dict(sorted(structural_counts.items()))}
+            if schema == "1.1"
+            else {}
+        ),
     }
 
 
@@ -170,6 +199,8 @@ def _ground_truth_case_identity(base: Path, case: dict[str, Any]) -> dict[str, A
         "expected_occurrences": deepcopy(case.get("expected_occurrences", [])),
         "audio_duration_seconds": float(case.get("audio_duration_seconds") or 0.0),
     }
+    if "structural_scenarios" in case:
+        identity["structural_scenarios"] = list(_case_structural_scenarios(case))
     return identity
 
 
@@ -303,6 +334,11 @@ def cut_boundary_metrics_by_scope(
             continue
         language = str(case.get("language") or "unknown")
         scopes = ["overall", f"language:{language}"]
+        if str(payload.get("schema_version") or "") == "1.1":
+            scopes.extend(
+                f"structural:{scenario}"
+                for scenario in _case_structural_scenarios(case)
+            )
         expected = case.get("expected_cuts")
         predicted = case.get("predicted_cuts")
         if expected is None and predicted is None:

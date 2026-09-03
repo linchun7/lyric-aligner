@@ -17,6 +17,11 @@ from copy import deepcopy
 from pathlib import Path
 from typing import Any, Iterable
 
+from lyric_aligner.evaluation.structural_scenarios import (
+    StructuralScenarioError,
+    structural_scenarios,
+)
+
 
 STRICT_EVALUATION_SCHEMA = "3.0"
 STRICT_DATASET_SCHEMA = "1.1"
@@ -27,6 +32,14 @@ ALLOWED_SPLITS = {"train", "calibration", "blind_test"}
 
 class StrictEvaluationError(ValueError):
     """Raised when a private evaluation workflow violates isolation contracts."""
+
+
+def _case_structural_scenarios(case: dict[str, Any]) -> tuple[str, ...]:
+    try:
+        return structural_scenarios(case)
+    except StructuralScenarioError as exc:
+        case_id = str(case.get("id") or "<unknown>")
+        raise StrictEvaluationError(f"case {case_id}: {exc}") from exc
 
 
 def canonical_sha256(payload: Any) -> str:
@@ -85,6 +98,7 @@ def validate_manifest_metadata(payload: dict[str, Any]) -> dict[str, Any]:
     ids: set[str] = set()
     group_splits: dict[str, set[str]] = defaultdict(set)
     split_counts: dict[str, int] = defaultdict(int)
+    structural_counts: dict[str, int] = defaultdict(int)
     for index, case in enumerate(cases):
         if not isinstance(case, dict):
             raise StrictEvaluationError(f"case {index} must be an object")
@@ -103,6 +117,8 @@ def validate_manifest_metadata(payload: dict[str, Any]) -> dict[str, Any]:
         ids.add(case_id)
         split_counts[split] += 1
         group_splits[source_group].add(split)
+        for scenario in _case_structural_scenarios(case):
+            structural_counts[scenario] += 1
 
     leaked = {
         group: sorted(splits)
@@ -121,6 +137,7 @@ def validate_manifest_metadata(payload: dict[str, Any]) -> dict[str, Any]:
         "split_counts": dict(sorted(split_counts.items())),
         "source_group_count": len(group_splits),
         "source_group_isolation_enforced": True,
+        "structural_scenario_counts": dict(sorted(structural_counts.items())),
     }
 
 
@@ -197,25 +214,26 @@ def ground_truth_identity(
             raise StrictEvaluationError(
                 f"selected case {case['id']} reference_srt does not exist"
             )
-        rows.append(
-            {
-                "id": str(case["id"]),
-                "split": split,
-                "language": str(case.get("language") or "unknown"),
-                "source_group": str(case["source_group"]),
-                "reference_srt_sha256": file_sha256(reference),
-                "expected_cuts": deepcopy(case.get("expected_cuts", [])),
-                "expected_cut_ids": sorted(
-                    str(value) for value in case.get("expected_cut_ids", [])
-                ),
-                "expected_overlaps": deepcopy(case.get("expected_overlaps", [])),
-                "expected_occurrences": deepcopy(case.get("expected_occurrences", [])),
-                "audio_duration_seconds": _finite_number(
-                    case.get("audio_duration_seconds") or 0.0,
-                    label=f"case {case['id']} audio_duration_seconds",
-                ),
-            }
-        )
+        row = {
+            "id": str(case["id"]),
+            "split": split,
+            "language": str(case.get("language") or "unknown"),
+            "source_group": str(case["source_group"]),
+            "reference_srt_sha256": file_sha256(reference),
+            "expected_cuts": deepcopy(case.get("expected_cuts", [])),
+            "expected_cut_ids": sorted(
+                str(value) for value in case.get("expected_cut_ids", [])
+            ),
+            "expected_overlaps": deepcopy(case.get("expected_overlaps", [])),
+            "expected_occurrences": deepcopy(case.get("expected_occurrences", [])),
+            "audio_duration_seconds": _finite_number(
+                case.get("audio_duration_seconds") or 0.0,
+                label=f"case {case['id']} audio_duration_seconds",
+            ),
+        }
+        if "structural_scenarios" in case:
+            row["structural_scenarios"] = list(_case_structural_scenarios(case))
+        rows.append(row)
     rows.sort(key=lambda row: row["id"])
     core = {
         "dataset": str(payload["dataset"]),

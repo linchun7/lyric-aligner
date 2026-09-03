@@ -79,9 +79,13 @@ def command_evaluate(args: argparse.Namespace) -> int:
     grouped_rows: dict[str, list[dict]] = defaultdict(list)
     grouped_cases: dict[str, list[dict]] = defaultdict(list)
     for row, case in zip(rows, cases):
-        scope = f"language:{row['language']}"
-        grouped_rows[scope].append(row)
-        grouped_cases[scope].append(case)
+        scopes = [f"language:{row['language']}"]
+        scopes.extend(
+            f"structural:{scenario}" for scenario in row["structural_scenarios"]
+        )
+        for scope in scopes:
+            grouped_rows[scope].append(row)
+            grouped_cases[scope].append(case)
 
     overall = aggregate(rows)
     overall.update(cut_boundary_metrics(cases))
@@ -108,6 +112,7 @@ def command_evaluate(args: argparse.Namespace) -> int:
                 "id": row["id"],
                 "split": row["split"],
                 "language": row["language"],
+                "structural_scenarios": row["structural_scenarios"],
                 "reference_cues": row["reference_cues"],
                 "predicted_cues": row["predicted_cues"],
                 "review_candidate_count": row["review_candidate_count"],

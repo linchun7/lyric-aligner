@@ -86,6 +86,7 @@ class V4StrictCalibrationWorkflowTests(unittest.TestCase):
                             "split": "calibration",
                             "language": "zh",
                             "source_group": "source-cal-001",
+                            "structural_scenarios": ["hard_cut"],
                             "reference_srt": str(refs / "cal.srt"),
                             "predicted_srt": str(pred_cal),
                             "qa_json": str(qa_cal),
@@ -96,6 +97,7 @@ class V4StrictCalibrationWorkflowTests(unittest.TestCase):
                             "split": "blind_test",
                             "language": "ja",
                             "source_group": "source-blind-001",
+                            "structural_scenarios": ["true_overlap"],
                             "reference_srt": str(refs / "blind.srt"),
                             "predicted_srt": str(pred_blind),
                             "qa_json": str(qa_blind),
@@ -161,6 +163,11 @@ class V4StrictCalibrationWorkflowTests(unittest.TestCase):
             self.assertEqual(
                 baseline_payload["dataset_identity"]["dataset_ground_truth_sha256"],
                 candidate_payload["dataset_identity"]["dataset_ground_truth_sha256"],
+            )
+            self.assertIn("structural:hard_cut", baseline_payload["groups"])
+            self.assertEqual(
+                baseline_payload["dataset_validation"]["structural_scenario_counts"],
+                {"hard_cut": 1, "true_overlap": 1},
             )
 
             calibration_policy = root / "calibration.policy.json"
@@ -247,6 +254,10 @@ class V4StrictCalibrationWorkflowTests(unittest.TestCase):
                     candidate_blind_eval,
                 ).returncode,
                 0,
+            )
+            self.assertIn(
+                "structural:true_overlap",
+                json.loads(candidate_blind_eval.read_text(encoding="utf-8"))["groups"],
             )
 
             blind_policy = root / "blind.policy.json"
