@@ -21,6 +21,11 @@ from lyric_aligner.evaluation.structural_scenarios import (
     StructuralScenarioError,
     structural_scenarios,
 )
+from lyric_aligner.evaluation.structural_events import (
+    StructuralEventError,
+    structural_event_truth_identity,
+    validate_structural_event_case,
+)
 
 
 STRICT_EVALUATION_SCHEMA = "3.0"
@@ -39,6 +44,41 @@ def _case_structural_scenarios(case: dict[str, Any]) -> tuple[str, ...]:
         return structural_scenarios(case)
     except StructuralScenarioError as exc:
         case_id = str(case.get("id") or "<unknown>")
+        raise StrictEvaluationError(f"case {case_id}: {exc}") from exc
+
+
+def _validate_structural_events(case: dict[str, Any]) -> None:
+    try:
+        validate_structural_event_case(case)
+        if (
+            "predicted_structural_events" in case
+            and "expected_structural_events" not in case
+        ):
+            raise StructuralEventError(
+                "predicted_structural_events requires frozen expected_structural_events"
+            )
+        if "expected_structural_events" not in case:
+            return
+        if "structural_scenarios" not in case:
+            raise StructuralEventError(
+                "expected_structural_events requires explicit structural_scenarios"
+            )
+        scenarios = set(_case_structural_scenarios(case))
+        expected = structural_event_truth_identity(case)
+        if scenarios == {"none"} and expected:
+            raise StructuralEventError(
+                "structural scenario 'none' requires empty expected_structural_events"
+            )
+        missing = sorted({str(event["kind"]) for event in expected} - scenarios)
+        if missing:
+            raise StructuralEventError(
+                "expected structural event kinds missing from structural_scenarios: "
+                + ", ".join(missing)
+            )
+    except (StructuralEventError, StrictEvaluationError) as exc:
+        case_id = str(case.get("id") or "<unknown>")
+        if isinstance(exc, StrictEvaluationError):
+            raise
         raise StrictEvaluationError(f"case {case_id}: {exc}") from exc
 
 
@@ -119,6 +159,7 @@ def validate_manifest_metadata(payload: dict[str, Any]) -> dict[str, Any]:
         group_splits[source_group].add(split)
         for scenario in _case_structural_scenarios(case):
             structural_counts[scenario] += 1
+        _validate_structural_events(case)
 
     leaked = {
         group: sorted(splits)
@@ -233,6 +274,19 @@ def ground_truth_identity(
         }
         if "structural_scenarios" in case:
             row["structural_scenarios"] = list(_case_structural_scenarios(case))
+        if "expected_structural_events" in case:
+            try:
+                row["expected_structural_events"] = structural_event_truth_identity(case)
+            except StructuralEventError as exc:
+                raise StrictEvaluationError(f"case {case['id']}: {exc}") from exc
+            row["structural_event_tolerance_ms"] = _finite_number(
+                case.get("structural_event_tolerance_ms", 500.0),
+                label=f"case {case['id']} structural_event_tolerance_ms",
+            )
+            row["structural_event_min_iou"] = _finite_number(
+                case.get("structural_event_min_iou", 0.5),
+                label=f"case {case['id']} structural_event_min_iou",
+            )
         rows.append(row)
     rows.sort(key=lambda row: row["id"])
     core = {

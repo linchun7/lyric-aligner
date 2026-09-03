@@ -24,6 +24,14 @@ ASR / forced -> auxiliary acoustic evidence
 
 ---
 
+## 2026-09-03 — P1 typed structural-event evaluation contract
+
+在 taxonomy/reporting foundation 之后继续补齐“事件是否真的被检测到”的 strict gate 能力，而不是直接写新 detector。schema `1.1` 可选 `expected_structural_events / predicted_structural_events`：point event (`hard_cut / same_track_splice / sequential_transition`) 使用 `kind + time_ms`，interval event (`crossfade / true_overlap / piecewise_rate / reorder / detached_tail`) 使用 `kind + start_ms + end_ms`。point 采用单调 maximum-cardinality/minimum-total-error matching，interval 采用单调 maximum-cardinality/maximum-total-IoU matching。
+
+Expected events 及其 `structural_event_tolerance_ms / structural_event_min_iou` 属于 truth-side identity；predicted events 永不进入 ground-truth SHA。prediction-only metadata、truth/scenario 不一致、`none` 配非空 truth、错误 shape、重复事件、非法时间/阈值全部 fail closed。strict evaluator 新增 aggregate `structural_event_precision / recall / f1`、FP/miss、point MAE、interval mean IoU；evaluation 输出仍只保留 aggregate/opaque case，不泄漏事件位置。
+
+兼容验收：冻结 r3 calibration/blind SHA 分别仍为 `737e83697f1e577bbf9c8473e21b54ad304c33d1c6f09404fc45abe10853e330` / `2e9c49321ac3541d2d5f3fdb953ddbdecab1f0c09f3ed80a6249aae83bbdc886`，旧 case 的 typed-event annotation/clean counts 均为 0；剥离新增 `structural_event_*` 指标后，旧/新两 split 递归全等。另新增 privacy-safe coverage map `references/structural-benchmark-coverage.md`，确认下一阶段优先构造 `reorder / detached_tail` 的 typed calibration 与全新 locked blind，不复用已观察 r3 blind，不先实现 detector。
+
 ## 2026-09-03 — P1 structural benchmark taxonomy / reporting contract
 
 结构算法继续研究前先补齐评估层，而不是继续调 ordinary timing threshold。既有 strict calibration / locked blind workflow 保持唯一方法学主线；dataset schema `1.1` 新增可选、truth-side `structural_scenarios`，canonical 类别固定为 `none / hard_cut / same_track_splice / crossfade / true_overlap / sequential_transition / piecewise_rate / reorder / detached_tail`。1.1 未标注 case 只在报表层归入 `structural:unspecified`；显式标签 canonical 排序后进入 ground-truth identity，非法值/重复值/`none` 混用 fail closed。schema `1.0` 不接受该字段，并保持旧 report shape，不新增 structural scope。

@@ -108,24 +108,32 @@ class V4StrictCalibrationWorkflowTests(unittest.TestCase):
 
             baseline_manifest = root / "baseline.dataset.json"
             candidate_manifest = root / "candidate.dataset.json"
-            write_json(
-                baseline_manifest,
-                manifest(
-                    baseline_cal_pred,
-                    baseline_cal_qa,
-                    baseline_blind_pred,
-                    baseline_blind_qa,
-                ),
+            baseline_manifest_payload = manifest(
+                baseline_cal_pred,
+                baseline_cal_qa,
+                baseline_blind_pred,
+                baseline_blind_qa,
             )
-            write_json(
-                candidate_manifest,
-                manifest(
-                    candidate_cal_pred,
-                    candidate_cal_qa,
-                    candidate_blind_pred,
-                    candidate_blind_qa,
-                ),
+            candidate_manifest_payload = manifest(
+                candidate_cal_pred,
+                candidate_cal_qa,
+                candidate_blind_pred,
+                candidate_blind_qa,
             )
+            for manifest_payload in (
+                baseline_manifest_payload,
+                candidate_manifest_payload,
+            ):
+                manifest_payload["cases"][0]["structural_scenarios"] = ["reorder"]
+                manifest_payload["cases"][0]["expected_structural_events"] = [
+                    {"kind": "reorder", "start_ms": 1000, "end_ms": 2500}
+                ]
+            baseline_manifest_payload["cases"][0]["predicted_structural_events"] = []
+            candidate_manifest_payload["cases"][0]["predicted_structural_events"] = [
+                {"kind": "reorder", "start_ms": 1100, "end_ms": 2400}
+            ]
+            write_json(baseline_manifest, baseline_manifest_payload)
+            write_json(candidate_manifest, candidate_manifest_payload)
 
             baseline_cal_eval = root / "baseline.calibration.eval.json"
             candidate_cal_eval = root / "candidate.calibration.eval.json"
@@ -164,10 +172,28 @@ class V4StrictCalibrationWorkflowTests(unittest.TestCase):
                 baseline_payload["dataset_identity"]["dataset_ground_truth_sha256"],
                 candidate_payload["dataset_identity"]["dataset_ground_truth_sha256"],
             )
-            self.assertIn("structural:hard_cut", baseline_payload["groups"])
+            self.assertIn("structural:reorder", baseline_payload["groups"])
             self.assertEqual(
                 baseline_payload["dataset_validation"]["structural_scenario_counts"],
-                {"hard_cut": 1, "true_overlap": 1},
+                {"reorder": 1, "true_overlap": 1},
+            )
+            self.assertEqual(
+                baseline_payload["groups"]["structural:reorder"][
+                    "structural_event_recall"
+                ],
+                0.0,
+            )
+            self.assertEqual(
+                candidate_payload["groups"]["structural:reorder"][
+                    "structural_event_recall"
+                ],
+                1.0,
+            )
+            self.assertGreater(
+                candidate_payload["groups"]["structural:reorder"][
+                    "structural_event_interval_mean_iou"
+                ],
+                0.8,
             )
 
             calibration_policy = root / "calibration.policy.json"

@@ -17,6 +17,7 @@ if str(SCRIPT_ROOT) not in sys.path:
     sys.path.insert(0, str(SCRIPT_ROOT))
 
 from evaluate_dataset import aggregate, case_metrics
+from lyric_aligner.evaluation.structural_events import structural_event_metrics
 from lyric_aligner.evaluation.strict_workflow import (
     STRICT_EVALUATION_SCHEMA,
     STRICT_SELECTION_SCHEMA,
@@ -89,10 +90,15 @@ def command_evaluate(args: argparse.Namespace) -> int:
 
     overall = aggregate(rows)
     overall.update(cut_boundary_metrics(cases))
+    overall.update(structural_event_metrics(cases))
     groups = {}
     for scope in sorted(grouped_rows):
         metrics = aggregate(grouped_rows[scope])
         metrics.update(cut_boundary_metrics(grouped_cases[scope]))
+        kind_filter = scope.split(":", 1)[1] if scope.startswith("structural:") else None
+        metrics.update(
+            structural_event_metrics(grouped_cases[scope], kind_filter=kind_filter)
+        )
         groups[scope] = metrics
 
     payload = {

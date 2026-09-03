@@ -224,7 +224,11 @@ r2 calibration aggregate 为 `unit_f1=0.999221`、`line_exact_f1=0.999167`、`cu
 
 P1 结构 benchmark 现在复用上述 strict workflow，并把 case-level 结构真值显式标准化为 `structural_scenarios`。schema `1.1` 支持 `none / hard_cut / same_track_splice / crossfade / true_overlap / sequential_transition / piecewise_rate / reorder / detached_tail`；schema `1.0` 不接受该字段且保持旧 report shape。1.1 显式标签 canonical 排序后进入 ground-truth identity，未标注 1.1 case 只在 report 中归入 `structural:unspecified`，因此不会重写既有锁。strict evaluator 同时输出 `language:*` 与 `structural:*` aggregate scope；这些标签只用于 evaluation/gating，不增加任何生产 timing authority。
 
-冻结 r3 复放继续得到 calibration SHA `737e83697f1e577bbf9c8473e21b54ad304c33d1c6f09404fc45abe10853e330`、blind SHA `2e9c49321ac3541d2d5f3fdb953ddbdecab1f0c09f3ed80a6249aae83bbdc886`；去除新增 structural-only report 字段后，新旧两 split 评估递归全等。后续 detector 研究必须先补足相应 structural calibration/blind truth，再以分类指标证明增益；不得用同一 blind 结果继续调 threshold。
+冻结 r3 复放继续得到 calibration SHA `737e83697f1e577bbf9c8473e21b54ad304c33d1c6f09404fc45abe10853e330`、blind SHA `2e9c49321ac3541d2d5f3fdb953ddbdecab1f0c09f3ed80a6249aae83bbdc886`；去除新增 structural-only report 字段后，新旧两 split 评估递归全等。
+
+P1 已进一步增加 evaluation-only typed structural-event contract。point event 为 `hard_cut / same_track_splice / sequential_transition`，按 `time_ms` 容差做 maximum-cardinality/minimum-error matching；interval event 为 `crossfade / true_overlap / piecewise_rate / reorder / detached_tail`，按区间 IoU 做 maximum-cardinality/maximum-IoU matching。truth 使用 `expected_structural_events`，prediction 使用 `predicted_structural_events`；typed prediction 若没有预先冻结的 expected list（负例也必须显式为空）立即 fail closed。expected events、point tolerance 和 interval IoU threshold 进入 ground-truth identity，prediction 不进入。strict evaluator 现在可在 overall/language/structural scope 输出 event precision/recall/F1、FP/miss、point MAE 和 interval mean IoU，且不把 event 位置写入公开 evaluation。
+
+冻结 r3 在 typed-event 层再次精确复现同一 calibration/blind SHA；历史 r3 没有 event truth 字段，因此 `structural_event_annotation_case_count=0`、`clean_case_count=0`，不会被误当成新 event-level clean truth。剥离新增 `structural_event_*` 指标后，新旧 r3 评估仍递归全等。当前 coverage 已单列在 `references/structural-benchmark-coverage.md`：真实 `reorder` 与 `detached_tail` calibration truth 已存在，下一步先构造 typed calibration + **新的** fresh-blind revision；不得先写 detector，也不得复用已观察的 r3 blind 调 threshold。
 
 ## 6. Legacy Partial Timeline Repair
 
