@@ -24,6 +24,14 @@ ASR / forced -> auxiliary acoustic evidence
 
 ---
 
+## 2026-09-03 — P1 r4 fresh-blind structural detector evidence
+
+在 typed-event metric contract 冻结之后，新增 evaluation-only `lyric_aligner/evaluation/structural_detectors.py`，只研究两个已有独立 truth 的正交结构事实，不接入 production Max authority。`reorder` 不再用“任意 SRT 文件顺序回跳”作为真值，而要求已有 source/occurrence mapping authority 的 editor cue 才能建立/触发 chronology frontier；unmapped overlay/口播不能单独生成 reorder。`detached_tail` 只检测后段长 exact-digital-zero gap 后重新出现的短孤立 active island。
+
+r4 calibration 使用 2 个真实正例（190 reorder、Walk120 detached tail）和 3 个显式 negative controls，opaque SRT 仅作评估载体；真实 production SRT/audio/QA/Smart mapping 通过 SHA 绑定 input/truth。candidate revision `11b2443c59aa5a14b8b1c8950a9eaf0c103fc6f48d958711208bc7f3ad5c5183` 在 calibration 上得到 typed-event precision/recall/F1=`1/1/1`、negative clean rate=`1.0`、interval IoU=`1.0`，随后 selection payload `71c5f5ab9b40603a095b526dea016435ceffcff49a0183038a3d0f3c2ff38745` 被锁定。
+
+在读取任何 blind metric 前，fresh blind policy 同样冻结。12 个一次性、隐藏 case（4 reorder / 4 detached-tail / 4 none）首次 materialize 后执行唯一一次 gate：overall precision/recall/F1=`1/1/1`、interval mean IoU=`0.999696`，两类 positive recall 均为 `1.0`，`none` clean-case rate=`1.0`，gate PASS；blind gate payload SHA=`53bef3698a1dc60da6d3aa605c4e126aea5cea231dc6b680ef95e8c044fcbe04`。该 r4 blind 自 observation 起永久不可用于继续调 threshold。此结果只证明 evaluation candidate 泛化，不直接修改 coarse/Fine/TimeWarp、transition/review/release authority。
+
 ## 2026-09-03 — P1 typed structural-event evaluation contract
 
 在 taxonomy/reporting foundation 之后继续补齐“事件是否真的被检测到”的 strict gate 能力，而不是直接写新 detector。schema `1.1` 可选 `expected_structural_events / predicted_structural_events`：point event (`hard_cut / same_track_splice / sequential_transition`) 使用 `kind + time_ms`，interval event (`crossfade / true_overlap / piecewise_rate / reorder / detached_tail`) 使用 `kind + start_ms + end_ms`。point 采用单调 maximum-cardinality/minimum-total-error matching，interval 采用单调 maximum-cardinality/maximum-total-IoU matching。

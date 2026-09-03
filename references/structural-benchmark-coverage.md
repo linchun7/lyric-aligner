@@ -30,8 +30,8 @@ The labels describe truth; they do not grant timing, cut, overlap, review, or re
 | `same_track_splice` | yes: KPOP110 Gee has independently audited source-offset handoff/removal within one occurrence | yes: r3 has four unseen synthetic positive splice cases | covered |
 | `crossfade` | yes: KPOP110 production review contains independently confirmed crossfade boundaries | yes: r3 positive cases use a locked linear crossfade between source-offset branches | covered |
 | `sequential_transition` | yes: KPOP130 and 快乐健走140 production review explicitly resolve representative boundaries clear with no persistent dual-source support | no dedicated fresh blind category | calibration-ready; blind gap |
-| `reorder` | yes: the private 190 regression truth explicitly documents non-monotonic file/source order and the affected review region | no | calibration truth exists; detector gate not yet complete |
-| `detached_tail` | yes: Walk120 QA freezes the main-program end, long exact-zero region, and later detached audio island as export residue | no | calibration truth exists; detector gate not yet complete |
+| `reorder` | yes: the private 190 regression truth explicitly documents non-monotonic mapped source/editor order and the affected review region | yes: r4 has four fresh locked hidden reorder cases | evaluation detector passed fresh blind; production promotion not yet granted |
+| `detached_tail` | yes: Walk120 QA freezes the main-program end, long exact-zero region, and later detached audio island as export residue | yes: r4 has four fresh locked hidden detached-tail cases | evaluation detector passed fresh blind; production promotion not yet granted |
 | `hard_cut` | no independently frozen clean case yet | no | gap |
 | `true_overlap` | no independently frozen non-crossfade overlap case yet | no | gap |
 | `piecewise_rate` | production history/user editing facts suggest candidates, but no independent immutable benchmark truth currently separates real rate regimes from detector inference | no | gap; do not use algorithm selection as truth |
@@ -78,22 +78,21 @@ Strict evaluation now exposes aggregate `structural_event_precision / recall / f
 
 Compatibility was verified against the frozen r3 calibration and locked blind view. Both historical ground-truth SHAs remain exact; legacy cases have `structural_event_annotation_case_count=0` and are not treated as event-level clean truth. After stripping only the newly added `structural_event_*` fields, the old and new r3 evaluations are recursively equal.
 
-## 5. What is not yet detector-ready
+## 5. Current detector-readiness
 
-The metric contract is now ready, but several categories still lack a complete calibration + fresh-blind truth set. The next work is therefore **benchmark construction, not detector implementation**:
+`reorder` and `detached_tail` have now completed the full real-calibration -> candidate-selection -> predeclared-policy -> fresh-blind cycle. The selected evaluation-only candidate passed r4 fresh blind with overall typed-event precision/recall/F1 `1/1/1`, interval mean IoU `0.999696`, category recalls `1.0`, and `none` clean-case rate `1.0`. The r4 blind is now permanently observed and must not be used for retuning.
 
-1. materialize typed calibration events from independently verified real `reorder` and `detached_tail` evidence;
-2. create a **new** deterministic fresh-blind revision for the selected research categories and lock truth before candidate selection;
-3. add independent `piecewise_rate`, `hard_cut`, and non-crossfade `true_overlap` truth before researching those detectors;
-4. never reuse the already observed r3 blind result for threshold tuning;
-5. only after calibration truth + new blind lock exist may a detector be implemented/selected.
+Remaining categories are still benchmark-limited:
+
+1. add independent `piecewise_rate`, `hard_cut`, and non-crossfade `true_overlap` truth before researching those detectors;
+2. keep r3 and r4 observed blind sets out of future threshold tuning;
+3. treat the current `reorder / detached_tail` detector as evaluation evidence until a separate production-authority design and real-task regression prove it can be integrated fail-closed.
 
 ## 6. Current research priority
 
 The next algorithm target should not be chosen by convenience. Priority is determined by production impact and availability of independent truth:
 
-1. `reorder` — high impact because wrong source identity can corrupt a whole region; real calibration truth already exists.
-2. `detached_tail` — real truth exists and current a13 solution is explicit QA evidence, not general automatic detection.
-3. `piecewise_rate` — important for manually edited songs, but truth must first be frozen independently of Max predictions.
-4. `hard_cut` / non-crossfade `true_overlap` — obtain clean truth cases before detector work.
-5. ordinary timing refinement remains lower priority because current calibration timing/text performance is already near saturation.
+1. production-promotion design for the fresh-blind-passed `reorder / detached_tail` evidence, without granting raw-SRT heuristics new authority;
+2. `piecewise_rate` — important for manually edited songs, but truth must first be frozen independently of Max predictions;
+3. `hard_cut` / non-crossfade `true_overlap` — obtain clean truth cases before detector work;
+4. ordinary timing refinement remains lower priority because current calibration timing/text performance is already near saturation.

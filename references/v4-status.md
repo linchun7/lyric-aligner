@@ -228,7 +228,11 @@ P1 结构 benchmark 现在复用上述 strict workflow，并把 case-level 结�
 
 P1 已进一步增加 evaluation-only typed structural-event contract。point event 为 `hard_cut / same_track_splice / sequential_transition`，按 `time_ms` 容差做 maximum-cardinality/minimum-error matching；interval event 为 `crossfade / true_overlap / piecewise_rate / reorder / detached_tail`，按区间 IoU 做 maximum-cardinality/maximum-IoU matching。truth 使用 `expected_structural_events`，prediction 使用 `predicted_structural_events`；typed prediction 若没有预先冻结的 expected list（负例也必须显式为空）立即 fail closed。expected events、point tolerance 和 interval IoU threshold 进入 ground-truth identity，prediction 不进入。strict evaluator 现在可在 overall/language/structural scope 输出 event precision/recall/F1、FP/miss、point MAE 和 interval mean IoU，且不把 event 位置写入公开 evaluation。
 
-冻结 r3 在 typed-event 层再次精确复现同一 calibration/blind SHA；历史 r3 没有 event truth 字段，因此 `structural_event_annotation_case_count=0`、`clean_case_count=0`，不会被误当成新 event-level clean truth。剥离新增 `structural_event_*` 指标后，新旧 r3 评估仍递归全等。当前 coverage 已单列在 `references/structural-benchmark-coverage.md`：真实 `reorder` 与 `detached_tail` calibration truth 已存在，下一步先构造 typed calibration + **新的** fresh-blind revision；不得先写 detector，也不得复用已观察的 r3 blind 调 threshold。
+冻结 r3 在 typed-event 层再次精确复现同一 calibration/blind SHA；历史 r3 没有 event truth 字段，因此 `structural_event_annotation_case_count=0`、`clean_case_count=0`，不会被误当成新 event-level clean truth。剥离新增 `structural_event_*` 指标后，新旧 r3 评估仍递归全等。
+
+随后按该方法学完成 r4 `reorder / detached_tail / none` 研究闭环。真实 calibration 使用独立 production/QA truth，并把评估文本载体改为 opaque SRT；`reorder` detector 只允许已有 source/occurrence mapping authority 的 editor cue 建立或触发 chronology frontier，unmapped overlay/口播不能单独获得 reorder authority；`detached_tail` detector 只读取长 exact-zero gap 后重新出现的短孤立 active island。5-case calibration 在预先固定 gate 下得到 typed-event precision/recall/F1=`1/1/1`、3/3 negative controls clean、interval IoU=`1.0`，candidate revision 锁为 `11b2443c59aa5a14b8b1c8950a9eaf0c103fc6f48d958711208bc7f3ad5c5183`。
+
+candidate selection 与 blind policy 均在读取 blind metrics 前冻结；随后首次且唯一一次 materialize 12 个 fresh locked blind case（4 reorder / 4 detached-tail / 4 none）并执行 gate。结果 overall typed-event precision/recall/F1=`1/1/1`、interval mean IoU=`0.999696`、`structural:reorder` recall=`1.0`、`structural:detached_tail` recall=`1.0`、`structural:none` clean-case rate=`1.0`，blind gate PASS。该 r4 blind 从首次 observation 起永久禁止用于后续 threshold tuning；private case-level truth/prediction 继续不进入 public repo。此成功目前仍是 evaluation-only evidence，不自动授予 Max timing/review/release authority。
 
 ## 6. Legacy Partial Timeline Repair
 
