@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Plan and optionally execute bounded Pro evidence from a Smart report.
 
-Pro v1.2 routes evidence by failure reason, reuses nearby mix regions, can run
+Pro v1.2.7 routes evidence by failure reason, reuses nearby mix regions, can run
 source-local acoustic matching, faster-whisper, and the existing external
 forced-alignment protocol, and still never mutates subtitle timing by itself.
 """
@@ -33,6 +33,7 @@ from lyric_aligner.alignment.local_acoustic_match import LocalAcousticMatchConfi
 from lyric_aligner.alignment.local_acoustic_v11 import execute_region_source_match_jobs
 from lyric_aligner.alignment.selective_fusion import (
     ProDecisionFusionError,
+    PRO_PRODUCT_VERSION,
     build_pro_decisions,
 )
 from lyric_aligner.alignment.selective_policy import build_selective_repair_plan_v11
@@ -321,6 +322,7 @@ def main() -> int:
 
         summary: dict[str, object] = {
             "product_mode": "Pro",
+            "product_version": PRO_PRODUCT_VERSION,
             "policy_id": plan.get("policy_id"),
             "plan": str(args.plan_out),
             "job_count": plan["summary"].get("job_count", 0),
@@ -460,6 +462,18 @@ def main() -> int:
             }
             _write_json(args.decision_out, decisions)
             summary["decision_out"] = str(args.decision_out)
+            summary["automatic_adjudication_count"] = decisions["summary"].get(
+                "automatic_adjudication_count", 0
+            )
+            summary["manual_review_required_count"] = decisions["summary"].get(
+                "manual_review_required_count", 0
+            )
+            summary["confirm_only_manual_review_count"] = decisions["summary"].get(
+                "confirm_only_manual_review_count", 0
+            )
+            summary["investigative_manual_review_count"] = decisions["summary"].get(
+                "investigative_manual_review_count", 0
+            )
             summary["high_priority_manual_review_count"] = decisions["summary"].get(
                 "high_priority_manual_review_count", 0
             )

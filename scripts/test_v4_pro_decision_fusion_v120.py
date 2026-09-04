@@ -331,5 +331,222 @@ class ProDecisionFusionV120Tests(unittest.TestCase):
         self.assertEqual(row["manual_review_priority"], "high")
 
 
+    def test_v127_segmentation_timing_review_stays_investigative(self) -> None:
+        timing = _timing(1, proposal=None)
+        timing["reason"] = "segmentation_internal_boundary_unvalidated"
+        smart = {
+            "schema_version": "smart-1.1",
+            "policy_id": "smart-validation-policy-2026-08-22-v1.2.10",
+            "timing_decisions": [timing],
+            "text_decisions": [{"cue_ordinal": 1, "action": "unchanged"}],
+        }
+        plan = {
+            "schema_version": "1.1",
+            "policy_id": "smart-to-pro-reason-aware-2026-08-22-v1.2.6",
+            "jobs": [_job(1)],
+        }
+        acoustic = {"schema_version": "1.4", "jobs": [_acoustic(1, shift_ms=80)]}
+
+        result = build_pro_decisions(
+            smart_report=smart,
+            plan=plan,
+            acoustic_evidence=acoustic,
+        )
+        row = result["decisions"][0]
+        self.assertEqual(result["product_version"], "1.2.7")
+        self.assertEqual(result["schema_version"], "1.1")
+        self.assertEqual(result["authority"], "automatic_adjudication_no_srt_mutation")
+        self.assertTrue(result["automatic_adjudication_allowed"])
+        self.assertFalse(result["automatic_review_resolution_allowed"])
+        self.assertEqual(row["timing_state"], "editor_supported_by_acoustic")
+        self.assertEqual(row["timing_resolution"], "manual_review_required")
+        self.assertEqual(row["resolution"], "manual_review_required")
+        self.assertFalse(row["automatic_adjudication_performed"])
+        self.assertEqual(row["manual_review_mode"], "investigate")
+        self.assertTrue(row["manual_review_required"])
+        self.assertIsNone(row["timing_recommendation"])
+        self.assertFalse(row["automatic_review_resolution_performed"])
+        self.assertFalse(row["automatic_timing_change_allowed"])
+        self.assertFalse(row["automatic_text_change_allowed"])
+        self.assertFalse(row["timing_mutation_performed"])
+
+    def test_v127_supported_text_is_advisory_not_auto_resolved(self) -> None:
+        smart = {
+            "schema_version": "smart-1.1",
+            "policy_id": "smart-validation-policy-2026-08-22-v1.2.10",
+            "timing_decisions": [{"cue_ordinal": 3, "action": "unchanged"}],
+            "text_decisions": [
+                {
+                    "cue_ordinal": 3,
+                    "canonical_ordinal": 7,
+                    "canonical_span": [7, 8],
+                    "action": "review",
+                    "reason": "low_or_structurally_unsafe_similarity",
+                }
+            ],
+        }
+        job = {
+            "job_id": "job-3",
+            "cue_ordinal": 3,
+            "source_ordinal": 0,
+            "canonical_line_index": 7,
+            "canonical_text_sha256": "canonical-hash",
+            "requested_capabilities": ["mix_asr", "word_timestamps"],
+            "reasons": ["smart_text_review:low_or_structurally_unsafe_similarity"],
+            "shadow_evidence_only": False,
+        }
+        plan = {
+            "schema_version": "1.1",
+            "policy_id": "smart-to-pro-reason-aware-2026-08-22-v1.2.6",
+            "jobs": [job],
+        }
+        asr = {
+            "schema_version": "1.0",
+            "jobs": [{"job_id": "job-3", "canonical_text_support_score": 0.95}],
+        }
+
+        result = build_pro_decisions(smart_report=smart, plan=plan, asr_evidence=asr)
+        row = result["decisions"][0]
+        self.assertEqual(row["text_state"], "canonical_text_supported")
+        self.assertEqual(row["text_resolution"], "canonical_text_supported_advisory")
+        self.assertEqual(row["resolution"], "manual_review_required")
+        self.assertTrue(row["manual_review_required"])
+        self.assertTrue(row["automatic_adjudication_performed"])
+        self.assertEqual(row["manual_review_mode"], "investigate")
+        self.assertFalse(row["automatic_review_resolution_performed"])
+        self.assertFalse(row["automatic_text_change_allowed"])
+        self.assertEqual(result["summary"]["text_supported_advisory_count"], 1)
+        self.assertEqual(result["summary"]["automatic_review_resolution_count"], 0)
+
+    def test_v127_supported_timing_becomes_confirm_only_advisory(self) -> None:
+        smart = {
+            "schema_version": "smart-1.1",
+            "policy_id": "smart-validation-policy-2026-08-22-v1.2.10",
+            "timing_decisions": [_timing(1, proposal=11_200)],
+            "text_decisions": [{"cue_ordinal": 1, "action": "unchanged"}],
+        }
+        plan = {
+            "schema_version": "1.1",
+            "policy_id": "smart-to-pro-reason-aware-2026-08-22-v1.2.6",
+            "jobs": [_job(1)],
+        }
+        acoustic = {"schema_version": "1.4", "jobs": [_acoustic(1, shift_ms=650)]}
+
+        result = build_pro_decisions(
+            smart_report=smart,
+            plan=plan,
+            acoustic_evidence=acoustic,
+        )
+        row = result["decisions"][0]
+        self.assertEqual(row["timing_state"], "smart_candidate_supported")
+        self.assertEqual(row["timing_resolution"], "candidate_confirmed_advisory")
+        self.assertEqual(row["recommended_start_ms"], 11_200)
+        self.assertEqual(
+            row["timing_recommendation"],
+            "apply_smart_candidate_after_manual_confirmation",
+        )
+        self.assertTrue(row["manual_review_required"])
+        self.assertTrue(row["automatic_adjudication_performed"])
+        self.assertEqual(row["manual_review_mode"], "confirm_recommendation")
+        self.assertTrue(row["recommendation_requires_manual_confirmation"])
+        self.assertFalse(row["automatic_review_resolution_performed"])
+        self.assertFalse(row["independent_vocal_onset_evidence_used"])
+        self.assertFalse(row["automatic_timing_change_allowed"])
+        self.assertEqual(result["summary"]["confirm_only_manual_review_count"], 1)
+
+    def test_v127_insufficient_asr_stays_investigative(self) -> None:
+        smart = {
+            "schema_version": "smart-1.1",
+            "policy_id": "smart-validation-policy-2026-08-22-v1.2.10",
+            "timing_decisions": [{"cue_ordinal": 4, "action": "unchanged"}],
+            "text_decisions": [
+                {
+                    "cue_ordinal": 4,
+                    "canonical_ordinal": 9,
+                    "canonical_span": [9, 10],
+                    "action": "review",
+                    "reason": "low_or_structurally_unsafe_similarity",
+                }
+            ],
+        }
+        job = {
+            "job_id": "job-4",
+            "cue_ordinal": 4,
+            "source_ordinal": 0,
+            "canonical_line_index": 9,
+            "canonical_text_sha256": "canonical-hash-9",
+            "requested_capabilities": ["mix_asr", "word_timestamps"],
+            "reasons": ["smart_text_review:low_or_structurally_unsafe_similarity"],
+            "shadow_evidence_only": False,
+        }
+        plan = {
+            "schema_version": "1.1",
+            "policy_id": "smart-to-pro-reason-aware-2026-08-22-v1.2.6",
+            "jobs": [job],
+        }
+        asr = {
+            "schema_version": "1.0",
+            "jobs": [{"job_id": "job-4", "canonical_text_support_score": 0.71}],
+        }
+
+        row = build_pro_decisions(
+            smart_report=smart,
+            plan=plan,
+            asr_evidence=asr,
+        )["decisions"][0]
+        self.assertEqual(row["text_state"], "text_review_asr_insufficient")
+        self.assertEqual(row["text_resolution"], "manual_review_required")
+        self.assertTrue(row["manual_review_required"])
+        self.assertFalse(row["automatic_adjudication_performed"])
+        self.assertEqual(row["manual_review_mode"], "investigate")
+
+    def test_v127_ambiguous_text_support_never_auto_resolves(self) -> None:
+        smart = {
+            "schema_version": "smart-1.1",
+            "policy_id": "smart-validation-policy-2026-08-22-v1.2.10",
+            "timing_decisions": [{"cue_ordinal": 5, "action": "unchanged"}],
+            "text_decisions": [
+                {
+                    "cue_ordinal": 5,
+                    "canonical_ordinal": 11,
+                    "canonical_span": [11, 12],
+                    "action": "review",
+                    "reason": "ambiguous_nearby_canonical_match",
+                }
+            ],
+        }
+        job = {
+            "job_id": "job-5",
+            "cue_ordinal": 5,
+            "source_ordinal": 0,
+            "canonical_line_index": 11,
+            "canonical_text_sha256": "ambiguous-canonical-hash",
+            "requested_capabilities": ["mix_asr", "word_timestamps"],
+            "reasons": ["smart_text_review:ambiguous_nearby_canonical_match"],
+            "shadow_evidence_only": False,
+        }
+        plan = {
+            "schema_version": "1.1",
+            "policy_id": "smart-to-pro-reason-aware-2026-08-22-v1.2.6",
+            "jobs": [job],
+        }
+        asr = {
+            "schema_version": "1.0",
+            "jobs": [{"job_id": "job-5", "canonical_text_support_score": 0.95}],
+        }
+
+        row = build_pro_decisions(
+            smart_report=smart,
+            plan=plan,
+            asr_evidence=asr,
+        )["decisions"][0]
+        self.assertEqual(row["text_state"], "canonical_text_supported")
+        self.assertEqual(row["text_resolution"], "canonical_text_supported_advisory")
+        self.assertTrue(row["manual_review_required"])
+        self.assertTrue(row["automatic_adjudication_performed"])
+        self.assertEqual(row["manual_review_mode"], "investigate")
+        self.assertFalse(row["automatic_review_resolution_performed"])
+
+
 if __name__ == "__main__":
     unittest.main()

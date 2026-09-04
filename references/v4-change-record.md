@@ -7,7 +7,7 @@
 ```text
 Standard = Text Repair V2.1
 Smart    = Canonical Sequence Reconciliation + Anchor Timeline Repair v1.2.10（no-audio）
-Pro      = Selective Audio Repair v1.2.6（局部 audio evidence；no auto write-back）
+Pro      = Selective Audio Repair v1.2.7（局部 audio evidence + 自动 review 裁决；no SRT write-back）
 Max      = Full V4 Alignment（完整 audio / heavy fallback）
 ```
 
@@ -23,6 +23,14 @@ ASR / forced -> auxiliary acoustic evidence
 ```
 
 ---
+
+## 2026-09-04 — Pro v1.2.7 automatic adjudication without SRT mutation
+
+Pro 在现有 v1.2.6 selective planner / bounded evidence 路由之上新增 decision schema `1.1` 与 adjudication policy `pro-selective-decision-fusion-2026-09-04-v1.3`。该层不扩大 acoustic/ASR/forced 的证据搜索范围，只把已经执行的 evidence 进一步收敛成 `timing_resolution / text_resolution / resolution / manual_review_required / manual_review_mode`，形成明确的自动裁决支持，但不自动关闭 review。
+
+当前 authority 为 `automatic_adjudication_no_srt_mutation`，scope 为 `decision_support_no_srt_mutation`。所有 timing/text review 均保留人工确认，`automatic_review_resolution_allowed=false`。证据足够时可把 timing review 收敛为 `candidate_confirmed_advisory` 或 `keep_editor_advisory`；text evidence 可收敛为 canonical text/occurrence support advisory；证据冲突、结构风险或证据不足则保留 investigate。这样不会把相关 acoustic evidence、ASR 高分或单一 canonical 绑定误当成足以自动解除 segmentation/identity/structure 风险的最终 authority。
+
+`smart_candidate_supported` 现在可输出 `candidate_confirmed_advisory` 与 Smart proposed start/end，但仍要求人工确认；`smart_candidate_rebutted` 只输出 `keep_editor_advisory`；`smart_pro_conflict / pro_detected_anomaly / unvalidated` 继续进入人工队列。原因不变：Smart 与 local source↔mix retrieval 共享 canonical/LRC timeline，是相关证据而非独立 mix vocal-onset authority。因此 Pro v1.2.7 继续固定 `automatic_timing_change_allowed=false`、`automatic_text_change_allowed=false`、`timing_mutation_performed=false`，不会生成自动修改后的 Pro SRT。
 
 ## 2026-09-03 — Calibration-only ablation review
 

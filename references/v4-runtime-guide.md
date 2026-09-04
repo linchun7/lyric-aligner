@@ -1,6 +1,6 @@
 # Lyric Aligner v4 生产运行手册
 
-更新：2026-09-03
+更新：2026-09-04
 主线算法版本：`4.0.0a14`
 
 > 真实生产 workload 与产品设计基线见 `references/production-requirements.md`；Smart / Pro v1.1 设计细节见 `references/smart-pro-v1-1.md`。
@@ -17,7 +17,7 @@ Standard -> Smart -> Pro -> Max
 
 - **Standard**：只修文字，不读 audio，不改 timing。
 - **Smart**：默认主力。0 audio；利用 timed LRC/QRC、逐字 timing、剪映多数可信 cue、DAW/BPM rate，修少量有充分证据的 timing outlier。
-- **Pro**：只处理 Smart unresolved 的局部 audio region；当前执行 local acoustic / bounded ASR / external forced alignment evidence，仍不自动写 timing。
+- **Pro**：只处理 Smart unresolved 的局部 audio region；当前 v1.2.7 执行 local acoustic / bounded ASR / external forced alignment evidence，并自动把证据收敛为明确 advisory / investigate 决策支持；所有 timing/text review 仍人工确认，且不自动写 timing/text。
 - **Max**：整体时间轴不可信、复杂 cut/overlap/reorder 或 Pro 无法收敛时才进入完整 Full V4。
 
 韩文/日文不是自动 Max 条件。有规范 timed lyrics 且 editor/canonical 能稳定配对时仍先 Smart。
@@ -130,7 +130,7 @@ timing_review_count  # legacy unresolved total，不是人工队列
 
 v1.2.10 通过版本隔离开关启用 split-line guard，历史 policy 的显式入口保持可复现。它不再把一个 canonical line onset 重复授予映射到该行的多个 editor cues。span 首 cue 可继续使用 line onset；内部 cue 只有在合并后的 editor 文本与 canonical token stream 精确一致、且内部边界正好落在严格后移、仍处于该 canonical line 内的可靠 token boundary 时，才使用对应 token onset。否则输出 `segmentation_internal_boundary_unvalidated` 且不生成 timing proposal。
 
-## 4. Pro v1.2.6
+## 4. Pro v1.2.7
 
 ### 4.1 先只计划，不读 audio
 
@@ -144,7 +144,7 @@ python scripts/v4_pro_selective.py `
   --plan-out "output/<任务>/<任务>_PRO_PLAN.json"
 ```
 
-Pro v1.2.6 必须读取**当前 Smart v1.2.10 policy** 产出的 `smart-1.1` report。旧 Smart report 即使 schema 相同，只要 policy id 不是当前版本，也会要求重新跑 Smart。
+Pro v1.2.7 必须读取**当前 Smart v1.2.10 policy** 产出的 `smart-1.1` report。旧 Smart report 即使 schema 相同，只要 policy id 不是当前版本，也会要求重新跑 Smart。
 
 reason-aware routing：
 
@@ -176,7 +176,7 @@ asr_language_hint_counts
 asr_force_auto_detect_count
 ```
 
-`--max-jobs` 在当前 Pro v1.2.6 中约束 **primary unresolved cues**。Smart 的 `timing_high_value_pro_candidate_positions` 先获得预算优先级；其后再按 actionable/text、strong-vs-weak local model 与 `|Smart shift|` 排序。该优先级不改变完整 manual queue。Shadow competitor 不消耗 primary budget。
+`--max-jobs` 在当前 Pro v1.2.7 中仍约束 **primary unresolved cues**；planner policy 继续沿用 v1.2.6。Smart 的 `timing_high_value_pro_candidate_positions` 先获得预算优先级；其后再按 actionable/text、strong-vs-weak local model 与 `|Smart shift|` 排序。该优先级不改变完整 manual queue。Shadow competitor 不消耗 primary budget。
 
 `asr_language_hint=auto` 表示“没有具体 override”。当前 planner 只有在 canonical-local language 与显式 `zh/en/ko/ja` source language 一致时才固定 ASR；局部 code-switch 与整首语言冲突、mixed/unknown、或 source language 本身为 auto 时写入 `asr_force_auto_detect=true` 并继续 backend auto-detect，不从 Han/Latin script 静态猜语言。原因是 Pro 的宽 timing-search window 可能包含相邻歌词，不能把单行 script 误当成整段音频语言。
 
@@ -224,7 +224,7 @@ Acoustic schema v1.3 同时输出 `acoustic_shift_ms = predicted - editor`、`lo
 --decision-out "output/<任务>/<任务>_PRO_DECISIONS.json"
 ```
 
-decision artifact 分离 text/timing 两轴，列出 `high_priority_manual_review_count` 与精确 cue/start positions。Smart 与合格 local acoustic 都消费 canonical/LRC timeline，因此二者同向属于相关证据，不能冒充独立 vocal onset；仅此类 timing support/conflict 降为 medium。只有同时解决一对一 canonical text occurrence 等额外高价值问题时才进入 high。Source-side forced alignment 仍是 auxiliary evidence，未严格形成独立 mix vocal-onset 映射前，`independent_vocal_onset_evidence_used=false`。当前固定 `automatic_timing_change_allowed=false`、`automatic_text_change_allowed=false`、`timing_mutation_performed=false`，不生成 `*_PRO.srt`。
+decision artifact 分离 text/timing 两轴，并新增 `resolution / timing_resolution / text_resolution / manual_review_required / manual_review_mode`。CLI 汇总 `automatic_adjudication_count / confirm_only_manual_review_count / investigative_manual_review_count / manual_review_required_count`。证据充分时，timing 可收敛为 `candidate_confirmed_advisory` 或 `keep_editor_advisory`，text 可收敛为 canonical text/occurrence support advisory；但所有 timing/text review 仍保留人工确认，`automatic_review_resolution_allowed=false`。Smart 与合格 local acoustic 都消费 canonical/LRC timeline，因此二者同向属于相关证据，不能冒充独立 vocal onset，也不能解除 segmentation/identity/structure 风险；ASR 高支持同样只作为 text decision support，不能单独关闭结构性 text review。Source-side forced alignment 仍是 auxiliary evidence，未严格形成独立 mix vocal-onset 映射前，`independent_vocal_onset_evidence_used=false`。当前 authority 为 `automatic_adjudication_no_srt_mutation`，范围固定 `decision_support_no_srt_mutation`；`automatic_timing_change_allowed=false`、`automatic_text_change_allowed=false`、`timing_mutation_performed=false`，不生成 `*_PRO.srt`。
 
 ### 4.5 局部 Whisper
 
@@ -337,7 +337,7 @@ Public CI 能验证 deterministic policy、最终 overlap guard、soft BPM seman
 
 `python scripts/v4_smart_repair.py --help` 与 `python scripts/v4_pro_selective.py --help` 现在会自行把 repository root 加入 import path，正式文档中的直接入口不要求调用者额外设置 `PYTHONPATH`。
 
-当前 Pro v1.2.6 的 `--max-jobs` 是 **primary unresolved-cue budget**。Shadow boundary competitors 只附着于已经选中的 primary，属于 additive evidence；`plan.config.max_jobs` 对外报告调用者请求的 primary budget，内部完整 candidate-pool 扩池不是公开预算语义。Acoustic schema 1.4 同时记录 slope 与 source-start 搜索边界；任一 optimum 命中/接近边界时都不得参与 timing fusion。
+当前 Pro v1.2.7 的 `--max-jobs` 仍是 **primary unresolved-cue budget**；planner policy 保持 v1.2.6。Shadow boundary competitors 只附着于已经选中的 primary，属于 additive evidence；`plan.config.max_jobs` 对外报告调用者请求的 primary budget，内部完整 candidate-pool 扩池不是公开预算语义。Acoustic schema 1.4 同时记录 slope 与 source-start 搜索边界；任一 optimum 命中/接近边界时都不得参与 timing fusion。
 
 ## Max evaluation render vs production release — 2026-08-22 safety contract
 

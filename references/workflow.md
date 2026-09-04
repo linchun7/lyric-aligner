@@ -121,7 +121,7 @@ Smart unresolved 后：
 python scripts/v4_pro_selective.py ...
 ```
 
-当前 Pro v1.2.6。只读取 bounded suspicious regions：timing review 优先 local source-to-mix acoustic；text/identity review 再用 bounded ASR/forced evidence。当前仍不自动写 timing。
+当前 Pro v1.2.7。仍只读取 bounded suspicious regions：timing review 优先 local source-to-mix acoustic；text/identity review 再用 bounded ASR/forced evidence。v1.2.7 在原 v1.2.6 planner 上新增 fail-closed adjudication：证据可自动收敛为 candidate/keep-editor/text-support advisory，并区分 confirm-recommendation 与 investigate，但所有 timing/text review 仍保留人工确认。Pro 不自动关闭 review，不自动写 timing/text，也不生成自动修改后的 SRT。
 
 ### 4.4 Max：Full V4 heavy fallback
 

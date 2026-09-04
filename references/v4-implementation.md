@@ -390,7 +390,7 @@ text_unmapped_review_count
 
 `io/path_safety.py::validate_separate_artifact_paths()` 继续在任何 artifact write 前拒绝 output-input / output-output 路径碰撞。
 
-## 4. Pro / Selective Audio Repair v1.2.6
+## 4. Pro / Selective Audio Repair v1.2.7
 
 Pro 仍是 staged evidence path：
 
@@ -398,10 +398,11 @@ Pro 仍是 staged evidence path：
 Smart unresolved
 -> reason-aware bounded plan
 -> selected local acoustic / ASR / forced evidence
--> review/calibration
+-> fail-closed automatic adjudication (decision queue only)
+-> residual manual review/calibration
 ```
 
-`timing_mutation_performed=false` 保持。
+v1.2.7 允许 `decision_support_no_srt_mutation` 范围的自动 adjudication，但不自动关闭 review；`automatic_review_resolution_allowed=false`、`timing_mutation_performed=false`、`automatic_timing_change_allowed=false`、`automatic_text_change_allowed=false` 继续保持。
 
 ### 4.1 Exact Smart policy binding
 
@@ -578,6 +579,14 @@ Real production acceptance showed that unconditional bare-CJK fail-closed behavi
 Smart v1.2.10 enables a version-scoped `anchor_repair.py` guard; historical v1.2.9 and earlier entry points keep their frozen behavior. The guard treats a line-LRC onset as authority only for the first editor cue in a multi-cue-to-one-canonical span. For an internal cue it requires the concatenated editor span and canonical token stream to match exactly after normalization, and the editor boundary must land at a strictly later, line-local reliable token onset. Otherwise the decision is `segmentation_internal_boundary_unvalidated` with no proposed timing. This removes repeated-line-onset false suspicions without changing the rendered SRT or granting new timing mutation authority.
 
 `selective_policy.py` consumes `timing_high_value_pro_candidate_positions` as a first-budget key while retaining all actionable suspicions in the independent manual queue. For ASR, planner and executor distinguish an absent override from explicit `asr_force_auto_detect`: only canonical-local language that agrees with the known source language is pinned. Cross-language local lines, mixed/unknown and source-auto remain backend auto-detection because the bounded timing-search window may contain adjacent vocals. Pro v1.2.6 acoustic schema 1.4 additionally records the valid source-start search interval and removes timing-fusion authority when the winning source position hits or approaches either local boundary. Automatic text/timing mutation remains disabled.
+
+### Pro v1.2.7 automatic adjudication without mutation
+
+`alignment/selective_fusion.py` 将 Pro decision artifact 升级为 schema `1.1` / policy `pro-selective-decision-fusion-2026-09-04-v1.3`，而 selective planner 继续保持 `smart-to-pro-reason-aware-2026-08-22-v1.2.6`。新层只消费已经执行并通过原有 identity/boundary gate 的 evidence，不改变 region、ASR、forced、acoustic search 或 Smart budget 语义。
+
+裁决按 timing/text 两轴分离。Timing 不自动关闭任何 review：`smart_candidate_supported` 生成 `candidate_confirmed_advisory` 和 Smart proposed start/end；`smart_candidate_rebutted` 生成 `keep_editor_advisory`；segmentation/conflict/anomaly/unvalidated 继续 investigate。Text evidence 也只收敛为 canonical text/occurrence support advisory，不自动把 Smart text review 标成 resolved。原因是 timing/text review 都可能携带 segmentation、identity、neighbor-support、shift-limit 或 structure 风险，相关 acoustic/ASR evidence 不能独立解除这些约束。
+
+该 authority 仅为 `automatic_adjudication_no_srt_mutation`，scope 固定 `decision_support_no_srt_mutation`；`automatic_review_resolution_allowed=false`，所有 review 仍保留人工确认。`automatic_timing_change_allowed=false`、`automatic_text_change_allowed=false`、`timing_mutation_performed=false` 与 `independent_vocal_onset_evidence_used=false` 均继续保持。
 
 ### 维护说明（2026-09-03）
 

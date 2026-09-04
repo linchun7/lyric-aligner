@@ -1,6 +1,6 @@
 # Lyric Aligner v4 当前实施状态
 
-更新日期：2026-09-03
+更新日期：2026-09-04
 主线算法版本：`4.0.0a14`
 
 > PR #70 前的完整状态说明已无损归档到 `references/archive/2026-08-22-pre-max-authority-v4-status.md`。P3 前状态见 `references/archive/2026-08-19-pre-p3-v4-status.md`。生产基线见 `references/production-requirements.md`；Smart / Pro 细节见 `references/smart-pro-v1-1.md`。
@@ -10,7 +10,7 @@
 ```text
 Standard -> Text Repair V2.1
 Smart    -> Canonical Sequence Reconciliation + Anchor Timeline Repair v1.2.10（no-audio）
-Pro      -> Selective Audio Repair v1.2.6（bounded audio evidence）
+Pro      -> Selective Audio Repair v1.2.7（bounded audio evidence + automatic adjudication）
 Max      -> Full V4 Alignment
 ```
 
@@ -46,7 +46,7 @@ Smart 是日常主力 no-audio 模式。当前 facade 使用 v1.2.10，并继续
 - manual actionable timing queue 与 Pro high-value budget subset 分离；actionable suspicion 不会因 ranking 消失；
 - output path collision、overlap safety、stale-policy rejection 继续 fail closed。
 
-## 4. Pro v1.2.6
+## 4. Pro v1.2.7
 
 Pro 只处理 Smart 明确 unresolved 的 bounded regions：
 
@@ -64,6 +64,8 @@ automatic_timing_change_allowed = false
 automatic_text_change_allowed = false
 timing_mutation_performed = false
 ```
+
+v1.2.7 在 v1.2.6 planner 之上新增 decision schema 1.1 / adjudication policy v1.3：authority 为 `automatic_adjudication_no_srt_mutation`，scope 为 `decision_support_no_srt_mutation`。证据可自动收敛为 `candidate_confirmed_advisory`、`keep_editor_advisory` 或 canonical text/occurrence support advisory，并把人工任务区分为 confirm-recommendation 与 investigate；但所有 timing/text review 仍保留人工确认，`automatic_review_resolution_allowed=false`。Pro 继续固定 `automatic_timing_change_allowed=false`、`automatic_text_change_allowed=false`、`timing_mutation_performed=false`。
 
 Acoustic schema 1.4 同时审计 slope 与 source-start 搜索边界；命中/接近任一搜索边界的 optimum 只能作为 diagnostic，不参与 timing fusion。ASR 只在 canonical-local language 与已知 source language 一致时固定语言；code-switch/mixed/unknown/source-auto 保持 backend auto-detect。
 
@@ -273,7 +275,7 @@ Public CI 必须继续证明：
 
 ## 8. 历史 Smart/Pro 基线 freeze tag（不代表当前 selector）
 
-当前 production selector 仍为 Smart v1.2.10 / Pro v1.2.6。以下旧 tag 仅作为历史 production baseline，必须保持不动：
+当前 production selector 为 Smart v1.2.10 / Pro v1.2.7。以下旧 tag 仅作为历史 production baseline，必须保持不动：
 
 ```text
 prod-smart-v1.2.5-pro-v1.1.4-20260821

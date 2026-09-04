@@ -9,7 +9,7 @@
 ```text
 Standard -> Text Repair V2.1
 Smart    -> Sequence Reconciliation + Anchor Timeline Repair v1.2.10
-Pro      -> Selective Audio Repair v1.2.6
+Pro      -> Selective Audio Repair v1.2.7
 Max      -> Full V4 Alignment 4.0.0a14
 ```
 
