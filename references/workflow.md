@@ -1,8 +1,8 @@
 # 多语言混剪歌词字幕：当前生产工作流
 
-更新：2026-09-03
+更新：2026-09-04
 当前路径：`Standard -> Smart -> Pro -> Max`
-当前 Max：`4.0.0a14`
+当前 Max：`4.0.0a15`
 
 本文件是当前生产工作流总览。历史 `v3.9` / `redo_karaoke_pipeline.py` 仅保留为兼容、回归与历史实现，不再是新任务默认入口。更细的 Max authority 与 CLI 约束分别见 `v4-runtime-guide.md`、`v4-cli-contract.md`。
 

@@ -6,6 +6,7 @@ import unittest
 import wave
 from array import array
 from pathlib import Path
+from unittest.mock import patch
 
 from lyric_aligner.assets.bindings import CanonicalOriginal, ResolvedAssetBinding
 from lyric_aligner.audio.content_extent import AudioContentExtent, apply_content_end_override, detect_audio_content_extent
@@ -61,6 +62,34 @@ class AudioContentExtentTests(unittest.TestCase):
             extent = detect_audio_content_extent(path, min_trailing_digital_silence_seconds=30.0)
             self.assertFalse(extent.trimmed)
             self.assertAlmostEqual(extent.content_end, extent.full_duration, places=6)
+
+    def test_zero_only_frames_beyond_audio_stream_duration_are_not_treated_as_mix_time(self):
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "mix.wav"
+            write_pcm16(path, sr=1000, active_seconds=10.0, trailing_zero_seconds=7.0)
+            with patch(
+                "lyric_aligner.audio.content_extent._probe_audio_stream_duration",
+                return_value=10.0,
+            ):
+                extent = detect_audio_content_extent(
+                    path,
+                    min_trailing_digital_silence_seconds=30.0,
+                )
+            self.assertTrue(extent.trimmed)
+            self.assertAlmostEqual(extent.full_duration, 17.0, places=6)
+            self.assertAlmostEqual(extent.content_end, 10.0, places=6)
+            self.assertAlmostEqual(extent.trailing_digital_silence, 7.0, places=6)
+
+    def test_duration_probe_cannot_truncate_nonzero_decoded_content(self):
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "mix.wav"
+            write_pcm16(path, sr=1000, active_seconds=12.0, trailing_zero_seconds=5.0)
+            with patch(
+                "lyric_aligner.audio.content_extent._probe_audio_stream_duration",
+                return_value=10.0,
+            ):
+                with self.assertRaisesRegex(ValueError, "duration probes disagree"):
+                    detect_audio_content_extent(path)
 
     def test_explicit_content_end_override_may_only_shorten_and_binds_audio_sha(self):
         with tempfile.TemporaryDirectory() as td:

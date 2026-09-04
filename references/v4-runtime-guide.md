@@ -1,7 +1,7 @@
 # Lyric Aligner v4 生产运行手册
 
 更新：2026-09-04
-主线算法版本：`4.0.0a14`
+主线算法版本：`4.0.0a15`
 
 > 真实生产 workload 与产品设计基线见 `references/production-requirements.md`；Smart / Pro v1.1 设计细节见 `references/smart-pro-v1-1.md`。
 
@@ -292,7 +292,7 @@ python scripts/v4_run.py `
 
 正式 `scripts/v4_run.py` 会按职责调用 coarse CLI：primary occurrence 使用默认 `--purpose primary_timewarp`；shared-boundary 双侧 activity probe 使用 `--purpose transition_activity`。后者只产出完整 retrieval windows，不产出 Source-to-Mix mapping；不要把 `NOT_REQUESTED` 的 transition coarse artifact 手工接到 Fine 或 timeline projection。purpose 已进入 artifact fingerprint，恢复运行时不得跨 purpose 复用。
 
-Max orchestration 会另外记录物理 `mix_duration` 与保守 `content_end`。`content_end` 只会在音频尾部存在至少 30 秒**解码后逐样本精确为 0**的 digital-zero run 时缩短；普通淡出、近静音、底噪或弱信号不会被当成空白。该边界只限制最后一个 occurrence 的 production window/terminal clamp，物理文件时长仍保留作 provenance。这样可避免导出文件尾部的大段数字静音把最后一首搜索区间错误扩到容器末尾，同时不引入主观 silence threshold。
+Max orchestration 会另外记录物理 `mix_duration` 与保守 `content_end`。自动缩短 `content_end` 有两类严格证据：一是音频尾部存在至少 30 秒**解码后逐样本精确为 0**的 digital-zero run；二是 `4.0.0a15` 起，`ffprobe` 的首个 audio stream duration 明确早于 SoundFile 暴露的物理/容器时长，且该独立终点之后 SoundFile 只剩数字 0 帧。普通淡出、近静音、底噪或弱信号不会被当成空白；若 ffprobe 终点与仍存在的非零解码内容冲突则直接 fail closed。该边界只限制最后一个 occurrence 的 production window/terminal clamp，物理文件时长仍保留作 provenance。
 
 `4.0.0a13` 起，若 QA 已证明主节目结束后存在 detached export tail，例如先出现很长的 exact-zero gap、随后只剩短小孤立音频残片，可把 `mix_content_extent` JSON 作为**可选 task input**写入 task fingerprint。初始化时使用 `--mix-content-extent <json>`；JSON 必须声明 `schema_version=mix-content-extent-1.0`、与 task audio 完全一致的 SHA-256、正且有限的 `content_end_seconds` 与非空 `reason`。override 只能把自动 `content_end` 往前缩，任何延长都会 fail closed；原始 mix、物理时长与 SHA 均保留，不允许通过预裁音频绕过 provenance。没有该 input 的任务行为完全不变。
 

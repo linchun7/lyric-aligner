@@ -1,7 +1,7 @@
 # Lyric Aligner v4 当前实施状态
 
 更新日期：2026-09-04
-主线算法版本：`4.0.0a14`
+主线算法版本：`4.0.0a15`
 
 > PR #70 前的完整状态说明已无损归档到 `references/archive/2026-08-22-pre-max-authority-v4-status.md`。P3 前状态见 `references/archive/2026-08-19-pre-p3-v4-status.md`。生产基线见 `references/production-requirements.md`；Smart / Pro 细节见 `references/smart-pro-v1-1.md`。
 
@@ -73,7 +73,11 @@ Acoustic schema 1.4 同时审计 slope 与 source-start 搜索边界；命中/�
 
 Max 是 heavy fallback，用于整体 timeline/mapping 不可信、复杂 cut/overlap/reorder 或 Smart/Pro 无法安全收敛的任务。当前 primary chain 包括 TrackAsset、coarse/Fine/TimeWarp、canonical projection、transition/cut/overlap/review 等完整 reconstruction evidence。
 
-### 5.0 a14 task-local semantic run config
+### 5.0 a15 decodable terminal duration guard
+
+`4.0.0a15` 修复压缩成品音频的“容器/解码器声明时长长于实际可解码音频流”问题。`detect_audio_content_extent()` 继续保留 SoundFile 解出的物理/容器 `full_duration` 作 provenance，但会用 `ffprobe` 的首个 audio stream duration 作为独立上界证据：只有在该终点之后的 SoundFile 样本全部为数字 0 时，才允许把有效 `content_end` 缩到可解码音频流终点；若 ffprobe 终点与实际非零解码内容冲突，则 hard fail，绝不静默误裁。该规则不扩大 a12 的 5ms bounded-decode 容差，也不把普通短静音当作可裁内容。
+
+### 5.0.1 a14 task-local semantic run config
 
 `4.0.0a14` 起，新任务由 `init_task.py` 同时创建 `qa/v4_run_config.json`。它不替代 raw-input `task_manifest.json`，而是单独绑定后补且会改变 Max asset-resolution 语义的 `profile / language_map / middle_cut_map / lyric_role_map`。config 自身绑定 exact task fingerprint，并为每个非空语义文件记录 repository-relative path、size 与 SHA-256，再生成独立 `run_config_fingerprint_sha256`。
 
@@ -94,7 +98,7 @@ Max 是 heavy fallback，用于整体 timeline/mapping 不可信、复杂 cut/ov
 
 Shared-boundary transition activity 使用 retrieval-only purpose，保留完整 windows 但不生成 TimeWarp。该机制不确认 transition/outro/cut/overlap，也不改变 transition review threshold。
 
-Max run 同时区分物理 `mix_duration` 与保守 `content_end`。只有尾部至少 30 秒解码样本**精确为数字 0**时，`content_end` 才缩到最后一个非零样本之后；普通 fade/近静音/底噪不会被裁掉。该值只约束最后 occurrence 的 production interval/terminal clamp，完整容器时长继续保留作 provenance。
+Max run 同时区分物理 `mix_duration` 与保守 `content_end`。自动缩短有两类严格证据：其一是尾部至少 30 秒解码样本**精确为数字 0**；其二是 a15 起 `ffprobe` 已独立证明首个音频流更早结束，且该终点之后 SoundFile 只暴露数字 0 帧。普通 fade/近静音/底噪不会被裁掉；若 ffprobe 终点与非零解码内容冲突则 hard fail。`content_end` 只约束最后 occurrence 的 production interval/terminal clamp，完整容器时长继续保留作 provenance。
 
 `4.0.0a13` 起，若任务存在经过 QA 明确证明的 detached export tail（例如主节目结束后出现长数字零区间，再出现短小孤立音频残片），可把 `mix_content_extent` JSON 作为可选 task input 纳入 fingerprint。该 override 必须绑定同一 audio SHA、提供非空 reason，并且**只能缩短**自动 `content_end`，不能延长；未提供该输入的任务保持原自动判定。该机制保留原音频文件与物理时长，不通过复制/截短 mix 绕过 provenance。
 

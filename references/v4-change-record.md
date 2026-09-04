@@ -24,6 +24,12 @@ ASR / forced -> auxiliary acoustic evidence
 
 ---
 
+## 2026-09-04 — Max 4.0.0a15 decodable terminal duration guard
+
+真实华语青春180 MP3 生产暴露出一类压缩音频尾端异常：SoundFile/librosa 暴露的物理/容器时长为 `3024.8436667s`，但 ffprobe 与实际 bounded decode 的首个音频流都只到 `3017.7600000s`，差值 `7.0836667s`；这段额外区间在 SoundFile 侧只表现为数字 0。旧 content-extent 仅在 trailing digital-zero 至少 30 秒时自动缩短，因此把这 7 秒虚尾保留为可搜索 mix time，最后 occurrence 的 bounded decode 随后 hard fail。
+
+`4.0.0a15` 不扩大 a12 的 terminal short-read 容差，也不把普通短静音视为可裁内容；而是在 `detect_audio_content_extent()` 增加独立 decodable-stream upper bound。物理/容器 `full_duration` 仍完整保留作 provenance；只有 ffprobe 的首个 audio stream duration 明确更短，且该终点之后 SoundFile 暴露的样本全部为数字 0 时，才把有效 `content_end` 收敛到该可解码音频流终点。若 ffprobe 终点早于仍存在的非零解码内容，则直接 fail closed，避免探测器误报造成真实节目截断。定向回归覆盖虚尾缩短、短真实数字静音保留、probe 与非零内容冲突拒绝，并用该真实 MP3 复测：`content_end=3017.76s`、bounded shortfall 从 `7.0836667s` 收敛为 `0s`。
+
 ## 2026-09-04 — Pro v1.2.7 automatic adjudication without SRT mutation
 
 Pro 在现有 v1.2.6 selective planner / bounded evidence 路由之上新增 decision schema `1.1` 与 adjudication policy `pro-selective-decision-fusion-2026-09-04-v1.3`。该层不扩大 acoustic/ASR/forced 的证据搜索范围，只把已经执行的 evidence 进一步收敛成 `timing_resolution / text_resolution / resolution / manual_review_required / manual_review_mode`，形成明确的自动裁决支持，但不自动关闭 review。
