@@ -453,7 +453,7 @@ Max 也必须遵守 segmentation authority：line-LRC 本身不能强迫 final s
 `assets/lyric_roles.py` 与 `text/canonical_lyrics.py` 必须对 consumer-LRC 的 non-lyric timestamp groups 使用同一过滤语义。role preflight 在建立 TrackAsset `canonical_selection` 前：
 
 - 先移除 Enhanced/QRC timing markup 并执行 shared `clean_text()`；
-- `is_metadata_text()` 命中的 credits/role labels，以及首秒 `is_title_like_intro()` 命中的 title row 标记为 metadata；
+- `is_metadata_text()` 命中的 credits/role labels，以及首 2 秒内 `is_title_like_intro()` 命中的严格 `artist - title` title row 标记为 metadata；
 - 清洗后为空的 timing-only group、以及 metadata-only group不进入 `canonical_selection`；
 - 同一 timestamp 的 metadata + lexical lyric 可以保留原 alternative index，并选择唯一 lexical original；
 - 两个或更多真正 lexical alternatives 仍必须由唯一 language-native identity 或 explicit original-index override 解决，否则 `LyricRoleError` fail closed；

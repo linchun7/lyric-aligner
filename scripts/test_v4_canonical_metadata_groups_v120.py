@@ -16,7 +16,7 @@ class CanonicalMetadataGroupsV120Tests(unittest.TestCase):
 
     def test_common_timed_credits_title_and_role_labels_are_not_lyrics(self) -> None:
         lines = self._parse(
-            "[00:00.10]歌手 - 歌名\n"
+            "[00:01.50]歌手 - 歌名\n"
             "[00:01.00]编曲：某某\n"
             "[00:02.00]监制：某某\n"
             "[00:03.00]Felix Bennett：\n"
@@ -119,6 +119,16 @@ class CanonicalMetadataGroupsV120Tests(unittest.TestCase):
         self.assertEqual(
             [item.text for item in lines],
             ["监制不住心里的想念", "出品一场自己的故事"],
+        )
+
+    def test_artist_title_shape_after_two_seconds_is_retained(self) -> None:
+        lines = self._parse(
+            "[00:02.10]你 - 我\n"
+            "[00:03.00]下一句真实歌词\n"
+        )
+        self.assertEqual(
+            [item.text for item in lines],
+            ["你 - 我", "下一句真实歌词"],
         )
 
     def test_english_production_credits_are_not_lyrics(self) -> None:

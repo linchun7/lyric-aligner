@@ -24,6 +24,12 @@ ASR / forced -> auxiliary acoustic evidence
 
 ---
 
+## 2026-09-04 — Max 4.0.0a16 early timed title-row metadata guard
+
+华语青春180 WAV Max 终审暴露出一条 consumer-LRC 身份装饰行 `[00:01.337]潘玮柏、苏芮 - 我想更懂你` 被旧 canonical metadata 规则当成歌词并投进 timeline。根因是共享 `is_title_like_intro()` 仅识别首 1 秒内的 `artist - title`，而 provider 延迟及任务级时间缩放可把同类身份行推到 1–2 秒。
+
+`4.0.0a16` 把该共享识别窗口保守扩到首 2 秒，同时继续要求字面带空格的 `artist - title` 形态；2 秒之后同形文本仍保留为 lexical content。canonical parser、lyric-role preflight 与 text repair 因共享 helper 同步获得修复。回归新增 1.5 秒身份行必须过滤，以及 2.1 秒同形文本必须保留，防止未来无界扩大 metadata heuristic。
+
 ## 2026-09-04 — Max 4.0.0a15 decodable terminal duration guard
 
 真实华语青春180 MP3 生产暴露出一类压缩音频尾端异常：SoundFile/librosa 暴露的物理/容器时长为 `3024.8436667s`，但 ffprobe 与实际 bounded decode 的首个音频流都只到 `3017.7600000s`，差值 `7.0836667s`；这段额外区间在 SoundFile 侧只表现为数字 0。旧 content-extent 仅在 trailing digital-zero 至少 30 秒时自动缩短，因此把这 7 秒虚尾保留为可搜索 mix time，最后 occurrence 的 bounded decode 随后 hard fail。

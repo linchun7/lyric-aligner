@@ -155,6 +155,12 @@ def is_metadata_text(
 
 
 def is_title_like_intro(start_ms: int, text: str) -> bool:
-    """Recognize the common early ``artist - title`` consumer-LRC row."""
+    """Recognize the common early ``artist - title`` consumer-LRC row.
 
-    return int(start_ms) <= 1000 and " - " in clean_text(text)
+    Consumer providers do not always place this decoration at exactly 0-1s, and
+    task-local time scaling can move a legitimate title row slightly later. Keep
+    the heuristic narrow: only the literal spaced ``artist - title`` form and only
+    within the first two seconds are treated as metadata.
+    """
+
+    return int(start_ms) <= 2000 and " - " in clean_text(text)
