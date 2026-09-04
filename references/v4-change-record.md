@@ -32,6 +32,14 @@ ASR / forced -> auxiliary acoustic evidence
 
 从 a17 起 `v4_validate_release.py` 强制要求 `--run`、`--semantic-sync-fusion` 与 `--semantic-sync-qa`；projection/final 任一层 failed、证据 basis 非 `forced_alignment` / `asr_plus_reliable_editor`、QA 缺失、hash stale/mismatch 都不得生成 ready release manifest。QA 精确绑定 source SRT、final mix audio、song list、run、evidence fusion、exact final SRT 与 final audit report。Synthetic regression 覆盖整体 +12 秒系统偏移、低质量 editor + 正确 forced alignment、低质量 editor + ASR-only 禁止放行、reliable editor + ASR fallback、forced/ASR 冲突以及重复副歌约束。真实事故回归中《第一天》55 个高置信 editor 对照锚点 median error `12.346s`、98.18% 超过 2.5 秒；该事故同时推动了独立音频语义证据成为正式 release authority gate，而不再把 editor 对照本身当最终真值。
 
+## 2026-09-04 — Edited-mix recovery legacy hardening（v3.9 compatibility identity）
+
+华语青春180 的 P0 false-ready 事故在 a17 semantic release hard gate 之外，还暴露了一个现实恢复需求：已有较强 editor timing、实际调速/剪辑 source WAV 与 edited mix 的任务，如果 canonical LRC timebase 本身不可信，不能继续让错误 LRC 主导整首时间轴；但也不能把 editor SRT 升级成绝对真值，尤其韩语/日语识别较差时会形成新的系统性错误。因此 `redo_karaoke_pipeline.py` 仅作为显式 recovery/compatibility 工具补强，不重新成为默认生产入口，`ALGORITHM_VERSION` 继续保持冻结 legacy identity `3.9`，具体行为差异由 Git commit、task fingerprint 与 artifact lineage 绑定。
+
+本轮维护统一复用共享 `is_title_like_intro()`，过滤首 2 秒 provider `artist - title` 身份行，并补全全角 `词：/曲：` 与纯 `男：/女：/合：` 角色 metadata；新增 task-bound `_canonical_text_corrections`、`_drop_cues` 与更严格 provenance/理由校验，canonical 源修订和不可验证 editor 短词不能再靠手改最终 SRT。QA 的 shared-LRC accidental duplicate gate 现在能识别“editor 两半、输出却变成整句+整句”的 reconstruction failure，并把邻接审查窗口扩到 1500ms，同时以两侧原观察均完整匹配来保护真实重复演唱；review CSV 改用 union fieldnames，避免候选字段差异导致 QA writer 崩溃。中文纯 vocalization 兼容集合补充常见 `耶/呜/哒`，无 canonical provenance 时按既有规则处理。
+
+该 recovery path 的 authority 固定为：canonical lyric 负责文字/顺序，实际 source↔mix waveform/其它独立音频证据负责 timing truth，editor SRT 只作为强但可推翻 prior；手工分段调速、裁前奏或非线性 DAW 编辑禁止仅凭单一 BPM 比例缩放 LRC。华语青春180 重建回归中，旧版《第一天》约 +12.45s 系统错位被消除；640 个可追踪 editor anchors 的最终起点 global median/P95 absolute delta 均为 0ms，非零变化只发生在 6 个原长 cue 的显式拆分。独立 viewer-facing scan 又发现并关闭了 QA 原先漏掉的相邻重复分句，说明 release-ready 之外仍保留最终可见文本审计。
+
 ## 2026-09-04 — Max 4.0.0a16 early timed title-row metadata guard
 
 华语青春180 WAV Max 终审暴露出一条 consumer-LRC 身份装饰行 `[00:01.337]潘玮柏、苏芮 - 我想更懂你` 被旧 canonical metadata 规则当成歌词并投进 timeline。根因是共享 `is_title_like_intro()` 仅识别首 1 秒内的 `artist - title`，而 provider 延迟及任务级时间缩放可把同类身份行推到 1–2 秒。

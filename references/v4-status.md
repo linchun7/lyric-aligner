@@ -22,6 +22,7 @@ Max      -> Full V4 Alignment
 - 只有更强的 token/word/audio boundary evidence 才能推翻可信 editor segmentation；
 - Higher mode 可以增加证据、减少 review，但不能在没有更强反证时破坏 lower-mode 已安全成立的 text / cue ownership / timing；
 - Canonical truth 构建前会过滤明确的 timed provider metadata：中英文制作/工程 credits 与严格的 multi-instrument section marker 不能进入 canonical text/order；普通含 instrument/credit-like 词汇的歌词仍保留，explicit selection 也不能把已判定 metadata 的行重新引入。
+- Legacy `v3.9` 仍是兼容/事故恢复身份，不重新成为默认路径；2026-09-04 的 edited-mix recovery hardening 只补 fail-closed metadata、task-bound canonical correction/cue drop、shared-LRC accidental duplicate review 与 QA writer 安全。该路径同样要求“canonical 负责文字/顺序、实际音频负责 timing truth、editor 只是可推翻 prior”，禁止对手工分段调速/裁前奏素材仅按单一 BPM 比例统一缩放 LRC。
 
 ## 2. Standard
 

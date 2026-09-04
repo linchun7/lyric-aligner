@@ -43,6 +43,7 @@ from lyric_aligner.qa.final_integrity import (
     FinalIntegrityError,
     build_release_artifact_manifest,
 )
+from lyric_aligner.text.normalization import is_title_like_intro
 
 
 TIME_RE = re.compile(r"^(\d{2}):(\d{2}):(\d{2})[,.](\d{3})$")
@@ -53,7 +54,7 @@ ENHANCED_LRC_TOKEN_RE = re.compile(
 QRC_LINE_RE = re.compile(r"^\[(\d+),(\d+)\](.*)$")
 QRC_TOKEN_RE = re.compile(r"(.+?)\((\d+),(\d+)\)")
 META_RE = re.compile(
-    r"^(?:\[?by:|作词|作曲|编曲|词\s*:|曲\s*:|制作人|人声采样|未经|版权|发行|混音|母带|企划|出品人|op\s*:|sp\s*:|本作品)",
+    r"^(?:\[?by:|作词|作曲|编曲|词\s*[:：]|曲\s*[:：]|制作人|人声采样|未经|版权|发行|混音|母带|企划|出品人|op\s*[:：]|sp\s*[:：]|本作品|(?:男|女|合|男声|女声)\s*[:：]\s*$)",
     re.IGNORECASE,
 )
 ALGORITHM_VERSION = "3.9"
@@ -724,7 +725,7 @@ def parse_lrc(path: Path) -> list[LyricLine]:
             start_ms = int(qrc_match.group(1))
             duration_ms = int(qrc_match.group(2))
             text, tokens = parse_qrc_tokens(start_ms, duration_ms, qrc_match.group(3))
-            if text and not META_RE.match(text):
+            if text and not META_RE.match(text) and not is_title_like_intro(start_ms, text):
                 grouped.setdefault(start_ms, []).append((text, tokens, "qrc_word_timing"))
             continue
         match = LRC_RE.match(stripped)
@@ -733,7 +734,7 @@ def parse_lrc(path: Path) -> list[LyricLine]:
         minute, second, fraction, text = match.groups()
         time_ms = lrc_timestamp_ms(minute, second, fraction)
         text, tokens = parse_enhanced_lrc_tokens(text.strip())
-        if not text or META_RE.match(text):
+        if not text or META_RE.match(text) or is_title_like_intro(time_ms, text):
             continue
         grouped.setdefault(time_ms, []).append(
             (text, tokens, "enhanced_lrc" if tokens else "line_lrc")
@@ -775,6 +776,56 @@ def normalized_text(value: str) -> str:
     for old, new in replacements.items():
         value = value.replace(old, new)
     return "".join(ch for ch in value if ch.isalnum())
+
+
+def normalized_canonical_text_corrections(corrections: object) -> dict[tuple[str, int], dict]:
+    if corrections in (None, {}, []):
+        return {}
+    if not isinstance(corrections, list):
+        raise ValueError("_canonical_text_corrections must be a list")
+    result: dict[tuple[str, int], dict] = {}
+    required = ("track", "lrc_index", "expected_text", "corrected_text", "reason")
+    for position, item in enumerate(corrections, start=1):
+        if not isinstance(item, dict):
+            raise ValueError(f"canonical text correction {position} must be an object")
+        if any(field not in item for field in required):
+            raise ValueError(f"canonical text correction {position} is missing a required field")
+        track = item["track"]
+        if not isinstance(track, str) or not track.strip():
+            raise ValueError(f"canonical text correction {position} has invalid track")
+        try:
+            index = int(item["lrc_index"])
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"canonical text correction {position} has invalid lrc_index") from exc
+        if index < 0:
+            raise ValueError(f"canonical text correction {position} has invalid lrc_index")
+        values = {field: item[field] for field in ("expected_text", "corrected_text", "reason")}
+        if any(not isinstance(value, str) or not value.strip() for value in values.values()):
+            raise ValueError(f"canonical text correction {position} has a blank text or reason")
+        key = (track.strip(), index)
+        if key in result:
+            raise ValueError(f"duplicate canonical text correction key: {key!r}")
+        result[key] = {"track": key[0], "lrc_index": index, **values}
+    return result
+
+
+def apply_canonical_text_corrections(events: list[dict], corrections: object) -> int:
+    normalized = normalized_canonical_text_corrections(corrections)
+    event_map = {}
+    for event in events:
+        key = (str(event["track"]), int(event["lrc_index"]))
+        if key in event_map and key in normalized:
+            raise ValueError(f"duplicate canonical event key for correction: {key!r}")
+        event_map[key] = event
+    for key, correction in normalized.items():
+        event = event_map.get(key)
+        if event is None:
+            raise ValueError(f"canonical text correction key does not exist: {key!r}")
+        if normalized_text(str(event["text"])) != normalized_text(correction["expected_text"]):
+            raise ValueError(f"source canonical changed / stale correction: {key!r}")
+        event["text"] = correction["corrected_text"]
+        event["canonical_text_correction_reason"] = correction["reason"]
+    return len(normalized)
 
 
 def text_similarity(left: str, right: str) -> tuple[float, float]:
@@ -2996,6 +3047,34 @@ def apply_interval_overrides(rows: list[dict], overrides: object) -> int:
     return applied
 
 
+def apply_manual_cue_drops(rows: list[dict], drops: list[dict]) -> int:
+    requested: set[str] = set()
+    for position, drop in enumerate(drops, start=1):
+        if not isinstance(drop, dict):
+            raise ValueError(f"manual cue drop {position} must be an object")
+        if "cue" not in drop:
+            raise ValueError(f"manual cue drop {position} requires cue")
+        if not str(drop.get("reason", "")).strip():
+            raise ValueError(f"manual cue drop {position} requires non-empty reason")
+        try:
+            cue = int(drop["cue"])
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"manual cue drop {position} has invalid cue") from exc
+        if cue <= 0:
+            raise ValueError(f"manual cue drop {position} has invalid cue")
+        cue_key = str(cue)
+        if cue_key in requested:
+            raise ValueError(f"duplicate manual cue drop: {cue_key}")
+        requested.add(cue_key)
+    available = {str(row.get("original_cue", "")) for row in rows}
+    missing = requested - available
+    if missing:
+        raise ValueError(f"manual cue drop requested unknown cue(s): {', '.join(sorted(missing))}")
+    before = len(rows)
+    rows[:] = [row for row in rows if str(row.get("original_cue", "")) not in requested]
+    return before - len(rows)
+
+
 def command_finalize(args: argparse.Namespace) -> int:
     manifest = require_task_manifest(
         args,
@@ -3024,7 +3103,12 @@ def command_finalize(args: argparse.Namespace) -> int:
     overrides.pop("task_fingerprint_sha256", None)
     overrides.pop("artifact_type", None)
     overrides.pop("_source_srt_sha256", None)
+    manual_canonical_text_corrections = overrides.pop("_canonical_text_corrections", [])
+    canonical_text_correction_count = apply_canonical_text_corrections(
+        events, manual_canonical_text_corrections
+    )
     manual_insertions = overrides.pop("_insertions", [])
+    manual_cue_drops = overrides.pop("_drop_cues", [])
     manual_cue_splits = overrides.pop("_cue_splits", [])
     manual_interval_overrides = overrides.pop("_interval_overrides", [])
     manual_timing_overrides = overrides.pop("_timing_overrides", {})
@@ -3210,6 +3294,8 @@ def command_finalize(args: argparse.Namespace) -> int:
                 }
             )
 
+    manual_dropped_rows = apply_manual_cue_drops(output_rows, manual_cue_drops)
+
     split_applied = 0
     for split in manual_cue_splits:
         original_cue = str(split["original_cue"])
@@ -3378,12 +3464,14 @@ def command_finalize(args: argparse.Namespace) -> int:
                 "cues": len(final_cues),
                 "rebuilt": sum(row["kind"] == "rebuilt" for row in output_rows),
                 "manual_overrides": applied,
+                "manual_dropped_rows": manual_dropped_rows,
                 "manual_cue_splits": split_applied,
                 "manual_interval_overrides": interval_overrides_applied,
                 "manual_timing_overrides": timing_applied,
                 "manual_lrc_index_overrides": lrc_index_applied,
                 "manual_review_notes": review_notes_applied,
                 "manual_boundary_confirmations": boundary_confirmations_applied,
+                "canonical_text_correction_count": canonical_text_correction_count,
                 "discarded_noncanonical_vocalizations": discarded_noncanonical_vocalizations,
                 "removed_noncanonical_duplicate_vocalizations": (
                     removed_noncanonical_duplicate_vocalizations
@@ -3434,6 +3522,46 @@ def preferred_boundary_observation(row: dict) -> tuple[str, str]:
     if asr_fit >= 0.50 and asr_fit >= original_fit + 0.04:
         return asr_text, "word_asr"
     return original, "jianying"
+
+
+def accidental_shared_lrc_duplication(
+    left: dict, right: dict, event_text: str
+) -> tuple[bool, float, float, float]:
+    """Produce only a review signal; never automatically alter text or timing."""
+
+    event_norm = normalized_text(event_text)
+    if len(event_norm) < 4:
+        return False, 0.0, 0.0, 0.0
+    if not (
+        event_norm in normalized_text(str(left["text"]))
+        and event_norm in normalized_text(str(right["text"]))
+    ):
+        return False, 0.0, 0.0, 0.0
+    left_score = span_similarity(str(left["original"]), event_text)[0]
+    right_score = span_similarity(str(right["original"]), event_text)[0]
+    combined_score = span_similarity(
+        f"{left['original']} {right['original']}", event_text
+    )[0]
+    if min(left_score, right_score) >= 0.82:
+        return False, left_score, right_score, combined_score
+    obvious_single_side_mismatch = min(left_score, right_score) < 0.55
+    split_reconstruction = (
+        combined_score >= 0.88
+        and combined_score >= max(left_score, right_score) + 0.10
+    )
+    return (
+        obvious_single_side_mismatch or split_reconstruction,
+        left_score,
+        right_score,
+        combined_score,
+    )
+
+
+SHARED_LRC_DUPLICATE_MAX_GAP_MS = 1500
+
+
+def shared_lrc_duplicate_pair_is_nearby(left: dict, right: dict) -> bool:
+    return int(right["start_ms"]) - int(left["end_ms"]) <= SHARED_LRC_DUPLICATE_MAX_GAP_MS
 
 
 def boundary_review_candidates(rows: list[dict]) -> list[dict]:
@@ -3651,7 +3779,7 @@ def is_generic_vocalization(value: str) -> bool:
         )
     ):
         return True
-    return bool(compact) and all(char in "啊阿哈啦拉呐哪哦噢喔吧诶哎" for char in compact)
+    return bool(compact) and all(char in "啊阿哈啦拉呐哪哦噢喔吧诶哎耶呜哒" for char in compact)
 
 
 def discard_noncanonical_vocalization_rows(rows: list[dict]) -> int:
@@ -4157,6 +4285,7 @@ def command_qa(args: argparse.Namespace) -> int:
     audio_edit_reviews: object = []
     confirmed_overlap_intervals: list[dict] = []
     cross_track_overlap_reviews: list[dict] = []
+    canonical_text_corrections: object = []
     manual_override_scope_issue: str | None = None
     if args.manual_overrides:
         qa_overrides = json.loads(args.manual_overrides.read_text(encoding="utf-8"))
@@ -4169,6 +4298,7 @@ def command_qa(args: argparse.Namespace) -> int:
                 item.get("reason", "confirmed_audio_edit")
             )
         audio_edit_reviews = qa_overrides.get("_audio_edit_reviews", [])
+        canonical_text_corrections = qa_overrides.get("_canonical_text_corrections", [])
         try:
             confirmed_overlap_intervals = normalized_confirmed_overlap_intervals(
                 qa_overrides.get("_confirmed_overlap_intervals", [])
@@ -4417,11 +4547,19 @@ def command_qa(args: argparse.Namespace) -> int:
     cross_track_overlap_review_candidates: list[dict] = []
     lyric_coverage_missing: dict[str, list[int]] = {}
     lyric_metadata_unlinked: dict[str, list[int]] = {}
+    canonical_text_correction_count = 0
     if args.song_list and args.lyrics_dir and args.audio_alignment:
         tracks = parse_song_list(args.song_list, args.lyrics_dir, source[-1].end_ms)
         alignment_payload = json.loads(args.audio_alignment.read_text(encoding="utf-8"))
         validate_artifact_fingerprint(alignment_payload, manifest, "audio alignment")
         projected_events, _ = projected_lyric_events(tracks, source, alignment_payload)
+        try:
+            canonical_text_correction_count = apply_canonical_text_corrections(
+                projected_events, canonical_text_corrections
+            )
+        except ValueError as exc:
+            issues.append(str(exc))
+            canonical_text_correction_count = 0
         detected_overlap_candidates = cross_track_overlap_candidates(
             source, tracks, projected_events
         )
@@ -4472,7 +4610,8 @@ def command_qa(args: argparse.Namespace) -> int:
             track = str(left.get("track", ""))
             if not track or track != str(right.get("track", "")):
                 continue
-            if int(right["start_ms"]) - int(left["end_ms"]) > 300:
+            # Editor split lyric cells may have 300–1500ms visual gaps; genuine full-line repeats are independently protected.
+            if not shared_lrc_duplicate_pair_is_nearby(left, right):
                 continue
             left_indices = {
                 int(value) for value in str(left.get("lrc_indices", "")).split(";") if value.isdigit()
@@ -4485,22 +4624,10 @@ def command_qa(args: argparse.Namespace) -> int:
                 if not event:
                     continue
                 event_text = str(event["text"])
-                event_norm = normalized_text(event_text)
-                if len(event_norm) < 4:
-                    continue
-                # A shared LRC index is normal when one canonical line is split
-                # across two Jianying cells.  It is a duplication only when the
-                # complete event text appears in both outputs.  If both source
-                # observations also contain the event, it is an audible repeat
-                # rather than an accidental copy.
-                if not (
-                    event_norm in normalized_text(str(left.get("text", "")))
-                    and event_norm in normalized_text(str(right.get("text", "")))
-                ):
-                    continue
-                left_observed_score = span_similarity(str(left.get("original", "")), event_text)[0]
-                right_observed_score = span_similarity(str(right.get("original", "")), event_text)[0]
-                if min(left_observed_score, right_observed_score) >= 0.55:
+                duplicate, left_observed_score, right_observed_score, combined_score = accidental_shared_lrc_duplication(
+                    left, right, event_text
+                )
+                if not duplicate:
                     continue
                 duplicate_lyric_event_candidates.append(
                     {
@@ -4516,10 +4643,10 @@ def command_qa(args: argparse.Namespace) -> int:
                         "current_right": str(right.get("text", "")),
                         "suggested_left": "",
                         "suggested_right": "",
-                        "score": round(max(left_observed_score, right_observed_score), 6),
-                        "improvement": "",
+                        "score": round(combined_score, 6),
+                        "improvement": round(combined_score - max(left_observed_score, right_observed_score), 6),
                         "unit_shift": "",
-                        "mode": "shared_lrc_index_full_text",
+                        "mode": "shared_lrc_index_split_reconstruction",
                         "reason": f"LRC index {index} is substantially repeated in adjacent cues",
                     }
                 )
@@ -4653,7 +4780,7 @@ def command_qa(args: argparse.Namespace) -> int:
     publish_ready = bool(release["publish_ready"])
     if args.out_review:
         args.out_review.parent.mkdir(parents=True, exist_ok=True)
-        fields = list(review_candidates[0]) if review_candidates else ["category"]
+        fields = report_fieldnames(review_candidates)
         with args.out_review.open("w", encoding="utf-8-sig", newline="") as handle:
             writer = csv.DictWriter(handle, fieldnames=fields)
             writer.writeheader()
@@ -4705,6 +4832,7 @@ def command_qa(args: argparse.Namespace) -> int:
         "status_counts": dict(Counter(row["status"] for row in rows)),
         "confidence_counts": dict(Counter(row["confidence"] for row in rows)),
         "project_regression": regression_summary,
+        "canonical_text_correction_count": canonical_text_correction_count,
     }
     args.out.write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
     if publish_ready:

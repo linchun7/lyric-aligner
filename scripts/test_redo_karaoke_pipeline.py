@@ -9,6 +9,10 @@ from redo_karaoke_pipeline import (
     apply_audio_edit_reviews,
     apply_global_sequence_repairs,
     apply_interval_overrides,
+    apply_canonical_text_corrections,
+    apply_manual_cue_drops,
+    accidental_shared_lrc_duplication,
+    shared_lrc_duplicate_pair_is_nearby,
     audio_edit_candidates,
     audio_edit_review_consistency_issues,
     build_variable_speed_runs,
@@ -27,6 +31,7 @@ from redo_karaoke_pipeline import (
     matching_audio_edit_review,
     matching_cross_track_overlap_review,
     normalized_confirmed_overlap_intervals,
+    normalized_canonical_text_corrections,
     normalized_cross_track_overlap_reviews,
     overlap_pair_is_confirmed,
     parse_lrc,
@@ -43,6 +48,35 @@ from task_contract import qa_metadata, sha256 as contract_sha256
 
 
 class GlobalSequenceAlignmentTests(unittest.TestCase):
+    def test_canonical_text_correction_applies_exact_binding(self):
+        events = [{"track": "song", "lrc_index": 2, "text": "We must remember that tmorrow"}]
+        count = apply_canonical_text_corrections(events, [{"track": "song", "lrc_index": 2, "expected_text": "We must remember that tmorrow", "corrected_text": "We must remember that tomorrow", "reason": "typo"}])
+        self.assertEqual(count, 1)
+        self.assertEqual(events[0]["text"], "We must remember that tomorrow")
+        self.assertEqual(events[0]["canonical_text_correction_reason"], "typo")
+
+    def test_canonical_text_correction_rejects_stale_expected_text(self):
+        with self.assertRaises(ValueError):
+            apply_canonical_text_corrections([{ "track": "song", "lrc_index": 2, "text": "actual" }], [{"track": "song", "lrc_index": 2, "expected_text": "stale", "corrected_text": "new", "reason": "typo"}])
+
+    def test_canonical_text_correction_rejects_unknown_key(self):
+        with self.assertRaises(ValueError):
+            apply_canonical_text_corrections([], [{"track": "song", "lrc_index": 2, "expected_text": "a", "corrected_text": "b", "reason": "typo"}])
+
+    def test_canonical_text_correction_rejects_duplicate_event_target_identity(self):
+        events = [
+            {"track": "song", "lrc_index": 2, "text": "a"},
+            {"track": "song", "lrc_index": 2, "text": "a"},
+        ]
+        with self.assertRaisesRegex(ValueError, "duplicate canonical event key for correction"):
+            apply_canonical_text_corrections(events, [{"track": "song", "lrc_index": 2, "expected_text": "a", "corrected_text": "b", "reason": "typo"}])
+
+    def test_canonical_text_correction_requires_reason_and_unique_key(self):
+        with self.assertRaises(ValueError):
+            normalized_canonical_text_corrections([{ "track": "song", "lrc_index": 2, "expected_text": "a", "corrected_text": "b" }])
+        item = {"track": "song", "lrc_index": 2, "expected_text": "a", "corrected_text": "b", "reason": "typo"}
+        with self.assertRaises(ValueError):
+            normalized_canonical_text_corrections([item, item.copy()])
     def test_enhanced_lrc_word_timing_keeps_one_canonical_line(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "lyrics.lrc"
@@ -86,6 +120,36 @@ class GlobalSequenceAlignmentTests(unittest.TestCase):
             self.assertEqual(lines[0].text, "One complete line")
             self.assertEqual(lines[0].tokens, ())
             self.assertEqual(lines[0].timing_format, "line_lrc")
+
+    def test_title_like_intro_is_filtered_only_within_first_two_seconds(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "lyrics.lrc"
+            path.write_text(
+                "[00:01.35]歌手 - 歌名\n"
+                "[00:02.10]你 - 我\n"
+                "[00:03.00]真正歌词\n",
+                encoding="utf-8",
+            )
+
+            lines = parse_lrc(path)
+
+            self.assertEqual([line.text for line in lines], ["你 - 我", "真正歌词"])
+
+    def test_fullwidth_credit_and_role_only_metadata_are_filtered(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "lyrics.lrc"
+            path.write_text(
+                "[00:01.00]词：蔡健雅\n"
+                "[00:02.00]曲：蔡健雅\n"
+                "[00:03.00]女：\n"
+                "[00:04.00]男：\n"
+                "[00:05.00]真正歌词\n",
+                encoding="utf-8",
+            )
+
+            lines = parse_lrc(path)
+
+            self.assertEqual([line.text for line in lines], ["真正歌词"])
 
     def test_variable_speed_run_is_continuous_monotonic_and_used_for_projection(self):
         points = [(0.0, 0.0), (3.0, 3.0), (6.0, 6.3), (9.0, 10.8), (12.0, 15.9)]
@@ -594,6 +658,30 @@ class GlobalSequenceAlignmentTests(unittest.TestCase):
 
 
 class BoundaryEvidenceTests(unittest.TestCase):
+    def test_shared_lrc_duplicate_proximity_accepts_367ms_editor_gap(self):
+        left = {"start_ms": 1000, "end_ms": 2000, "track": "song", "lrc_indices": "7"}
+        right = {"start_ms": 2367, "end_ms": 3367, "track": "song", "lrc_indices": "7"}
+        self.assertTrue(shared_lrc_duplicate_pair_is_nearby(left, right))
+        right["start_ms"] = 3501
+        self.assertFalse(shared_lrc_duplicate_pair_is_nearby(left, right))
+        self.assertGreater(right["start_ms"] - left["end_ms"], 300)
+
+    def test_shared_lrc_split_reconstruction_is_duplicate_signal(self):
+        left = {"original": "如果再看你一眼", "text": "如果再看你一眼是否还会有感觉"}
+        right = {"original": "是否还会有感觉", "text": "如果再看你一眼是否还会有感觉"}
+        duplicate, left_score, right_score, combined = accidental_shared_lrc_duplication(
+            left, right, "如果再看你一眼是否还会有感觉"
+        )
+        self.assertTrue(duplicate)
+        self.assertGreaterEqual(combined, 0.88)
+        self.assertGreaterEqual(combined, max(left_score, right_score) + 0.10)
+
+    def test_shared_lrc_complete_real_repeat_is_protected(self):
+        full = "如果再看你一眼是否还会有感觉"
+        left = {"original": full, "text": full}
+        right = {"original": full, "text": full}
+        self.assertFalse(accidental_shared_lrc_duplication(left, right, full)[0])
+
     def test_word_asr_can_replace_bad_jianying_observation(self):
         row = {
             "original": "random phonetic noise",
@@ -777,9 +865,31 @@ class BoundaryEvidenceTests(unittest.TestCase):
         self.assertFalse(is_generic_vocalization("가나다 oh"))
         self.assertFalse(is_generic_vocalization("甲乙丙 oh"))
         self.assertTrue(is_generic_vocalization("Uh Oh Yeah"))
+        self.assertTrue(is_generic_vocalization("哦哦耶哦"))
+        self.assertTrue(is_generic_vocalization("呜呜呜"))
+        self.assertTrue(is_generic_vocalization("哒哒哒哒"))
 
 
 class ProjectRegressionTests(unittest.TestCase):
+    def test_manual_cue_drop_removes_all_matching_rows_only(self):
+        rows = [{"original_cue": "7", "text": "a"}, {"original_cue": "7", "text": "b"}, {"original_cue": "8", "text": "keep"}]
+        self.assertEqual(apply_manual_cue_drops(rows, [{"cue": 7, "reason": "review"}]), 2)
+        self.assertEqual(rows, [{"original_cue": "8", "text": "keep"}])
+
+    def test_manual_cue_drop_rejects_unknown_or_missing_reason(self):
+        with self.assertRaises(ValueError):
+            apply_manual_cue_drops([{"original_cue": "7"}], [{"cue": 9, "reason": "review"}])
+        with self.assertRaises(ValueError):
+            apply_manual_cue_drops([{"original_cue": "7"}], [{"cue": 7}])
+        with self.assertRaises(ValueError):
+            apply_manual_cue_drops([{"original_cue": "7"}], [{"cue": "bad", "reason": "review"}])
+
+    def test_manual_cue_drop_rejects_zero_and_duplicate_cue(self):
+        with self.assertRaises(ValueError):
+            apply_manual_cue_drops([{"original_cue": "1"}], [{"cue": 0, "reason": "review"}])
+        with self.assertRaisesRegex(ValueError, "duplicate manual cue drop"):
+            apply_manual_cue_drops([{"original_cue": "1"}], [{"cue": 1, "reason": "review"}, {"cue": 1, "reason": "review"}])
+
     def test_interval_override_replaces_only_contained_track_rows(self):
         rows = [
             {"track": "song", "start_ms": 1000, "end_ms": 2000, "text": "old 1"},

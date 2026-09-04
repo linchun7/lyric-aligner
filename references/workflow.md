@@ -6,6 +6,8 @@
 
 本文件是当前生产工作流总览。历史 `v3.9` / `redo_karaoke_pipeline.py` 仅保留为兼容、回归与历史实现，不再是新任务默认入口。更细的 Max authority 与 CLI 约束分别见 `v4-runtime-guide.md`、`v4-cli-contract.md`。
 
+对“已有 editor SRT + 实际调速/剪辑 source WAV + edited mix”的事故恢复任务，legacy redo 只允许作为显式 recovery tool 使用，不构成默认回退。此路径仍遵守同一 authority：canonical lyric 负责文字/顺序，实际音频负责 timing truth，editor SRT 只是强但可推翻的 timing/segmentation prior；手工分段调速、裁前奏或其它非线性 DAW 编辑不得仅凭单一 BPM 比例统一缩放 LRC 时间戳。任何 canonical provider 修订、cue 删除、confirmed omission/cut 和相邻 shared-LRC 重复裁决都必须 task-bound、可审计、fail closed。
+
 ## 1. 生产原则
 
 1. canonical lyric 决定最终文字与顺序；ASR 不能改写 canonical truth。
