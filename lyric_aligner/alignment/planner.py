@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import unicodedata
 from dataclasses import asdict, dataclass
 from typing import Any, Iterable
 
@@ -28,6 +29,8 @@ class AlignmentPlannerConfig:
     editor_boundary_disagreement_ms: int = 500
     editor_ambiguous_margin_max: float = 0.08
     include_editor_missing: bool = False
+    release_semantic_anchors_per_track: int = 0
+    release_semantic_mix_context_ms: int = 2_000
     max_jobs: int = 200
 
     def validate(self) -> None:
@@ -40,6 +43,14 @@ class AlignmentPlannerConfig:
         if not 0.0 <= float(self.editor_ambiguous_margin_max) <= 1.0:
             raise AlignmentPlanningError(
                 "editor_ambiguous_margin_max must be within [0,1]"
+            )
+        if not 0 <= int(self.release_semantic_anchors_per_track) <= 10:
+            raise AlignmentPlanningError(
+                "release_semantic_anchors_per_track must be within [0,10]"
+            )
+        if self.release_semantic_mix_context_ms < 0:
+            raise AlignmentPlanningError(
+                "release_semantic_mix_context_ms must be >= 0"
             )
         if self.max_jobs < 1:
             raise AlignmentPlanningError("max_jobs must be >= 1")
@@ -217,6 +228,7 @@ def _append_reason(
     mix_window_ms: list[int] | None,
     source_window_ms: list[int] | None,
     evidence: dict[str, Any] | None = None,
+    requested_capabilities: list[str] | None = None,
 ) -> None:
     line_index = None if line is None else int(line["canonical_line_index"])
     key = _job_key(
@@ -238,7 +250,9 @@ def _append_reason(
             else line["canonical_text_sha256"],
             "mix_window_ms": mix_window_ms,
             "source_window_ms": source_window_ms,
-            "requested_capabilities": _requested_capabilities(line),
+            "requested_capabilities": list(requested_capabilities)
+            if requested_capabilities is not None
+            else _requested_capabilities(line),
             "reasons": [],
             "reason_evidence": [],
             "priority": priority,
@@ -251,6 +265,93 @@ def _append_reason(
         row["reason_evidence"].append({"reason": reason, **evidence})
     if priority == "high":
         row["priority"] = "high"
+
+
+def _semantic_anchor_key(text: str) -> str:
+    return "".join(
+        char for char in unicodedata.normalize("NFKC", str(text or "")).casefold()
+        if unicodedata.category(char)[0] in {"L", "N"}
+    )
+
+
+def _spread_anchor_lines(occurrence_lines: list[dict[str, Any]], count: int) -> list[dict[str, Any]]:
+    eligible = [
+        line for line in occurrence_lines
+        if line.get("mix_start_ms") is not None and len(_semantic_anchor_key(line.get("text", ""))) >= 4
+    ]
+    eligible.sort(key=lambda line: (int(line["canonical_line_index"]), float(line["mix_start_ms"])))
+    counts: dict[str, int] = {}
+    for line in eligible:
+        key = _semantic_anchor_key(line.get("text", ""))
+        counts[key] = counts.get(key, 0) + 1
+    unique = [line for line in eligible if counts[_semantic_anchor_key(line.get("text", ""))] == 1]
+    candidates = unique if len(unique) >= count else eligible
+    if not candidates or count <= 0:
+        return []
+    take = min(count, len(candidates))
+    return [candidates[min(len(candidates) - 1, (i * len(candidates)) // take)] for i in range(take)]
+
+
+def _jobs_from_release_semantic_anchors(
+    *, lines: dict[tuple[str, int], dict[str, Any]], occurrences: dict[str, dict[str, Any]],
+    jobs: dict[tuple[Any, ...], dict[str, Any]], config: AlignmentPlannerConfig,
+    source_duration_ms_by_occurrence: dict[str, int] | None,
+) -> None:
+    if config.release_semantic_anchors_per_track <= 0:
+        return
+    if source_duration_ms_by_occurrence is None:
+        raise AlignmentPlanningError("release semantic anchors require source duration mapping")
+    for occurrence_id, occurrence in occurrences.items():
+        duration = source_duration_ms_by_occurrence.get(occurrence_id)
+        if duration is None or int(duration) <= 0:
+            raise AlignmentPlanningError(f"missing or invalid source duration for {occurrence_id}")
+        occurrence_lines = [line for (oid, _), line in lines.items() if oid == occurrence_id]
+        anchors = _spread_anchor_lines(occurrence_lines, config.release_semantic_anchors_per_track)
+        if occurrence_lines and not anchors:
+            raise AlignmentPlanningError(f"no eligible release semantic anchor for {occurrence_id}")
+        for line in anchors:
+            mix_window = _finite_interval(
+                line.get("mix_start_ms"), line.get("mix_end_ms"),
+                context_ms=config.release_semantic_mix_context_ms, label="semantic anchor mix line",
+            )
+            _append_reason(
+                jobs, occurrence=occurrence, line=line, reason="release_semantic_anchor", priority="high",
+                mix_window_ms=None, source_window_ms=[0, int(duration)],
+                evidence={"source_window_basis": "full_bound_source_audio", "mix_window_context_ms": config.release_semantic_mix_context_ms},
+                requested_capabilities=["source_forced_alignment"],
+            )
+
+
+def _jobs_from_release_semantic_asr_anchors(
+    editor_evidence: dict[str, Any] | None, *, lines, occurrences, jobs, config
+) -> None:
+    if config.release_semantic_anchors_per_track <= 0 or editor_evidence is None:
+        return
+    for occurrence_row in editor_evidence.get("occurrences", []):
+        occurrence = occurrences.get(str(occurrence_row.get("occurrence_id") or ""))
+        if occurrence is None:
+            continue
+        selected = _spread_anchor_lines([line for (oid, _), line in lines.items() if oid == occurrence["occurrence_id"]], config.release_semantic_anchors_per_track)
+        by_index = {int(row.get("canonical_line_index")): row for row in occurrence_row.get("lines", [])}
+        for line in selected:
+            row = by_index.get(int(line["canonical_line_index"]))
+            if not row or not row.get("best_editor_cue_number") or row.get("suggested_onset_delta_ms") is None:
+                continue
+            margin = row.get("best_candidate_margin_uncalibrated")
+            candidates = row.get("candidates")
+            if margin is None or float(margin) <= config.editor_ambiguous_margin_max or not candidates:
+                continue
+            top = candidates[0]
+            if float(top.get("timing_support_score", 0)) < 0.50:
+                continue
+            kind = "direct" if top.get("direct_text_support_score") is not None and float(top["direct_text_support_score"]) >= 0.65 else "phonetic" if top.get("phonetic_support_score") is not None and float(top["phonetic_support_score"]) >= 0.65 else None
+            if kind is None or top.get("editor_start_ms") is None or top.get("editor_end_ms") is None:
+                continue
+            start = max(0, int(top["editor_start_ms"]) - config.release_semantic_mix_context_ms)
+            end = int(top["editor_end_ms"]) + config.release_semantic_mix_context_ms
+            if end <= start:
+                continue
+            _append_reason(jobs, occurrence=occurrence, line=line, reason="release_semantic_asr_anchor", priority="high", mix_window_ms=[start, end], source_window_ms=None, requested_capabilities=["mix_asr", "word_timestamps"], evidence={"editor_cue_number": int(row["best_editor_cue_number"]), "candidate_margin_uncalibrated": float(margin), "timing_support_score": float(top["timing_support_score"]), "text_support_kind": kind})
 
 
 def _jobs_from_run_issues(
@@ -413,6 +514,7 @@ def build_alignment_plan(
     timeline_payloads: Iterable[dict[str, Any]],
     editor_evidence: dict[str, Any] | None = None,
     config: AlignmentPlannerConfig | None = None,
+    source_duration_ms_by_occurrence: dict[str, int] | None = None,
 ) -> dict[str, Any]:
     """Build bounded local evidence jobs without executing any backend."""
 
@@ -434,6 +536,11 @@ def build_alignment_plan(
             jobs=jobs,
             config=config,
         )
+    _jobs_from_release_semantic_anchors(
+        lines=lines, occurrences=occurrences, jobs=jobs, config=config,
+        source_duration_ms_by_occurrence=source_duration_ms_by_occurrence,
+    )
+    _jobs_from_release_semantic_asr_anchors(editor_evidence, lines=lines, occurrences=occurrences, jobs=jobs, config=config)
 
     rows = list(jobs.values())
     priority_order = {"high": 0, "medium": 1, "low": 2}
@@ -448,8 +555,12 @@ def build_alignment_plan(
             row["occurrence_id"],
         )
     )
+    release_reasons = {"release_semantic_anchor", "release_semantic_asr_anchor"}
+    planned_release_anchors = sum(bool(release_reasons.intersection(row["reasons"])) for row in rows)
     truncated = len(rows) > config.max_jobs
     rows = rows[: config.max_jobs]
+    if config.release_semantic_anchors_per_track > 0 and sum(bool(release_reasons.intersection(row["reasons"])) for row in rows) < planned_release_anchors:
+        raise AlignmentPlanningError("job limit would truncate release semantic anchors")
     for row in rows:
         row["reasons"].sort()
         row["requested_capabilities"] = sorted(set(row["requested_capabilities"]))

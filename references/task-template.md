@@ -2,7 +2,7 @@
 
 更新：2026-09-04
 当前产品路径：`Standard -> Smart -> Pro -> Max`
-当前 Max 主线版本：`4.0.0a16`
+当前 Max 主线版本：`4.0.0a17`
 
 本文件只描述当前生产入口。历史 v3.9/`redo_karaoke_pipeline.py` 仍保留用于回归与历史兼容，但不再是新任务默认生产路径。
 
@@ -173,8 +173,9 @@ v4_run
 -> editor-cue reconciliation
 -> production materialization
 -> optional display policy
+-> semantic sync audit（canonical projection + exact final vs independent audio-semantic evidence；editor 仅 auxiliary witness）
 -> final candidate audit
--> release validation
+-> release validation（a17 起必须绑定 run + semantic-sync fusion + semantic-sync QA）
 ```
 
 `ready_for_render` 不等于 `publish_ready`。
@@ -191,7 +192,7 @@ segmentation_authority = editor_reconciled
 release_blocked_reason = ""
 ```
 
-并由 `v4_validate_release.py` 验证唯一 hash-bound final-render artifact 的 config/evidence/QA authority 三层一致。
+并由 `v4_validate_release.py` 验证唯一 hash-bound final-render artifact 的 config/evidence/QA authority 三层一致。`4.0.0a17` 起还必须先运行 `v4_audit_semantic_sync.py`：逐首验证 canonical projection 与 exact final SRT 对 task-bound 独立音频语义证据的 onset 同步。优先使用 canonical text 对实际 source audio 的 forced alignment，再通过 source-to-mix 投影进入 mix time；ASR 只能在存在 canonical word-span 且 editor witness 本身经文本覆盖证明可靠时作为兜底，editor SRT 永远只是 auxiliary witness，不能单独授予 release authority。QA 必须精确绑定 source SRT、成品 audio、song list、run、evidence fusion、final SRT 与 final audit report SHA-256。缺失、failed、证据冲突或 stale semantic-sync QA 均不得 release。对于手工分段调速、裁前奏或 DAW 非线性编辑的 source audio，禁止仅按单一 BPM 比例统一缩放 LRC 时间戳后直接作为 Max canonical timebase，除非另有独立同步证据。
 
 ## 7. 多语言与 lyric-role
 

@@ -205,6 +205,37 @@ class V4AlignmentPlannerTests(unittest.TestCase):
         self.assertFalse(external_missing.execution_ready)
         self.assertIn("external_command", external_missing.missing_execution_requirements)
 
+    def test_release_semantic_anchors_bind_full_source_audio(self):
+        plan = build_alignment_plan(
+            run={"issues": []}, timeline_payloads=[self.timeline()],
+            config=AlignmentPlannerConfig(release_semantic_anchors_per_track=2),
+            source_duration_ms_by_occurrence={"occ-1": 180000},
+        )
+        jobs = [j for j in plan["jobs"] if "release_semantic_anchor" in j["reasons"]]
+        self.assertEqual(len(jobs), 2)
+        for job in jobs:
+            self.assertEqual(job["source_window_ms"], [0, 180000])
+            self.assertIn("source_forced_alignment", job["requested_capabilities"])
+            self.assertNotIn("mix_asr", job["requested_capabilities"])
+            self.assertIsNone(job["mix_window_ms"])
+        self.assertNotIn("private line", json.dumps(plan))
+
+    def test_release_semantic_anchors_require_duration_mapping(self):
+        with self.assertRaises(AlignmentPlanningError):
+            build_alignment_plan(
+                run={"issues": []}, timeline_payloads=[self.timeline()],
+                config=AlignmentPlannerConfig(release_semantic_anchors_per_track=2),
+            )
+
+    def test_release_semantic_anchors_cannot_be_truncated(self):
+        with self.assertRaisesRegex(AlignmentPlanningError, "truncate release semantic anchors"):
+            build_alignment_plan(
+                run={"issues": [{"occurrence_id": "occ-1", "code": "x", "interval_start": 1, "interval_end": 2}]},
+                timeline_payloads=[self.timeline()],
+                config=AlignmentPlannerConfig(release_semantic_anchors_per_track=2, max_jobs=1),
+                source_duration_ms_by_occurrence={"occ-1": 180000},
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

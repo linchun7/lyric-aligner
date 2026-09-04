@@ -20,6 +20,8 @@ from lyric_aligner.alignment.planner import (
     AlignmentPlanningError,
     build_alignment_plan,
 )
+from lyric_aligner.assets.bindings import AssetBindingError, bindings_from_payload
+from lyric_aligner.audio.content_extent import detect_audio_content_extent
 from lyric_aligner.contracts.artifacts import (
     atomic_write_json,
     build_artifact_manifest,
@@ -171,6 +173,10 @@ def main() -> int:
     parser.add_argument("--editor-ambiguous-margin-max", type=float, default=0.08)
     parser.add_argument("--include-editor-missing", action="store_true")
     parser.add_argument("--max-jobs", type=int, default=200)
+    parser.add_argument("--track-assets", type=Path)
+    parser.add_argument("--track-assets-artifact", type=Path)
+    parser.add_argument("--release-semantic-anchors-per-track", type=int, default=0)
+    parser.add_argument("--release-semantic-mix-context-ms", type=int, default=20000)
     parser.add_argument("--faster-whisper-model-id")
     parser.add_argument("--whisperx-model-id")
     parser.add_argument("--whisperx-align-model-id")
@@ -214,12 +220,35 @@ def main() -> int:
             fingerprint=fingerprint,
             run_artifact_id=run_artifact_id,
         )
+        if (args.track_assets is None) != (args.track_assets_artifact is None):
+            raise ValueError("track assets payload and artifact must be supplied together")
+        if args.release_semantic_anchors_per_track > 0 and args.track_assets is None:
+            raise ValueError("release semantic anchors require track assets payload and artifact")
+        source_track_assets_artifact_id = None
+        source_duration_ms_by_occurrence = None
+        if args.track_assets is not None:
+            assets_payload = _load(args.track_assets)
+            assets_artifact = _load(args.track_assets_artifact)
+            _check_artifact(assets_artifact, fingerprint=fingerprint, stage="asset_resolution", role="track_assets", output=args.track_assets)
+            source_track_assets_artifact_id = str(assets_artifact["artifact_id"])
+            if source_track_assets_artifact_id not in {str(value) for value in run_artifact.get("upstream_artifact_ids", [])}:
+                raise ValueError("track assets artifact is not upstream of source run")
+            bindings = bindings_from_payload(assets_payload, verify_files=True)
+            source_duration_ms_by_occurrence = {}
+            for binding in bindings:
+                extent = detect_audio_content_extent(binding.source_audio_path)
+                duration_ms = int(round(float(extent.content_end) * 1000.0))
+                if duration_ms <= 0:
+                    raise ValueError(f"source audio content duration is non-positive for {binding.occurrence_id}")
+                source_duration_ms_by_occurrence[binding.occurrence_id] = duration_ms
         config = AlignmentPlannerConfig(
             mix_context_ms=args.mix_context_ms,
             source_context_ms=args.source_context_ms,
             editor_boundary_disagreement_ms=args.editor_boundary_disagreement_ms,
             editor_ambiguous_margin_max=args.editor_ambiguous_margin_max,
             include_editor_missing=args.include_editor_missing,
+            release_semantic_anchors_per_track=args.release_semantic_anchors_per_track,
+            release_semantic_mix_context_ms=args.release_semantic_mix_context_ms,
             max_jobs=args.max_jobs,
         )
         plan = build_alignment_plan(
@@ -227,6 +256,7 @@ def main() -> int:
             timeline_payloads=timelines,
             editor_evidence=editor,
             config=config,
+            source_duration_ms_by_occurrence=source_duration_ms_by_occurrence,
         )
         statuses = inspect_backends(
             faster_whisper_model_id=args.faster_whisper_model_id,
@@ -241,6 +271,7 @@ def main() -> int:
                 "source_run_stage": run_stage,
                 "source_run_artifact_id": run_artifact_id,
                 "source_editor_evidence_artifact_id": editor_artifact_id,
+                "source_track_assets_artifact_id": source_track_assets_artifact_id,
                 "backend_status": [status.to_dict() for status in statuses],
                 "backend_execution_performed": False,
             }
@@ -250,6 +281,8 @@ def main() -> int:
         upstreams = {run_artifact_id, *timeline_ids}
         if editor_artifact_id:
             upstreams.add(editor_artifact_id)
+        if source_track_assets_artifact_id:
+            upstreams.add(source_track_assets_artifact_id)
         artifact = build_artifact_manifest(
             task_fingerprint_sha256=fingerprint,
             stage="alignment_job_planning",
@@ -260,6 +293,7 @@ def main() -> int:
                 **config.to_dict(),
                 "source_run_artifact_id": run_artifact_id,
                 "editor_evidence_artifact_id": editor_artifact_id,
+                "source_track_assets_artifact_id": source_track_assets_artifact_id,
             },
             producer={"git_commit": args.git_commit} if args.git_commit else {},
             upstream_artifact_ids=tuple(sorted(upstreams)),
@@ -276,6 +310,7 @@ def main() -> int:
         KeyError,
         TypeError,
         ValueError,
+        AssetBindingError,
         json.JSONDecodeError,
         AlignmentPlanningError,
     ) as exc:

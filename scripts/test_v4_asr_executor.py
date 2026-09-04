@@ -23,6 +23,7 @@ class FakeModel:
             word=" hello",
             probability=0.91,
         )
+        word2 = SimpleNamespace(start=1.50, end=1.75, word=" world", probability=0.92)
         segment = SimpleNamespace(
             start=1.05,
             end=1.90,
@@ -30,7 +31,7 @@ class FakeModel:
             avg_logprob=-0.2,
             no_speech_prob=0.01,
             compression_ratio=1.1,
-            words=[word],
+            words=[word, word2],
         )
         info = SimpleNamespace(language="en", language_probability=0.97)
         return iter([segment]), info

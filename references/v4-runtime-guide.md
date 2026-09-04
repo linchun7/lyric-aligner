@@ -1,7 +1,7 @@
 # Lyric Aligner v4 生产运行手册
 
 更新：2026-09-04
-主线算法版本：`4.0.0a16`
+主线算法版本：`4.0.0a17`
 
 > 真实生产 workload 与产品设计基线见 `references/production-requirements.md`；Smart / Pro v1.1 设计细节见 `references/smart-pro-v1-1.md`。
 
@@ -324,9 +324,10 @@ Smart/Pro 不借用 P9/P4 authority，也不会反向提升旧 chain。
 8. Max review/cut/overlap 闭合后先生成 canonical evaluation render
 9. 通过 Editor-Cue Reconciliation 获得可证明的 production segmentation authority；不满足 gate 则继续 review，不手改 artifact
 10. 如需平台展示修订，再运行 task-bound display policy
-11. 运行 `v4_audit_final.py` 做只读 final geometry/presentation QA
-12. 最后运行 `v4_validate_release.py`；只有 release manifest ready 才作为正式交付
-13. 永远保留原输入，写独立 outputs/artifacts；路径碰撞必须 fail closed
+11. 运行 `v4_audit_semantic_sync.py`，同时验证 canonical projection 与 exact final SRT 对独立 audio-semantic evidence 的逐首语义 onset 同步；优先 forced alignment→source-to-mix 投影，ASR 只可作为受约束 fallback，editor 永远只是 auxiliary witness；任何歌曲证据不足、冲突或 timing fail 都不得 release
+12. 运行 `v4_audit_final.py` 做只读 final geometry/presentation QA
+13. 最后运行 `v4_validate_release.py --run ... --semantic-sync-fusion ... --semantic-sync-qa ...`；a17 起缺少或未通过独立 audio semantic-sync QA 时 release 必须 fail closed
+14. 永远保留原输入，写独立 outputs/artifacts；路径碰撞必须 fail closed
 ```
 
 ## 9. 验证边界
@@ -445,6 +446,12 @@ python scripts/v4_apply_display_policy.py `
 ```
 
 该阶段生成一个新的、仍为 `stage=final_render` 的 hash-bound production artifact，并以上一层 production render 为 upstream。发布时只把**新的 display final-render artifact**交给 `v4_validate_release.py`，因此现有“exactly one final_render”与三层 `editor_reconciled` authority gate 不需要任何例外。
+
+### Semantic timing audit（a17 起 release 硬门）
+
+在 production/display final 确定后运行 `scripts/v4_audit_semantic_sync.py --task-manifest ... --run ... --final-srt ... --out ...`。该审计不修改字幕，而是把 task-bound source editor/Jianying SRT 视为从最终音频识别/编辑得到的独立 timing witness，并在每首歌曲窗口内分别检查：① Max canonical projection；② exact final SRT。匹配允许一个 editor cue 对应最多若干连续 canonical/final cue，并保持单调、限定 ±20 秒搜索范围，避免重复副歌借用远处同词。
+
+默认 fail-closed 条件包括：每首高置信语义锚点覆盖不足；median absolute onset error >1500ms；或 >2500ms 的大误差比例 >25%。该 QA 绑定 source SRT、final mix audio、song list、run 与 exact final SRT SHA-256。a17 起 `v4_validate_release.py` 必须同时收到 `--run` 和 `--semantic-sync-qa`，且 projection/final 两层都 `passed=true`；缺失、失败或 hash stale 均不得 ready。该 gate 用于阻止“artifact lineage/geometry 全部合法，但 canonical timebase 实际与声音错位”的 false-ready。
 
 ### Final candidate audit（推荐，release 前最后一层只读 QA）
 

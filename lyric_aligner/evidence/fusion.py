@@ -202,6 +202,10 @@ def _forced_index(
 
 
 def _asr_boundary(job: dict[str, Any]) -> tuple[int, int] | None:
+    start = _int_or_none(job.get("canonical_match_start_ms"), label="ASR canonical match start")
+    end = _int_or_none(job.get("canonical_match_end_ms"), label="ASR canonical match end")
+    if start is not None and end is not None and end > start:
+        return start, end
     segments = job.get("segments")
     if not isinstance(segments, list) or not segments:
         return None
@@ -225,7 +229,9 @@ def _best_asr(jobs: list[dict[str, Any]]) -> tuple[dict[str, Any], tuple[int, in
         boundary = _asr_boundary(job)
         if boundary is None:
             continue
-        support = job.get("canonical_text_support_score")
+        support = job.get("canonical_match_support_score")
+        if support is None:
+            support = job.get("canonical_text_support_score")
         try:
             score = -1.0 if support is None else float(support)
         except (TypeError, ValueError) as exc:
@@ -363,6 +369,8 @@ def _fuse_line(
                 "canonical_text_support_score": job.get(
                     "canonical_text_support_score"
                 ),
+                "canonical_match_support_score": job.get("canonical_match_support_score"),
+                "boundary_basis": "canonical_word_span" if job.get("canonical_match_start_ms") is not None and job.get("canonical_match_end_ms") is not None and int(job["canonical_match_end_ms"]) > int(job["canonical_match_start_ms"]) else "segment_envelope",
                 "language_probability": job.get("language_probability"),
             }
         )

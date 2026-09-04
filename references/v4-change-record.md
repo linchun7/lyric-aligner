@@ -24,6 +24,14 @@ ASR / forced -> auxiliary acoustic evidence
 
 ---
 
+## 2026-09-04 — Max 4.0.0a17 semantic timing release hard gate
+
+华语青春180 的真实生产事故证明：artifact lineage、cue geometry、review closure、editor-reconciled segmentation authority 与 release manifest 可以全部自洽，但 canonical source timebase 仍可能与实际 edited audio 严重错位。事故样本《第一天》因手工分段调速却被错误按单一 BPM 比例缩放 LRC，导致 Max canonical projection 与最终 SRT 对 source editor/audio-derived timing witness 稳定晚约 12.3 秒；旧 release gate 没有任何“歌词是否真的在声音唱到这里时出现”的独立检查，因此 false-ready。
+
+`4.0.0a17` 新增 `lyric_aligner.qa.semantic_sync` 与 `scripts/v4_audit_semantic_sync.py`，并把既有 forced-alignment / ASR / evidence-fusion 基础设施接入 release QA。正式 timing truth 不再由 editor/Jianying SRT 单独承担：planner 会为每首主动选取分散的 canonical semantic anchors，优先请求 canonical text 对实际 source audio 的 forced alignment，并经 source-to-mix 投影得到独立 mix-time 语义锚点；ASR executor 新增 canonical word-span 定位，只有 word-span support 足够且 editor witness 经文本覆盖证明可靠时，ASR 才可作为 fallback。forced/ASR 冲突、独立音频证据不足、editor-only 均 fail closed。默认每首独立音频锚点 median absolute onset error 必须 `<=1500ms`，且 `>2500ms` 的大误差比例 `<=25%`。
+
+从 a17 起 `v4_validate_release.py` 强制要求 `--run`、`--semantic-sync-fusion` 与 `--semantic-sync-qa`；projection/final 任一层 failed、证据 basis 非 `forced_alignment` / `asr_plus_reliable_editor`、QA 缺失、hash stale/mismatch 都不得生成 ready release manifest。QA 精确绑定 source SRT、final mix audio、song list、run、evidence fusion、exact final SRT 与 final audit report。Synthetic regression 覆盖整体 +12 秒系统偏移、低质量 editor + 正确 forced alignment、低质量 editor + ASR-only 禁止放行、reliable editor + ASR fallback、forced/ASR 冲突以及重复副歌约束。真实事故回归中《第一天》55 个高置信 editor 对照锚点 median error `12.346s`、98.18% 超过 2.5 秒；该事故同时推动了独立音频语义证据成为正式 release authority gate，而不再把 editor 对照本身当最终真值。
+
 ## 2026-09-04 — Max 4.0.0a16 early timed title-row metadata guard
 
 华语青春180 WAV Max 终审暴露出一条 consumer-LRC 身份装饰行 `[00:01.337]潘玮柏、苏芮 - 我想更懂你` 被旧 canonical metadata 规则当成歌词并投进 timeline。根因是共享 `is_title_like_intro()` 仅识别首 1 秒内的 `artist - title`，而 provider 延迟及任务级时间缩放可把同类身份行推到 1–2 秒。

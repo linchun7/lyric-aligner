@@ -19,6 +19,7 @@ from lyric_aligner.text.display_policy import (
     load_display_policy,
     mask_strong_profanity,
 )
+from semantic_sync_test_support import write_passing_semantic_sync_fixture
 from task_contract import build_task_manifest, write_json_atomic
 
 
@@ -389,6 +390,12 @@ class V4DisplayTextPolicyEndToEndTests(unittest.TestCase):
             self.assertTrue(qa["display_text_canonical_preserved_in_audit"])
             self.assertTrue(qa["display_timing_source_preserved_in_audit"])
 
+            semantic_run, semantic_fusion, semantic_qa = write_passing_semantic_sync_fixture(
+                manifest_path=fixture["manifest_path"],
+                final_srt=out_dir / "FINAL.srt",
+                final_report=out_dir / "FINAL.audit.csv",
+                out_dir=out_dir,
+            )
             release_path = out_dir / "FINAL.release.json"
             release = run_command(
                 [
@@ -402,6 +409,12 @@ class V4DisplayTextPolicyEndToEndTests(unittest.TestCase):
                     str(out_dir / "FINAL.audit.csv"),
                     "--qa-json",
                     str(out_dir / "FINAL.qa.json"),
+                    "--run",
+                    str(semantic_run),
+                    "--semantic-sync-qa",
+                    str(semantic_qa),
+                    "--semantic-sync-fusion",
+                    str(semantic_fusion),
                     "--algorithm-version",
                     __version__,
                     "--upstream-artifact",

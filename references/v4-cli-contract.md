@@ -124,9 +124,15 @@ Display-policy materializer 只能消费已获得 `editor_reconciled`、`publish
 
 输出 audit 必须保留 canonical 原文及其 hash，以及原始 source start/end；同时把 `text/start_ms/end_ms` 绑定到最终 display 值，记录 display timing change reason，并重算 `text_sha256` / `cue_id`。该阶段生成新的唯一 `final_render` artifact，以上一层 production final-render 为 upstream；release 时只提交新的 display final-render，现有 exactly-one-final-render contract 不变。
 
+### `v4_audit_semantic_sync.py`
+
+该 CLI 是 release 前的只读语义时间轴审计，不修改 final SRT、不授予新的 timing/text/segmentation authority。它必须绑定 exact task manifest、同 task run、同 task evidence fusion、exact final SRT 与 exact final audit report。正式 timing witness 来自独立 audio-semantic evidence：优先使用 canonical text 对实际 source audio 的 forced alignment 再经 source-to-mix 投影；ASR 仅允许使用 canonical word-span，且只有 editor/Jianying witness 经文本覆盖证明可靠时才可作为 fallback。source editor/Jianying SRT 只做 auxiliary lexical/timing witness，永远不是 canonical text truth，也不能单独授予 release authority。
+
+输出 `semantic-sync-qa-1.1` 必须包含 task fingerprint、algorithm version 与 `audio_evidence_policy=forced_alignment_or_asr_plus_reliable_editor_v1`，并精确绑定 source SRT/audio/song-list/run/evidence-fusion/final-SRT/final-report SHA-256。projection 与 final 任一层 failed、任一歌曲独立音频锚点覆盖不足、median absolute onset error 超阈值、大误差比例超阈值、forced/ASR family conflict、editor-only 或 stale binding 时，顶层 `passed` 必须为 false。
+
 ### `v4_validate_release.py`
 
-release manifest 不得覆盖 task manifest/任一 task input、final SRT、audit CSV、QA JSON 或任何 upstream artifact。
+release manifest 不得覆盖 task manifest/任一 task input、final SRT、audit CSV、QA JSON、run、semantic-sync fusion、semantic-sync QA 或任何 upstream artifact。
 
 V4 release 只有在唯一 exact final-render artifact 的 production authority **三层一致**时才可继续：
 

@@ -68,6 +68,46 @@ def _text_support(canonical: str, observed: str) -> float | None:
     return SequenceMatcher(None, left, right, autojunk=False).ratio()
 
 
+def _canonical_word_span(canonical: str, segments: Iterable[Any]) -> dict[str, Any] | None:
+    target = _normalize(canonical)
+    words = []
+    for segment in segments:
+        for word in getattr(segment, "words", None) or []:
+            normalized = _normalize(getattr(word, "word", ""))
+            start = float(getattr(word, "start", 0.0) or 0.0)
+            end = float(getattr(word, "end", 0.0) or 0.0)
+            if normalized and math.isfinite(start) and math.isfinite(end) and end > start:
+                words.append((normalized, int(round(start * 1000)), int(round(end * 1000)), getattr(word, "probability", None)))
+    if not target or not words:
+        return None
+    minimum = max(1, len(target) // 2)
+    maximum = max(2 * len(target), len(target) + 12)
+    best = None
+    for start in range(len(words)):
+        combined = ""
+        for end in range(start, len(words)):
+            combined += words[end][0]
+            if len(combined) > maximum:
+                break
+            if len(combined) < minimum:
+                continue
+            score = SequenceMatcher(None, target, combined, autojunk=False).ratio()
+            ranked = score + 0.001 * min(len(target), len(combined)) / len(target)
+            if best is None or ranked > best[0]:
+                best = (ranked, start, end + 1, combined)
+    if best is None:
+        return None
+    _, start, end, combined = best
+    selected = words[start:end]
+    probabilities = [float(row[3]) for row in selected if row[3] is not None]
+    return {
+        "start_ms": selected[0][1], "end_ms": selected[-1][2],
+        "support_score": round(SequenceMatcher(None, target, combined, autojunk=False).ratio(), 6),
+        "word_count": len(selected), "normalized_match_sha256": _sha(combined),
+        "mean_word_probability": None if not probabilities else round(sum(probabilities) / len(probabilities), 6),
+    }
+
+
 def _language_hint(profile: str) -> str | None:
     value = str(profile or "").strip().lower()
     return value if value in {"en", "zh", "ko", "ja"} else None
@@ -252,6 +292,7 @@ def execute_faster_whisper_jobs(
             observed_parts.append(text)
         observed = " ".join(observed_parts)
         support = None if canonical is None else _text_support(canonical, observed)
+        canonical_span = None if canonical is None else _canonical_word_span(canonical, segments)
         result: dict[str, Any] = {
             "job_id": job_id,
             "occurrence_id": str(job.get("occurrence_id") or ""),
@@ -266,6 +307,12 @@ def execute_faster_whisper_jobs(
             "canonical_text_support_score": None
             if support is None
             else round(float(support), 6),
+            "canonical_match_support_score": None if canonical_span is None else canonical_span["support_score"],
+            "canonical_match_start_ms": None if canonical_span is None else canonical_span["start_ms"],
+            "canonical_match_end_ms": None if canonical_span is None else canonical_span["end_ms"],
+            "canonical_match_word_count": None if canonical_span is None else canonical_span["word_count"],
+            "canonical_match_mean_word_probability": None if canonical_span is None else canonical_span["mean_word_probability"],
+            "canonical_match_normalized_sha256": None if canonical_span is None else canonical_span["normalized_match_sha256"],
             "segment_count": len(segment_rows),
             "segments": segment_rows,
         }

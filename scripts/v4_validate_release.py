@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -20,10 +21,129 @@ from lyric_aligner.contracts.artifacts import (
 from lyric_aligner.io.path_safety import validate_separate_artifact_paths
 from lyric_aligner.io.task_path_safety import protected_task_input_paths
 from lyric_aligner.qa.final_integrity import FinalIntegrityError, build_release_artifact_manifest
-from task_contract import load_task_manifest, verify_manifest_inputs
+from lyric_aligner.qa.semantic_sync import (
+    DEFAULT_LARGE_ERROR_MS,
+    DEFAULT_MAX_LARGE_ERROR_FRACTION,
+    DEFAULT_MAX_MEDIAN_ABS_ERROR_MS,
+    DEFAULT_MIN_AUDIO_ANCHOR_FRACTION,
+)
+from task_contract import (
+    load_task_manifest,
+    resolve_manifest_record,
+    sha256,
+    verify_manifest_inputs,
+)
 
 
 _REQUIRED_V4_SEGMENTATION_AUTHORITY = "editor_reconciled"
+_SEMANTIC_SYNC_SCHEMA_VERSION = "semantic-sync-qa-1.1"
+_SEMANTIC_SYNC_MODE = "independent_audio_semantic_release_gate"
+_SEMANTIC_AUDIO_POLICY = "forced_alignment_or_asr_plus_reliable_editor_v1"
+
+
+def _semantic_sync_required(algorithm_version: str) -> bool:
+    """Require semantic timing evidence from a17 onward and for later stable v4."""
+
+    if not algorithm_version.startswith("4."):
+        return False
+    alpha = re.fullmatch(r"4\.0\.0a(\d+)", algorithm_version)
+    if alpha is not None:
+        return int(alpha.group(1)) >= 17
+    return True
+
+
+def _validate_semantic_sync_layer(layer: object, *, label: str) -> dict:
+    if not isinstance(layer, dict) or layer.get("passed") is not True:
+        raise ValueError(f"release blocked: {label} semantic sync did not pass")
+    track_count = layer.get("track_count")
+    failed_count = layer.get("failed_track_count")
+    if (
+        not isinstance(track_count, int)
+        or isinstance(track_count, bool)
+        or track_count < 1
+        or not isinstance(failed_count, int)
+        or isinstance(failed_count, bool)
+        or failed_count != 0
+    ):
+        raise ValueError(f"semantic sync {label} track counts are invalid")
+    errors = layer.get("errors")
+    tracks = layer.get("tracks")
+    if errors != [] or not isinstance(tracks, list) or len(tracks) != track_count:
+        raise ValueError(f"semantic sync {label} track evidence is invalid")
+    for row in tracks:
+        if (
+            not isinstance(row, dict)
+            or row.get("passed") is not True
+            or row.get("errors") != []
+            or row.get("evidence_basis") not in ("forced_alignment", "asr_plus_reliable_editor")
+        ):
+            raise ValueError(f"semantic sync {label} contains a failed track")
+    expected_thresholds = {
+        "max_median_abs_error_ms": DEFAULT_MAX_MEDIAN_ABS_ERROR_MS,
+        "large_error_ms": DEFAULT_LARGE_ERROR_MS,
+        "max_large_error_fraction": DEFAULT_MAX_LARGE_ERROR_FRACTION,
+        "min_audio_anchor_fraction": DEFAULT_MIN_AUDIO_ANCHOR_FRACTION,
+    }
+    if layer.get("thresholds") != expected_thresholds:
+        raise ValueError(f"semantic sync {label} thresholds differ from release policy")
+    return layer
+
+
+def _validate_semantic_sync_qa(
+    path: Path,
+    *,
+    run_path: Path,
+    final_srt: Path,
+    manifest_path: Path,
+    manifest: dict,
+    algorithm_version: str,
+    fusion_path: Path,
+    final_report: Path,
+) -> dict:
+    payload = json.loads(path.read_text(encoding="utf-8-sig"))
+    if not isinstance(payload, dict):
+        raise ValueError("semantic sync QA must contain a JSON object")
+    fingerprint = str(manifest["task_fingerprint_sha256"])
+    if payload.get("schema_version") != _SEMANTIC_SYNC_SCHEMA_VERSION:
+        raise ValueError("semantic sync QA schema_version mismatch")
+    if str(payload.get("algorithm_version") or "") != algorithm_version:
+        raise ValueError("semantic sync QA algorithm_version mismatch")
+    if str(payload.get("task_fingerprint_sha256") or "") != fingerprint:
+        raise ValueError("semantic sync QA belongs to another task")
+    if str(payload.get("mode") or "") != _SEMANTIC_SYNC_MODE:
+        raise ValueError("semantic sync QA mode mismatch")
+    if payload.get("audio_evidence_policy") != _SEMANTIC_AUDIO_POLICY:
+        raise ValueError("semantic sync QA audio_evidence_policy mismatch")
+    if not isinstance(payload.get("editor_witness"), dict) or payload["editor_witness"].get("authority") != "auxiliary_only":
+        raise ValueError("semantic sync QA editor_witness must be auxiliary_only")
+    if payload.get("passed") is not True:
+        raise ValueError("release blocked: semantic sync QA did not pass")
+    projection = _validate_semantic_sync_layer(
+        payload.get("projection_sync"), label="canonical projection"
+    )
+    final = _validate_semantic_sync_layer(
+        payload.get("final_sync"), label="final subtitle"
+    )
+    bindings = payload.get("bindings")
+    if not isinstance(bindings, dict):
+        raise ValueError("semantic sync QA has invalid bindings")
+    inputs = manifest["inputs"]
+    source_srt = resolve_manifest_record(manifest_path, inputs["source_srt"])
+    audio = resolve_manifest_record(manifest_path, inputs["audio"])
+    song_list = resolve_manifest_record(manifest_path, inputs["song_list"])
+    expected = {
+        "source_srt_sha256": sha256(source_srt),
+        "audio_sha256": sha256(audio),
+        "song_list_sha256": sha256(song_list),
+        "run_sha256": sha256(run_path),
+        "final_srt_sha256": sha256(final_srt),
+        "fusion_sha256": sha256(fusion_path),
+        "final_report_sha256": sha256(final_report),
+    }
+    for key, digest in expected.items():
+        if str(bindings.get(key) or "") != digest:
+            raise ValueError(f"semantic sync QA binding mismatch: {key}")
+    return payload
 
 
 def _load_upstream_artifacts(paths: list[Path], *, fingerprint: str) -> tuple[tuple[str, ...], dict]:
@@ -172,6 +292,9 @@ def main() -> int:
     parser.add_argument("--final-srt", required=True, type=Path)
     parser.add_argument("--report", required=True, type=Path)
     parser.add_argument("--qa-json", required=True, type=Path)
+    parser.add_argument("--run", type=Path)
+    parser.add_argument("--semantic-sync-qa", type=Path)
+    parser.add_argument("--semantic-sync-fusion", type=Path)
     parser.add_argument("--algorithm-version", required=True)
     parser.add_argument(
         "--upstream-artifact",
@@ -207,6 +330,12 @@ def main() -> int:
                 },
             }
         )
+        if args.run is not None:
+            protected_inputs["run"] = args.run
+        if args.semantic_sync_qa is not None:
+            protected_inputs["semantic_sync_qa"] = args.semantic_sync_qa
+        if args.semantic_sync_fusion is not None:
+            protected_inputs["semantic_sync_fusion"] = args.semantic_sync_fusion
         validate_separate_artifact_paths(
             inputs=protected_inputs,
             outputs={"release_manifest": args.out_manifest},
@@ -215,6 +344,7 @@ def main() -> int:
         upstream_ids, upstream_metadata = _load_upstream_artifacts(
             args.upstream_artifact, fingerprint=fingerprint
         )
+        semantic_sync_payload = None
 
         if args.algorithm_version.startswith("4."):
             upstream_version = upstream_metadata["v4_upstream_algorithm_version"]
@@ -239,6 +369,26 @@ def main() -> int:
                 report=args.report,
                 qa_json=args.qa_json,
             )
+            semantic_requested = (
+                args.run is not None
+                or args.semantic_sync_qa is not None
+                or args.semantic_sync_fusion is not None
+            )
+            if _semantic_sync_required(args.algorithm_version) or semantic_requested:
+                if args.run is None or args.semantic_sync_qa is None or args.semantic_sync_fusion is None:
+                    raise ValueError(
+                        "v4 release requires --run, --semantic-sync-qa and --semantic-sync-fusion from a17 onward"
+                    )
+                semantic_sync_payload = _validate_semantic_sync_qa(
+                    args.semantic_sync_qa,
+                    run_path=args.run,
+                    final_srt=args.final_srt,
+                    manifest_path=args.task_manifest,
+                    manifest=task,
+                    algorithm_version=args.algorithm_version,
+                    fusion_path=args.semantic_sync_fusion,
+                    final_report=args.report,
+                )
         else:
             profile_id = upstream_metadata["calibration_profile_id"] or None
             profile_version = upstream_metadata["calibration_profile_version"] or None
@@ -254,6 +404,16 @@ def main() -> int:
             normalized_config={
                 **upstream_metadata,
                 "final_render_artifact_id": final_render_artifact_id,
+                "semantic_sync_verified": semantic_sync_payload is not None,
+                "semantic_sync_qa_sha256": (
+                    sha256(args.semantic_sync_qa) if semantic_sync_payload is not None else ""
+                ),
+                "semantic_sync_run_sha256": (
+                    sha256(args.run) if semantic_sync_payload is not None else ""
+                ),
+                "semantic_sync_fusion_sha256": (
+                    sha256(args.semantic_sync_fusion) if semantic_sync_payload is not None else ""
+                ),
             },
             upstream_artifact_ids=upstream_ids,
             expected_calibration_profile_id=profile_id,
@@ -270,6 +430,7 @@ def main() -> int:
         "v4_upstream_algorithm_version": upstream_metadata["v4_upstream_algorithm_version"],
         "calibration_profile_id": upstream_metadata["calibration_profile_id"],
         "final_render_artifact_id": final_render_artifact_id,
+        "semantic_sync_verified": semantic_sync_payload is not None,
     }))
     return 0
 

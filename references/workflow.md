@@ -2,7 +2,7 @@
 
 更新：2026-09-04
 当前路径：`Standard -> Smart -> Pro -> Max`
-当前 Max：`4.0.0a16`
+当前 Max：`4.0.0a17`
 
 本文件是当前生产工作流总览。历史 `v3.9` / `redo_karaoke_pipeline.py` 仅保留为兼容、回归与历史实现，不再是新任务默认入口。更细的 Max authority 与 CLI 约束分别见 `v4-runtime-guide.md`、`v4-cli-contract.md`。
 
@@ -207,8 +207,9 @@ display layer 不回写 canonical lyric，不移动 cue start，不改变 occurr
 
 ```text
 production/display materialization
+-> v4_audit_semantic_sync.py
 -> v4_audit_final.py
--> v4_validate_release.py
+-> v4_validate_release.py --run ... --semantic-sync-qa ...
 ```
 
 `v4_audit_final.py` 是 diagnostic-only；检查 cue duration、file order、occurrence/content-end containment、same/cross occurrence overlap 等，不授予 release authority。

@@ -62,6 +62,9 @@ def asr(*, start: int = 5120, end: int = 6310) -> dict:
                 "occurrence_id": "occ-1",
                 "canonical_line_index": 0,
                 "canonical_text_support_score": 0.9,
+                "canonical_match_support_score": 0.9,
+                "canonical_match_start_ms": start,
+                "canonical_match_end_ms": end,
                 "language_probability": 0.95,
                 "segments": [{"start_ms": start, "end_ms": end}],
             }

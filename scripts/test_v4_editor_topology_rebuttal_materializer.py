@@ -9,6 +9,7 @@ from pathlib import Path
 from lyric_aligner import __version__
 from lyric_aligner.contracts.artifacts import build_artifact_manifest
 from lyric_aligner.srt import Cue, cue_id, text_sha256
+from semantic_sync_test_support import write_passing_semantic_sync_fixture
 from task_contract import build_task_manifest, write_json_atomic
 
 
@@ -296,6 +297,12 @@ class V4EditorTopologyRebuttalMaterializerTests(unittest.TestCase):
                 production_artifact["upstream_artifact_ids"],
             )
 
+            semantic_run, semantic_fusion, semantic_qa = write_passing_semantic_sync_fixture(
+                manifest_path=fixture["manifest_path"],
+                final_srt=out_dir / "FINAL.srt",
+                final_report=out_dir / "FINAL.csv",
+                out_dir=out_dir,
+            )
             release_manifest = out_dir / "release.json"
             release = run_command(
                 [
@@ -309,6 +316,12 @@ class V4EditorTopologyRebuttalMaterializerTests(unittest.TestCase):
                     str(out_dir / "FINAL.csv"),
                     "--qa-json",
                     str(out_dir / "FINAL.qa.json"),
+                    "--run",
+                    str(semantic_run),
+                    "--semantic-sync-qa",
+                    str(semantic_qa),
+                    "--semantic-sync-fusion",
+                    str(semantic_fusion),
                     "--algorithm-version",
                     __version__,
                     "--upstream-artifact",

@@ -1,7 +1,7 @@
 # Lyric Aligner v4 当前实施状态
 
 更新日期：2026-09-04
-主线算法版本：`4.0.0a16`
+主线算法版本：`4.0.0a17`
 
 > PR #70 前的完整状态说明已无损归档到 `references/archive/2026-08-22-pre-max-authority-v4-status.md`。P3 前状态见 `references/archive/2026-08-19-pre-p3-v4-status.md`。生产基线见 `references/production-requirements.md`；Smart / Pro 细节见 `references/smart-pro-v1-1.md`。
 
@@ -73,15 +73,21 @@ Acoustic schema 1.4 同时审计 slope 与 source-start 搜索边界；命中/�
 
 Max 是 heavy fallback，用于整体 timeline/mapping 不可信、复杂 cut/overlap/reorder 或 Smart/Pro 无法安全收敛的任务。当前 primary chain 包括 TrackAsset、coarse/Fine/TimeWarp、canonical projection、transition/cut/overlap/review 等完整 reconstruction evidence。
 
-### 5.0 a16 early timed title-row metadata guard
+### 5.0 a17 semantic timing release hard gate
+
+`4.0.0a17` 把“字幕是否真的跟着最终音频唱词位置”提升为正式 release 必要证据，而不再只验证 artifact lineage、cue geometry 与 segmentation authority。新增 `v4_audit_semantic_sync.py`：优先使用 canonical text 对实际 source audio 的 forced alignment，再通过 source-to-mix 投影到 mix time，分别验证 Max canonical projection 与 exact final SRT；ASR 只有形成 canonical word-span 且 editor witness 本身经文本覆盖证明可靠时才可作为受约束 fallback，editor/Jianying SRT 永远只是 auxiliary witness，不能单独授予 release authority。默认每首独立音频锚点要求 median absolute onset error `<=1500ms`，且 `>2500ms` 的大误差比例不得超过 `25%`；证据覆盖不足或 forced/ASR 冲突均 fail closed。
+
+从 a17 起，`v4_validate_release.py` 强制要求 `--run`、hash-bound `--semantic-sync-fusion` 与 `--semantic-sync-qa`；QA 必须同时声明 canonical projection sync 与 final sync `passed=true`，并精确绑定 task fingerprint、source SRT、final mix audio、song list、run、evidence fusion、final SRT 与 final audit report SHA-256。每首 release evidence basis 只能是 `forced_alignment` 或 `asr_plus_reliable_editor`；editor-only、insufficient、family conflict、stale 或任一 hash mismatch 都不得生成 ready release manifest。该 gate 专门防止“内部证据链完全自洽，但 canonical lyric timebase 本身不对应 source/edited audio”的 false-ready。
+
+### 5.0.1 a16 early timed title-row metadata guard
 
 `4.0.0a16` 修复 consumer LRC 中稍晚出现的 timed `artist - title` 身份行泄漏进 canonical lyric 的问题。共享 `is_title_like_intro()` 仍只接受带空格的字面 `artist - title` 形态，但识别窗口由首 1 秒保守扩到首 2 秒，以覆盖 provider 延迟以及任务级时间缩放造成的轻微后移；2 秒之后同形文本继续按普通 lexical content 保留。该共享规则同时约束 canonical parser、lyric-role preflight 与 text repair，避免某一路径单独漏滤。
 
-### 5.0.1 a15 decodable terminal duration guard
+### 5.0.2 a15 decodable terminal duration guard
 
 `4.0.0a15` 修复压缩成品音频的“容器/解码器声明时长长于实际可解码音频流”问题。`detect_audio_content_extent()` 继续保留 SoundFile 解出的物理/容器 `full_duration` 作 provenance，但会用 `ffprobe` 的首个 audio stream duration 作为独立上界证据：只有在该终点之后的 SoundFile 样本全部为数字 0 时，才允许把有效 `content_end` 缩到可解码音频流终点；若 ffprobe 终点与实际非零解码内容冲突，则 hard fail，绝不静默误裁。该规则不扩大 a12 的 5ms bounded-decode 容差，也不把普通短静音当作可裁内容。
 
-### 5.0.2 a14 task-local semantic run config
+### 5.0.3 a14 task-local semantic run config
 
 `4.0.0a14` 起，新任务由 `init_task.py` 同时创建 `qa/v4_run_config.json`。它不替代 raw-input `task_manifest.json`，而是单独绑定后补且会改变 Max asset-resolution 语义的 `profile / language_map / middle_cut_map / lyric_role_map`。config 自身绑定 exact task fingerprint，并为每个非空语义文件记录 repository-relative path、size 与 SHA-256，再生成独立 `run_config_fingerprint_sha256`。
 
