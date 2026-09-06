@@ -24,8 +24,9 @@ from lyric_aligner.evaluation.selective_consensus_calibration import (
     internal_selective_consensus_calibration_is_authoritative,
 )
 from scripts.task_contract import load_task_manifest, verify_manifest_inputs
+from scripts.v4_adjudicate_calibrated_alignment import run_adjudication
 
-SCHEMA_VERSION = "boundary-authority-overlay-release-seal-1.0"
+SCHEMA_VERSION = "boundary-authority-overlay-release-seal-1.1"
 
 
 def _load(path: Path) -> dict[str, Any]:
@@ -61,14 +62,91 @@ def _manifest_input_sha(manifest: Mapping[str, Any], key: str) -> str:
     return value
 
 
+def active_invalidation_markers(final_srt: Path) -> list[Path]:
+    """Find release invalidation sentinels from the final directory up to output/."""
+
+    final_path = final_srt.resolve()
+    output_root = (REPOSITORY_ROOT / "output").resolve()
+    current = final_path.parent
+    markers: list[Path] = []
+    while current == output_root or output_root in current.parents:
+        markers.extend(path for path in current.glob("*INVALIDATED*") if path.is_file())
+        if current == output_root:
+            break
+        current = current.parent
+    return sorted(set(markers))
+
+
+def active_invalidation_references(*, task_fingerprint: str, final_srt_sha256: str) -> list[Path]:
+    """Find tracked invalidation references bound to this exact release identity."""
+
+    matches: list[Path] = []
+    for path in (REPOSITORY_ROOT / "references").glob("*invalidation*.json"):
+        try:
+            payload = _load(path)
+        except (OSError, ValueError, json.JSONDecodeError):
+            continue
+        if (
+            str(payload.get("task_fingerprint_sha256") or "") == task_fingerprint
+            and str(payload.get("final_srt_sha256") or "") == final_srt_sha256
+            and (
+                payload.get("release_publish_ready") is False
+                or payload.get("invalidates_publish_ready_claim") is True
+            )
+        ):
+            matches.append(path)
+    return sorted(matches)
+
+
+def verify_replayed_adjudication(
+    *,
+    plan: Mapping[str, Any],
+    backend_runs: list[Mapping[str, Any]],
+    suite_dir: Path,
+    joint_calibration: Mapping[str, Any],
+    evidence: Mapping[str, Any],
+    decisions: Mapping[str, Any],
+    bundle: Mapping[str, Any],
+) -> None:
+    """Rebuild raw-run -> adjudication and require exact semantic identity."""
+
+    replay_evidence, replay_decisions, replay_bundle = run_adjudication(
+        mode="internal",
+        plan=plan,
+        backend_runs=backend_runs,
+        suite_dir=suite_dir,
+        selective_consensus_calibration=joint_calibration,
+    )
+    if dict(replay_evidence) != dict(evidence):
+        raise ValueError("raw backend runs do not replay to the sealed evidence artifact")
+    if dict(replay_decisions) != dict(decisions):
+        raise ValueError("raw backend runs do not replay to the sealed decision artifact")
+    if dict(replay_bundle) != dict(bundle):
+        raise ValueError("raw backend runs do not replay to the sealed adjudication bundle")
+
+
 def seal(args: argparse.Namespace) -> dict[str, Any]:
     if args.out.exists():
         raise FileExistsError("seal output path must be new")
+    invalidation = active_invalidation_markers(args.final_srt)
+    if invalidation:
+        rendered = ", ".join(str(path) for path in invalidation)
+        raise ValueError(
+            "release is invalidated and cannot receive a new authority seal: " + rendered
+        )
     manifest = load_task_manifest(args.task_manifest)
     issues = verify_manifest_inputs(args.task_manifest, manifest)
     if issues:
         raise ValueError("task manifest validation failed: " + "; ".join(issues))
     fingerprint = str(manifest["task_fingerprint_sha256"])
+    final_srt_sha = sha256_file(args.final_srt)
+    invalidation_refs = active_invalidation_references(
+        task_fingerprint=fingerprint,
+        final_srt_sha256=final_srt_sha,
+    )
+    if invalidation_refs:
+        rendered = ", ".join(str(path) for path in invalidation_refs)
+        raise ValueError("release has tracked invalidation reference: " + rendered)
     source_srt_sha = _manifest_input_sha(manifest, "source_srt")
     final_audio_sha = _manifest_input_sha(manifest, "audio")
 
@@ -108,8 +186,10 @@ def seal(args: argparse.Namespace) -> dict[str, Any]:
     if set(expected_profiles) != {"sofa_mandarin_v1", "hubertfa_mandarin_v1"}:
         raise ValueError("calibration suite backend profiles are unexpected")
     raw_seals: dict[str, Any] = {}
+    raw_runs: list[Mapping[str, Any]] = []
     for raw_path in args.backend_run:
         run = _load(raw_path)
+        raw_runs.append(run)
         profile = str(run.get("backend_profile_id") or "")
         expected = expected_profiles.get(profile)
         if expected is None or profile in raw_seals:
@@ -154,6 +234,15 @@ def seal(args: argparse.Namespace) -> dict[str, Any]:
         or bool(bundle.get("subtitle_mutation_performed"))
     ):
         raise ValueError("adjudication bundle chain mismatch")
+    verify_replayed_adjudication(
+        plan=plan,
+        backend_runs=raw_runs,
+        suite_dir=args.calibration_suite_summary.parent,
+        joint_calibration=joint,
+        evidence=evidence,
+        decisions=decisions,
+        bundle=bundle,
+    )
     dsummary = decisions.get("summary") or {}
     if dsummary.get("authority_mode") != "human_gold_joint_lexical_selector_v1":
         raise ValueError("internal decisions do not use joint Human Gold selector")
@@ -181,7 +270,7 @@ def seal(args: argparse.Namespace) -> dict[str, Any]:
         or correction.get("task_fingerprint_sha256") != fingerprint
         or int(correction.get("timing_changed_count", -1)) != 0
         or bool(correction.get("subtitle_timing_mutation_performed"))
-        or correction.get("output_srt_sha256") != sha256_file(args.final_srt)
+        or correction.get("output_srt_sha256") != final_srt_sha
         or correction.get("output_report_sha256") != sha256_file(args.final_report)
     ):
         raise ValueError("post-materialization correction chain mismatch")
@@ -204,7 +293,7 @@ def seal(args: argparse.Namespace) -> dict[str, Any]:
     release = _load(args.legacy_release)
     output_by_role = {str(row.get("role")): row for row in release.get("outputs", []) if isinstance(row, Mapping)}
     expected_output_shas = {
-        "final_srt": sha256_file(args.final_srt),
+        "final_srt": final_srt_sha,
         "audit_csv": sha256_file(args.final_report),
         "qa_json": sha256_file(args.final_qa),
     }
@@ -244,6 +333,7 @@ def seal(args: argparse.Namespace) -> dict[str, Any]:
             "bundle_file_sha256": sha256_file(args.bundle),
             "evidence_sha256": evidence_sha,
             "decisions_sha256": decisions_sha,
+            "raw_run_replay_verified": True,
             "automatic_split_boundary_count": int(dsummary["automatic_split_boundary_count"]),
             "internal_boundary_count": int(dsummary["internal_boundary_count"]),
         },

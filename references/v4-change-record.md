@@ -24,6 +24,20 @@ ASR / forced -> auxiliary acoustic evidence
 
 ---
 
+## 2026-09-06 — post-seal authority/provenance review hardening
+
+封板复审发现 legacy recovery 的自动 gap insertion 在仅由 projected LRC 生成新区间时错误自授 `boundary_authority=manual_verified_interval`。华语青春180 a19 最终表中有 5 条受影响，因此旧 a19 seal 作为历史 provenance 保留，但整份最终 SRT 的 `publish_ready` 已撤销；独立 Human-Gold joint internal split authority 本身不因该旁路失效。生产代码现已移除自动 manual authority，并写入 `projected_lrc_gap_candidate_no_boundary_authority`，使这类新区间在没有后续独立 audio/manual authority 时由 QA fail-closed。正式失效记录见 `references/v4-boundary-authority-a19-invalidation-20260906.json`。
+
+同轮补强 `v4_seal_boundary_authority_overlay.py`：seal 不再只分别 hash raw run 与 adjudication artifact，而是使用 seal 指定的两份 raw backend run、exact calibration suite、joint calibration 与 plan 重新执行正式 internal adjudication，并要求重放得到的 evidence / decisions / bundle 与待封板对象逐对象一致，从而闭合 raw-run → evidence provenance。
+
+生产文档同时澄清 spread 语义：普通“两 backend 各自已获得 boundary-kind calibration”的 consensus 仍受 `250ms` spread gate；a19 `human_gold_joint_lexical_selector_v1` 是独立 Human-Gold 校准且在 blind gold 前冻结的 selector policy，因此不适用普通 consensus 的固定 spread gate，不能把两类 authority 混写。
+
+精度口径补充：a19 文档中 `0.165/1.92` 帧与 `0.735/1.92` 帧是扣除 Human Gold ±50/100ms uncertainty 后的 **effective error**，不是 raw absolute error。12 个 joint gold 的 raw absolute error median=`65.5ms`、P90≈`112.2ms`、max=`114ms`；4 个 holdout raw median=`93ms`、P90≈`108.6ms`、max=`114ms`。因此结论仍是几帧级，但后续报告必须同时给 raw / gold uncertainty / effective 三种口径。
+
+最终工程复验：targeted authority/reverify suite `17/17` 通过；source-bound R8 全量回归 `1264/1264`、`compileall=0`，445 个 Python/production-adapter source fingerprint 在测试前后均为 `59ffcf5462d5704d76ff0cf5f85995fba6639fc4a7af4ff7d4ca208867dcecde`。当前 7-release reverify 为 `6/7`，唯一失败是主动 fail-closed 的 H180 a19；其它 6 个 release 均重新通过 current manifest、exact final-SRT release→QA binding 与敏感词检查。机器验收见 `references/v4-postseal-hardening-verification-2026-09-06.json`。
+
+---
+
 ## 2026-09-06 — a19 Human-Gold joint internal boundary authority seal
 
 Replacement Human Anchor V2 已完成 24/24 真人确认。六个单 backend start/end/internal scope 仍未取得 production authority，outer start/end 继续 `keep_editor`；未通过的 scope 不因 coverage 需求放宽 edge-clamp。internal 采用在最后一条 replacement gold 揭晓前已冻结的 `dual_aligner_nearest_lexical_ratio_prior_v1` joint selector：8 calibration + 4 holdout 全覆盖，calibration median 0.165 帧、P90/max 1.92 帧；holdout median 0.735 帧、P90/max 1.92 帧、catastrophic=0。joint artifact SHA=`84174bb8439cc3458acc1568ff60b579d6845be2d838327150420e7d24a2e1de`，并嵌入/验证 Human Gold、两份 source calibration 与 pre-human V6 full-blind scope，不能把事后 prediction 自签成 authority。

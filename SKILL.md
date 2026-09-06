@@ -342,7 +342,8 @@ human-gold-calibrated independent final-mix evidence -> 才可授予自动 bound
 - 默认 direct-final-mix window policy 为 `editor_cue_plus_1500ms_clamped_to_mix_v1`，sidecar 必须根据 owning cue 与实际 WAV duration 自行复算，不能只相信调用方字符串；
 - 自动 outer/internal mutation 至少需要两个不同 `backend_id`、两个不同 `correlation_group`，并来自规定的 independent direct-final-mix evidence families；同一个 backend 不能通过换 group 名称冒充两票；
 - raw confidence 只作诊断，不能跨模型直接比较或单独授权；真正 uncertainty floor 来自 human-gold holdout calibration；
-- internal 两个已校准 direct-final-mix observer 的 spread 超过当前 `250ms` gate 时必须保持 unsplit，不得取平均制造假精度；
+- 普通“双 backend 各自已取得该 boundary-kind production calibration”的 consensus 路径仍执行 `250ms` spread gate；超过必须保持 unsplit，不得取平均制造假精度；
+- `human_gold_joint_lexical_selector_v1` 是独立校准的 selector authority，不适用上述普通 consensus 的 `250ms` gate：它要求 selector 在最后一条 blind gold 揭晓前冻结、两个 exact direct aligner 都有结果、Human-Gold calibration+holdout 通过，并在运行时重算 lexical-ratio prior 后选择离 prior 最近的 direct prediction；因此“大 spread”本身不能被旧 gate 二次否决，也不能把未经该 joint calibration 的其它 selector 类推为有 authority。exact-distance tie 只沿用冻结 selector 的 tie rule，不得临时改算法；
 - text ownership 与 timing authority 分离：当相邻 editor cue 的原文精确拼成一个 canonical event，或三格原文精确拼成两个连续 canonical events 时，只允许按 editor 原 cue ownership 重新分配 canonical text；不得把同一整句复制进多个 cue，真实整句重复不得被该规则折叠；
 - `v4_run_alignment_backend_evidence.py` 只生成 raw evidence；`v4_adjudicate_calibrated_alignment.py` 只生成校准绑定后的 evidence/decision/bundle，本身不等于已写回字幕；internal plan 使用 `v4_plan_internal_segmentation.py`；最终写回必须通过 `v4_materialize_calibrated_alignment.py`，并重新绑定 task/source/final-mix/report/plan/evidence/decisions 与 exact adjudication bundle SHA、fresh re-adjudicate 后才能生成新 CSV/SRT，materialize 阶段不得重新注入另一组 structural confirmations；
 - `production_authority_ready=false` 时严禁把 boundary decision 描述成 final timing truth，也不得借 editor/LRC/旧 smoke 绕过 human-gold gate。

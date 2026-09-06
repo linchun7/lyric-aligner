@@ -1,0 +1,52 @@
+{
+  "schema_version": "v4-postseal-hardening-verification-1.0",
+  "date": "2026-09-06",
+  "package_version": "4.0.0a19",
+  "scope": "post-seal authority/provenance hardening after a19 boundary-authority review",
+  "status": "engineering_pass_with_h180_release_invalidation",
+  "production_release_set": {
+    "release_count": 7,
+    "passed_count": 6,
+    "all_passed": false,
+    "only_failed_release": "H180-a19-overlay",
+    "failure_is_expected_fail_closed": true,
+    "failure_reasons": [
+      "release has INVALIDATED marker",
+      "release has tracked invalidation reference"
+    ],
+    "tracked_invalidation_reference": "references/v4-boundary-authority-a19-invalidation-20260906.json",
+    "tracked_invalidation_reference_file_sha256": "4380b762e2dbafd8cc9483168b8b12995671771ce6c0c978a02faaeecfbeb7ed",
+    "h180_final_srt_sha256": "02b89d49db3f8cbc5886e9495804e3d0ee1b409ef0ed91e7333223e4c84f9f7a",
+    "internal_joint_boundary_authority_preserved": true,
+    "h180_publish_ready": false
+  },
+  "fixed_findings": [
+    "automatic projected-LRC gap insertion no longer self-grants manual_verified_interval authority",
+    "overlay release seal rejects active local or tracked release invalidation",
+    "overlay release seal replays exact raw backend runs through production adjudication and requires evidence/decisions/bundle identity",
+    "ordinary individually calibrated consensus 250ms spread policy is separated from the independently Human-Gold-calibrated joint lexical selector policy",
+    "release-set reverification is executable, bounded to each exact release ancestry, and requires exact final-SRT release binding plus the release-bound qa_json SHA",
+    "a19 precision reporting now distinguishes raw absolute error, Human-Gold uncertainty and effective error"
+  ],
+  "targeted_verification": {
+    "direct_queue_task_id": "subtitle-postseal-final-freeze-r4-20260906-2245-01",
+    "test_count": 17,
+    "unittest_exit_code": 0,
+    "result": "OK",
+    "validate_skill_ok": true
+  },
+  "full_regression": {
+    "runner": ".ai-bridge/run_subtitle_full_regression_detached_r8_20260906.py",
+    "result": ".ai-bridge/results/subtitle-full-regression-postseal-r8-20260906/result.json",
+    "result_file_sha256": "182e2651b9bf4e079713cdc10b145e591d13b2ae35dc9c16a499edd3cb45a20e",
+    "ok": true,
+    "unittest_count": 1264,
+    "unittest_exit_code": 0,
+    "compileall_exit_code": 0,
+    "source_file_count": 445,
+    "source_stable_during_regression": true,
+    "source_fingerprint_before_sha256": "59ffcf5462d5704d76ff0cf5f85995fba6639fc4a7af4ff7d4ca208867dcecde",
+    "source_fingerprint_after_sha256": "59ffcf5462d5704d76ff0cf5f85995fba6639fc4a7af4ff7d4ca208867dcecde"
+  },
+  "release_policy": "The engineering hardening is accepted. The H180 a19 subtitle release itself remains fail-closed and must not be published or resealed until its five affected intervals receive exact independent timing authority or are safely rebuilt, followed by fresh QA and a new seal."
+}

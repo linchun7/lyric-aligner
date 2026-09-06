@@ -1,11 +1,15 @@
 # Lyric Aligner v4 当前实施状态
 
 更新日期：2026-09-06
-主线算法版本：`4.0.0a18`
-工程封板：`a19 boundary-authority seal + outer-observer closeout`
-最终工程验收：`references/v4-max-engineering-seal-2026-09-06.json`，file SHA=`27f2c54613d2922b4c1c618fc881f066b66a33f85a93c82407d06a53a34bef45`
+主线算法版本：`4.0.0a19`
+工程封板：`4.0.0a19 post-seal authority/provenance hardening`
+当前工程验收：`references/v4-postseal-hardening-verification-2026-09-06.json`；旧 `references/v4-max-engineering-seal-2026-09-06.json` 仅保留为 post-seal review 前的历史工程 seal。
 
 > PR #70 前的完整状态说明已无损归档到 `references/archive/2026-08-22-pre-max-authority-v4-status.md`。P3 前状态见 `references/archive/2026-08-19-pre-p3-v4-status.md`。生产基线见 `references/production-requirements.md`；Smart / Pro 细节见 `references/smart-pro-v1-1.md`。
+>
+> **2026-09-06 post-seal review（当前最高优先级）**：a19 最终 SRT 的 runtime `publish_ready` 已撤销。复审确认 legacy automatic gap insertion 有 5 条仅由 projected LRC 定位的新 interval 被错误标成 `manual_verified_interval`，并因此绕过 unverified-timing QA；当前代码已移除该伪 authority，并用 `projected_lrc_gap_candidate_no_boundary_authority` 使其 fail-closed。a19 Human-Gold joint **internal split authority 本身仍有效**，但整份 H180 成品在这 5 条获得 exact independent audio/manual boundary authority 或被安全删除/重建并重新 QA+seal 前不得发布。正式失效记录：`references/v4-boundary-authority-a19-invalidation-20260906.json`。
+>
+> 同轮 seal hardening 已要求 raw backend runs 重新执行正式 adjudication，并逐对象匹配 sealed evidence/decisions/bundle；spread 规则也已澄清为“普通 individual-calibration consensus 执行 250ms gate，独立 Human-Gold joint selector 不继承该固定 gate”。下方 a19 `publish_ready=true` 与原工程 seal 均仅保留为**历史封板事实**，不再代表当前 runtime readiness。
 >
 > **2026-09-06 a19 sealed update（优先于下方 5.0 中保留的 a18 WIP 历史叙述）**：replacement Human Anchor V2 已完成 `24/24` 真人确认，pending=`0`。六个单 backend scope 的 start/end/internal 仍全部未取得 production authority，outer start/end 因此继续确定性 `keep_editor`，不得放宽 edge guard。internal 改由最后一条 replacement gold 揭晓前已冻结的 `dual_aligner_nearest_lexical_ratio_prior_v1` joint selector 独立校准；正式 artifact `private/_calibration/internal_selective_consensus_calibration_华语青春180_20260906_v1.json`（artifact SHA=`84174bb8439cc3458acc1568ff60b579d6845be2d838327150420e7d24a2e1de`）在 8 calibration + 4 holdout 上均 100% coverage，calibration median=`0.165` 帧、P90/max=`1.92` 帧，holdout median=`0.735` 帧、P90/max=`1.92` 帧、catastrophic=`0`。该 joint authority 只授权 internal，不倒灌为 SOFA/HuBERTFA 单模型 authority。
 >

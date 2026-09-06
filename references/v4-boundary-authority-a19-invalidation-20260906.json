@@ -1,0 +1,21 @@
+{
+  "schema_version": "v4-boundary-authority-invalidation-reference-1.0",
+  "invalidated_at": "2026-09-06",
+  "supersedes_runtime_readiness_of": "references/v4-boundary-authority-a19-seal-20260906.json",
+  "preserves_a19_seal_as_historical_provenance": true,
+  "task_fingerprint_sha256": "371149487b5628240d300bb4f33419d642511908e584df0c1250093813c8e760",
+  "final_srt_sha256": "02b89d49db3f8cbc5886e9495804e3d0ee1b409ef0ed91e7333223e4c84f9f7a",
+  "release_publish_ready": false,
+  "internal_joint_boundary_authority_still_valid_for_its_materialized_splits": true,
+  "issue": "Five legacy inserted_missing_lyric rows were automatically positioned from projected LRC gaps but were incorrectly labeled boundary_authority=manual_verified_interval without exact manual timing confirmation.",
+  "affected_interval_count": 5,
+  "affected_intervals": [
+    {"track": "爱的魔法", "lrc_index": 1, "start_ms": 651224, "end_ms": 653933},
+    {"track": "爱的魔法", "lrc_index": 2, "start_ms": 656326, "end_ms": 661813},
+    {"track": "爱的魔法", "lrc_index": 3, "start_ms": 661893, "end_ms": 666793},
+    {"track": "爱的魔法", "lrc_index": 4, "start_ms": 666873, "end_ms": 669800},
+    {"track": "一吻天荒", "lrc_index": 48, "start_ms": 3007458, "end_ms": 3013146}
+  ],
+  "production_fix": "Automatic projected-LRC gap insertion no longer assigns boundary_authority; it carries projected_lrc_gap_candidate_no_boundary_authority and therefore blocks release QA until separately authorized.",
+  "required_next_step": "Resolve the five intervals with exact independent audio/manual boundary authority or remove/rebuild them, then run fresh QA and create a new seal."
+}

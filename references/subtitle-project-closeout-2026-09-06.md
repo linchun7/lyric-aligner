@@ -2,6 +2,10 @@
 
 本记录封板当前明确要求验收的 7 个字幕成品：KPOP110 新混音、120 健走、KPOP130、140 健走、华语男声190、KPOP200、华语青春180 a19。机器可复验结果见 `references/subtitle-release-set-audit-2026-09-06.json`；该报告重新校验 task manifest 当前输入 SHA、QA/release task fingerprint、release→最终 SRT/QA 哈希绑定、review gate、未打码 f-word，以及当前 final 目录 INVALIDATED 标记，而不是只引用历史“已通过”结论。
 
+> **Post-seal superseding note（2026-09-06）**：后续封板复审确认 H180 a19 有 5 条 legacy automatic gap insertion 被错误自授 `manual_verified_interval`。因此本页下方 H180 的 `publish_ready=true` 与原 7/7 audit 只保留为历史结果；当前 H180 final 已有 `INVALIDATED.json`，runtime 发布资格撤销，现阶段有效发布集合按 6/7 处理。详见 `references/v4-boundary-authority-a19-invalidation-20260906.json`。
+>
+> 该失效不撤销 137/152 joint-authorized internal boundary 本身的 Human-Gold authority；待 5 个新区间获得真正独立 audio/manual timing confirmation（或安全移除/重建）后，必须 fresh QA + new seal，不能删除 invalidation marker 恢复旧 seal。
+
 ## 当前最终成品
 
 | 项目 | 最终 SRT | SHA-256 | 生产状态 |
