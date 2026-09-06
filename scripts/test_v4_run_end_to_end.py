@@ -95,6 +95,13 @@ class V4RunEndToEndTests(unittest.TestCase):
                 text=True,
                 check=True,
             ).stdout.strip()
+            checkout_clean = not subprocess.run(
+                ["git", "status", "--porcelain=v1"],
+                cwd=ROOT,
+                capture_output=True,
+                text=True,
+                check=True,
+            ).stdout.strip()
             out_dir = repo / "output" / "synthetic_v4" / "v4"
             command = [
                 sys.executable,
@@ -150,13 +157,12 @@ class V4RunEndToEndTests(unittest.TestCase):
                     encoding="utf-8"
                 )
             )
-            self.assertTrue(first_execution["resume_enabled"])
+            self.assertEqual(first_execution["resume_enabled"], checkout_clean)
             self.assertGreaterEqual(first_execution["executed"], 2)
 
-            # A second invocation with the exact same task, clean checked-out
-            # commit and runtime must reuse at least the expensive coarse
-            # artifact. Asset resolution is intentionally fresh across runs and
-            # timeline/final lineage is deterministically rebuilt by the core.
+            # A second invocation may reuse cross-run artifacts only when the
+            # checkout is actually clean. During local development a dirty
+            # checkout must disable resume rather than weakening the safety gate.
             second = subprocess.run(
                 command,
                 cwd=ROOT,
@@ -170,9 +176,12 @@ class V4RunEndToEndTests(unittest.TestCase):
                     encoding="utf-8"
                 )
             )
-            self.assertTrue(second_execution["resume_enabled"])
-            self.assertGreaterEqual(second_execution["resume_hits"], 1)
-            self.assertGreaterEqual(second_execution["memo_hits"], 2)
+            self.assertEqual(second_execution["resume_enabled"], checkout_clean)
+            if checkout_clean:
+                self.assertGreaterEqual(second_execution["resume_hits"], 1)
+                self.assertGreaterEqual(second_execution["memo_hits"], 2)
+            else:
+                self.assertEqual(second_execution["resume_hits"], 0)
 
             second_artifact = json.loads(
                 (out_dir / "v4_run.artifact.json").read_text(encoding="utf-8")

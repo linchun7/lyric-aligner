@@ -1,8 +1,8 @@
 # 多语言混剪歌词字幕：当前生产工作流
 
-更新：2026-09-04
+更新：2026-09-05
 当前路径：`Standard -> Smart -> Pro -> Max`
-当前 Max：`4.0.0a17`
+当前 Max：`4.0.0a18`
 
 本文件是当前生产工作流总览。历史 `v3.9` / `redo_karaoke_pipeline.py` 仅保留为兼容、回归与历史实现，不再是新任务默认入口。更细的 Max authority 与 CLI 约束分别见 `v4-runtime-guide.md`、`v4-cli-contract.md`。
 
@@ -262,6 +262,14 @@ Resume 只有 task、algorithm、clean current Git identity、runtime、upstream
 - 普通 timing 已接近当前输入条件下的高位，下一阶段重点是运行可复现性、结构事件和生产自动闭环。
 
 当前正式 calibration 与 roadmap 见 `v4-status.md`、`multilingual-roadmap.md`。
+
+### 12.1 Max boundary-authority 人工校准链
+
+- full 60-clip / 90-boundary pack 是 pre-model 锁定的 diagnostic population，不等于生产 authority 样本；production anchor 从它确定性投影为 24 clips / 36 points，每个 `start/end/internal` 固定 8 calibration + 4 holdout；
+- full population 的 SOFA/HuBERTFA/machine consensus 可以在人耳 gold 完成前运行，用于候选、覆盖率和失败模式诊断，但机器输出永远不能写入或升级 human gold；
+- human audit 必须在 locked final-mix clip 内完成；题目若被证明目标边界不在 clip 内，应将该题作废并只从同一 pre-model population 做 deterministic replacement，不能看 backend score 重新挑“更好”的题；
+- 只有 production anchor 达到 24/24 UI human-confirmed，才能 materialize 36-point gold 并计算两个独立 backend × 三个 boundary kind 的正式 calibration；缺失预测按 coverage 失败处理，不得把 window/editor 边缘 clamp 成预测来补覆盖率；
+- 每个 boundary kind 只有两个独立 backend scope 都取得当前 runtime-provenance-bound authority 时，才具备后续自动 mutation 的必要条件；calibration suite 本身始终 `no_subtitle_mutation`，真正写字幕仍必须经过 exact plan/audio/evidence/adjudication/materialization lineage gate。
 
 ## 13. 当前权威文档
 

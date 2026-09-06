@@ -1,6 +1,6 @@
 # 多语言字幕算法升级路线
 
-更新：2026-09-04
+更新：2026-09-05
 
 ## 当前状态
 
@@ -10,7 +10,7 @@
 Standard -> Text Repair V2.1
 Smart    -> Sequence Reconciliation + Anchor Timeline Repair v1.2.10
 Pro      -> Selective Audio Repair v1.2.7
-Max      -> Full V4 Alignment 4.0.0a17
+Max      -> Full V4 Alignment 4.0.0a18
 ```
 
 普通 canonical text/order 与 Source-to-Mix timing 已经不是主要瓶颈。正式 private calibration 当前达到：

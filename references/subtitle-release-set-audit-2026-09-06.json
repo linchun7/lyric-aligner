@@ -1,0 +1,128 @@
+{
+  "schema_version": "subtitle-release-set-audit-1.0",
+  "date": "2026-09-06",
+  "scope": [
+    "KPOP110-newmix",
+    "Walk120",
+    "KPOP130",
+    "Walk140",
+    "H190",
+    "KPOP200",
+    "H180-a19-overlay"
+  ],
+  "all_passed": true,
+  "release_count": 7,
+  "rows": [
+    {
+      "name": "KPOP110-newmix",
+      "task_fingerprint_sha256": "3942b8f5ce17ea781a31c6175e48d38af1c8313133801cf16385f98bda82d8da",
+      "algorithm_version": "4.0.0a8",
+      "manifest_inputs_current": true,
+      "publish_ready": true,
+      "review_candidate_count": 0,
+      "raw_unmasked_fword_count": 0,
+      "invalidation_markers": [],
+      "final_srt": "output/kpop110/final_20260902_newmix_splice_a8_r3/KPOP110_FINAL.srt",
+      "final_srt_sha256": "c51867f35dfc50264b30d352e6f3bc07aafb9a0ace1feee3113a54d238adc573",
+      "problems": [],
+      "passed": true
+    },
+    {
+      "name": "Walk120",
+      "task_fingerprint_sha256": "ca7328bb475a6a67e05ae25567500ceff3cf3a38f6962c71b079b1bb84d32c64",
+      "algorithm_version": "4.0.0a13",
+      "manifest_inputs_current": true,
+      "publish_ready": true,
+      "review_candidate_count": 0,
+      "raw_unmasked_fword_count": 0,
+      "invalidation_markers": [],
+      "final_srt": "output/walk120_a13_20260903/WALK120_MAX_FINAL.srt",
+      "final_srt_sha256": "f5c81f3f8eeff70f080e1b3fb0cac3cceaabcdcc37811820febae2a584287261",
+      "problems": [],
+      "passed": true
+    },
+    {
+      "name": "KPOP130",
+      "task_fingerprint_sha256": "1658eac7946a76cbe590aaf1070ca7b74dc29f37797a5b97750ab2b963fcde55",
+      "algorithm_version": "4.0.0a8",
+      "manifest_inputs_current": true,
+      "publish_ready": true,
+      "review_candidate_count": 0,
+      "raw_unmasked_fword_count": 0,
+      "invalidation_markers": [],
+      "final_srt": "output/kpop130_max_20260902_a8_contentend_r2/KPOP130_MAX_FINAL.srt",
+      "final_srt_sha256": "500d7aea2d25399d275cec6709e854719b600c8caebbd6e324d841bbc67a66c7",
+      "problems": [],
+      "passed": true
+    },
+    {
+      "name": "Walk140",
+      "task_fingerprint_sha256": "400cc356d23a099af97c808bc044f95c2026a38c10ef7bb10e43c37eceabccea",
+      "algorithm_version": "4.0.0a8",
+      "manifest_inputs_current": true,
+      "publish_ready": true,
+      "review_candidate_count": 0,
+      "raw_unmasked_fword_count": 0,
+      "invalidation_markers": [],
+      "final_srt": "output/快乐健走140_max_20260902_r2/KUAILE140_MAX_FINAL.srt",
+      "final_srt_sha256": "83e5c652040bc4283dd56db1484bcd5a4c90fea2265bebf7776f4615b8f36880",
+      "problems": [],
+      "passed": true
+    },
+    {
+      "name": "H190",
+      "task_fingerprint_sha256": "50dbd3e81c6b61e64ca345947ed3fbe32ba1f3bab9f5e6d44d1f441c7fe844a6",
+      "algorithm_version": "4.0.0a9",
+      "manifest_inputs_current": true,
+      "publish_ready": true,
+      "review_candidate_count": 0,
+      "raw_unmasked_fword_count": 0,
+      "invalidation_markers": [],
+      "final_srt": "output/华语男声190_max_20260902_a9/H190_MAX_FINAL.srt",
+      "final_srt_sha256": "c497c9a5e5ed623c497504921975f99ce77c0747916fc261cea56020ea8141fc",
+      "problems": [],
+      "passed": true
+    },
+    {
+      "name": "KPOP200",
+      "task_fingerprint_sha256": "86a4a66f45280210d8dec6528ae646ddff08919eb54a561b7426187e58759b8e",
+      "algorithm_version": "4.0.0a13",
+      "manifest_inputs_current": true,
+      "publish_ready": true,
+      "review_candidate_count": 0,
+      "raw_unmasked_fword_count": 0,
+      "invalidation_markers": [],
+      "final_srt": "output/kpop200_a13_20260903/KPOP200_A13_FINAL.srt",
+      "final_srt_sha256": "c7792d729a9262b05e663cdc78aeae0cd0d0a9177c3c0c3f306cc96b2e412d6f",
+      "problems": [],
+      "passed": true
+    },
+    {
+      "name": "H180-a19-overlay",
+      "task_fingerprint_sha256": "371149487b5628240d300bb4f33419d642511908e584df0c1250093813c8e760",
+      "algorithm_version": "3.9",
+      "manifest_inputs_current": true,
+      "publish_ready": true,
+      "internal_authority_ready": true,
+      "outer_start_end_fallback": "keep_editor",
+      "raw_unmasked_fword_count": 0,
+      "invalidation_markers": [],
+      "final_srt": "output/华语青春180_v4_authority_a19_20260906/corrected/internal_direct_v2_textfix_v1/corrected.srt",
+      "final_srt_sha256": "02b89d49db3f8cbc5886e9495804e3d0ee1b409ef0ed91e7333223e4c84f9f7a",
+      "seal_sha256": "8732cb718b47b0c5b3910236ec3dd4d2ee41d8ce0021c45a3d9af4c93cb94d53",
+      "problems": [],
+      "passed": true
+    }
+  ],
+  "late_input_guards": {
+    "kpop110_newmix_audio_directory_wavs": [
+      "kpop-110-初版.wav",
+      "kpop-110-后移16帧.wav"
+    ],
+    "kpop110_manifest_audio": "private/kpop110字幕项目/kpop-110-音频-剪映歌词/kpop-110-后移16帧.wav",
+    "kpop110_no_newer_named_replacement_present": true,
+    "walk120_final_song_count": 14,
+    "walk120_bound_source_audio_count": 14,
+    "walk120_bound_source_audio_count_matches_final_song_count": true
+  }
+}

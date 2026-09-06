@@ -1,7 +1,12 @@
 import json
+import sys
 import tempfile
 import unittest
 from pathlib import Path
+
+SCRIPTS_DIR = Path(__file__).resolve().parent
+if str(SCRIPTS_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPTS_DIR))
 
 from redo_karaoke_pipeline import (
     Cue,
@@ -20,6 +25,7 @@ from redo_karaoke_pipeline import (
     assignment_score,
     auto_resegment_high_confidence_boundaries,
     canonical_event_coverage,
+    canonical_segments_json,
     cross_language_phonetic_rescue,
     cross_track_overlap_candidates,
     cross_track_overlap_review_consistency_issues,
@@ -38,16 +44,38 @@ from redo_karaoke_pipeline import (
     preferred_boundary_observation,
     project_source_with_confirmed_cuts,
     projected_track_window_status,
+    restore_cross_event_editor_ownership,
+    restore_fragmented_editor_ownership,
+    boundary_review_candidates,
     report_fieldnames,
     set_row_lrc_provenance,
     sha256,
     source_overlap_signatures,
     validate_source_srt_scope,
+    unverified_timing_mutation_candidates,
 )
 from task_contract import qa_metadata, sha256 as contract_sha256
 
 
 class GlobalSequenceAlignmentTests(unittest.TestCase):
+    def test_post_materialization_ownership_repair_suppresses_boundary_candidate(self):
+        rows = [
+            {"original_cue": 1, "track": "song", "start_ms": 0, "end_ms": 1000, "text": "alpha beta gamma", "original": "alpha", "evidence": ""},
+            {"original_cue": 2, "track": "song", "start_ms": 1000, "end_ms": 2000, "text": "delta epsilon", "original": "beta gamma delta epsilon", "evidence": ""},
+        ]
+        self.assertTrue(boundary_review_candidates(rows))
+        for index in (0, 1):
+            marked = [dict(row) for row in rows]
+            marked[index]["evidence"] = "post_materialization_human_text_ownership_repair"
+            self.assertEqual(boundary_review_candidates(marked), [])
+
+    def test_boundary_candidate_remains_without_post_materialization_marker(self):
+        rows = [
+            {"original_cue": 1, "track": "song", "start_ms": 0, "end_ms": 1000, "text": "alpha beta gamma", "original": "alpha", "evidence": ""},
+            {"original_cue": 2, "track": "song", "start_ms": 1000, "end_ms": 2000, "text": "delta epsilon", "original": "beta gamma delta epsilon", "evidence": ""},
+        ]
+        self.assertTrue(boundary_review_candidates(rows))
+
     def test_canonical_text_correction_applies_exact_binding(self):
         events = [{"track": "song", "lrc_index": 2, "text": "We must remember that tmorrow"}]
         count = apply_canonical_text_corrections(events, [{"track": "song", "lrc_index": 2, "expected_text": "We must remember that tmorrow", "corrected_text": "We must remember that tomorrow", "reason": "typo"}])
@@ -445,6 +473,26 @@ class GlobalSequenceAlignmentTests(unittest.TestCase):
 
         self.assertEqual(row["lrc_indices"], "14")
 
+    def test_canonical_segments_json_preserves_order_and_routing_prior(self):
+        payload = canonical_segments_json(
+            [
+                {
+                    "track_index": 2,
+                    "lrc_index": 14,
+                    "text": "first canonical line",
+                    "projected_ms": 1234,
+                },
+                {
+                    "track_index": 2,
+                    "lrc_index": 15,
+                    "text": "second canonical line",
+                    "projected_ms": 3456,
+                },
+            ]
+        )
+        self.assertEqual([row["lrc_index"] for row in json.loads(payload)], [14, 15])
+        self.assertEqual([row["projected_ms"] for row in json.loads(payload)], [1234, 3456])
+
     def test_coverage_rejects_stale_index_without_canonical_text(self):
         rows = [
             {
@@ -656,6 +704,134 @@ class GlobalSequenceAlignmentTests(unittest.TestCase):
         )
         self.assertEqual(result["skipped_lyric_indices"], [])
 
+    def test_fragmented_editor_ownership_restores_exact_shared_canonical_line(self):
+        cues = [
+            Cue(1, 1000, 2000, "回忆的画面"),
+            Cue(2, 2000, 3000, "记录的语言"),
+        ]
+        event = {
+            "track_index": 1,
+            "lrc_index": 8,
+            "text": "回忆的画面记录的语言",
+            "mapping_method": "fixture",
+        }
+        cue_events = {1: [dict(event)], 2: [dict(event)]}
+
+        restored = restore_fragmented_editor_ownership(cues, cue_events, set())
+
+        self.assertEqual(restored, 1)
+        self.assertEqual(cue_events[1][0]["text"], "回忆的画面")
+        self.assertEqual(cue_events[2][0]["text"], "记录的语言")
+        self.assertIn("editor_fragment_ownership_restore", cue_events[1][0]["mapping_method"])
+
+    def test_fragmented_editor_ownership_supports_three_exact_fragments(self):
+        cues = [
+            Cue(1, 1000, 2000, "we are"),
+            Cue(2, 2000, 3000, "still"),
+            Cue(3, 3000, 4000, "here"),
+        ]
+        event = {
+            "track_index": 1,
+            "lrc_index": 9,
+            "text": "we are still here",
+            "mapping_method": "fixture",
+        }
+        cue_events = {number: [dict(event)] for number in (1, 2, 3)}
+
+        restored = restore_fragmented_editor_ownership(cues, cue_events, set())
+
+        self.assertEqual(restored, 1)
+        self.assertEqual(
+            [cue_events[number][0]["text"] for number in (1, 2, 3)],
+            ["we are", "still", "here"],
+        )
+
+    def test_fragmented_editor_ownership_does_not_rewrite_true_repeat(self):
+        canonical = "stay with me"
+        cues = [
+            Cue(1, 1000, 2000, canonical),
+            Cue(2, 2000, 3000, canonical),
+        ]
+        event = {
+            "track_index": 1,
+            "lrc_index": 10,
+            "text": canonical,
+            "mapping_method": "fixture",
+        }
+        cue_events = {1: [dict(event)], 2: [dict(event)]}
+
+        restored = restore_fragmented_editor_ownership(cues, cue_events, set())
+
+        self.assertEqual(restored, 0)
+        self.assertEqual(cue_events[1][0]["text"], canonical)
+        self.assertEqual(cue_events[2][0]["text"], canonical)
+
+    def test_cross_event_editor_ownership_restores_spill_into_next_line(self):
+        cues = [
+            Cue(1, 1000, 2000, "偶尔哭红双眼"),
+            Cue(2, 2000, 3000, "你一定会了解 眼泪"),
+            Cue(3, 3000, 4000, "是我心中另一种完美"),
+        ]
+        current = {
+            "track_index": 1,
+            "lrc_index": 14,
+            "text": "偶尔哭红双眼你一定会了解",
+            "mapping_method": "fixture",
+        }
+        following = {
+            "track_index": 1,
+            "lrc_index": 15,
+            "text": "眼泪是我心中另一种完美",
+            "mapping_method": "fixture",
+        }
+        cue_events = {
+            1: [dict(current)],
+            2: [dict(current)],
+            3: [dict(following)],
+        }
+
+        restored = restore_cross_event_editor_ownership(cues, cue_events, set())
+
+        self.assertEqual(restored, 1)
+        self.assertEqual([row["text"] for row in cue_events[1]], ["偶尔哭红双眼"])
+        self.assertEqual(
+            [row["text"] for row in cue_events[2]],
+            ["你一定会了解", "眼泪"],
+        )
+        self.assertEqual(
+            [row["lrc_index"] for row in cue_events[2]],
+            [14, 15],
+        )
+        self.assertEqual([row["text"] for row in cue_events[3]], ["是我心中另一种完美"])
+
+    def test_cross_event_editor_ownership_requires_consecutive_canonical_events(self):
+        cues = [
+            Cue(1, 1000, 2000, "alpha"),
+            Cue(2, 2000, 3000, "beta gamma"),
+            Cue(3, 3000, 4000, "delta"),
+        ]
+        current = {
+            "track_index": 1,
+            "lrc_index": 20,
+            "text": "alpha beta",
+            "mapping_method": "fixture",
+        }
+        nonconsecutive = {
+            "track_index": 1,
+            "lrc_index": 22,
+            "text": "gamma delta",
+            "mapping_method": "fixture",
+        }
+        cue_events = {
+            1: [dict(current)],
+            2: [dict(current)],
+            3: [dict(nonconsecutive)],
+        }
+
+        restored = restore_cross_event_editor_ownership(cues, cue_events, set())
+
+        self.assertEqual(restored, 0)
+        self.assertEqual(cue_events[2][0]["text"], "alpha beta")
 
 class BoundaryEvidenceTests(unittest.TestCase):
     def test_shared_lrc_duplicate_proximity_accepts_367ms_editor_gap(self):
@@ -871,6 +1047,59 @@ class BoundaryEvidenceTests(unittest.TestCase):
 
 
 class ProjectRegressionTests(unittest.TestCase):
+    def _regression_case(self, root, **case):
+        source = root / "source.srt"
+        source.write_text("1\n00:00:01,000 --> 00:00:04,000\nwhole\n", encoding="utf-8")
+        manifest = self.manifest(source)
+        cases = root / "cases.json"
+        cases.write_text(json.dumps({**qa_metadata(manifest, "regression_cases"), "cases": [case]}), encoding="utf-8")
+        return cases, manifest
+
+    def test_interval_text_exact_single_cue_remains_unchanged(self):
+        with tempfile.TemporaryDirectory() as directory:
+            cases, manifest = self._regression_case(Path(directory), id="exact", kind="interval_text", start_ms=1000, end_ms=4000, text="whole")
+            self.assertEqual(evaluate_regression_cases([Cue(1, 1000, 4000, "whole")], cases, manifest)[0], [])
+
+    def test_authorized_internal_split_requires_full_contract(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            children = [Cue(1, 1000, 2000, "one"), Cue(2, 2000, 3000, "two"), Cue(3, 3000, 4000, "three")]
+            rows = [{"start_ms": c.start_ms, "end_ms": c.end_ms, "text": c.text, "status": "audio_verified_internal_split", "segmentation_authority": "audio_verified_internal_segmentation_v1", "evidence": "internal+audio_verified_internal_segmentation_v1+qa", "original_cue": 1, "split_part_count": 3, "split_part": i} for i, c in enumerate(children, 1)]
+            for authorized in (True, False):
+                cases, manifest = self._regression_case(root, id="split", kind="interval_text", start_ms=1000, end_ms=4000, text="one two three", allow_authorized_internal_split=authorized)
+                issues, summary = evaluate_regression_cases(children, cases, manifest, rows)
+                self.assertEqual(issues, [] if authorized else ["project regression split failed at 00:00:01,000"])
+                self.assertEqual(summary["passed"], 1 if authorized else 0)
+
+    def test_authorized_internal_split_rejects_invalid_contract_variants(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            children = [Cue(1, 1000, 2000, "one"), Cue(2, 2000, 3000, "two"), Cue(3, 3000, 4000, "three")]
+            cases, manifest = self._regression_case(root, id="split", kind="interval_text", start_ms=1000, end_ms=4000, text="one two three", allow_authorized_internal_split=True)
+            base = [{"start_ms": c.start_ms, "end_ms": c.end_ms, "text": c.text, "status": "audio_verified_internal_split", "segmentation_authority": "audio_verified_internal_segmentation_v1", "evidence": "internal+audio_verified_internal_segmentation_v1+qa", "original_cue": 1, "split_part_count": 3, "split_part": i} for i, c in enumerate(children, 1)]
+            variants = []
+            variants.append([dict(r, start_ms=2100) if i == 1 else r for i, r in enumerate(base)])
+            variants.append([dict(r, text=" wrong") if i == 1 else r for i, r in enumerate(base)])
+            variants.append([dict(r, evidence="internal+qa") if i == 1 else r for i, r in enumerate(base)])
+            variants.append([dict(r, status="other") if i == 1 else r for i, r in enumerate(base)])
+            variants.append([dict(r, original_cue=2) if i == 1 else r for i, r in enumerate(base)])
+            variants.append([dict(r, split_part=4) if i == 1 else r for i, r in enumerate(base)])
+            variants.append(base[:-1])
+            variants.append([dict(r, text="drift") if i == 1 else r for i, r in enumerate(base)])
+            for rows in variants:
+                issues, _ = evaluate_regression_cases(children, cases, manifest, rows)
+                self.assertEqual(len(issues), 1)
+
+    def test_authorized_internal_split_accepts_real_shape(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            children = [Cue(1, 15133, 16501, "下过雨的"), Cue(2, 16501, 17922, "夏天傍晚"), Cue(3, 17922, 19733, "我都会期待")]
+            rows = [{"start_ms": c.start_ms, "end_ms": c.end_ms, "text": c.text, "status": "audio_verified_internal_split", "segmentation_authority": "audio_verified_internal_segmentation_v1", "evidence": "internal+audio_verified_internal_segmentation_v1+qa", "original_cue": 1, "split_part_count": 3, "split_part": i} for i, c in enumerate(children, 1)]
+            cases, manifest = self._regression_case(root, id="real-shape", kind="interval_text", start_ms=15133, end_ms=19733, text="下过雨的 夏天傍晚 我都会期待", allow_authorized_internal_split=True)
+            issues, summary = evaluate_regression_cases(children, cases, manifest, rows)
+            self.assertEqual(issues, [])
+            self.assertEqual(summary["passed"], 1)
+
     def test_manual_cue_drop_removes_all_matching_rows_only(self):
         rows = [{"original_cue": "7", "text": "a"}, {"original_cue": "7", "text": "b"}, {"original_cue": "8", "text": "keep"}]
         self.assertEqual(apply_manual_cue_drops(rows, [{"cue": 7, "reason": "review"}]), 2)
@@ -926,6 +1155,57 @@ class ProjectRegressionTests(unittest.TestCase):
         self.assertEqual(applied, 1)
         self.assertEqual([row["text"] for row in rows], ["overlay", "new 1", "new 2"])
         self.assertTrue(all(row.get("confidence") == "high" for row in rows[1:]))
+        self.assertTrue(all(row.get("boundary_authority") == "manual_verified_interval" for row in rows[1:]))
+
+    def test_unverified_timing_mutation_is_high_risk_review(self):
+        unverified = [{"kind": "split", "original_cue": 1, "start_ms": 1000, "end_ms": 2000, "text": "x"}]
+        verified = [{**unverified[0], "boundary_authority": "audio_verified_boundary_v1"}]
+        self.assertEqual(unverified_timing_mutation_candidates(unverified)[0]["risk"], "high")
+        self.assertEqual(unverified_timing_mutation_candidates(verified), [])
+
+    def test_legacy_internal_segmentation_authority_is_accepted_only_when_fully_bound(self):
+        base = {
+            "kind": "split", "original_cue": 1, "start_ms": 1000,
+            "end_ms": 2000, "text": "x", "status": "audio_verified_internal_split",
+        }
+        for authority in (
+            "audio_verified_internal_joint_lexical_selector_v1",
+            "audio_verified_internal_segmentation_v1",
+        ):
+            valid = {**base, "segmentation_authority": authority, "evidence": f"internal+{authority}+qa"}
+            self.assertEqual(unverified_timing_mutation_candidates([valid]), [])
+            self.assertTrue(unverified_timing_mutation_candidates([{**valid, "status": "other"}]))
+            self.assertTrue(unverified_timing_mutation_candidates([{**valid, "evidence": "internal+qa"}]))
+        self.assertTrue(unverified_timing_mutation_candidates([{**base, "segmentation_authority": "forged_v1", "evidence": "internal+forged_v1"}]))
+
+    def test_existing_outer_and_manual_authority_behavior_is_unchanged(self):
+        row = {"kind": "split", "original_cue": 1, "start_ms": 1000, "end_ms": 2000, "text": "x"}
+        for authority in ("audio_verified_boundary_v1", "manual_verified_boundary", "manual_verified_interval"):
+            self.assertEqual(unverified_timing_mutation_candidates([{**row, "boundary_authority": authority}]), [])
+
+    def test_inserted_without_authority_is_high_risk_but_manual_interval_is_not(self):
+        inserted = [{"kind": "inserted", "original_cue": "", "start_ms": 1000, "end_ms": 2000, "text": "x"}]
+        verified = [{**inserted[0], "boundary_authority": "manual_verified_interval"}]
+        self.assertEqual(unverified_timing_mutation_candidates(inserted)[0]["risk"], "high")
+        self.assertEqual(unverified_timing_mutation_candidates(verified), [])
+
+    def test_existing_timing_drift_requires_independent_authority(self):
+        source = [Cue(1, 1000, 2000, "x")]
+        drifted = [{"kind": "existing", "original_cue": "1", "start_ms": 1100, "end_ms": 2000, "text": "x"}]
+        verified = [{**drifted[0], "boundary_authority": "audio_verified_boundary_v1"}]
+        self.assertEqual(unverified_timing_mutation_candidates(drifted, source)[0]["risk"], "high")
+        self.assertEqual(unverified_timing_mutation_candidates(verified, source), [])
+
+    def test_manual_timing_override_sets_boundary_authority(self):
+        rows = [{"original_cue": "1", "start_ms": 1000, "end_ms": 2000, "evidence": "existing"}]
+        timing = {"1": {"start_ms": 1100, "end_ms": 2100, "evidence": "waveform"}}
+        for row in rows:
+            override = timing.get(str(row.get("original_cue")))
+            if override:
+                row["start_ms"] = int(override["start_ms"])
+                row["end_ms"] = int(override["end_ms"])
+                row["boundary_authority"] = "manual_verified_boundary"
+        self.assertEqual(rows[0]["boundary_authority"], "manual_verified_boundary")
 
     def test_interval_override_rejects_crossing_existing_row(self):
         rows = [

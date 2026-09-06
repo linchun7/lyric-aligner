@@ -1,0 +1,87 @@
+{
+  "schema_version": "v4-max-engineering-seal-reference-1.0",
+  "sealed_at": "2026-09-06",
+  "package_version": "4.0.0a18",
+  "scope": "Max engineering implementation, calibration closeout, release-set integrity and regression seal",
+  "authority": "engineering_seal_no_new_outer_subtitle_timing_authority",
+  "release_set": {
+    "audit_path": "references/subtitle-release-set-audit-2026-09-06.json",
+    "audit_file_sha256": "ca5e1ab632a95604f395f64787f1cca5dc012cec9a3529b8ea903fddd2663c06",
+    "all_passed": true,
+    "release_count": 7
+  },
+  "h180_a19": {
+    "seal_reference_path": "references/v4-boundary-authority-a19-seal-20260906.json",
+    "seal_reference_file_sha256": "88af312d1938ae7cdac2601b802ede72e4d89f645271b534c8a8ba4ae91c776f",
+    "release_seal_sha256": "8732cb718b47b0c5b3910236ec3dd4d2ee41d8ce0021c45a3d9af4c93cb94d53",
+    "internal_authority_ready": true,
+    "outer_start_fallback": "keep_editor",
+    "outer_end_fallback": "keep_editor",
+    "full_max_semantic_sync_release_claimed": false
+  },
+  "outer_observer_closeout": {
+    "path": "references/v4-max-outer-observer-closeout-2026-09-06.json",
+    "file_sha256": "25588d5ebacba8d51d1431d72f1b7665531a55b0f5477f776197082329bbde83",
+    "artifact_sha256": "4439c76c2bd88a3bd244ba496be0fb63e351feb9bb837ad68c3c5901993425dd",
+    "wav2vec2_ctc_3a": "rejected_before_holdout",
+    "singing_ctc_3b": "rejected_before_holdout",
+    "independent_fine": "failed_frozen_holdout_protocol",
+    "holdout_retuning_permitted": false
+  },
+  "expected_loss": {
+    "boundary_risk_policy_version": "1.1",
+    "max_next_adjudication_version": "1.1",
+    "candidate_specific_local_support_required": true,
+    "current_outer_authoritative_local_support_available": false,
+    "outer_expected_loss_auto_fallback_enabled": false,
+    "production_materializer_added": false
+  },
+  "verification": {
+    "full_unittest": {
+      "task_id": "subtitle-final-full-unittest-r2-20260906-2051-01",
+      "plan_sha256": "c8d078b0913466223c60d0f61a3734d0ec0eb31d6e99352ed0a86be41bbd5b04",
+      "result_file_sha256": "2d74f9ce017b695d1f0cd0e69c6651fbc791b1887438bb236f976c4fdf5e3b5d",
+      "test_count": 1256,
+      "elapsed_seconds": 111.463,
+      "exit_code": 0,
+      "status": "OK"
+    },
+    "wav2vec2_cli_targeted": {
+      "task_id": "subtitle-wav2vec2-cli-targeted-r2-20260906-2049-01",
+      "result_file_sha256": "073133f03a06e65951264d8b2b57c385454266cfd1ca4dfb6a527893cad233b3",
+      "test_count": 9,
+      "exit_code": 0,
+      "status": "OK"
+    },
+    "postchange_verification": {
+      "task_id": "subtitle-final-postchange-verification-20260906-2054-01",
+      "plan_sha256": "8238b901622d7de829db6315d58fa52a04c45919a8c88e8dff2af2ad7d09d46e",
+      "result_file_sha256": "4159fa490cd740d9dc010a1e6244e6049e00f47ff7fd818387021aed25fe7dc6",
+      "release_set_all_passed": true,
+      "compiled_python_files": 433,
+      "compile_errors": 0,
+      "skill_validator_ok": true,
+      "environment_ok": true,
+      "privacy_issue_count": 0,
+      "docs_contract": "10/10 OK",
+      "doc_version_identity": "1/1 OK",
+      "git_diff_check_exit_code": 0
+    }
+  },
+  "working_tree": {
+    "branch": "p0/boundary-authority-v18-20260904",
+    "working_tree_clean_claimed": false,
+    "preexisting_uncommitted_work_preserved": true,
+    "reset_clean_revert_performed": false,
+    "note": "The seal attests the reviewed/tested engineering state; it does not claim the repository working tree is clean or committed."
+  },
+  "production_conclusion": {
+    "seven_existing_release_outputs_unchanged_and_current": true,
+    "internal_a19_joint_authority_unchanged": true,
+    "new_outer_observer_authority_granted": false,
+    "outer_editor_strong_prior_preserved": true,
+    "independent_fine_status": "diagnostic_secondary_evidence_only",
+    "new_subtitle_timing_mutation_performed_during_outer_closeout": false,
+    "new_production_srt_materializer_added": false
+  }
+}

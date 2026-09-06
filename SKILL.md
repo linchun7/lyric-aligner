@@ -321,6 +321,34 @@ python scripts/v4_run.py ...
 
 **Max 是 fallback，不是“更准所以默认用”的模式。** 日常剪映字幕修复不能为了少量坏 cue 重扫 40–60 分钟完整节目。Max 同样必须遵守 segmentation authority：line-LRC grouping 不能单独推翻可信 editor cue boundary；需要更强 word/token/audio evidence。
 
+#### a18 direct-final-mix boundary authority
+
+当 Max 需要自动修改 cue start/end 或把一个可信 editor 长 cue 拆成多条时，必须走当前 boundary-authority 链；不能继续使用 projected LRC onset 直接创建/移动边界。
+
+```text
+canonical lyric -> 文字/顺序真源，不提供自动 boundary authority
+editor cue timing -> 强但可推翻 prior
+LRC timestamp -> routing/search only
+SOFA / HuBERTFA raw result -> diagnostic only
+human-gold-calibrated independent final-mix evidence -> 才可授予自动 boundary mutation authority
+```
+
+生产要求：
+
+- calibration 必须来自预先锁定、人工听音标注的 final-mix human gold；不得让模型先看 blind selection 再补 gold；
+- human-gold pack 若其 source report 后续被证明存在题目语义/ownership 错误，必须在原目录写 `HUMAN_GOLD_PACK_INVALIDATED.json` 并废弃整包；ingest 遇到该 sentinel 必须 hard fail，禁止原地删 sentinel、改 lock 或继续填旧 audit，须从修复后的新 report 重新 blind-select 新 pack；
+- outer `start/end` 与 internal split 分开校准；每个 backend/profile × boundary kind 独立形成 calibration artifact；
+- production evidence 必须绑定 exact final-audio SHA、exact plan SHA、backend profile/model revision、language、lexical contract 与 deterministic window policy；任一身份变化都会使旧 calibration 失效；
+- 默认 direct-final-mix window policy 为 `editor_cue_plus_1500ms_clamped_to_mix_v1`，sidecar 必须根据 owning cue 与实际 WAV duration 自行复算，不能只相信调用方字符串；
+- 自动 outer/internal mutation 至少需要两个不同 `backend_id`、两个不同 `correlation_group`，并来自规定的 independent direct-final-mix evidence families；同一个 backend 不能通过换 group 名称冒充两票；
+- raw confidence 只作诊断，不能跨模型直接比较或单独授权；真正 uncertainty floor 来自 human-gold holdout calibration；
+- internal 两个已校准 direct-final-mix observer 的 spread 超过当前 `250ms` gate 时必须保持 unsplit，不得取平均制造假精度；
+- text ownership 与 timing authority 分离：当相邻 editor cue 的原文精确拼成一个 canonical event，或三格原文精确拼成两个连续 canonical events 时，只允许按 editor 原 cue ownership 重新分配 canonical text；不得把同一整句复制进多个 cue，真实整句重复不得被该规则折叠；
+- `v4_run_alignment_backend_evidence.py` 只生成 raw evidence；`v4_adjudicate_calibrated_alignment.py` 只生成校准绑定后的 evidence/decision/bundle，本身不等于已写回字幕；internal plan 使用 `v4_plan_internal_segmentation.py`；最终写回必须通过 `v4_materialize_calibrated_alignment.py`，并重新绑定 task/source/final-mix/report/plan/evidence/decisions 与 exact adjudication bundle SHA、fresh re-adjudicate 后才能生成新 CSV/SRT，materialize 阶段不得重新注入另一组 structural confirmations；
+- `production_authority_ready=false` 时严禁把 boundary decision 描述成 final timing truth，也不得借 editor/LRC/旧 smoke 绕过 human-gold gate。
+
+具体 algorithm version 不在本段硬编码，以 `references/v4-status.md` 与 runtime snapshot 为准。
+
 ### 模式选择速查
 
 ```text

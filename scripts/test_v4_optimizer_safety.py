@@ -108,7 +108,7 @@ class OptimizerSafetyTests(unittest.TestCase):
     def test_arbitrary_legacy_git_metadata_does_not_authorize_resume(self):
         self.assertFalse(OPTIMIZER.resume_git_identity_verified("synthetic-test"))
 
-    def test_exact_clean_head_can_authorize_resume(self):
+    def test_exact_head_authorizes_resume_only_when_checkout_is_clean(self):
         head = subprocess.run(
             ["git", "rev-parse", "HEAD"],
             cwd=ROOT,
@@ -116,7 +116,15 @@ class OptimizerSafetyTests(unittest.TestCase):
             text=True,
             check=True,
         ).stdout.strip()
-        self.assertTrue(OPTIMIZER.resume_git_identity_verified(head))
+        status = subprocess.run(
+            ["git", "status", "--porcelain=v1"],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        expected = not status.stdout.strip()
+        self.assertEqual(OPTIMIZER.resume_git_identity_verified(head), expected)
 
 
 if __name__ == "__main__":

@@ -1,10 +1,20 @@
 # Lyric Aligner v4 当前实施状态
 
-更新日期：2026-09-04
-主线算法版本：`4.0.0a17`
+更新日期：2026-09-06
+主线算法版本：`4.0.0a18`
+工程封板：`a19 boundary-authority seal + outer-observer closeout`
+最终工程验收：`references/v4-max-engineering-seal-2026-09-06.json`，file SHA=`27f2c54613d2922b4c1c618fc881f066b66a33f85a93c82407d06a53a34bef45`
 
 > PR #70 前的完整状态说明已无损归档到 `references/archive/2026-08-22-pre-max-authority-v4-status.md`。P3 前状态见 `references/archive/2026-08-19-pre-p3-v4-status.md`。生产基线见 `references/production-requirements.md`；Smart / Pro 细节见 `references/smart-pro-v1-1.md`。
+>
+> **2026-09-06 a19 sealed update（优先于下方 5.0 中保留的 a18 WIP 历史叙述）**：replacement Human Anchor V2 已完成 `24/24` 真人确认，pending=`0`。六个单 backend scope 的 start/end/internal 仍全部未取得 production authority，outer start/end 因此继续确定性 `keep_editor`，不得放宽 edge guard。internal 改由最后一条 replacement gold 揭晓前已冻结的 `dual_aligner_nearest_lexical_ratio_prior_v1` joint selector 独立校准；正式 artifact `private/_calibration/internal_selective_consensus_calibration_华语青春180_20260906_v1.json`（artifact SHA=`84174bb8439cc3458acc1568ff60b579d6845be2d838327150420e7d24a2e1de`）在 8 calibration + 4 holdout 上均 100% coverage，calibration median=`0.165` 帧、P90/max=`1.92` 帧，holdout median=`0.735` 帧、P90/max=`1.92` 帧、catastrophic=`0`。该 joint authority 只授权 internal，不倒灌为 SOFA/HuBERTFA 单模型 authority。
+>
+> 华语青春180 a19 fresh internal plan 共 `152` 个 boundary；SOFA=`144/152` aligned，HuBERTFA=`141/152` aligned。HuBERTFA production batch 对精确 `No duplicate groups` item-local failure 使用 observer-contract 外的二分隔离：成功点仍来自原冻结 batch adapter，3 个最终 singleton 仅标 unavailable；adapter contract 未变。joint adjudication 授权 `137/152` internal boundaries，materialization 从 `646` 行得到 `781` 行，其中 `264` 行带 `audio_verified_internal_joint_lexical_selector_v1`。用户明确指出的 40:28 text-ownership 错位随后通过 hash-bound text-only post-materialization correction 修复 `544/545`，`timing_changed_count=0`。最终 structural/text QA：`publish_ready=true`、8/8 regression、0 review candidate、0 unverified timing mutation、0 lyric gap/duplicate/unexpected overlap。最终 SRT 为 `output/华语青春180_v4_authority_a19_20260906/corrected/internal_direct_v2_textfix_v1/corrected.srt`，SHA=`02b89d49db3f8cbc5886e9495804e3d0ee1b409ef0ed91e7333223e4c84f9f7a`；release seal `output/华语青春180_v4_authority_a19_20260906/qa/boundary_authority_overlay_release_seal.json`，seal SHA=`8732cb718b47b0c5b3910236ec3dd4d2ee41d8ce0021c45a3d9af4c93cb94d53`。
+>
+> 该 seal 的 scope 是 **recovery baseline + Human-Gold-calibrated internal boundary overlay**，不是 full Max semantic-sync release：当前没有与这条 recovery overlay 精确匹配的 current Max `run+fusion`，因此不得冒充 `v4_audit_semantic_sync/v4_validate_release` 的 full semantic authority。`whenever you come whatever we talk` 仍保留 editor `16:06.833–16:15.033`，因为 SOFA 无所需英文 lexical coverage；用户此前给出的 onset 只是“约 16:07.000”，在 outer authority 未通过时不把近似人工点伪装成精确毫秒。
 
+> **2026-09-06 outer-observer / Expected-Loss closeout**：a19 internal authority 不变；outer start/end 没有新增 production authority。普通话 speech CTC 3A（Wav2Vec2 XLSR53）在 calibration 即被拒绝，未运行 holdout；singing-specific 3B（Mandarin LyricAlignment ASRU 2023）同样在 calibration 被拒绝，未运行 holdout。Independent Fine 使用与歌词 Human Gold 独立的 source↔DAW 调速真值建立 24-case calibration，冻结 `ambiguous=false + margin>=0.05` 后才运行首次 blind 24-case holdout；按预测前冻结的 protocol 最终 selected=`16/24`、coverage=`66.67%`、median=`12.04ms`、P90=`17.60ms`，但 max=`1040.14ms`、500ms catastrophic=`1/16`，因此 `failed_frozen_holdout_protocol`，且禁止依据 holdout 再调阈值。`boundary_risk` / Max Next 已升为 `1.1`，aggregate holdout profile 之外强制 exact candidate-specific `BoundaryLocalSupport`，population/catastrophic-threshold/local candidate binding 任一不一致即 fail closed；当前没有 observer 获得这种 local production authority，也没有新增 production materializer，所以 outer Expected-Loss 自动 fallback 继续关闭、editor timing 继续作为 strong prior。机器封板见 `references/v4-max-outer-observer-closeout-2026-09-06.json`（artifact SHA=`4439c76c2bd88a3bd244ba496be0fb63e351feb9bb837ad68c3c5901993425dd`）。
+>
 ## 1. 当前四档产品路径
 
 ```text
@@ -74,21 +84,37 @@ Acoustic schema 1.4 同时审计 slope 与 source-start 搜索边界；命中/�
 
 Max 是 heavy fallback，用于整体 timeline/mapping 不可信、复杂 cut/overlap/reorder 或 Smart/Pro 无法安全收敛的任务。当前 primary chain 包括 TrackAsset、coarse/Fine/TimeWarp、canonical projection、transition/cut/overlap/review 等完整 reconstruction evidence。
 
-### 5.0 a17 semantic timing release hard gate
+### 5.0 a18 calibration-gated direct-final-mix boundary authority
+
+`4.0.0a18` 增加一条与既有 Max reconstruction/release gate 分离的 boundary-authority 链，专门关闭“可信 editor 长 cue 被未验证 LRC onset 拆错”的真实生产缺口。outer cue start/end 与 long-cue internal split 被视为不同 authority kind；canonical lyric 继续只决定文字/顺序，editor timing 继续是强但可推翻 prior，LRC timestamp 只能用于 routing/search，任何 projected LRC 时间都不能直接创建或移动字幕边界。
+
+生产 observer 由 versioned backend profile 固定为两个独立 direct-final-mix family：SOFA Mandarin singing alignment 与 HuBERTFA forced alignment。human-gold batch、outer single-boundary、internal single-boundary 与 production batch adapter 共享同一 `full-sequence-alignment-core-1.0` logical identity，但当前 production authority 不再只绑定逻辑版本或模型权重：每个 profile resolution 同时计算 `model_revision`、底层推理源码/字典/config 的 `implementation_revision`，以及完整 observer runtime 的 `adapter_contract_revision`。后者不仅绑定 gold/boundary/internal/batch 四个 sidecar adapter，也绑定真正消费这些 adapter 的 boundary/internal/batch executors、edge-clamp、window policy、lexical contract、human prediction 与 calibration core；因此不能把旧 blind prediction 或旧 calibration 用“当前 contract 值”补签成新实现结果。request/response 仍绑定 language、final-mix SHA、lexical contract 与 `editor_cue_plus_1500ms_clamped_to_mix_v1` window policy，raw run 另外绑定 exact plan SHA；任一模型、底层实现、observer runtime contract、窗口、canonical text 或 plan 变化都会使旧 calibration/evidence 失去当前 production authority。旧 schema artifact 可继续读取作历史/诊断，但缺少完整 runtime provenance 时即使统计 `passed=true` 也不能被当前生产链授权。
+
+自动 authority 只来自严格 human-gold calibration。完整 60-clip / 90-boundary full pack 继续作为锁定 diagnostic population；production authority 使用从该 pre-model full pack 确定性投影出的 24-clip / 36-boundary human anchor，每个 `start/end/internal` 固定 12 点，其中 8 calibration + 4 holdout，至少 4 首不同歌曲，并继续执行既定 coverage/median/P90/max/catastrophic 门禁。machine consensus 可以在 human gold 之前对 full locked population 运行，但 authority 永远是 `machine_candidate_only_never_human_gold`，只用于候选/失败模式诊断，不能把模型输出倒灌成人工真值。outer/internal production mutation 仍至少需要两个不同 backend ID、不同 correlation group 的已校准 direct-final-mix evidence；简单的“两模型接近”本身不构成正确性证明。`v4_adjudicate_calibrated_alignment.py` 只生成 hash-bound evidence/decision/bundle，本身不写 SRT；`v4_materialize_calibrated_alignment.py` 仍必须重新绑定 task/source/final-mix/report/plan/evidence/decisions 与 exact adjudication bundle SHA，并 fresh re-adjudicate 后才允许 materialize。
+
+**【a18 历史 WIP，已被页首 a19 sealed update supersede】** 当时软件路径保持 fail-closed，尚未获得任何 boundary production authority，`production_authority_ready=false`。正式 full diagnostic pack 仍是 `private/_calibration/human_boundary_gold_华语青春180_20260905_v4`：outer=30、internal=30、共 90 个 boundary points，selection lock SHA=`8f2b06f3d6c66382f78a3b22c0d2d9f4e285bc7048b47d932f2e056723746633`。其 production projection v1 完成 24/24 人耳操作后，又由真人备注暴露出一个更深的问题：`一吻天荒` 的一个 internal target 实际位于原锁定 clip 之外，因此该问题被标记 `target_boundary_outside_locked_clip`，v1 gold 仅保留历史证据，不再作为最终 production calibration truth。replacement pack `private/_calibration/human_boundary_anchor_20260905_v2` 只从同一 pre-model full benchmark 确定性替换这一无效问题，不读取任何 backend score；23 个合法人工确认原样继承，唯一 replacement case 需要重新人耳确认。internal 的 editor cue 现在只作为 reference，locked final-mix clip 才是 hard bound。真实 90-point blind diagnostic 还暴露了 start/end 的 padded-window edge collapse：应用 conservative edge-clamp guard 后 full blind scope coverage 为 SOFA start/end/internal=`24/30, 12/30, 30/30`，HuBERTFA=`27/30, 19/30, 30/30`。旧 blind scope 因未绑定完整 observer runtime contract 已降为历史证据；当前 v6 六个 scope 使用 `subtitle-machine-consensus-scope-1.2-full-adapter-contract` 重跑并绑定 full observer contract；新的 provenance-bound 聚合输出为 `private/_calibration/machine_boundary_consensus_华语青春180_20260906_v6.json`，90-point `records_sha256=a11e32394538979ea8fbfef9d82b58074ba5b78a7bb21ce6322cb0f8bf5f6367`、artifact SHA=`adfefd461884d3cf1c0a43d6ca40c3f87edd589981814b41af9fcdfb69192bfe`，并在 artifact 内直接绑定六份 blind-scope artifact SHA、model/implementation/four-adapter/adapter-contract revision 与 code SHA；authority 仍严格是 `machine_candidate_only_never_human_gold`。production anchor v2 的最新 v6 blind-scope reuse preflight 显示选中点为 SOFA start/end/internal=`11/12, 3/12, 12/12`、HuBERTFA=`12/12, 5/12, 12/12`；end 已低于 75% production coverage 门槛，因此不会通过放宽安全 guard 获得 authority。start 与 internal 仍等待 replacement human gold 完成后的正式 8+4 calibration；整个过程未执行字幕 timing mutation。
+
+**【a18 历史 WIP，已被页首 a19 sealed update supersede】** 当时的 audit UI 封板：旧 60-clip Human Gold / UI 2.0 仅保留历史 diagnostic 数据与任务日志，不再保留活动启动入口；production review 只允许通过 replacement Anchor V2 启动链进入。当前启动链固定绑定 `127.0.0.1:8765`，端口占用时 fail closed，不再静默回退到 8766–8774；启动后必须反查监听 PID，并在线校验 `V4 boundary-authority / Anchor Pack V2 / Machine Consensus V6 / UI 3.2 / total=24 / complete=23 / pending_recheck=1 / remaining_unstarted=1` 后才允许打开浏览器。focused human-anchor suite 为 14/14 PASS。当前唯一未完成的人耳点为《一吻天荒》cue 628 的 internal boundary（`一转眼 忘了时间` → `丢了感觉 黑了世界`），因此 authority 继续保持关闭，直到该 replacement case 由真人保存并重新 ingest/calibrate。
+
+同日对 v2 已确认 outer gold 的诊断进一步明确 production fallback 语义：editor baseline 在 8 个 calibration outer 上 start median/P90/max absolute error=`0/150/150ms`，end=`5/289/289ms`，明显优于当前两个全文 aligner 的歌唱末字结束表现；SOFA/HuBERTFA 的 end 低覆盖主要来自末音素被拉到 padded window 尾部后被 edge-clamp guard 正确拒绝。不得为了提高 coverage 放宽该 guard。现有 `v4_adjudicate_calibrated_alignment.py` 已支持 boundary-kind selective authority：某 kind 两个独立 backend 未同时通过 human-gold calibration 时，该 kind 不绑定 calibrated evidence 并确定性 `keep_editor`；`production_authority_ready=false` 因而表示“不是所有 kind 都具备自动改时能力”，不等价于“整条字幕生产链必须失败”。replacement human gold 已完成；正式结果如页首 a19 seal：internal joint selector 通过并仅授权 internal，outer start/end 仍未通过，因此继续保留 editor，不把 internal authority 倒灌到 outer。
+
+2026-09-05 的剪映 viewer-level 对比进一步确认 `boundary_v18_diagnostic.srt` 也不能作为当前最佳底稿：其《笔记》段落把“回忆的画面/记录的语言”“载着我的想念/飞过了地平线”“你温暖的笑脸/还一如从前”等 editor 互补 fragment 都扩成两格相同的完整 canonical 行。该 artifact 已单独写入 `boundary_v18_diagnostic.HUMAN_QA_INVALIDATED.json`，只保留为回归证据。a18 recovery 新增 exact text-ownership restore：只有 editor 原文拼接后精确重建 canonical stream 时才自动把 canonical text 重新分回原 cue ownership；跨两个连续 canonical event 的三格 spill 也必须完整精确重建才允许处理，真实整句重复保持不变。未能安全恢复的 shared-event duplication 继续进入现有 high-review gate 并阻止 release。
+
+### 5.0.1 a17 semantic timing release hard gate
 
 `4.0.0a17` 把“字幕是否真的跟着最终音频唱词位置”提升为正式 release 必要证据，而不再只验证 artifact lineage、cue geometry 与 segmentation authority。新增 `v4_audit_semantic_sync.py`：优先使用 canonical text 对实际 source audio 的 forced alignment，再通过 source-to-mix 投影到 mix time，分别验证 Max canonical projection 与 exact final SRT；ASR 只有形成 canonical word-span 且 editor witness 本身经文本覆盖证明可靠时才可作为受约束 fallback，editor/Jianying SRT 永远只是 auxiliary witness，不能单独授予 release authority。默认每首独立音频锚点要求 median absolute onset error `<=1500ms`，且 `>2500ms` 的大误差比例不得超过 `25%`；证据覆盖不足或 forced/ASR 冲突均 fail closed。
 
 从 a17 起，`v4_validate_release.py` 强制要求 `--run`、hash-bound `--semantic-sync-fusion` 与 `--semantic-sync-qa`；QA 必须同时声明 canonical projection sync 与 final sync `passed=true`，并精确绑定 task fingerprint、source SRT、final mix audio、song list、run、evidence fusion、final SRT 与 final audit report SHA-256。每首 release evidence basis 只能是 `forced_alignment` 或 `asr_plus_reliable_editor`；editor-only、insufficient、family conflict、stale 或任一 hash mismatch 都不得生成 ready release manifest。该 gate 专门防止“内部证据链完全自洽，但 canonical lyric timebase 本身不对应 source/edited audio”的 false-ready。
 
-### 5.0.1 a16 early timed title-row metadata guard
+### 5.0.2 a16 early timed title-row metadata guard
 
 `4.0.0a16` 修复 consumer LRC 中稍晚出现的 timed `artist - title` 身份行泄漏进 canonical lyric 的问题。共享 `is_title_like_intro()` 仍只接受带空格的字面 `artist - title` 形态，但识别窗口由首 1 秒保守扩到首 2 秒，以覆盖 provider 延迟以及任务级时间缩放造成的轻微后移；2 秒之后同形文本继续按普通 lexical content 保留。该共享规则同时约束 canonical parser、lyric-role preflight 与 text repair，避免某一路径单独漏滤。
 
-### 5.0.2 a15 decodable terminal duration guard
+### 5.0.3 a15 decodable terminal duration guard
 
 `4.0.0a15` 修复压缩成品音频的“容器/解码器声明时长长于实际可解码音频流”问题。`detect_audio_content_extent()` 继续保留 SoundFile 解出的物理/容器 `full_duration` 作 provenance，但会用 `ffprobe` 的首个 audio stream duration 作为独立上界证据：只有在该终点之后的 SoundFile 样本全部为数字 0 时，才允许把有效 `content_end` 缩到可解码音频流终点；若 ffprobe 终点与实际非零解码内容冲突，则 hard fail，绝不静默误裁。该规则不扩大 a12 的 5ms bounded-decode 容差，也不把普通短静音当作可裁内容。
 
-### 5.0.3 a14 task-local semantic run config
+### 5.0.4 a14 task-local semantic run config
 
 `4.0.0a14` 起，新任务由 `init_task.py` 同时创建 `qa/v4_run_config.json`。它不替代 raw-input `task_manifest.json`，而是单独绑定后补且会改变 Max asset-resolution 语义的 `profile / language_map / middle_cut_map / lyric_role_map`。config 自身绑定 exact task fingerprint，并为每个非空语义文件记录 repository-relative path、size 与 SHA-256，再生成独立 `run_config_fingerprint_sha256`。
 

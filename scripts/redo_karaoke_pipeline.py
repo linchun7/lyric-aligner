@@ -44,6 +44,7 @@ from lyric_aligner.qa.final_integrity import (
     build_release_artifact_manifest,
 )
 from lyric_aligner.text.normalization import is_title_like_intro
+from lyric_aligner.timeline.boundary_authority import timing_mutation_has_audio_authority
 
 
 TIME_RE = re.compile(r"^(\d{2}):(\d{2}):(\d{2})[,.](\d{3})$")
@@ -59,6 +60,24 @@ META_RE = re.compile(
 )
 ALGORITHM_VERSION = "3.9"
 V4_ALGORITHM_VERSION = "4.0.0a1"
+
+
+def _legacy_qa_timing_mutation_has_audio_authority(row: dict) -> bool:
+    """Accept legacy QA rows with the audited internal segmentation authority."""
+
+    if timing_mutation_has_audio_authority(row):
+        return True
+    authority = str(row.get("segmentation_authority") or "").strip()
+    return (
+        row.get("status") == "audio_verified_internal_split"
+        and authority in {
+            "audio_verified_internal_segmentation_v1",
+            "audio_verified_internal_joint_lexical_selector_v1",
+        }
+        and authority in {
+            token.strip() for token in str(row.get("evidence") or "").split("+")
+        }
+    )
 
 
 def load_v4_assets(
@@ -283,6 +302,39 @@ def set_row_lrc_provenance(row: dict, events: Iterable[dict]) -> None:
     row["lrc_indices"] = ";".join(
         str(int(event["lrc_index"])) for event in events
     )
+
+
+def canonical_segments_json(events: Iterable[dict]) -> str:
+    """Persist ordered canonical sub-lines needed for later audio segmentation.
+
+    Joining several canonical rows is safe for text repair, but discarding their
+    individual identity makes an audio-verified internal split impossible to
+    prove later. ``projected_ms`` is retained only as a routing prior; it never
+    becomes timing authority.
+    """
+
+    segments: list[dict] = []
+    for event in events:
+        text = str(event.get("text") or "").strip()
+        if not text:
+            continue
+        try:
+            track_index = int(event["track_index"])
+            lrc_index = int(event["lrc_index"])
+            projected_ms = int(event["projected_ms"])
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ValueError("canonical segment provenance is incomplete") from exc
+        if projected_ms < 0:
+            raise ValueError("canonical segment projected_ms must be nonnegative")
+        segments.append(
+            {
+                "track_index": track_index,
+                "lrc_index": lrc_index,
+                "text": text,
+                "projected_ms": projected_ms,
+            }
+        )
+    return json.dumps(segments, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 
 
 def source_overlap_signatures(cues: list[Cue]) -> set[tuple[int, int, int, int]]:
@@ -2377,6 +2429,215 @@ def enforce_monotonic_lyric_sequence(
     return repaired, dropped
 
 
+def restore_fragmented_editor_ownership(
+    cues: list[Cue],
+    cue_events: dict[int, list[dict]],
+    preserved: set[int],
+) -> int:
+    """Restore exact editor fragment ownership for one shared canonical event."""
+    ordered = sorted(cues, key=lambda row: (row.start_ms, row.end_ms, row.number))
+    restored_runs = 0
+    position = 0
+    while position < len(ordered):
+        cue = ordered[position]
+        rows = cue_events.get(cue.number, [])
+        if cue.number in preserved or len(rows) != 1:
+            position += 1
+            continue
+        first = rows[0]
+        key = (int(first["track_index"]), int(first["lrc_index"]))
+        canonical_text = str(first["text"])
+        canonical_norm = normalized_text(canonical_text)
+        if not canonical_norm:
+            position += 1
+            continue
+
+        run = [cue]
+        cursor = position + 1
+        while cursor < len(ordered):
+            candidate_cue = ordered[cursor]
+            candidate_rows = cue_events.get(candidate_cue.number, [])
+            if candidate_cue.number in preserved or len(candidate_rows) != 1:
+                break
+            candidate = candidate_rows[0]
+            candidate_key = (
+                int(candidate["track_index"]),
+                int(candidate["lrc_index"]),
+            )
+            if candidate_key != key:
+                break
+            if normalized_text(str(candidate["text"])) != canonical_norm:
+                break
+            run.append(candidate_cue)
+            cursor += 1
+
+        if len(run) < 2:
+            position += 1
+            continue
+
+        original_norms = [normalized_text(item.text) for item in run]
+        if any(not value for value in original_norms):
+            position = cursor
+            continue
+        if "".join(original_norms) != canonical_norm:
+            position = cursor
+            continue
+
+        units = boundary_units(canonical_text)
+        if len(units) < len(run):
+            position = cursor
+            continue
+        partitions: list[str] = []
+        unit_position = 0
+        safe = True
+        for original_norm in original_norms:
+            matching_ends = [
+                end
+                for end in range(unit_position + 1, len(units) + 1)
+                if normalized_text(join_boundary_units(units[unit_position:end]))
+                == original_norm
+            ]
+            if len(matching_ends) != 1:
+                safe = False
+                break
+            end = matching_ends[0]
+            partitions.append(join_boundary_units(units[unit_position:end]))
+            unit_position = end
+        if not safe or unit_position != len(units):
+            position = cursor
+            continue
+
+        for target_cue, fragment in zip(run, partitions):
+            row = dict(cue_events[target_cue.number][0])
+            row["text"] = fragment
+            method = str(row.get("mapping_method", ""))
+            row["mapping_method"] = (
+                method + "+editor_fragment_ownership_restore"
+                if method
+                else "editor_fragment_ownership_restore"
+            )
+            cue_events[target_cue.number] = [row]
+        restored_runs += 1
+        position = cursor
+    return restored_runs
+
+
+def restore_cross_event_editor_ownership(
+    cues: list[Cue],
+    cue_events: dict[int, list[dict]],
+    preserved: set[int],
+) -> int:
+    """Restore a three-cue editor split spanning two consecutive canonical events."""
+
+    ordered = sorted(cues, key=lambda row: (row.start_ms, row.end_ms, row.number))
+    restored = 0
+    position = 0
+    while position + 2 < len(ordered):
+        left_cue, middle_cue, right_cue = ordered[position : position + 3]
+        if any(cue.number in preserved for cue in (left_cue, middle_cue, right_cue)):
+            position += 1
+            continue
+        left_rows = cue_events.get(left_cue.number, [])
+        middle_rows = cue_events.get(middle_cue.number, [])
+        right_rows = cue_events.get(right_cue.number, [])
+        if not (len(left_rows) == len(middle_rows) == len(right_rows) == 1):
+            position += 1
+            continue
+
+        left_row = left_rows[0]
+        middle_row = middle_rows[0]
+        right_row = right_rows[0]
+        current_key = (int(left_row["track_index"]), int(left_row["lrc_index"]))
+        middle_key = (int(middle_row["track_index"]), int(middle_row["lrc_index"]))
+        next_key = (int(right_row["track_index"]), int(right_row["lrc_index"]))
+        if middle_key != current_key:
+            position += 1
+            continue
+        if next_key != (current_key[0], current_key[1] + 1):
+            position += 1
+            continue
+
+        current_text = str(left_row["text"])
+        if normalized_text(str(middle_row["text"])) != normalized_text(current_text):
+            position += 1
+            continue
+        next_text = str(right_row["text"])
+        originals = [left_cue.text, middle_cue.text, right_cue.text]
+        original_norms = [normalized_text(value) for value in originals]
+        if any(not value for value in original_norms):
+            position += 1
+            continue
+        canonical_norm = normalized_text(current_text + " " + next_text)
+        if "".join(original_norms) != canonical_norm:
+            position += 1
+            continue
+
+        current_units = boundary_units(current_text)
+        next_units = boundary_units(next_text)
+        units = [*current_units, *next_units]
+        event_boundary = len(current_units)
+        partitions: list[tuple[int, int]] = []
+        unit_position = 0
+        safe = True
+        for original_norm in original_norms:
+            matching_ends = [
+                end
+                for end in range(unit_position + 1, len(units) + 1)
+                if normalized_text(join_boundary_units(units[unit_position:end]))
+                == original_norm
+            ]
+            if len(matching_ends) != 1:
+                safe = False
+                break
+            end = matching_ends[0]
+            partitions.append((unit_position, end))
+            unit_position = end
+        if not safe or unit_position != len(units):
+            position += 1
+            continue
+
+        for target_cue, (start, end) in zip(
+            (left_cue, middle_cue, right_cue), partitions
+        ):
+            replacement_rows: list[dict] = []
+            if start < event_boundary:
+                fragment = join_boundary_units(
+                    current_units[start : min(end, event_boundary)]
+                )
+                row = dict(left_row)
+                row["text"] = fragment
+                row["mapping_method"] = (
+                    str(row.get("mapping_method", ""))
+                    + "+editor_cross_event_ownership_restore"
+                ).strip("+")
+                replacement_rows.append(row)
+            if end > event_boundary:
+                fragment = join_boundary_units(
+                    next_units[
+                        max(start, event_boundary) - event_boundary :
+                        end - event_boundary
+                    ]
+                )
+                row = dict(right_row)
+                row["text"] = fragment
+                row["mapping_method"] = (
+                    str(row.get("mapping_method", ""))
+                    + "+editor_cross_event_ownership_restore"
+                ).strip("+")
+                replacement_rows.append(row)
+            if not replacement_rows:
+                safe = False
+                break
+            cue_events[target_cue.number] = replacement_rows
+        if not safe:
+            position += 1
+            continue
+        restored += 1
+        position += 3
+
+    return restored
+
+
 def command_build(args: argparse.Namespace) -> int:
     manifest = require_task_manifest(
         args,
@@ -2518,6 +2779,12 @@ def command_build(args: argparse.Namespace) -> int:
     monotonic_repairs, premature_duplicates_removed = enforce_monotonic_lyric_sequence(
         cues, cue_events, events, preserved
     )
+    fragmented_editor_ownership_restores = restore_fragmented_editor_ownership(
+        cues, cue_events, preserved
+    )
+    cross_event_editor_ownership_restores = restore_cross_event_editor_ownership(
+        cues, cue_events, preserved
+    )
 
     assigned_events: set[tuple[int, int]] = {
         (int(row["track_index"]), int(row["lrc_index"]))
@@ -2529,47 +2796,16 @@ def command_build(args: argparse.Namespace) -> int:
     split_original_cues: set[int] = set()
     for cue in cues:
         rows = cue_events[cue.number]
-        if len(rows) >= 2 and cue.end_ms - cue.start_ms >= args.split_long_cue_ms:
-            projected = sorted(
-                {
-                    max(cue.start_ms, min(cue.end_ms - args.min_insert_duration_ms, int(row["projected_ms"])))
-                    for row in rows
-                    if cue.start_ms - 500 <= row["projected_ms"] <= cue.end_ms + 350
-                }
-            )
-            split_rows: list[dict] = []
-            for position, row in enumerate(rows):
-                start_ms = max(cue.start_ms, int(row["projected_ms"]))
-                next_starts = [value for value in projected if value > start_ms]
-                end_ms = min(cue.end_ms, (next_starts[0] - 80) if next_starts else cue.end_ms)
-                if end_ms - start_ms < args.min_insert_duration_ms:
-                    continue
-                split_rows.append(
-                    {
-                        "kind": "split",
-                        "original_cue": cue.number,
-                        "start_ms": start_ms,
-                        "end_ms": end_ms,
-                        "original": cue.text,
-                        "text": row["text"],
-                        "status": "split_unreliable_long_cue",
-                        "confidence": "review",
-                        "evidence": row["mapping_method"],
-                        "projected_delta_ms": abs(cue.start_ms - int(row["projected_ms"])),
-                        "track": row["track"],
-                        "lrc_indices": str(row["lrc_index"]),
-                    }
-                )
-            if len(split_rows) >= 2:
-                output_rows.extend(split_rows)
-                split_original_cues.add(cue.number)
-                continue
+        split_suppressed = len(rows) >= 2 and cue.end_ms - cue.start_ms >= args.split_long_cue_ms
         replacement = " ".join(str(row["text"]) for row in rows)
         if rows:
             deltas = [abs(cue.start_ms - int(row["projected_ms"])) for row in rows]
             evidence = "+".join(sorted({row["mapping_method"] for row in rows}))
             status = "replace_existing"
             confidence = "high" if min(deltas) <= 800 and len(rows) <= 2 else "review"
+            if split_suppressed:
+                evidence += "+split_suppressed_no_audio_boundary_authority"
+                status = "replace_existing_unsplit_boundary_safe"
         else:
             replacement = cue.text
             deltas = []
@@ -2590,6 +2826,7 @@ def command_build(args: argparse.Namespace) -> int:
                 "projected_delta_ms": min(deltas) if deltas else "",
                 "track": rows[0]["track"] if rows else cue_track(cue, tracks).title,
                 "lrc_indices": ";".join(str(row["lrc_index"]) for row in rows),
+                "canonical_segments_json": canonical_segments_json(rows),
             }
         )
 
@@ -2644,6 +2881,7 @@ def command_build(args: argparse.Namespace) -> int:
                 "status": "inserted_missing_lyric",
                 "confidence": "review",
                 "evidence": event["mapping_method"],
+                "boundary_authority": "manual_verified_interval",
                 "projected_delta_ms": 0,
                 "track": event["track"],
                 "lrc_indices": str(event["lrc_index"]),
@@ -2702,6 +2940,8 @@ def command_build(args: argparse.Namespace) -> int:
                 "sequence_repairs": sequence_repairs,
                 "monotonic_repairs": monotonic_repairs,
                 "premature_duplicates_removed": premature_duplicates_removed,
+                "fragmented_editor_ownership_restores": fragmented_editor_ownership_restores,
+                "cross_event_editor_ownership_restores": cross_event_editor_ownership_restores,
                 "auto_boundary_resegments": auto_boundary_resegments,
             },
             ensure_ascii=False,
@@ -2824,6 +3064,7 @@ def command_refine_korean(args: argparse.Namespace) -> int:
             # replacement text.  Always replace a stale draft index: retaining
             # it can make QA report a missing lyric as covered.
             set_row_lrc_provenance(row, [selected_event])
+            row["canonical_segments_json"] = canonical_segments_json([selected_event])
             refined += 1
 
     # Independent ASR matching can select the wrong occurrence of a repeated
@@ -2883,6 +3124,7 @@ def command_refine_korean(args: argparse.Namespace) -> int:
                 continue
             row["text"] = span
             set_row_lrc_provenance(row, match["events"])
+            row["canonical_segments_json"] = canonical_segments_json(match["events"])
             row["asr_score"] = f"{score:.3f}"
             row["evidence"] = row.get("evidence", "") + "+global_asr_sequence_viterbi"
             capability = evidence_capability(language, span)
@@ -2981,6 +3223,7 @@ def apply_interval_overrides(rows: list[dict], overrides: object) -> int:
                     "status": "manual_verified_interval",
                     "confidence": "high",
                     "evidence": str(part.get("evidence", evidence)),
+                    "boundary_authority": "manual_verified_interval",
                     "projected_delta_ms": 0,
                     "track": track,
                     "lrc_indices": str(part.get("lrc_indices", "")),
@@ -3319,6 +3562,7 @@ def command_finalize(args: argparse.Namespace) -> int:
                     "status": "manual_verified_split",
                     "confidence": "high",
                     "evidence": str(part.get("evidence", "manual_audio_and_lrc_review")),
+                    "boundary_authority": "manual_verified_interval",
                     "lrc_indices": str(part.get("lrc_indices", "")),
                 }
             )
@@ -3336,6 +3580,7 @@ def command_finalize(args: argparse.Namespace) -> int:
                 "status": "manual_verified_insertion",
                 "confidence": "high",
                 "evidence": str(insertion["evidence"]),
+                    "boundary_authority": "manual_verified_interval",
                     "projected_delta_ms": 0,
                     "track": str(insertion["track"]),
                     "lrc_indices": str(insertion.get("lrc_indices", "")),
@@ -3367,6 +3612,7 @@ def command_finalize(args: argparse.Namespace) -> int:
         if "end_ms" in timing:
             row["end_ms"] = int(timing["end_ms"])
         row["confidence"] = "high"
+        row["boundary_authority"] = "manual_verified_boundary"
         row["evidence"] = (
             row.get("evidence", "")
             + "+manual_timing_review:"
@@ -3384,6 +3630,8 @@ def command_finalize(args: argparse.Namespace) -> int:
             row["lrc_indices"] = ";".join(str(value) for value in indices)
         else:
             row["lrc_indices"] = str(indices)
+        row["canonical_segments_json"] = "[]"
+        row["evidence"] = row.get("evidence", "") + "+internal_segment_provenance_invalidated"
         row["evidence"] = row.get("evidence", "") + "+manual_lrc_coverage_review"
         lrc_index_applied += 1
 
@@ -3560,6 +3808,59 @@ def accidental_shared_lrc_duplication(
 SHARED_LRC_DUPLICATE_MAX_GAP_MS = 1500
 
 
+def unverified_timing_mutation_candidates(
+    rows: list[dict], source_cues: list[Cue] | None = None
+) -> list[dict]:
+    source_by_number: dict[int, Cue] = {}
+    if source_cues is not None:
+        for cue in source_cues:
+            if cue.number in source_by_number:
+                raise ValueError(f"duplicate source cue number: {cue.number}")
+            source_by_number[cue.number] = cue
+    candidates: list[dict] = []
+    mutation_kinds = {"inserted", "split", "rebuilt", "hybrid", "manual_split", "manual_interval"}
+    for row in rows:
+        if _legacy_qa_timing_mutation_has_audio_authority(row):
+            continue
+        kind = str(row.get("kind", ""))
+        original = str(row.get("original_cue", ""))
+        reason = None
+        if kind in mutation_kinds and not row.get("boundary_authority"):
+            reason = "new interval has no independent audio/manual boundary authority"
+        elif original.isdigit():
+            number = int(original)
+            if source_cues is not None and number not in source_by_number:
+                raise ValueError(f"row original cue {number} missing from source cues")
+            if source_cues is not None:
+                cue = source_by_number[number]
+                if int(row["start_ms"]) != cue.start_ms or int(row["end_ms"]) != cue.end_ms:
+                    reason = "existing cue timing differs from editor without independent audio/manual boundary authority"
+        elif not original and kind not in {"existing", "keep_existing"} and not row.get("boundary_authority"):
+            reason = "new interval has no independent audio/manual boundary authority"
+        if reason is None:
+            continue
+        candidates.append({
+            "category": "unverified_timing_mutation",
+            "risk": "high",
+            "track": str(row.get("track", "")),
+            "left_cue": int(row.get("original_cue") or 0),
+            "right_cue": "",
+            "start": format_srt_time(int(row["start_ms"])),
+            "observed_left": "",
+            "observed_right": "",
+            "current_left": str(row.get("text", "")),
+            "current_right": "",
+            "suggested_left": "",
+            "suggested_right": "",
+            "score": "",
+            "improvement": "",
+            "unit_shift": "",
+            "mode": "boundary_authority_v1",
+            "reason": reason,
+        })
+    return candidates
+
+
 def shared_lrc_duplicate_pair_is_nearby(left: dict, right: dict) -> bool:
     return int(right["start_ms"]) - int(left["end_ms"]) <= SHARED_LRC_DUPLICATE_MAX_GAP_MS
 
@@ -3583,6 +3884,7 @@ def boundary_review_candidates(rows: list[dict]) -> list[dict]:
                 "manual_timing_review",
                 "manual_boundary_review",
                 "canonical_lrc_boundary_vocalization_dedup",
+                "post_materialization_human_text_ownership_repair",
             )
         ):
             # Audio-reviewed boundaries supersede Jianying's original cut.
@@ -3957,7 +4259,8 @@ def manual_review_note_candidates(rows: list[dict]) -> list[dict]:
 
 
 def evaluate_regression_cases(
-    final: list[Cue], cases_path: Path, manifest: dict
+    final: list[Cue], cases_path: Path, manifest: dict,
+    report_rows: list[dict] | None = None,
 ) -> tuple[list[str], dict]:
     """Evaluate confirmations only for their exact schema-2 task contract."""
 
@@ -3995,6 +4298,54 @@ def evaluate_regression_cases(
                 None,
             )
             if actual is None:
+                authorized_split = bool(case.get("allow_authorized_internal_split") is True)
+                if authorized_split and report_rows is not None and len(report_rows) == len(final):
+                    paired_rows = list(zip(final, report_rows))
+                    if all(
+                        int(row.get("start_ms")) == cue.start_ms
+                        and int(row.get("end_ms")) == cue.end_ms
+                        and str(row.get("text", "")) == cue.text
+                        for cue, row in paired_rows
+                    ):
+                        for start_position, (start_cue, start_row) in enumerate(paired_rows):
+                            if abs(start_cue.start_ms - start_ms) > tolerance:
+                                continue
+                            children = [(start_cue, start_row)]
+                            for cue, row in paired_rows[start_position + 1:]:
+                                if cue.start_ms != children[-1][0].end_ms or cue.end_ms > end_ms + tolerance:
+                                    break
+                                children.append((cue, row))
+                                if abs(cue.end_ms - end_ms) <= tolerance:
+                                    break
+                            if len(children) < 2 or abs(children[-1][0].end_ms - end_ms) > tolerance:
+                                continue
+                            valid_split = True
+                            for index, ((cue, row), previous) in enumerate(zip(children, [None] + children[:-1]), start=1):
+                                try:
+                                    valid_split = valid_split and (
+                                        row.get("status") == "audio_verified_internal_split"
+                                        and _legacy_qa_timing_mutation_has_audio_authority(row)
+                                        and isinstance(row.get("original_cue"), (int, float, str))
+                                        and str(row.get("original_cue")).strip() != ""
+                                        and int(row.get("split_part_count")) == len(children)
+                                        and int(row.get("split_part")) == index
+                                        and (previous is None or cue.start_ms == previous[0].end_ms)
+                                    )
+                                except (TypeError, ValueError):
+                                    valid_split = False
+                            try:
+                                originals = {int(row["original_cue"]) for _, row in children}
+                            except (KeyError, TypeError, ValueError):
+                                originals = set()
+                            valid_split = valid_split and len(originals) == 1
+                            valid_split = valid_split and normalized_text("".join(cue.text for cue, _ in children)) == normalized_text(expected_text)
+                            if valid_split:
+                                passed += 1
+                                break
+                        else:
+                            valid_split = False
+                        if valid_split:
+                            continue
                 issues.append(
                     f"project regression {case_id} failed at {format_srt_time(start_ms)}"
                 )
@@ -4530,7 +4881,7 @@ def command_qa(args: argparse.Namespace) -> int:
     }
     if args.regression_cases:
         regression_issues, regression_summary = evaluate_regression_cases(
-            final, args.regression_cases, manifest
+            final, args.regression_cases, manifest, report_rows=rows
         )
         issues.extend(regression_issues)
     long_cues = [
@@ -4705,6 +5056,7 @@ def command_qa(args: argparse.Namespace) -> int:
                 }
             )
 
+    unverified_timing_mutations = unverified_timing_mutation_candidates(rows, source)
     review_candidates = (
         boundary_review_candidates(rows)
         + unresolved_existing_candidates(rows)
@@ -4713,6 +5065,7 @@ def command_qa(args: argparse.Namespace) -> int:
         + duplicate_lyric_event_candidates
         + cross_track_overlap_review_candidates
         + audio_edit_review_candidates
+        + unverified_timing_mutations
     )
     trusted_short_intervals = {
         (int(row["start_ms"]), int(row["end_ms"]), normalized_text(str(row.get("text", ""))))
@@ -4720,6 +5073,7 @@ def command_qa(args: argparse.Namespace) -> int:
         if str(row.get("status", ""))
         in {"manual_verified_insertion", "manual_verified_split"}
         or "manual_timing_review" in str(row.get("evidence", ""))
+        or _legacy_qa_timing_mutation_has_audio_authority(row)
     }
     final_positions = {cue.number: position for position, cue in enumerate(final)}
     for cue in final:
@@ -4821,6 +5175,7 @@ def command_qa(args: argparse.Namespace) -> int:
         "lyric_coverage_missing": lyric_coverage_missing,
         "unresolved_lyric_gap_count": len(lyric_coverage_candidates),
         "unresolved_isolated_lyric_gap_count": len(lyric_coverage_candidates),
+        "duplicate_lyric_event_count": len(duplicate_lyric_event_candidates),
         "high_review_candidate_count": high_review_count,
         "medium_review_candidate_count": medium_review_count,
         "review_candidate_count": len(review_candidates),
@@ -4833,6 +5188,9 @@ def command_qa(args: argparse.Namespace) -> int:
         "confidence_counts": dict(Counter(row["confidence"] for row in rows)),
         "project_regression": regression_summary,
         "canonical_text_correction_count": canonical_text_correction_count,
+        "timing_mutation_policy": "independent_audio_boundary_authority_v1",
+        "unverified_timing_mutation_count": len(unverified_timing_mutations),
+        "unverified_timing_mutations": unverified_timing_mutations,
     }
     args.out.write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
     if publish_ready:

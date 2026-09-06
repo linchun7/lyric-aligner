@@ -1,0 +1,49 @@
+{
+  "schema_version": "v4-max-outer-observer-closeout-1.0",
+  "date": "2026-09-06",
+  "package_version": "4.0.0a18",
+  "scope": "new_outer_observers_expected_loss_and_independent_fine_calibration_closeout",
+  "authority": "engineering_closeout_no_new_subtitle_timing_authority",
+  "observer_verdicts": {
+    "wav2vec2_xlsr53_zh_ctc_3a": {
+      "verdict_artifact_sha256": "3bdc70d29ff8fd19af67e4ef13b914d627d340417a280f3d73aa2e09468ddf4e",
+      "decision": "rejected_before_holdout",
+      "holdout_run": false
+    },
+    "mandarin_lyricalignment_asru2023_ctc_3b": {
+      "verdict_artifact_sha256": "0691ab8be87c50312536a272c26c7d2ce38d63893877db7b85859df81051cc18",
+      "decision": "rejected_before_holdout",
+      "holdout_run": false
+    },
+    "independent_fine": {
+      "frozen_calibration_policy_sha256": "945cd50bebeec9a42a456e13bda9f94a0a7c10dba492f5badad9a02ab210c26f",
+      "holdout_protocol_sha256": "e5b69382911d2d8d75fe7ce81089d9430e567cea0dfed9aae49a7ef3c7d347d5",
+      "holdout_evaluation_sha256": "382238bb2a6e1f845e5c5878b48f05ec5b50dc61aa384f616cea270e32e7c4fc",
+      "holdout_verdict_sha256": "fe7128936d48e7f2d8271f014933220f3c54451c073f202defbd415eddd07362",
+      "decision": "failed_frozen_holdout_protocol",
+      "holdout_run": true,
+      "policy_retuning_from_holdout_allowed": false
+    }
+  },
+  "expected_loss": {
+    "boundary_risk_policy_version": "1.1",
+    "max_next_adjudication_version": "1.1",
+    "boundary_risk_code_sha256": "008eddeca6255d8e66443291b7113ea8ec03eb4682198efbe1d1353cceeb2901",
+    "risk_provenance_code_sha256": "9cb4d7482257df38f3e6707170a0fd4ab4d14f4f545c7ef5d4c7e93d8ca423a7",
+    "max_next_code_sha256": "b210a56c0fea65292ecf264a7453422f29867b356084484b85fb895594590d49",
+    "candidate_specific_local_support_required": true,
+    "production_materializer_added": false,
+    "production_mutation_allowed": false
+  },
+  "production_conclusion": {
+    "new_outer_observer_authority_granted": false,
+    "outer_editor_strong_prior_preserved": true,
+    "outer_expected_loss_auto_fallback_enabled": false,
+    "independent_fine_status": "diagnostic_secondary_evidence_only",
+    "internal_a19_joint_authority_unchanged": true,
+    "holdout_retuning_permitted": false
+  },
+  "automatic_mutation_allowed": false,
+  "subtitle_mutation_performed": false,
+  "artifact_sha256": "4439c76c2bd88a3bd244ba496be0fb63e351feb9bb837ad68c3c5901993425dd"
+}

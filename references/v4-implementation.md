@@ -469,6 +469,16 @@ Payload 的 additive `path_coverage` 记录 `status`、retrieved/selected/exclud
 
 Coarse CLI 另外用 fingerprinted `purpose` 分离职责：`primary_timewarp`（默认）执行上述 DP/TimeWarp；`transition_activity` 只做共享边界的 per-source retrieval，返回全部 `windows`、空 `path`、`path_coverage.status=retrieval_only` 与 `timewarp.selection=NOT_REQUESTED`。transition activity 的 downstream consumer 只能是读取 raw window strength/ambiguity 的 probe，不能送入 Fine、timeline projection 或当作 Source-to-Mix mapping。purpose 同时写入 payload、normalized config 和 artifact evidence，因此 resume 不会跨 purpose 复用。
 
+### 5.3 Calibration-gated direct-final-mix boundary authority
+
+Max 的 boundary-authority 子系统把 outer `start/end` 与 long-cue `internal` split 作为独立 authority kind。核心职责分布在 `alignment/production_backend_profiles.py`、`alignment/boundary_executor.py`、`alignment/internal_executor.py`、`alignment/batch_executor.py`、`evaluation/human_boundary_anchor.py`、`evaluation/human_gold_prediction.py`、`evaluation/production_calibration.py`、`timeline/boundary_refinement.py` 与 `timeline/internal_segmentation.py`。canonical lyric 只提供文字/顺序与 lexical contract；editor boundary 是强但可推翻 reference；LRC onset 只能 routing/search，不能直接创建或移动 production boundary。
+
+锁定的 full benchmark 固定为 60 clips / 90 boundary points，仅承担 diagnostic population。production authority 使用从该 pre-model population 确定性投影的 24 clips / 36 points，每个 `start/end/internal` 12 点并固定为 8 calibration + 4 holdout。machine consensus 可以在人耳 gold 之前对 full population 运行，但 authority 永远是 candidate/diagnostic；机器输出、模型一致或 acoustic onset 都不能写回 human gold。人工题目本身若被证明 target 不在 locked clip 内，必须以预先锁定 population 中的 deterministic replacement 替换，旧 gold 只保留历史证据。
+
+SOFA 与 HuBERTFA 都直接读取 final mix。对 outer start/end，`padded_window_edge_clamp_reason()` 会把“预测极靠 padded window 边缘且已远离 editor reference”的明显 lexical-state collapse 降为 unavailable；internal 不应用该 guard。locked final-mix clip 是 hard bound，editor owning cue 对 internal 只作 reference。缺失预测降低 calibration coverage，不能通过裁剪到 editor/window 边缘伪造成有效点。
+
+production calibration scope 同时绑定 `model_revision`、底层推理依赖的 `implementation_revision` 与完整 observer runtime 的 `adapter_contract_revision`。该 contract revision 不是只哈希四个 sidecar adapter，而是把 gold/boundary/internal/batch adapters 与 boundary/internal/batch executors、forced-alignment edge guard、window policy、lexical contract、human prediction 和 calibration core 一起纳入；因此 blind prediction 只能在生成时的完整 observer contract 与当前 contract 完全一致时用于 production calibration，不能由 materializer 事后补签当前值。旧 artifact 可以继续读取做历史统计，但缺任何当前 runtime provenance 时不得取得 production authority。真正的 timing mutation 仍要求同一 boundary kind 的两个独立 backend/correlation group 都通过 human calibration，并在具体点形成符合 spread/identity/plan/audio lineage 的独立 evidence；suite 通过本身不会直接修改字幕。
+
 ## 6. Legacy Partial Timeline Repair P1–P5
 
 旧 formal proposal chain继续固定：
@@ -587,6 +597,14 @@ Smart v1.2.10 enables a version-scoped `anchor_repair.py` guard; historical v1.2
 裁决按 timing/text 两轴分离。Timing 不自动关闭任何 review：`smart_candidate_supported` 生成 `candidate_confirmed_advisory` 和 Smart proposed start/end；`smart_candidate_rebutted` 生成 `keep_editor_advisory`；segmentation/conflict/anomaly/unvalidated 继续 investigate。Text evidence 也只收敛为 canonical text/occurrence support advisory，不自动把 Smart text review 标成 resolved。原因是 timing/text review 都可能携带 segmentation、identity、neighbor-support、shift-limit 或 structure 风险，相关 acoustic/ASR evidence 不能独立解除这些约束。
 
 该 authority 仅为 `automatic_adjudication_no_srt_mutation`，scope 固定 `decision_support_no_srt_mutation`；`automatic_review_resolution_allowed=false`，所有 review 仍保留人工确认。`automatic_timing_change_allowed=false`、`automatic_text_change_allowed=false`、`timing_mutation_performed=false` 与 `independent_vocal_onset_evidence_used=false` 均继续保持。
+
+### Max outer Expected-Loss 1.1 + candidate-specific local support
+
+`timeline/boundary_risk.py` 的 Expected-Loss fallback 与精确 boundary authority 分离。aggregate Human-Gold holdout profile 只能说明 estimator 在某个人群上的总体风险，不能证明当前单条 candidate 合理；因此 1.1 新增 `BoundaryLocalSupport`，精确绑定 `support_id / boundary_kind / candidate_ms / estimated_p90_error_ms / contradictory / provenance_sha256`。production-authoritative local support 必须有有效 SHA provenance，并与当前 candidate timestamp/kind 完全一致；缺失、stale、contradictory 或绑定错位均 fail closed。`risk_provenance.py` 同时强制 editor/candidate risk profile 来自同一 Human Gold、records、selection lock、final audio、boundary kind 与 population；production fallback 只接受 holdout population，catastrophic threshold 也必须一致。
+
+`timeline/max_next_adjudication.py` 1.1 仍只生成 `selection_recommendation_only_no_srt_mutation`。Tier A precise、Tier B calibrated-better、Tier C rescue、Tier D structural ambiguity 都经过同一个下游 global/semantic veto；即使推荐自动 selection，`production_mutation_allowed=false`。本轮没有增加消费 Max Next 的 production materializer，也没有让 aggregate profile 直接变成 SRT write-back authority。
+
+Independent Fine 的 local-support 研究使用独立于歌词 Human Gold 的 known-transform benchmark：真实 source FLAC 与 DAW 调速 WAV 先由 broadband RMS affine audit 验证稳定 slope/intercept，再将 truth 与 Independent Fine prediction 物理分离。calibration 只允许在未看 holdout 前冻结 selector；holdout pair selection、RMS truth audit、acceptance protocol 都在首次 prediction 前 hash-bound。最终冻结 selector `ambiguous=false + margin>=0.05` 在 blind holdout 上因 coverage 66.67%、max 1040.14ms、catastrophic 1/16 失败，所以该 observer 继续 `evaluation_only_never_direct_timing_authority`。holdout artifact 明确禁止从 holdout 反调 threshold；production outer Expected-Loss 因没有 candidate-specific authoritative local support 而保持关闭。
 
 ### 维护说明（2026-09-03）
 

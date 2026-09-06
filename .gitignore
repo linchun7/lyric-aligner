@@ -235,8 +235,9 @@ output/
 .DS_Store
 Thumbs.db
 
-# Local-only project data: never upload as part of the Skill
+# Local-only project data and model sidecars: never upload as part of the Skill
 private/
+private_models/
 tools/__pycache__/
 .skill-scaffold/
 
