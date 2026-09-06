@@ -1,11 +1,13 @@
 # Lyric Aligner v4 当前实施状态
 
-更新日期：2026-09-06
+更新日期：2026-09-07
 主线算法版本：`4.0.0a19`
 工程封板：`4.0.0a19 post-seal authority/provenance hardening`
 当前工程验收：`references/v4-postseal-hardening-verification-2026-09-06.json`；旧 `references/v4-max-engineering-seal-2026-09-06.json` 仅保留为 post-seal review 前的历史工程 seal。
 
 > PR #70 前的完整状态说明已无损归档到 `references/archive/2026-08-22-pre-max-authority-v4-status.md`。P3 前状态见 `references/archive/2026-08-19-pre-p3-v4-status.md`。生产基线见 `references/production-requirements.md`；Smart / Pro 细节见 `references/smart-pro-v1-1.md`。
+>
+> **2026-09-07 reference-retime semantic evidence compatibility hardening**：renderer 自 a11 已正式接受 `reference_retime` run，但 a19 的 editor/mix-ASR/planner/fusion consumer allowlist 曾遗漏该合法 stage，导致含 reference-retime 的 fresh Max run 在 semantic-sync 取证前被错误拒绝。当前只对与最终 mix timeline 直接一致的 editor evidence、mix ASR first/second pass、alignment planner 与 evidence fusion 补入 `reference_retime` / `reference_timeline_retime`；不改变任何 timing/evidence/release 阈值，也不重新授权 source forced-alignment。`v4_execute_forced_alignment.py` 与 `v4_project_forced_alignment.py` 继续对 reference-retime fail-closed，因为现有 source→mix projector 尚未显式组合 reference-retime 变换，禁止沿用原 coarse/Fine timewarp 冒充 retimed projection。
 >
 > **2026-09-06 post-seal review（当前最高优先级）**：a19 最终 SRT 的 runtime `publish_ready` 已撤销。复审确认 legacy automatic gap insertion 有 5 条仅由 projected LRC 定位的新 interval 被错误标成 `manual_verified_interval`，并因此绕过 unverified-timing QA；当前代码已移除该伪 authority，并用 `projected_lrc_gap_candidate_no_boundary_authority` 使其 fail-closed。a19 Human-Gold joint **internal split authority 本身仍有效**，但整份 H180 成品在这 5 条获得 exact independent audio/manual boundary authority 或被安全删除/重建并重新 QA+seal 前不得发布。正式失效记录：`references/v4-boundary-authority-a19-invalidation-20260906.json`。
 >

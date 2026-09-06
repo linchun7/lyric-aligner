@@ -34,12 +34,14 @@ _RUN_ROLES = {
     "overlap_recomposition": "v4_recomposed_run",
     "cut_rebuild": "v4_cut_rebuilt_run",
     "combined_recomposition": "v4_combined_run",
+    "reference_retime": "v4_reference_retimed_run",
 }
 _TIMELINE_STAGES = {
     "canonical_timeline_projection",
     "overlap_timeline_recomposition",
     "cut_timeline_rebuild",
     "combined_timeline_recomposition",
+    "reference_timeline_retime",
 }
 
 

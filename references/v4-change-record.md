@@ -24,6 +24,16 @@ ASR / forced -> auxiliary acoustic evidence
 
 ---
 
+## 2026-09-07 — reference-retime semantic evidence compatibility hardening
+
+Fresh production exposed a stage-contract mismatch: `v4_render.py` has formally supported `reference_retime` since a11, but the a19 semantic evidence chain still rejected that run/timeline stage before release QA. This was a consumer compatibility omission, not a timing-algorithm change. Editor evidence, alignment planning, mix-ASR first/second pass and evidence fusion now accept `reference_retime` / `reference_timeline_retime`, preserving exact task/run/timeline artifact binding and all existing semantic-sync thresholds.
+
+The change is deliberately narrower than "enable every backend": source forced-alignment execution/projection remains fail-closed for reference-retimed runs. The current forced projector derives mix timing from coarse/Fine/cut-aware Source-to-Mix provenance and does not yet explicitly compose the reference-retime transform; allowing it would risk projecting correct source word spans onto the pre-retime mix timeline. Release-grade reference-retime tasks therefore use the already-supported independent mix-ASR + reliable-editor fallback unless a future retime-aware forced projector is separately implemented and calibrated.
+
+Targeted verification after the initial compatibility patch: reference-retime suite `14/14`, alignment planner `2/2`, semantic-sync CLI `2/2`, release semantic gate `9/9`; the pre-narrowing full source suite passed `1266/1266`. After restoring forced source projection to fail-closed and adding the explicit negative regression, final verification passed `py_compile=0`, reference-retime `15/15`, `validate_skill={"ok":true}`, and the full source suite `1267/1267`.
+
+---
+
 ## 2026-09-06 — post-seal authority/provenance review hardening
 
 封板复审发现 legacy recovery 的自动 gap insertion 在仅由 projected LRC 生成新区间时错误自授 `boundary_authority=manual_verified_interval`。华语青春180 a19 最终表中有 5 条受影响，因此旧 a19 seal 作为历史 provenance 保留，但整份最终 SRT 的 `publish_ready` 已撤销；独立 Human-Gold joint internal split authority 本身不因该旁路失效。生产代码现已移除自动 manual authority，并写入 `projected_lrc_gap_candidate_no_boundary_authority`，使这类新区间在没有后续独立 audio/manual authority 时由 QA fail-closed。正式失效记录见 `references/v4-boundary-authority-a19-invalidation-20260906.json`。
