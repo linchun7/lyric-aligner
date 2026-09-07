@@ -6,6 +6,8 @@ Before using this document for architecture, production, review, or delegation d
 
 This document records the real production workload that should drive product and algorithm decisions. When an implementation choice, optimization target, or edge-case architecture conflicts with this workload, use this document as the design baseline unless a later explicit production decision supersedes it.
 
+> **2026-09-07 Max reliability refinement:** statements below such as “normal Chinese jobs are often mostly correct” describe observed workload history and cost distribution; they are **not** a hard production prior that Chinese/editor timing is reliable, nor do they define fixed reliability tiers for Korean, Japanese, English, style, artist, or any other category. For the next Max timing upgrade, `references/next-stage-max-expected-loss-handoff-2026-09-07.md` supersedes any such fixed interpretation: editor text/timing reliability is calibrated dynamically for the current task/track/cue; language/style are weak features only, and direct final-mix/local evidence may rebut the broad workload baseline.
+
 ## 1. Primary production job
 
 The normal job is not subtitle generation from zero. The normal job starts with a Jianying-exported SRT that is already mostly usable, then repairs it against canonical lyrics.

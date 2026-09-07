@@ -8,6 +8,103 @@
 
 ---
 
+## 0. 真实业务背景：这些字幕从哪里来、最终要解决什么
+
+本文不是面向抽象 ASR benchmark，而是服务于真实的音乐混剪视频生产。现有业务背景已经分散记录在 `references/production-requirements.md`、`references/task-template.md`，以及历史工作流 `../../视频创作/歌词识别项目/README.md` 中；本文把与下一阶段 Max 直接相关的事实收敛到这里。历史工具只作为业务来源证据，不重新成为当前生产入口。
+
+### 0.1 实际字幕从哪里来
+
+正常任务**不是从零生成一份字幕**。典型链路是：
+
+```text
+多首歌曲/素材
+  -> 调速、裁切、拼接、混音，形成最终节目音频
+  -> 在剪映/Jianying 对最终节目做歌词/语音识别
+  -> 导出 editor/source SRT
+  -> 用 canonical lyrics + 音频证据校正文字、身份、结构和 timing
+  -> 产出最终 SRT，回到视频编辑/发布流程使用
+```
+
+历史项目曾对同一成品做两次剪映识别并选取分段/时间更合适的一份；这说明 source SRT 本质上是**编辑器识别结果**，不是人工真值。但当前生产契约不要求固定“两次识别”：必须绑定本任务实际提供的 exact source SRT，不能假定识别次数或质量。
+
+典型任务输入为：
+
+- `source SRT`：剪映/Jianying 对最终节目识别后导出的字幕；
+- `final mix`：用户最终视频实际使用的混剪音频，常见约 40–60 分钟；
+- `song list`：歌曲顺序及大致节目位置；
+- `canonical lyrics`：标准歌词，常见 LRC / Enhanced LRC / QRC；
+- `source audio`：原曲或可用于 acoustic evidence 的对应单曲；
+- 可选的 DAW/调速后单曲 WAV、BPM、exact stretch ratio、已知 cut/版本/口播等信息。
+
+当前规范目录仍以 `references/task-template.md` 为准，例如：
+
+```text
+private/<任务>/input/
+├─ source.srt
+├─ mix.wav
+├─ songs.txt
+├─ lyrics/
+├─ source-audio/
+└─ bpm.txt / 其它可选任务信息
+```
+
+### 0.2 final mix 才是最终时间轴；调速后单曲不是成品真值
+
+用户工作流中经常有“原曲/调速后单曲 WAV”，它们非常有价值，但不能等同于最终节目音频。
+
+进入 final mix 后还可能发生：
+
+- 裁前奏/尾奏；
+- 中间剪断或跳段；
+- 同曲内部 splice；
+- 手工多段调速 / piecewise timewarp；
+- 两首歌 crossfade；
+- overlap / 伴唱 / 口播；
+- 插入、删除、静音或其它编辑。
+
+因此：
+
+> **原曲、LRC 时间戳、调速后单曲都只能提供 source/local evidence；exact final mix 才是最终字幕时间轴要贴合的对象。**
+
+这也是为什么“把 LRC 按 BPM 或一个 affine 比例整首缩放到节目里”不能成为最终方案。单曲→final mix 应优先做局部、可验证、必要时 piecewise 的映射。
+
+### 0.3 canonical lyric 与 editor 各自解决什么
+
+- **canonical lyrics**：文字内容与歌词顺序的真源；
+- **canonical line break / LRC timestamp**：可提供结构和时间证据，但不是最终 cue segmentation / boundary 的无条件真源；
+- **editor SRT text**：识别观察，可用于 identity evidence，但可能错字、漏字、谐音、乱码或识别成另一语言；
+- **editor SRT timing**：一个候选时间轴，局部可能很准，也可能很差；可靠度必须由当前任务/track/cue 的证据动态估计；
+- **source/retimed audio**：帮助定位 source 内容及局部变换；
+- **final mix audio**：最终 timing 判断必须落到这里。
+
+文字正确与 timing 正确是两条独立轴。不能因为 editor 文本很差，就自动认定它的 timing 也差；也不能因为文字碰巧识别正确，就自动授予 timing authority。
+
+### 0.4 用户真正需要解决的问题
+
+最终要解决的不是单一“字幕识别率”，而是下面几类真实生产问题：
+
+1. **文字错误**：editor ASR 的错字、漏字、多字、谐音、乱码、code-switch 误判等，最终必须回到 canonical text/order。
+2. **局部起点错误**：字幕早出或晚出；目标是在有证据时做到接近帧级，而不是把整条 timeline 无差别重建。
+3. **局部终点错误**：唱完后字幕长时间挂着，或过早消失；应区分 acoustic end 与 display end。
+4. **漏句/多句/错误分句**：editor 漏掉实际演唱，或 canonical line break 与合理显示 cue 不一致。
+5. **调速/剪辑映射错误**：单一 BPM/LRC 缩放无法覆盖手工调速、裁切、splice、crossfade 等真实编辑。
+6. **结构语义问题**：重复副歌/同句多 occurrence、cut/repeat/reorder、overlap/crossfade、cue ownership、歌曲版本身份等。
+7. **人工成本过高**：系统应自动处理能经校准证明更优的 timing；人工主要留给多个结构解释仍无法消歧的少量难点。
+
+### 0.5 最终成品什么才算“好”
+
+用户真正需要的是一份可直接进入视频生产的最终 SRT：
+
+- 歌词文字和顺序正确；
+- 在 exact final mix 上出现/消失位置合理；
+- 多数本来正确的 cue 不被无证据破坏；
+- 原来明显错误的 cue，只要有更优候选就应自动纠正或 rescue；
+- cut/repeat/overlap 等结构自洽；
+- 尽量少人工；
+- display text 清理、敏感词显示策略、异常长尾等发布层规则可以继续存在，但必须与“真实 timing accuracy 提升”分开统计，不能拿文字/显示层变化冒充边界精度升级。
+
+---
+
 ## 1. 项目核心目标
 
 Max 的目标不是“尽量不犯错”，也不是“证明很多地方不敢改”。
