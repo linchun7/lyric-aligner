@@ -20,6 +20,7 @@ from lyric_aligner.text.language_spans import asr_language_hint_for_text
 
 
 ASR_EVIDENCE_SCHEMA_VERSION = "1.0"
+ASR_SAMPLE_RATE = 16000
 
 
 class AsrExecutionError(RuntimeError):
@@ -68,7 +69,12 @@ def _text_support(canonical: str, observed: str) -> float | None:
     return SequenceMatcher(None, left, right, autojunk=False).ratio()
 
 
-def _canonical_word_span(canonical: str, segments: Iterable[Any]) -> dict[str, Any] | None:
+def _canonical_word_span(
+    canonical: str,
+    segments: Iterable[Any],
+    *,
+    offset_ms: int = 0,
+) -> dict[str, Any] | None:
     target = _normalize(canonical)
     words = []
     for segment in segments:
@@ -77,7 +83,14 @@ def _canonical_word_span(canonical: str, segments: Iterable[Any]) -> dict[str, A
             start = float(getattr(word, "start", 0.0) or 0.0)
             end = float(getattr(word, "end", 0.0) or 0.0)
             if normalized and math.isfinite(start) and math.isfinite(end) and end > start:
-                words.append((normalized, int(round(start * 1000)), int(round(end * 1000)), getattr(word, "probability", None)))
+                words.append(
+                    (
+                        normalized,
+                        offset_ms + int(round(start * 1000)),
+                        offset_ms + int(round(end * 1000)),
+                        getattr(word, "probability", None),
+                    )
+                )
     if not target or not words:
         return None
     minimum = max(1, len(target) // 2)
@@ -153,6 +166,19 @@ def _model_factory_default(model_id: str, *, device: str, compute_type: str):
         raise AsrExecutionError(f"cannot initialize faster-whisper model: {exc}") from exc
 
 
+def _decode_audio_default(audio_path: Path):
+    try:
+        from faster_whisper.audio import decode_audio
+    except ImportError as exc:
+        raise AsrExecutionError(
+            "faster_whisper audio decoder is unavailable; install requirements-asr.txt"
+        ) from exc
+    try:
+        return decode_audio(str(audio_path), sampling_rate=ASR_SAMPLE_RATE)
+    except Exception as exc:
+        raise AsrExecutionError(f"cannot decode mix audio once for bounded ASR: {exc}") from exc
+
+
 def _finite_ms(value: Any, *, label: str) -> int:
     try:
         number = float(value)
@@ -163,14 +189,19 @@ def _finite_ms(value: Any, *, label: str) -> int:
     return int(round(number))
 
 
-def _word_row(word: Any, *, include_private_text: bool) -> dict[str, Any]:
+def _word_row(
+    word: Any,
+    *,
+    include_private_text: bool,
+    offset_ms: int = 0,
+) -> dict[str, Any]:
     text = str(getattr(word, "word", "") or "")
     start = float(getattr(word, "start", 0.0) or 0.0)
     end = float(getattr(word, "end", start) or start)
     probability = getattr(word, "probability", None)
     row: dict[str, Any] = {
-        "start_ms": int(round(start * 1000.0)),
-        "end_ms": int(round(end * 1000.0)),
+        "start_ms": offset_ms + int(round(start * 1000.0)),
+        "end_ms": offset_ms + int(round(end * 1000.0)),
         "text_sha256": _sha(text),
         "probability": None if probability is None else round(float(probability), 6),
     }
@@ -179,14 +210,19 @@ def _word_row(word: Any, *, include_private_text: bool) -> dict[str, Any]:
     return row
 
 
-def _segment_row(segment: Any, *, include_private_text: bool) -> tuple[dict[str, Any], str]:
+def _segment_row(
+    segment: Any,
+    *,
+    include_private_text: bool,
+    offset_ms: int = 0,
+) -> tuple[dict[str, Any], str]:
     text = str(getattr(segment, "text", "") or "")
     start = float(getattr(segment, "start", 0.0) or 0.0)
     end = float(getattr(segment, "end", start) or start)
     words = getattr(segment, "words", None) or []
     row: dict[str, Any] = {
-        "start_ms": int(round(start * 1000.0)),
-        "end_ms": int(round(end * 1000.0)),
+        "start_ms": offset_ms + int(round(start * 1000.0)),
+        "end_ms": offset_ms + int(round(end * 1000.0)),
         "text_sha256": _sha(text),
         "avg_logprob": round(float(getattr(segment, "avg_logprob", 0.0) or 0.0), 6),
         "no_speech_prob": round(
@@ -196,13 +232,202 @@ def _segment_row(segment: Any, *, include_private_text: bool) -> tuple[dict[str,
             float(getattr(segment, "compression_ratio", 0.0) or 0.0), 6
         ),
         "words": [
-            _word_row(word, include_private_text=include_private_text)
+            _word_row(
+                word,
+                include_private_text=include_private_text,
+                offset_ms=offset_ms,
+            )
             for word in words
         ],
     }
     if include_private_text:
         row["text"] = text
     return row, text
+
+
+def _execute_grouped_predecoded_jobs(
+    *,
+    model: Any,
+    predecoded_audio: Any,
+    selected: list[dict[str, Any]],
+    canonical_text_by_job_id: dict[str, str],
+    config: FasterWhisperExecutionConfig,
+) -> dict[str, Any]:
+    """Execute multiple bounded windows with one backend call per language group.
+
+    Concrete language hints may be grouped across occurrences. Jobs requiring
+    backend auto-detection remain grouped only within one occurrence so language
+    detection cannot leak across songs.
+    """
+
+    duration_ms = int(round(len(predecoded_audio) * 1000.0 / ASR_SAMPLE_RATE))
+    prepared: list[dict[str, Any]] = []
+    for job in selected:
+        job_id = str(job.get("job_id") or "").strip()
+        if not job_id:
+            raise AsrExecutionError("alignment job is missing job_id")
+        window = job.get("mix_window_ms")
+        if not isinstance(window, list) or len(window) != 2:
+            raise AsrExecutionError(f"ASR job {job_id} has no finite mix window")
+        start_ms = _finite_ms(window[0], label="ASR clip start")
+        end_ms = _finite_ms(window[1], label="ASR clip end")
+        if start_ms < 0 or end_ms <= start_ms:
+            raise AsrExecutionError(f"ASR job {job_id} has invalid mix window")
+        if end_ms > duration_ms:
+            raise AsrExecutionError(f"ASR job {job_id} extends beyond decoded mix audio")
+        canonical = canonical_text_by_job_id.get(job_id)
+        prepared.append(
+            {
+                "job": job,
+                "job_id": job_id,
+                "start_ms": start_ms,
+                "end_ms": end_ms,
+                "canonical": canonical,
+                "language": _job_language_hint(job, canonical),
+            }
+        )
+
+    groups: dict[tuple[str, str], list[dict[str, Any]]] = {}
+    for entry in prepared:
+        occurrence_id = str(entry["job"].get("occurrence_id") or "")
+        language = entry["language"]
+        key = (
+            ("language", str(language))
+            if language is not None
+            else ("auto_occurrence", occurrence_id)
+        )
+        groups.setdefault(key, []).append(entry)
+
+    result_by_job_id: dict[str, dict[str, Any]] = {}
+    for group_entries in groups.values():
+        group_entries.sort(
+            key=lambda row: (row["start_ms"], row["end_ms"], row["job_id"])
+        )
+        clip_timestamps: list[float] = []
+        for entry in group_entries:
+            clip_timestamps.extend(
+                [entry["start_ms"] / 1000.0, entry["end_ms"] / 1000.0]
+            )
+        kwargs = {
+            "language": group_entries[0]["language"],
+            "beam_size": config.beam_size,
+            "temperature": config.temperature,
+            "condition_on_previous_text": False,
+            "word_timestamps": True,
+            "vad_filter": False,
+            "clip_timestamps": clip_timestamps,
+        }
+        try:
+            segments_iter, info = model.transcribe(predecoded_audio, **kwargs)
+            group_segments = list(segments_iter)
+        except Exception as exc:
+            job_ids = ",".join(entry["job_id"] for entry in group_entries)
+            raise AsrExecutionError(
+                f"grouped ASR jobs {job_ids} failed: {exc}"
+            ) from exc
+
+        for segment in group_segments:
+            segment_start_ms = int(
+                round(float(getattr(segment, "start", 0.0) or 0.0) * 1000.0)
+            )
+            segment_end_ms = int(
+                round(float(getattr(segment, "end", 0.0) or 0.0) * 1000.0)
+            )
+            if not any(
+                segment_end_ms > entry["start_ms"]
+                and segment_start_ms < entry["end_ms"]
+                for entry in group_entries
+            ):
+                raise AsrExecutionError(
+                    "grouped clip-timestamp ASR returned a segment outside every requested window"
+                )
+
+        for entry in group_entries:
+            segments = [
+                segment
+                for segment in group_segments
+                if int(
+                    round(float(getattr(segment, "end", 0.0) or 0.0) * 1000.0)
+                )
+                > entry["start_ms"]
+                and int(
+                    round(float(getattr(segment, "start", 0.0) or 0.0) * 1000.0)
+                )
+                < entry["end_ms"]
+            ]
+            segment_rows: list[dict[str, Any]] = []
+            observed_parts: list[str] = []
+            for segment in segments:
+                row, text = _segment_row(
+                    segment,
+                    include_private_text=config.include_private_text,
+                )
+                segment_rows.append(row)
+                observed_parts.append(text)
+            observed = " ".join(observed_parts)
+            canonical = entry["canonical"]
+            support = None if canonical is None else _text_support(canonical, observed)
+            canonical_span = (
+                None if canonical is None else _canonical_word_span(canonical, segments)
+            )
+            job = entry["job"]
+            result: dict[str, Any] = {
+                "job_id": entry["job_id"],
+                "occurrence_id": str(job.get("occurrence_id") or ""),
+                "canonical_line_index": job.get("canonical_line_index"),
+                "mix_window_ms": [entry["start_ms"], entry["end_ms"]],
+                "language_hint": entry["language"],
+                "detected_language": str(getattr(info, "language", "") or ""),
+                "language_probability": round(
+                    float(getattr(info, "language_probability", 0.0) or 0.0), 6
+                ),
+                "observed_text_sha256": _sha(observed),
+                "canonical_text_support_score": None
+                if support is None
+                else round(float(support), 6),
+                "canonical_match_support_score": None
+                if canonical_span is None
+                else canonical_span["support_score"],
+                "canonical_match_start_ms": None
+                if canonical_span is None
+                else canonical_span["start_ms"],
+                "canonical_match_end_ms": None
+                if canonical_span is None
+                else canonical_span["end_ms"],
+                "canonical_match_word_count": None
+                if canonical_span is None
+                else canonical_span["word_count"],
+                "canonical_match_mean_word_probability": None
+                if canonical_span is None
+                else canonical_span["mean_word_probability"],
+                "canonical_match_normalized_sha256": None
+                if canonical_span is None
+                else canonical_span["normalized_match_sha256"],
+                "segment_count": len(segment_rows),
+                "segments": segment_rows,
+            }
+            if config.include_private_text:
+                result["observed_text"] = observed
+            result_by_job_id[entry["job_id"]] = result
+
+    results = [
+        result_by_job_id[str(job.get("job_id") or "").strip()]
+        for job in selected
+    ]
+    return {
+        "schema_version": ASR_EVIDENCE_SCHEMA_VERSION,
+        "backend": "faster_whisper",
+        "execution_strategy": "grouped_multi_clip_v1",
+        "config": config.to_dict(),
+        "model_loaded": True,
+        "job_count": len(results),
+        "jobs": results,
+        "privacy": (
+            "private ASR text included by explicit request"
+            if config.include_private_text
+            else "raw ASR text omitted; hashes/confidence/timing/support only"
+        ),
+    }
 
 
 def execute_faster_whisper_jobs(
@@ -212,6 +437,7 @@ def execute_faster_whisper_jobs(
     canonical_text_by_job_id: dict[str, str] | None,
     config: FasterWhisperExecutionConfig,
     model_factory: Callable[..., Any] | None = None,
+    audio_loader: Callable[[Path], Any] | None = None,
 ) -> dict[str, Any]:
     """Execute only plan jobs requesting mix_asr, one bounded clip per job."""
 
@@ -252,7 +478,28 @@ def execute_faster_whisper_jobs(
     except Exception as exc:
         raise AsrExecutionError(f"faster-whisper model factory failed: {exc}") from exc
 
+    predecoded_audio = None
+    if audio_loader is not None or model_factory is None:
+        loader = audio_loader or _decode_audio_default
+        try:
+            predecoded_audio = loader(audio_path)
+        except AsrExecutionError:
+            raise
+        except Exception as exc:
+            raise AsrExecutionError(f"bounded ASR audio preload failed: {exc}") from exc
+        if predecoded_audio is None:
+            raise AsrExecutionError("bounded ASR audio preload returned no samples")
+
     canonical_text_by_job_id = canonical_text_by_job_id or {}
+    if predecoded_audio is not None and len(selected) > 1:
+        return _execute_grouped_predecoded_jobs(
+            model=model,
+            predecoded_audio=predecoded_audio,
+            selected=selected,
+            canonical_text_by_job_id=canonical_text_by_job_id,
+            config=config,
+        )
+
     results: list[dict[str, Any]] = []
     for job in selected:
         job_id = str(job.get("job_id") or "").strip()
@@ -274,10 +521,23 @@ def execute_faster_whisper_jobs(
             "condition_on_previous_text": False,
             "word_timestamps": True,
             "vad_filter": False,
-            "clip_timestamps": [start_ms / 1000.0, end_ms / 1000.0],
         }
+        segment_offset_ms = 0
+        if predecoded_audio is None:
+            transcribe_audio = str(audio_path)
+            kwargs["clip_timestamps"] = [start_ms / 1000.0, end_ms / 1000.0]
+        else:
+            start_sample = max(0, int(round(start_ms * ASR_SAMPLE_RATE / 1000.0)))
+            end_sample = min(
+                len(predecoded_audio),
+                int(round(end_ms * ASR_SAMPLE_RATE / 1000.0)),
+            )
+            if end_sample <= start_sample:
+                raise AsrExecutionError(f"ASR job {job_id} resolves to an empty audio clip")
+            transcribe_audio = predecoded_audio[start_sample:end_sample]
+            segment_offset_ms = int(round(start_sample * 1000.0 / ASR_SAMPLE_RATE))
         try:
-            segments_iter, info = model.transcribe(str(audio_path), **kwargs)
+            segments_iter, info = model.transcribe(transcribe_audio, **kwargs)
             segments = list(segments_iter)
         except Exception as exc:
             raise AsrExecutionError(f"ASR job {job_id} failed: {exc}") from exc
@@ -286,13 +546,23 @@ def execute_faster_whisper_jobs(
         observed_parts: list[str] = []
         for segment in segments:
             row, text = _segment_row(
-                segment, include_private_text=config.include_private_text
+                segment,
+                include_private_text=config.include_private_text,
+                offset_ms=segment_offset_ms,
             )
             segment_rows.append(row)
             observed_parts.append(text)
         observed = " ".join(observed_parts)
         support = None if canonical is None else _text_support(canonical, observed)
-        canonical_span = None if canonical is None else _canonical_word_span(canonical, segments)
+        canonical_span = (
+            None
+            if canonical is None
+            else _canonical_word_span(
+                canonical,
+                segments,
+                offset_ms=segment_offset_ms,
+            )
+        )
         result: dict[str, Any] = {
             "job_id": job_id,
             "occurrence_id": str(job.get("occurrence_id") or ""),

@@ -24,6 +24,18 @@ ASR / forced -> auxiliary acoustic evidence
 
 ---
 
+## 2026-09-07 — fresh-production bounded ASR execution hardening
+
+Seven-project fresh production exposed a runtime-only failure mode in release semantic evidence: `v4_execute_asr_evidence.py` correctly selected bounded final-mix windows, but the faster-whisper executor invoked `transcribe()` once per window against the long mix. On CPU this repeatedly paid long-audio decode/30-second-context overhead; two 30-minute direct-queue batches timed out before producing a complete project evidence artifact. No semantic threshold or anchor count was relaxed.
+
+The executor now pre-decodes the final mix once and, when more than one ASR job is selected, groups concrete-language windows into a single multi-clip `clip_timestamps` call; auto-detected language remains isolated per occurrence so language detection cannot leak across songs. Returned segment/word timestamps must still overlap the original requested final-mix windows or execution fails closed. Single-job/injected-model behavior remains unchanged. ASR evidence/artifact provenance now records `execution_strategy=grouped_multi_clip_v1`; legacy/per-job execution remains identifiable as `per_job_clip_v1`.
+
+Real large-v3-turbo CPU smoke on the same six KPOP110 release windows improved from `434.714s` (per-window predecoded execution) to `206.479s` grouped execution, with all segment/canonical-match timestamps remaining on the original final-mix timeline. CUDA capability was independently probed and is unavailable on the current host (`ctranslate2.get_cuda_device_count()=0`), so full fresh production uses CPU grouped execution plus bounded task sharding; the release requirement remains six anchors per track. Targeted verification after the grouped change: ASR executor `14/14`, second-pass execution `5/5`. Final verification on the frozen worktree passed `validate_skill=0`, full source suite `1269/1269`, and `compileall=0`; formal fresh ASR evidence must be generated only after this exact hardening state is committed and its Git identity is bound into the evidence artifacts.
+
+The same run also exposed a legacy CLI bootstrap defect in `validate_multilingual_asr.py`; direct execution could import `task_contract` but then fail to resolve the repository package. The script now inserts the repository root into `sys.path`, matching other current production CLIs. This does not grant boundary authority: H180 revoked-gap ASR remained diagnostically unreliable and therefore stayed fail-closed.
+
+---
+
 ## 2026-09-07 — reference-retime semantic evidence compatibility hardening
 
 Fresh production exposed a stage-contract mismatch: `v4_render.py` has formally supported `reference_retime` since a11, but the a19 semantic evidence chain still rejected that run/timeline stage before release QA. This was a consumer compatibility omission, not a timing-algorithm change. Editor evidence, alignment planning, mix-ASR first/second pass and evidence fusion now accept `reference_retime` / `reference_timeline_retime`, preserving exact task/run/timeline artifact binding and all existing semantic-sync thresholds.

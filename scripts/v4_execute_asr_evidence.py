@@ -263,6 +263,7 @@ def main() -> int:
             {
                 "algorithm_version": __version__,
                 "task_fingerprint_sha256": fingerprint,
+                "execution_strategy": evidence.get("execution_strategy", "per_job_clip_v1"),
                 "source_plan_artifact_id": str(plan_artifact["artifact_id"]),
                 "source_run_artifact_id": run_artifact_id,
                 "mix_audio_sha256": str(audio_record["sha256"]),
@@ -288,6 +289,7 @@ def main() -> int:
                 "beam_size": args.beam_size,
                 "temperature": args.temperature,
                 "include_private_text": args.include_private_text,
+                "execution_strategy": evidence.get("execution_strategy", "per_job_clip_v1"),
                 "source_plan_artifact_id": str(plan_artifact["artifact_id"]),
                 "source_run_artifact_id": run_artifact_id,
                 "mix_audio_sha256": str(audio_record["sha256"]),

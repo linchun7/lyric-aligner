@@ -97,6 +97,100 @@ class V4AsrExecutorTests(unittest.TestCase):
             self.assertNotIn("hello world", serialized)
             self.assertNotIn('" hello"', serialized)
 
+    def test_predecoded_audio_slices_bounded_clip_and_restores_absolute_timestamps(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            audio = Path(temporary) / "mix.wav"
+            audio.write_bytes(b"fake")
+            fake = FakeModel()
+            loader_calls = []
+
+            def loader(path):
+                loader_calls.append(path)
+                return [0.0] * 64000
+
+            result = execute_faster_whisper_jobs(
+                audio_path=audio,
+                plan=self.plan(),
+                canonical_text_by_job_id={"job-1": "hello world"},
+                config=FasterWhisperExecutionConfig(model_id="test-model"),
+                model_factory=lambda *args, **kwargs: fake,
+                audio_loader=loader,
+            )
+            self.assertEqual(loader_calls, [audio])
+            transcribe_audio, kwargs = fake.calls[0]
+            self.assertEqual(len(transcribe_audio), 24000)
+            self.assertNotIn("clip_timestamps", kwargs)
+            self.assertEqual(result["jobs"][0]["segments"][0]["start_ms"], 2050)
+            self.assertEqual(result["jobs"][0]["segments"][0]["words"][0]["start_ms"], 2100)
+            self.assertEqual(result["jobs"][0]["canonical_match_start_ms"], 2100)
+
+    def test_grouped_predecoded_audio_uses_one_multi_clip_transcribe_call(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            audio = Path(temporary) / "mix.wav"
+            audio.write_bytes(b"fake")
+            plan = self.plan()
+            plan["jobs"][1]["requested_capabilities"] = ["mix_asr", "word_timestamps"]
+            plan["jobs"][1]["mix_window_ms"] = [3000, 4000]
+
+            class GroupFakeModel:
+                def __init__(self):
+                    self.calls = []
+
+                def transcribe(self, audio_value, **kwargs):
+                    self.calls.append((audio_value, kwargs))
+                    segments = []
+                    for start, end, text in (
+                        (1.05, 1.90, "hello world"),
+                        (3.10, 3.75, "second line"),
+                    ):
+                        word = SimpleNamespace(
+                            start=start + 0.05,
+                            end=min(end, start + 0.35),
+                            word=" " + text.split()[0],
+                            probability=0.91,
+                        )
+                        word2 = SimpleNamespace(
+                            start=min(end, start + 0.35),
+                            end=end,
+                            word=" " + text.split()[-1],
+                            probability=0.92,
+                        )
+                        segments.append(
+                            SimpleNamespace(
+                                start=start,
+                                end=end,
+                                text=text,
+                                avg_logprob=-0.2,
+                                no_speech_prob=0.01,
+                                compression_ratio=1.1,
+                                words=[word, word2],
+                            )
+                        )
+                    return iter(segments), SimpleNamespace(
+                        language="en", language_probability=0.97
+                    )
+
+            fake = GroupFakeModel()
+            result = execute_faster_whisper_jobs(
+                audio_path=audio,
+                plan=plan,
+                canonical_text_by_job_id={
+                    "job-1": "hello world",
+                    "job-2": "second line",
+                },
+                config=FasterWhisperExecutionConfig(model_id="test-model"),
+                model_factory=lambda *args, **kwargs: fake,
+                audio_loader=lambda path: [0.0] * 80000,
+            )
+            self.assertEqual(len(fake.calls), 1)
+            _, kwargs = fake.calls[0]
+            self.assertEqual(kwargs["clip_timestamps"], [1.0, 2.5, 3.0, 4.0])
+            self.assertEqual(result["job_count"], 2)
+            self.assertEqual(result["jobs"][0]["segments"][0]["start_ms"], 1050)
+            self.assertEqual(result["jobs"][1]["segments"][0]["start_ms"], 3100)
+            self.assertGreater(result["jobs"][0]["canonical_text_support_score"], 0.99)
+            self.assertGreater(result["jobs"][1]["canonical_text_support_score"], 0.99)
+
     def test_private_text_requires_explicit_config(self):
         with tempfile.TemporaryDirectory() as temporary:
             audio = Path(temporary) / "mix.wav"
