@@ -7,6 +7,8 @@ description: Reconstruct, review, materialize, diagnose and render multilingual 
 
 当前生产主路径为 **Standard -> Smart -> Pro -> Max**。
 
+当前能力、评分依据与未具备事项见[能力与使用边界](references/capabilities-and-limits.md)。当前为维护收敛阶段；工程验收不代表任意新歌的准确率封板。
+
 当前正式生产版本：
 
 ```text
