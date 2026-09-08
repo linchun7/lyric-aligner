@@ -9,7 +9,7 @@ REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 if str(REPOSITORY_ROOT) not in sys.path:
     sys.path.insert(0, str(REPOSITORY_ROOT))
 from lyric_aligner.contracts.artifacts import atomic_write_json
-from scripts.v4_evaluate_independent_fine_benchmark import _load_hashed
+from scripts.v4_evaluate_independent_fine_benchmark import _load_hashed, observer_identity
 from scripts.v4_freeze_independent_fine_local_support_policy import POLICY_SCHEMA_VERSION
 from scripts.v4_audit_independent_fine_affine_truth import AUDIT_SCHEMA_VERSION
 
@@ -66,6 +66,7 @@ def freeze_protocol(*, policy_path: Path, audit_path: Path) -> dict[str, Any]:
     artifact: dict[str, Any] = {
         "schema_version": PROTOCOL_SCHEMA_VERSION,
         "authority": PROTOCOL_AUTHORITY,
+        **observer_identity(policy),
         "frozen_policy_sha256": policy["artifact_sha256"],
         "holdout_affine_truth_audit_sha256": audit["artifact_sha256"],
         "pair_selection_sha256": audit["pair_selection_sha256"],

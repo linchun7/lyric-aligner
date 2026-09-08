@@ -3808,7 +3808,8 @@ SHARED_LRC_DUPLICATE_MAX_GAP_MS = 1500
 
 
 def unverified_timing_mutation_candidates(
-    rows: list[dict], source_cues: list[Cue] | None = None
+    rows: list[dict], source_cues: list[Cue] | None = None,
+    *, verified_boundary_edges: dict[tuple[int, str], int] | None = None,
 ) -> list[dict]:
     source_by_number: dict[int, Cue] = {}
     if source_cues is not None:
@@ -3818,13 +3819,16 @@ def unverified_timing_mutation_candidates(
             source_by_number[cue.number] = cue
     candidates: list[dict] = []
     mutation_kinds = {"inserted", "split", "rebuilt", "hybrid", "manual_split", "manual_interval"}
-    for row in rows:
+    for position, row in enumerate(rows, 1):
+        verified = verified_boundary_edges or {}
+        confirmed = {kind: verified.get((position, kind)) == int(row[kind+'_ms'])
+                     for kind in ('start', 'end')}
         if _legacy_qa_timing_mutation_has_audio_authority(row):
             continue
         kind = str(row.get("kind", ""))
         original = str(row.get("original_cue", ""))
         reason = None
-        if kind in mutation_kinds and not row.get("boundary_authority"):
+        if kind in mutation_kinds and not row.get("boundary_authority") and not all(confirmed.values()):
             reason = "new interval has no independent audio/manual boundary authority"
         elif original.isdigit():
             number = int(original)
@@ -3832,9 +3836,9 @@ def unverified_timing_mutation_candidates(
                 raise ValueError(f"row original cue {number} missing from source cues")
             if source_cues is not None:
                 cue = source_by_number[number]
-                if int(row["start_ms"]) != cue.start_ms or int(row["end_ms"]) != cue.end_ms:
+                if any(int(row[k+'_ms']) != getattr(cue, k+'_ms') and not confirmed[k] for k in ('start', 'end')):
                     reason = "existing cue timing differs from editor without independent audio/manual boundary authority"
-        elif not original and kind not in {"existing", "keep_existing"} and not row.get("boundary_authority"):
+        elif not original and kind not in {"existing", "keep_existing"} and not row.get("boundary_authority") and not all(confirmed.values()):
             reason = "new interval has no independent audio/manual boundary authority"
         if reason is None:
             continue
@@ -4615,6 +4619,36 @@ def command_review_audio_edits(args: argparse.Namespace) -> int:
     return 0
 
 
+def validate_confirmation_qa_paths(args: argparse.Namespace, manifest: dict) -> None:
+    """Protect the newly consumed receipt and all its replay dependencies."""
+    from lyric_aligner.io.path_safety import validate_separate_artifact_paths
+    from lyric_aligner.io.task_path_safety import protected_task_input_paths
+    from lyric_aligner.io.materializer_path_safety import declared_input_paths
+    receipt_path = getattr(args, 'boundary_confirmations', None)
+    if receipt_path is None:
+        return
+    receipt_path = Path(receipt_path).resolve()
+    receipt = json.loads(receipt_path.read_text(encoding='utf-8-sig'))
+    inputs = protected_task_input_paths(manifest_path=args.task_manifest, manifest=manifest)
+    if receipt.get('schema_version') == 'human-gap-review-materialization-1.0':
+        from scripts.verified_boundary_receipt import replay_gap_receipt
+        direct, _, _ = replay_gap_receipt(receipt_path, receipt)
+        inputs.update({'gap_replay_'+k:v for k,v in direct.items()})
+    for key in ('source_srt', 'final_srt', 'report', 'song_list', 'lyrics_dir', 'audio_alignment',
+                'manual_overrides', 'regression_cases', 'boundary_confirmations'):
+        if getattr(args, key, None) is not None:
+            inputs[key] = Path(getattr(args,key))
+    for role, record in receipt.get('input_files', {}).items():
+        path = (receipt_path.parent/record['path']).resolve()
+        inputs['receipt_'+role] = path
+        if role in ('lock', 'gold') or role.endswith(('_lock', '_gold')):
+            payload = json.loads(path.read_text(encoding='utf-8-sig'))
+            inputs.update(declared_input_paths({role:payload}))
+    outputs = {'qa': args.out, 'review': args.out_review,
+               'release': getattr(args,'release_manifest',None) or args.out.with_name(args.out.stem+'_RELEASE_ARTIFACT.json')}
+    validate_separate_artifact_paths(inputs=inputs, outputs={k:v for k,v in outputs.items() if v is not None})
+
+
 def command_qa(args: argparse.Namespace) -> int:
     from collections import Counter
 
@@ -4626,6 +4660,7 @@ def command_qa(args: argparse.Namespace) -> int:
             "lyrics_dir": args.lyrics_dir,
         },
     )
+    validate_confirmation_qa_paths(args, manifest)
     source = parse_srt(args.source_srt)
     final = parse_srt(args.final_srt)
     with args.report.open(encoding="utf-8-sig", newline="") as handle:
@@ -5055,7 +5090,17 @@ def command_qa(args: argparse.Namespace) -> int:
                 }
             )
 
-    unverified_timing_mutations = unverified_timing_mutation_candidates(rows, source)
+    verified_edges = {}
+    verified_receipt_sha = None
+    if getattr(args, 'boundary_confirmations', None):
+        from scripts.verified_boundary_receipt import verified_qa_edges
+        verified_edges, verified_receipt_sha = verified_qa_edges(
+            artifact_path=args.boundary_confirmations, report_path=args.report, srt_path=args.final_srt,
+            task_fingerprint=manifest['task_fingerprint_sha256'],
+            source_srt_sha256=manifest['inputs']['source_srt']['sha256'],
+            final_audio_sha256=manifest['inputs']['audio']['sha256'],
+        )
+    unverified_timing_mutations = unverified_timing_mutation_candidates(rows, source, verified_boundary_edges=verified_edges)
     review_candidates = (
         boundary_review_candidates(rows)
         + unresolved_existing_candidates(rows)
@@ -5189,6 +5234,8 @@ def command_qa(args: argparse.Namespace) -> int:
         "canonical_text_correction_count": canonical_text_correction_count,
         "timing_mutation_policy": "independent_audio_boundary_authority_v1",
         "unverified_timing_mutation_count": len(unverified_timing_mutations),
+        "verified_human_boundary_edge_count": len(verified_edges),
+        "verified_human_boundary_receipt_sha256": verified_receipt_sha,
         "unverified_timing_mutations": unverified_timing_mutations,
     }
     args.out.write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -5545,6 +5592,7 @@ def build_parser() -> argparse.ArgumentParser:
     qa.add_argument("--lyrics-dir", required=True, type=Path)
     qa.add_argument("--audio-alignment", required=True, type=Path)
     qa.add_argument("--manual-overrides", required=True, type=Path)
+    qa.add_argument("--boundary-confirmations", type=Path, help="Replayable human boundary receipt for exact final SRT/report")
     qa.add_argument(
         "--regression-cases",
         required=True,

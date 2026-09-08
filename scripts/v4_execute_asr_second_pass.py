@@ -325,6 +325,10 @@ def main() -> int:
             normalized_config={
                 "backend": "faster_whisper",
                 "mode": "composite_second_pass_evidence",
+                "composition_policy_id": evidence["composition_policy_id"],
+                "language_hint_policy_id": evidence.get("language_hint_policy_id"),
+                "word_match_policy_id": evidence.get("word_match_policy_id"),
+                "pass_policy_ids": evidence.get("pass_policy_ids"),
                 "first_pass_model_id": evidence["config"]["first_pass_model_id"],
                 "second_pass_model_id": evidence["config"]["second_pass_model_id"],
                 "device": args.device,
@@ -354,6 +358,7 @@ def main() -> int:
             evidence={
                 "backend": "faster_whisper",
                 "mode": "composite_second_pass_evidence",
+                "composition_policy_id": evidence["composition_policy_id"],
                 "raw_private_text_included": args.include_private_text,
                 "first_pass_retained_job_count": evidence[
                     "first_pass_retained_job_count"
@@ -365,6 +370,7 @@ def main() -> int:
                     "second_pass_executed_job_count"
                 ],
                 "model_loaded_second_pass": evidence["model_loaded_second_pass"],
+                "second_pass_adopted_job_count": evidence["second_pass_adopted_job_count"],
                 "canonical_text_authority_unchanged": True,
                 "primary_timing_authority_unchanged": True,
             },
@@ -389,6 +395,7 @@ def main() -> int:
                 "second_pass_selected": evidence["second_pass_selected_job_count"],
                 "second_pass_executed": evidence["second_pass_executed_job_count"],
                 "model_loaded_second_pass": evidence["model_loaded_second_pass"],
+                "second_pass_adopted_job_count": evidence["second_pass_adopted_job_count"],
                 "raw_private_text_included": args.include_private_text,
                 "artifact_id": artifact["artifact_id"],
                 "out": str(args.out),

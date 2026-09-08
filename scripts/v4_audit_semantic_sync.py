@@ -197,6 +197,7 @@ def main() -> int:
                 "final_sync": editor_final,
             },
             "audio_evidence_policy": audio_sync["policy"],
+            "diagnostics_policy": audio_sync["diagnostics_policy"],
             "audio_evidence_tracks": audio_sync["tracks"],
             "projection_sync": projection,
             "final_sync": final,

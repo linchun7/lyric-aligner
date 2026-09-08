@@ -118,3 +118,7 @@ jobs:
           fi
           ffprobe -version | head -n 1
       - run: python scripts/check_environment.py --asr
+      - name: Verify floating-point audio decoding
+        run: |
+          python -c "import av, numpy, soundfile"
+          python -m unittest discover -s scripts -p "test_float_decode.py" -v

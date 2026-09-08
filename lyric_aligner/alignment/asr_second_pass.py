@@ -3,24 +3,27 @@
 The second pass never widens the original P3 local windows. An empty P5
 selection means execute zero jobs (and therefore load no model), never
 "execute all". Unselected first-pass results are retained; selected jobs are
-replaced by second-pass evidence. Composite privacy is controlled by the P6
+compared with second-pass evidence without discarding already covered edges. Composite privacy is controlled by the P6
 execution config, so private text from an earlier pass cannot leak by accident.
 """
 
 from __future__ import annotations
 
 from copy import deepcopy
+import math
 from pathlib import Path
 from typing import Any, Callable
 
 from lyric_aligner.alignment.asr_executor import (
     AsrExecutionError,
+    AsrModelLoadError,
     FasterWhisperExecutionConfig,
     execute_faster_whisper_jobs,
 )
 
 
 ASR_COMPOSITE_SCHEMA_VERSION = "1.0"
+ASR_COMPOSITION_POLICY_ID = "asr-second-pass-preserve-edges-2026-09-07-v2"
 
 
 class AsrSecondPassExecutionError(AsrExecutionError):
@@ -215,6 +218,44 @@ def _apply_output_privacy(row: dict[str, Any], *, include_private_text: bool) ->
     return output
 
 
+def _support(row: dict[str, Any]) -> float:
+    raw = row.get("canonical_match_support_score")
+    if raw is None:
+        raw = row.get("canonical_text_support_score")
+    if isinstance(raw, bool) or not isinstance(raw, (int, float)) or not math.isfinite(raw):
+        return 0.0
+    return float(raw) if 0 <= raw <= 1 else 0.0
+
+
+def _covered_edges(row: dict[str, Any]) -> set[str]:
+    if row.get("canonical_match_ambiguous") or _support(row) < .72:
+        return set()
+    edges = set()
+    for edge in ("start", "end"):
+        value = row.get("canonical_match_" + edge + "_ms")
+        if (row.get("canonical_" + edge + "_covered") is True
+                and type(value) in (int, float) and math.isfinite(value) and value >= 0):
+            edges.add(edge)
+    return edges
+
+
+def _prefer_second(first: dict[str, Any] | None, second: dict[str, Any]) -> tuple[bool, str]:
+    if first is None:
+        return True, "no_first_pass_observation"
+    before, after = _covered_edges(first), _covered_edges(second)
+    if before - after:
+        return False, "retain_first_covered_edges"
+    if second.get("canonical_match_ambiguous"):
+        return False, "retain_first_over_ambiguous_retry"
+    if after > before:
+        return True, "retry_recovers_covered_edges"
+    if before:
+        return False, "retry_has_no_new_covered_edges"
+    if _support(second) > _support(first):
+        return True, "retry_improves_lexical_support"
+    return False, "retry_has_no_demonstrated_gain"
+
+
 def execute_second_pass_and_compose(
     *,
     audio_path: Path,
@@ -224,6 +265,7 @@ def execute_second_pass_and_compose(
     canonical_text_by_job_id: dict[str, str] | None,
     config: FasterWhisperExecutionConfig,
     model_factory: Callable[..., Any] | None = None,
+    retain_first_on_model_unavailable: bool = False,
 ) -> dict[str, Any]:
     """Execute exact selected P5 jobs and return one complete ASR evidence view."""
 
@@ -251,15 +293,24 @@ def execute_second_pass_and_compose(
         if job_id in canonical_text_by_job_id
     }
 
-    second = execute_faster_whisper_jobs(
-        audio_path=audio_path,
-        plan=execution_plan,
-        canonical_text_by_job_id=selected_canonical,
-        config=config,
-        model_factory=model_factory,
-    )
+    model_unavailable = False
+    try:
+        second = execute_faster_whisper_jobs(
+            audio_path=audio_path,
+            plan=execution_plan,
+            canonical_text_by_job_id=selected_canonical,
+            config=config,
+            model_factory=model_factory,
+        )
+    except AsrModelLoadError:
+        if not retain_first_on_model_unavailable:
+            raise
+        # Only a failure before inference is recoverable here. Plan, audio,
+        # inference and evidence errors must never masquerade as a good retry.
+        model_unavailable = True
+        second = {"jobs": [], "model_loaded": False}
     second_rows = _job_index(second.get("jobs"), label="second-pass evidence")
-    if set(second_rows) != set(selected_rows):
+    if not model_unavailable and set(second_rows) != set(selected_rows):
         raise AsrSecondPassExecutionError(
             "second-pass executor result IDs do not match selected second-pass jobs"
         )
@@ -267,25 +318,37 @@ def execute_second_pass_and_compose(
     composite_rows: list[dict[str, Any]] = []
     retained = 0
     replaced = 0
+    comparisons = []
     for job_id in original_order:
-        if job_id in second_rows:
-            row = _apply_output_privacy(
-                second_rows[job_id], include_private_text=config.include_private_text
-            )
-            row["evidence_pass"] = "second"
-            row["evidence_model_id"] = config.model_id
-            composite_rows.append(row)
-            replaced += 1
-        elif job_id in first_rows:
-            row = _apply_output_privacy(
-                first_rows[job_id], include_private_text=config.include_private_text
-            )
-            row["evidence_pass"] = "first"
-            row["evidence_model_id"] = first_model
-            composite_rows.append(row)
-            retained += 1
+        first = first_rows.get(job_id)
+        second_row = second_rows.get(job_id)
+        choose_second, reason = _prefer_second(first, second_row) if second_row is not None else (False, "not_routed")
+        chosen = second_row if choose_second else first
+        if chosen is None:
+            continue
+        row = _apply_output_privacy(chosen, include_private_text=config.include_private_text)
+        row["evidence_pass"] = "second" if choose_second else "first"
+        row["evidence_model_id"] = config.model_id if choose_second else first_model
+        origin = second if choose_second else first_pass_evidence
+        for policy_key in ("language_hint_policy_id", "word_match_policy_id"):
+            row[policy_key] = chosen.get(policy_key, origin.get(policy_key))
+        composite_rows.append(row)
+        replaced += int(choose_second)
+        retained += int(not choose_second)
+        if second_row is not None:
+            comparisons.append({"job_id": job_id, "selected_pass": row["evidence_pass"], "reason": reason,
+                "first": None if first is None else _apply_output_privacy(first, include_private_text=config.include_private_text),
+                "second": _apply_output_privacy(second_row, include_private_text=config.include_private_text)})
 
+    policy_keys = ("language_hint_policy_id", "word_match_policy_id")
+    common_policies = {}
+    for key in policy_keys:
+        values = {row.get(key) for row in composite_rows}
+        common_policies[key] = next(iter(values)) if len(values) == 1 else None
     return {
+        **common_policies,
+        "pass_policy_ids": {"first": {key: first_pass_evidence.get(key) for key in policy_keys},
+                            "second": {key: second.get(key) for key in policy_keys}},
         "schema_version": ASR_COMPOSITE_SCHEMA_VERSION,
         "backend": "faster_whisper",
         "mode": "composite_second_pass_evidence",
@@ -299,10 +362,18 @@ def execute_second_pass_and_compose(
             "second_pass_execution": config.to_dict(),
         },
         "model_loaded_second_pass": bool(second.get("model_loaded")),
+        "second_pass_status": (
+            "model_unavailable_retained_first" if model_unavailable
+            else "completed" if selected_rows else "not_selected"
+        ),
         "first_pass_input_job_count": len(first_rows),
         "first_pass_retained_job_count": retained,
         "second_pass_selected_job_count": len(selected_rows),
-        "second_pass_executed_job_count": replaced,
+        "second_pass_executed_job_count": len(second_rows),
+        "second_pass_adopted_job_count": replaced,
+        "composition_policy_id": ASR_COMPOSITION_POLICY_ID,
+        "pass_comparisons": comparisons,
+        "evidence_family_count": 1,
         "job_count": len(composite_rows),
         "jobs": composite_rows,
         "privacy": (
@@ -311,3 +382,26 @@ def execute_second_pass_and_compose(
             else "raw ASR text omitted from both retained first-pass and second-pass jobs"
         ),
     }
+
+
+def execute_faster_whisper_cascade(*, audio_path, plan, canonical_text_by_job_id,
+                                   config, retry_config, model_factory=None):
+    """One bounded execution: first pass, route weak jobs, preserve better evidence."""
+    from lyric_aligner.alignment.asr_routing import build_second_pass_plan
+    config.validate()
+    retry_config.validate()
+    if config.model_id == retry_config.model_id:
+        raise AsrSecondPassExecutionError("retry model must differ from first-pass model")
+    first = execute_faster_whisper_jobs(audio_path=audio_path, plan=plan,
+        canonical_text_by_job_id=canonical_text_by_job_id, config=config, model_factory=model_factory)
+    routed = build_second_pass_plan(alignment_plan=plan, first_pass_evidence=first)
+    routed["second_pass_model_id"] = retry_config.model_id
+    routed["selected_job_ids"] = [job["job_id"] for job in routed["jobs"]]
+    result = execute_second_pass_and_compose(audio_path=audio_path, alignment_plan=plan,
+        second_pass_plan=routed, first_pass_evidence=first,
+        canonical_text_by_job_id=canonical_text_by_job_id, config=retry_config, model_factory=model_factory,
+        retain_first_on_model_unavailable=True)
+    result["routing_policy_id"] = routed["policy_id"]
+    result["routing_summary"] = routed["summary"]
+    result["execution_strategy"] = "bounded_first_pass_then_edge_retry_v2_retain_on_model_unavailable"
+    return result

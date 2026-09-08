@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import difflib
 import statistics
+import math
 import unicodedata
 from dataclasses import dataclass
 from pathlib import Path
@@ -33,6 +34,7 @@ DEFAULT_AUDIO_FAMILY_CONFLICT_MS = 2_000
 DEFAULT_MIN_FORCED_CONFIDENCE = 0.50
 DEFAULT_MIN_ASR_SUPPORT_SCORE = 0.72
 DEFAULT_EDITOR_RELIABLE_MATCH_FRACTION = 0.45
+EDITOR_MATCH_POLICY_ID = "editor-semantic-disjoint-onsets-1.0"
 
 
 @dataclass(frozen=True)
@@ -129,6 +131,8 @@ def match_track_semantics(
     Candidate cues may be split more finely than the editor cue, so up to
     ``max_span`` adjacent candidate texts are concatenated.  Search is bounded
     in time to prevent a repeated chorus from satisfying an earlier cue.
+    Each candidate span supplies only one onset: a merged candidate does not
+    reveal the onset of its second editor fragment without word timing.
     """
 
     eligible = _eligible_source(source)
@@ -178,9 +182,9 @@ def match_track_semantics(
                 "delta_ms": int(first.start_ms - source_cue.start_ms),
             }
         )
-        # Non-decreasing rather than strictly increasing lets two short editor
-        # cues legitimately map into one longer candidate cue.
-        cursor = index
+        # Consume the complete span. Reusing its onset for a later source cue
+        # invents a second timing witness and collapses consecutive repeats.
+        cursor = index + span
     return matches
 
 
@@ -249,6 +253,7 @@ def audit_semantic_sync(
                 }
             )
     return {
+        "matcher_policy_id": EDITOR_MATCH_POLICY_ID,
         "passed": not errors,
         "track_count": len(tracks),
         "failed_track_count": len(errors),
@@ -317,9 +322,24 @@ def _line_audio_anchor(
     forced_start: int | None = None
     asr_start: int | None = None
     for family in families:
-        if not isinstance(family, dict) or family.get("available") is not True:
+        if not isinstance(family, dict):
             continue
         name = str(family.get("family") or "")
+        onset = family.get('canonical_onset') if name == 'asr' else None
+        if isinstance(onset, dict):
+            start = onset.get('start_ms')
+            score = onset.get('support_score')
+            if (type(start) is int and start >= 0 and type(score) in (int, float)
+                    and math.isfinite(score) and score >= min_asr_support_score
+                    and onset.get('basis') == 'canonical_prefix_word_span'
+                    and onset.get('canonical_start_covered') is True
+                    and onset.get('canonical_match_ambiguous') is False):
+                asr_start = start
+            continue
+        if name == 'asr' and 'canonical_onset' in family:
+            continue
+        if family.get("available") is not True:
+            continue
         start = _boundary_start(family)
         if start is None:
             continue
@@ -329,6 +349,8 @@ def _line_audio_anchor(
                 continue
             forced_start = start
         elif name == "asr":
+            if family.get('canonical_start_covered') is not True:
+                continue
             if family.get("boundary_basis") != "canonical_word_span":
                 continue
             support = family.get("canonical_match_support_score")
@@ -416,7 +438,7 @@ def _timing_layer_summary(
     tracks: list[dict] = []
     errors: list[dict] = []
     for row in track_rows:
-        track_errors = list(row["shared_errors"])
+        track_errors = list(row["shared_errors"]) + list(row.get(f"{prefix}_errors", []))
         deltas = list(row[f"{prefix}_deltas_ms"])
         abs_deltas = [abs(value) for value in deltas]
         median_abs = float(statistics.median(abs_deltas)) if abs_deltas else None
@@ -578,6 +600,8 @@ def audit_independent_audio_sync(
         asr_fraction = row["asr_anchor_count"] / count if count else 0.0
         reliable = bool(editor_reliable.get(ordinal, False))
         shared_errors: list[str] = []
+        projection_errors: list[str] = []
+        final_errors: list[str] = []
         if row["audio_conflict_count"]:
             shared_errors.append("independent_audio_family_conflict")
         if (
@@ -594,9 +618,9 @@ def audit_independent_audio_sync(
             projection_editor = editor_projection_tracks.get(ordinal)
             final_editor = editor_final_tracks.get(ordinal)
             if not projection_editor or projection_editor.get("passed") is not True:
-                shared_errors.append("asr_fallback_editor_projection_disagrees")
+                projection_errors.append("asr_fallback_editor_projection_disagrees")
             if not final_editor or final_editor.get("passed") is not True:
-                shared_errors.append("asr_fallback_editor_final_disagrees")
+                final_errors.append("asr_fallback_editor_final_disagrees")
         else:
             basis = "insufficient"
             shared_errors.append("insufficient_independent_audio_semantic_evidence")
@@ -611,6 +635,8 @@ def audit_independent_audio_sync(
                 "editor_witness_reliable": reliable,
                 "evidence_basis": basis,
                 "shared_errors": shared_errors,
+                "projection_errors": projection_errors,
+                "final_errors": final_errors,
             }
         )
         track_rows.append(row)
@@ -634,6 +660,7 @@ def audit_independent_audio_sync(
     return {
         "passed": bool(projection["passed"] and final["passed"]),
         "policy": "forced_alignment_or_asr_plus_reliable_editor_v1",
+        "diagnostics_policy": "semantic-layer-errors-1.0",
         "projection_sync": projection,
         "final_sync": final,
         "tracks": track_rows,

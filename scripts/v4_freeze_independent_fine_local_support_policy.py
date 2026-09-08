@@ -17,7 +17,7 @@ if str(REPOSITORY_ROOT) not in sys.path:
     sys.path.insert(0, str(REPOSITORY_ROOT))
 
 from lyric_aligner.contracts.artifacts import atomic_write_json
-from scripts.v4_evaluate_independent_fine_benchmark import EVALUATION_SCHEMA_VERSION, _load_hashed
+from scripts.v4_evaluate_independent_fine_benchmark import EVALUATION_SCHEMA_VERSION, _load_hashed, observer_identity
 
 POLICY_SCHEMA_VERSION = "independent-fine-local-support-policy-1.0"
 POLICY_AUTHORITY = "frozen_before_holdout_local_support_only_no_direct_timing_authority"
@@ -126,6 +126,7 @@ def freeze_policy(*, evaluation_path: Path, expected_evaluation_sha256: str | No
         "schema_version": POLICY_SCHEMA_VERSION,
         "policy_id": POLICY_ID,
         "authority": POLICY_AUTHORITY,
+        **observer_identity(evaluation),
         "source_audit_sha256": str(evaluation.get("source_audit_sha256") or ""),
         "calibration_evaluation_sha256": evaluation_sha,
         "calibration_run_artifact_sha256": str(evaluation.get("run_artifact_sha256") or ""),

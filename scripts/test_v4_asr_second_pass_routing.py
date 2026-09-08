@@ -112,6 +112,20 @@ class V4AsrSecondPassRoutingTests(unittest.TestCase):
         self.assertFalse(result["policy_calibrated"])
         self.assertFalse(result["backend_execution_performed"])
 
+    def test_high_text_support_does_not_hide_missing_edges_or_ambiguity(self):
+        for fields, reason in (
+            ({"canonical_start_covered": False, "canonical_end_covered": True}, "missing_canonical_start"),
+            ({"canonical_start_covered": True, "canonical_end_covered": False}, "missing_canonical_end"),
+            ({"canonical_start_covered": True, "canonical_end_covered": True, "canonical_match_ambiguous": True}, "ambiguous_canonical_match"),
+        ):
+            with self.subTest(reason=reason):
+                evidence = self.first_pass()
+                evidence["jobs"][0].update(fields)
+                result = build_second_pass_plan(alignment_plan=self.alignment_plan(), first_pass_evidence=evidence)
+                rows = {r["job_id"]: r for r in result["jobs"]}
+                self.assertIn("job-good", rows)
+                self.assertIn(reason, rows["job-good"]["second_pass_reasons"])
+
     def test_missing_first_pass_evidence_is_routed(self):
         evidence = self.first_pass()
         evidence["jobs"] = [evidence["jobs"][0]]

@@ -14,7 +14,7 @@ from typing import Any, Iterable
 
 
 FUSION_SCHEMA_VERSION = "1.1"
-FUSION_POLICY_ID = "evidence-fusion-shadow-2026-08-18-v2-forced"
+FUSION_POLICY_ID = "evidence-fusion-shadow-2026-09-07-v5-edge-coverage"
 
 
 class EvidenceFusionError(ValueError):
@@ -137,7 +137,8 @@ def _editor_index(editor_evidence: dict[str, Any] | None) -> dict[tuple[str, int
 def _asr_index(asr_evidence: dict[str, Any] | None) -> dict[tuple[str, int], list[dict[str, Any]]]:
     if asr_evidence is None:
         return {}
-    if str(asr_evidence.get("backend") or "") != "faster_whisper":
+    backend = str(asr_evidence.get("backend") or "")
+    if backend not in {"faster_whisper", "qwen3_asr"}:
         raise EvidenceFusionError("unsupported ASR evidence backend")
     jobs = asr_evidence.get("jobs")
     if not isinstance(jobs, list):
@@ -155,7 +156,7 @@ def _asr_index(asr_evidence: dict[str, Any] | None) -> dict[tuple[str, int], lis
             index = int(line_index)
         except (TypeError, ValueError) as exc:
             raise EvidenceFusionError("ASR evidence line index is invalid") from exc
-        output.setdefault((occurrence_id, index), []).append(job)
+        output.setdefault((occurrence_id, index), []).append({**job, "backend": backend})
     return output
 
 
@@ -204,28 +205,20 @@ def _forced_index(
 def _asr_boundary(job: dict[str, Any]) -> tuple[int, int] | None:
     start = _int_or_none(job.get("canonical_match_start_ms"), label="ASR canonical match start")
     end = _int_or_none(job.get("canonical_match_end_ms"), label="ASR canonical match end")
-    if start is not None and end is not None and end > start:
+    if start is not None and end is not None and start >= 0 and end > start:
         return start, end
-    segments = job.get("segments")
-    if not isinstance(segments, list) or not segments:
-        return None
-    intervals: list[tuple[int, int]] = []
-    for segment in segments:
-        if not isinstance(segment, dict):
-            continue
-        start = _int_or_none(segment.get("start_ms"), label="ASR segment start")
-        end = _int_or_none(segment.get("end_ms"), label="ASR segment end")
-        if start is None or end is None or end <= start:
-            continue
-        intervals.append((start, end))
-    if not intervals:
-        return None
-    return min(start for start, _ in intervals), max(end for _, end in intervals)
+    return None
 
 
 def _best_asr(jobs: list[dict[str, Any]]) -> tuple[dict[str, Any], tuple[int, int]] | None:
     candidates: list[tuple[float, str, dict[str, Any], tuple[int, int]]] = []
     for job in jobs:
+        if job.get("canonical_match_ambiguous") is True:
+            continue
+        if (
+            job.get("canonical_start_covered") is not True or job.get("canonical_end_covered") is not True
+        ):
+            continue
         boundary = _asr_boundary(job)
         if boundary is None:
             continue
@@ -244,6 +237,31 @@ def _best_asr(jobs: list[dict[str, Any]]) -> tuple[dict[str, Any], tuple[int, in
     candidates.sort(key=lambda item: (item[0], item[1]), reverse=True)
     _, _, job, boundary = candidates[0]
     return job, boundary
+
+
+def _best_asr_onset(jobs: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """Keep a witnessed prefix without turning its partial end into a line end."""
+    candidates = []
+    for job in jobs:
+        if job.get('canonical_start_covered') is not True or job.get('canonical_match_ambiguous') is True:
+            continue
+        start = _int_or_none(job.get('canonical_match_start_ms'), label='ASR canonical onset')
+        support = job.get('canonical_match_support_score')
+        if start is None or start < 0 or support is None:
+            continue
+        try:
+            score = float(support)
+        except (TypeError, ValueError) as exc:
+            raise EvidenceFusionError('ASR canonical support score is invalid') from exc
+        if not math.isfinite(score):
+            raise EvidenceFusionError('ASR canonical support score must be finite')
+        candidates.append((score, str(job.get('job_id') or ''), start, job))
+    if not candidates:
+        return None
+    score, job_id, start, job = max(candidates, key=lambda item: (item[0], item[1]))
+    return dict(start_ms=start, support_score=score, job_id=job_id,
+        backend=job.get('backend','faster_whisper'), basis='canonical_prefix_word_span',
+        canonical_start_covered=True, canonical_match_ambiguous=False)
 
 
 def _forced_boundary(job: dict[str, Any]) -> tuple[int, int] | None:
@@ -356,6 +374,7 @@ def _fuse_line(
             )
 
     selected_asr = _best_asr(asr_jobs)
+    onset = _best_asr_onset(asr_jobs)
     if selected_asr is not None:
         job, boundary = selected_asr
         proposals["asr"] = boundary
@@ -363,6 +382,10 @@ def _fuse_line(
             {
                 "family": "asr",
                 "available": True,
+                "canonical_onset": onset,
+                "backend": job.get("backend", "faster_whisper"),
+                "canonical_start_covered": job.get("canonical_start_covered"),
+                "canonical_end_covered": job.get("canonical_end_covered"),
                 "authoritative_for_primary_timing": False,
                 "boundary_ms": list(boundary),
                 "job_id": str(job.get("job_id") or ""),
@@ -379,8 +402,10 @@ def _fuse_line(
             {
                 "family": "asr",
                 "available": False,
+                "canonical_onset": onset,
                 "authoritative_for_primary_timing": False,
                 "reason": "no_valid_segment_boundary",
+                "coverage_status": "no_complete_verified_canonical_interval",
             }
         )
 

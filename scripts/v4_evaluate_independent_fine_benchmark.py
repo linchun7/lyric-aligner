@@ -47,6 +47,34 @@ def _load_hashed(path: Path, *, hash_field: str = "artifact_sha256") -> dict[str
     return payload
 
 
+def observer_identity(payload: Mapping[str, Any]) -> dict[str, Any]:
+    """Keep legacy artifacts readable; contextual evidence must bind exact code."""
+    variant = payload.get("observer_variant", "independent")
+    if variant not in {"independent", "contextual"}:
+        raise IndependentFineBenchmarkEvaluationError("unsupported observer variant")
+    revision = payload.get("observer_implementation_revision")
+    if revision is None:
+        implementation = payload.get("implementation") or {}
+        revision = implementation.get("implementation_revision")
+    version = payload.get("observer_version")
+    sample_rate = payload.get("observer_sample_rate", payload.get("sample_rate"))
+    if variant == "contextual" and (
+        not isinstance(revision, str) or len(revision) != 64
+        or any(ch not in "0123456789abcdef" for ch in revision)
+        or not isinstance(version, str) or not version
+        or type(sample_rate) is not int or sample_rate < 8000
+    ):
+        raise IndependentFineBenchmarkEvaluationError("contextual observer identity is incomplete")
+    result = {"observer_variant": variant}
+    if revision is not None:
+        result["observer_implementation_revision"] = revision
+    if version is not None:
+        result["observer_version"] = version
+    if sample_rate is not None:
+        result["observer_sample_rate"] = sample_rate
+    return result
+
+
 def _p90(values: Sequence[float]) -> float | None:
     if not values:
         return None
@@ -203,6 +231,7 @@ def evaluate(*, run_path: Path, truth_path: Path) -> dict[str, Any]:
         "schema_version": EVALUATION_SCHEMA_VERSION,
         "authority": "evaluation_only_no_production_timing_authority",
         "partition": truth["partition"],
+        **observer_identity(run),
         "source_audit_sha256": truth_audit_sha,
         **holdout_provenance,
         "run_artifact_sha256": run["artifact_sha256"],

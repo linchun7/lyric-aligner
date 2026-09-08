@@ -9,6 +9,7 @@ import numpy as np
 
 from lyric_aligner.audio.features import extract_harmonic_features, retrieve_coarse_window
 from lyric_aligner.audio.timewarp import AlignmentAnchor, select_timewarp
+from lyric_aligner.audio.waveform_alignment import POLICY_VERSION as WAVEFORM_POLICY, refine_waveform_window
 
 
 @dataclass(frozen=True)
@@ -84,6 +85,7 @@ def refine_coarse_mapping(
     drift_threshold: float = 0.30,
     residual_threshold: float = 0.25,
     complexity_penalty: float = 0.035,
+    waveform_refinement: bool = False,
 ) -> dict[str, Any]:
     reasons = fine_alignment_reasons(coarse_payload)
     if not force and not reasons:
@@ -139,6 +141,7 @@ def refine_coarse_mapping(
     mix_features = extract_harmonic_features(local_mix_audio, sr=sr, hop_length=hop_length)
     source_features = extract_harmonic_features(source_audio, sr=sr, hop_length=hop_length)
     fine_points: list[FinePoint] = []
+    waveform_candidates: list[dict[str, Any]] = []
     unresolved = 0
     for window, point in zip(windows, path):
         mix_start = float(window["mix_start"])
@@ -189,6 +192,18 @@ def refine_coarse_mapping(
             margin = retrieval.margin
             agreement = selected.feature_agreement
             ambiguous = retrieval.ambiguous
+        waveform = None
+        if waveform_refinement and selected.fused_score >= min_score and selected.feature_agreement >= 1:
+            waveform = refine_waveform_window(
+                mix_audio, source_audio, sr=sr, mix_start=mix_start, mix_end=mix_end,
+                source_center=refined_center, slope=refined_slope,
+                radius=source_radius_seconds, mix_audio_start=buffer_start,
+            )
+            if waveform is not None:
+                # Experimental candidate: existing feature scores describe the
+                # feature coordinates, so they cannot certify new signal points.
+                waveform_candidates.append({"mix_center": float(point["mix_center"]),
+                    "feature_source_center": refined_center, "registration": waveform})
         fine_points.append(
             FinePoint(
                 mix_center=float(point["mix_center"]),
@@ -249,6 +264,7 @@ def refine_coarse_mapping(
             "candidate_step_seconds": candidate_step_seconds,
             "min_score": min_score,
             "min_margin": min_margin,
+            "waveform_policy": WAVEFORM_POLICY if waveform_refinement else None,
         },
         "timewarp_config": {
             "bpm_prior_strength": bpm_prior_strength,
@@ -261,5 +277,6 @@ def refine_coarse_mapping(
             "complexity_penalty": complexity_penalty,
         },
         "path": [point.to_dict() for point in fine_points],
+        "waveform_candidates": waveform_candidates,
         "timewarp": timewarp,
     }

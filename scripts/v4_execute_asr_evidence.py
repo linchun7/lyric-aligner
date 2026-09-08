@@ -26,6 +26,9 @@ from lyric_aligner.contracts.artifacts import (
     validate_artifact_output,
     validate_upstream_artifact,
 )
+from lyric_aligner.io.path_safety import validate_separate_artifact_paths
+from lyric_aligner.io.task_path_safety import protected_task_input_paths
+from lyric_aligner.io.materializer_path_safety import declared_input_paths
 from task_contract import (
     load_task_manifest,
     resolve_manifest_record,
@@ -166,6 +169,10 @@ def main() -> int:
     parser.add_argument("--run", required=True, type=Path)
     parser.add_argument("--run-artifact", required=True, type=Path)
     parser.add_argument("--model-id", required=True)
+    parser.add_argument("--retry-model-id", help="Optional second local ASR model for automatic bounded weak/partial retry")
+    parser.add_argument("--backend", choices=("faster_whisper", "qwen3_asr"), default="faster_whisper")
+    parser.add_argument("--alignment-model-id", help="Local Qwen aligner directory; required for qwen3_asr")
+    parser.add_argument("--qwen-dtype", choices=("float32", "bfloat16"), default="bfloat16")
     parser.add_argument("--device", default="cpu")
     parser.add_argument("--compute-type", default="int8")
     parser.add_argument("--beam-size", type=int, default=5)
@@ -228,6 +235,15 @@ def main() -> int:
             run_artifact,
             fingerprint=fingerprint,
         )
+        protected = protected_task_input_paths(manifest_path=args.task_manifest, manifest=task)
+        protected.update({name: getattr(args, name) for name in ("plan", "plan_artifact", "run", "run_artifact")})
+        protected.update(declared_input_paths({"run": run, "plan": plan}))
+        for name in ("model_id", "alignment_model_id", "retry_model_id"):
+            value = getattr(args, name, None)
+            if value and Path(value).is_dir():
+                protected[name] = Path(value)
+        validate_separate_artifact_paths(inputs=protected,
+            outputs={"asr_evidence": args.out, "asr_artifact": args.artifact_out})
         selected_plan = _filter_jobs(plan, args.job_id)
         canonical_by_job: dict[str, str] = {}
         for job in selected_plan.get("jobs", []):
@@ -245,20 +261,31 @@ def main() -> int:
                 raise ValueError("plan/canonical text identity mismatch")
             canonical_by_job[str(job["job_id"])] = canonical
 
-        config = FasterWhisperExecutionConfig(
-            model_id=args.model_id,
-            device=args.device,
-            compute_type=args.compute_type,
-            beam_size=args.beam_size,
-            temperature=args.temperature,
-            include_private_text=args.include_private_text,
-        )
-        evidence = execute_faster_whisper_jobs(
-            audio_path=mix_audio,
-            plan=selected_plan,
-            canonical_text_by_job_id=canonical_by_job,
-            config=config,
-        )
+        if args.retry_model_id and args.backend != "faster_whisper":
+            raise ValueError("automatic retry currently requires faster_whisper")
+        if args.backend == "qwen3_asr":
+            from lyric_aligner.alignment.qwen_asr_executor import QwenAsrExecutionConfig, execute_qwen_asr_jobs
+            if not args.alignment_model_id:
+                raise ValueError("qwen3_asr requires --alignment-model-id")
+            config = QwenAsrExecutionConfig(model_id=args.model_id,
+                alignment_model_id=args.alignment_model_id, device=args.device,
+                dtype=args.qwen_dtype, include_private_text=args.include_private_text)
+            execute = execute_qwen_asr_jobs
+        else:
+            config = FasterWhisperExecutionConfig(model_id=args.model_id, device=args.device,
+                compute_type=args.compute_type, beam_size=args.beam_size,
+                temperature=args.temperature, include_private_text=args.include_private_text)
+            execute = execute_faster_whisper_jobs
+        execution_args = dict(audio_path=mix_audio, plan=selected_plan,
+            canonical_text_by_job_id=canonical_by_job, config=config)
+        if args.retry_model_id:
+            from lyric_aligner.alignment.asr_second_pass import execute_faster_whisper_cascade
+            retry_config = FasterWhisperExecutionConfig(model_id=args.retry_model_id,
+                device=args.device, compute_type=args.compute_type, beam_size=args.beam_size,
+                temperature=args.temperature, include_private_text=args.include_private_text)
+            evidence = execute_faster_whisper_cascade(**execution_args, retry_config=retry_config)
+        else:
+            evidence = execute(**execution_args)
         evidence.update(
             {
                 "algorithm_version": __version__,
@@ -282,13 +309,14 @@ def main() -> int:
             algorithm_version=__version__,
             outputs=(("asr_evidence", args.out),),
             normalized_config={
-                "backend": "faster_whisper",
-                "model_id": args.model_id,
-                "device": args.device,
-                "compute_type": args.compute_type,
-                "beam_size": args.beam_size,
-                "temperature": args.temperature,
-                "include_private_text": args.include_private_text,
+                "backend": args.backend,
+                **config.to_dict(),
+                "retry_model_id": args.retry_model_id,
+                "composition_policy_id": evidence.get("composition_policy_id"),
+                "routing_policy_id": evidence.get("routing_policy_id"),
+                "word_match_policy_id": evidence.get("word_match_policy_id"),
+                "language_hint_policy_id": evidence.get("language_hint_policy_id"),
+                "pass_policy_ids": evidence.get("pass_policy_ids"),
                 "execution_strategy": evidence.get("execution_strategy", "per_job_clip_v1"),
                 "source_plan_artifact_id": str(plan_artifact["artifact_id"]),
                 "source_run_artifact_id": run_artifact_id,
@@ -305,8 +333,10 @@ def main() -> int:
                 )
             ),
             evidence={
-                "backend": "faster_whisper",
+                "backend": args.backend,
                 "job_count": evidence["job_count"],
+                **({"second_pass_status": evidence["second_pass_status"]}
+                   if "second_pass_status" in evidence else {}),
                 "raw_private_text_included": args.include_private_text,
                 "canonical_text_authority_unchanged": True,
                 "primary_timing_authority_unchanged": True,
@@ -327,8 +357,10 @@ def main() -> int:
         json.dumps(
             {
                 "status": "executed",
-                "backend": "faster_whisper",
+                "backend": args.backend,
                 "jobs": evidence["job_count"],
+                **({"second_pass_status": evidence["second_pass_status"]}
+                   if "second_pass_status" in evidence else {}),
                 "raw_private_text_included": args.include_private_text,
                 "artifact_id": artifact["artifact_id"],
                 "out": str(args.out),

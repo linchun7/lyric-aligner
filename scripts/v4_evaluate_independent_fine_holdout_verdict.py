@@ -16,7 +16,7 @@ if str(REPOSITORY_ROOT) not in sys.path:
     sys.path.insert(0, str(REPOSITORY_ROOT))
 
 from lyric_aligner.contracts.artifacts import atomic_write_json
-from scripts.v4_evaluate_independent_fine_benchmark import EVALUATION_SCHEMA_VERSION, _load_hashed
+from scripts.v4_evaluate_independent_fine_benchmark import EVALUATION_SCHEMA_VERSION, _load_hashed, observer_identity
 from scripts.v4_freeze_independent_fine_holdout_protocol import PROTOCOL_SCHEMA_VERSION
 
 VERDICT_SCHEMA_VERSION = "independent-fine-holdout-verdict-1.0"
@@ -69,6 +69,10 @@ def evaluate_verdict(*, evaluation_path: Path, protocol_path: Path) -> dict[str,
         raise IndependentFineHoldoutVerdictError("holdout protocol was not frozen before predictions")
     if bool(protocol.get("production_authoritative")) or bool(protocol.get("automatic_mutation_allowed")):
         raise IndependentFineHoldoutVerdictError("holdout protocol must remain non-authoritative")
+
+    if observer_identity(protocol).get("observer_variant") == "contextual" or observer_identity(evaluation).get("observer_variant") == "contextual":
+        if observer_identity(protocol) != observer_identity(evaluation):
+            raise IndependentFineHoldoutVerdictError("holdout observer identity does not match frozen protocol")
 
     expected_links = {
         "holdout_protocol_sha256": protocol.get("artifact_sha256"),

@@ -194,6 +194,11 @@ class V4EvidenceFusionEndToEndTests(unittest.TestCase):
                         "occurrence_id": "occ-1",
                         "canonical_line_index": 0,
                         "canonical_text_support_score": 0.9,
+                        "canonical_match_support_score": 0.9,
+                        "canonical_start_covered": True,
+                        "canonical_end_covered": True,
+                        "canonical_match_start_ms": 5120,
+                        "canonical_match_end_ms": 6310,
                         "language_probability": 0.95,
                         "segments": [{"start_ms": 5120, "end_ms": 6310}],
                     }

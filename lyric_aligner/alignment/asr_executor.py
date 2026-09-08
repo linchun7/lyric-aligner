@@ -16,15 +16,21 @@ from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Any, Callable, Iterable
 
-from lyric_aligner.text.language_spans import asr_language_hint_for_text
+from lyric_aligner.text.bijective_han import fold_unambiguous_han
+from lyric_aligner.text.language_spans import ASR_LANGUAGE_HINT_POLICY_ID, asr_language_hint_for_text
 
 
 ASR_EVIDENCE_SCHEMA_VERSION = "1.0"
 ASR_SAMPLE_RATE = 16000
+WORD_MATCH_POLICY_ID = "bounded-lexical-match-2026-09-08-v6-opencc131-bijective"
 
 
 class AsrExecutionError(RuntimeError):
     """Raised when a planned ASR job cannot be executed truthfully."""
+
+
+class AsrModelLoadError(AsrExecutionError):
+    """Backend unavailable before inference; distinct from invalid evidence."""
 
 
 @dataclass(frozen=True)
@@ -62,11 +68,64 @@ def _normalize(value: str) -> str:
 
 
 def _text_support(canonical: str, observed: str) -> float | None:
-    left = _normalize(canonical)
-    right = _normalize(observed)
+    left = fold_unambiguous_han(_normalize(canonical))
+    right = fold_unambiguous_han(_normalize(observed))
     if not left or not right:
         return None
     return SequenceMatcher(None, left, right, autojunk=False).ratio()
+
+
+def _window_word_text(segments: Iterable[Any], window_ms: tuple[int, int], *, offset_ms: int = 0) -> str:
+    """Return one continuous bounded observation, or unknown across barriers."""
+    words = _bounded_words(segments, offset_ms=offset_ms, window_ms=window_ms)
+    valid = [i for i, word in enumerate(words) if word is not None]
+    if not valid:
+        return ""
+    words = words[valid[0]:valid[-1] + 1]
+    if any(word is None for word in words) or any(
+        right[1] < left[2] for left, right in zip(words, words[1:])
+    ):
+        return ""
+    return "".join(word[0] for word in words)
+
+
+def _bounded_words(
+    segments: Iterable[Any],
+    *,
+    offset_ms: int = 0,
+    window_ms: tuple[int, int] | None = None,
+    retain_zero_duration: bool = False,
+):
+    words = []
+    for segment in segments:
+        for word in getattr(segment, "words", None) or []:
+            normalized = _normalize(getattr(word, "word", ""))
+            start = float(getattr(word, "start", 0.0) or 0.0)
+            end = float(getattr(word, "end", 0.0) or 0.0)
+            if normalized and math.isfinite(start) and math.isfinite(end) and (
+                end > start or (retain_zero_duration and end == start)
+            ):
+                absolute_start = offset_ms + int(round(start * 1000))
+                absolute_end = offset_ms + int(round(end * 1000))
+                if absolute_end <= absolute_start and not retain_zero_duration:
+                    words.append(None)
+                    continue
+                if window_ms is not None and (
+                    absolute_start < window_ms[0] or absolute_end > window_ms[1]
+                ):
+                    words.append(None)
+                    continue
+                words.append(
+                    (
+                        normalized,
+                        absolute_start,
+                        absolute_end,
+                        getattr(word, "probability", None),
+                    )
+                )
+            elif normalized:
+                words.append(None)
+    return words
 
 
 def _canonical_word_span(
@@ -74,31 +133,27 @@ def _canonical_word_span(
     segments: Iterable[Any],
     *,
     offset_ms: int = 0,
+    window_ms: tuple[int, int] | None = None,
 ) -> dict[str, Any] | None:
-    target = _normalize(canonical)
-    words = []
-    for segment in segments:
-        for word in getattr(segment, "words", None) or []:
-            normalized = _normalize(getattr(word, "word", ""))
-            start = float(getattr(word, "start", 0.0) or 0.0)
-            end = float(getattr(word, "end", 0.0) or 0.0)
-            if normalized and math.isfinite(start) and math.isfinite(end) and end > start:
-                words.append(
-                    (
-                        normalized,
-                        offset_ms + int(round(start * 1000)),
-                        offset_ms + int(round(end * 1000)),
-                        getattr(word, "probability", None),
-                    )
-                )
+    target = fold_unambiguous_han(_normalize(canonical))
+    # Collapsed aligner words still carry observed text. Keep that text in the
+    # sequence, but never use a collapsed outer word as boundary evidence.
+    words = _bounded_words(segments, offset_ms=offset_ms, window_ms=window_ms,
+                           retain_zero_duration=True)
+    words = [None if word is None else (fold_unambiguous_han(word[0]), *word[1:]) for word in words]
     if not target or not words:
         return None
     minimum = max(1, len(target) // 2)
     maximum = max(2 * len(target), len(target) + 12)
     best = None
+    tied = []
     for start in range(len(words)):
         combined = ""
         for end in range(start, len(words)):
+            if words[end] is None or (
+                end > start and words[end][1] < words[end - 1][2]
+            ):
+                break
             combined += words[end][0]
             if len(combined) > maximum:
                 break
@@ -108,16 +163,31 @@ def _canonical_word_span(
             ranked = score + 0.001 * min(len(target), len(combined)) / len(target)
             if best is None or ranked > best[0]:
                 best = (ranked, start, end + 1, combined)
+                tied = [(start, end + 1, combined)]
+            elif ranked == best[0]:
+                tied.append((start, end + 1, combined))
     if best is None:
         return None
     _, start, end, combined = best
     selected = words[start:end]
+    candidates = [dict(start_ms=words[a][1], end_ms=words[b-1][2],
+        normalized_match_sha256=_sha(text)) for a,b,text in tied]
+    ambiguous = len({(r['start_ms'],r['end_ms']) for r in candidates}) > 1
     probabilities = [float(row[3]) for row in selected if row[3] is not None]
+    blocks = [b for b in SequenceMatcher(None, target, combined, autojunk=False).get_matching_blocks() if b.size]
+    start_timed = selected[0][2] > selected[0][1]
+    end_timed = selected[-1][2] > selected[-1][1]
     return {
-        "start_ms": selected[0][1], "end_ms": selected[-1][2],
+        "start_ms": None if ambiguous or not start_timed else selected[0][1],
+        "end_ms": None if ambiguous or not end_timed else selected[-1][2],
+        "ambiguous": ambiguous, "candidates": candidates,
         "support_score": round(SequenceMatcher(None, target, combined, autojunk=False).ratio(), 6),
         "word_count": len(selected), "normalized_match_sha256": _sha(combined),
-        "mean_word_probability": None if not probabilities else round(sum(probabilities) / len(probabilities), 6),
+        "untimed_word_count": sum(row[1] == row[2] for row in selected),
+        "mean_word_probability": None if ambiguous or not probabilities else round(sum(probabilities) / len(probabilities), 6),
+        "canonical_start_covered": bool(not ambiguous and start_timed and blocks and blocks[0].a == 0 and blocks[0].b == 0),
+        "canonical_end_covered": bool(not ambiguous and end_timed and blocks and blocks[-1].a + blocks[-1].size == len(target)
+                                      and blocks[-1].b + blocks[-1].size == len(combined)),
     }
 
 
@@ -157,13 +227,13 @@ def _model_factory_default(model_id: str, *, device: str, compute_type: str):
     try:
         from faster_whisper import WhisperModel
     except ImportError as exc:
-        raise AsrExecutionError(
+        raise AsrModelLoadError(
             "faster_whisper package is not installed; install requirements-asr.txt"
         ) from exc
     try:
         return WhisperModel(model_id, device=device, compute_type=compute_type)
     except Exception as exc:  # backend-specific model/runtime failures must be explicit
-        raise AsrExecutionError(f"cannot initialize faster-whisper model: {exc}") from exc
+        raise AsrModelLoadError(f"cannot initialize faster-whisper model: {exc}") from exc
 
 
 def _decode_audio_default(audio_path: Path):
@@ -253,7 +323,7 @@ def _execute_grouped_predecoded_jobs(
     canonical_text_by_job_id: dict[str, str],
     config: FasterWhisperExecutionConfig,
 ) -> dict[str, Any]:
-    """Execute multiple bounded windows with one backend call per language group.
+    """Execute disjoint bounded windows in batches within each language group.
 
     Concrete language hints may be grouped across occurrences. Jobs requiring
     backend auto-detection remain grouped only within one occurrence so language
@@ -298,8 +368,20 @@ def _execute_grouped_predecoded_jobs(
         )
         groups.setdefault(key, []).append(entry)
 
+    batches: list[list[dict[str, Any]]] = []
+    for entries in groups.values():
+        disjoint: list[list[dict[str, Any]]] = []
+        for entry in sorted(entries, key=lambda row: (row["start_ms"], row["end_ms"], row["job_id"])):
+            for batch in disjoint:
+                if batch[-1]["end_ms"] <= entry["start_ms"]:
+                    batch.append(entry)
+                    break
+            else:
+                disjoint.append([entry])
+        batches.extend(disjoint)
+
     result_by_job_id: dict[str, dict[str, Any]] = {}
-    for group_entries in groups.values():
+    for group_entries in batches:
         group_entries.sort(
             key=lambda row: (row["start_ms"], row["end_ms"], row["job_id"])
         )
@@ -366,9 +448,13 @@ def _execute_grouped_predecoded_jobs(
                 observed_parts.append(text)
             observed = " ".join(observed_parts)
             canonical = entry["canonical"]
-            support = None if canonical is None else _text_support(canonical, observed)
+            support = None if canonical is None else _text_support(
+                canonical, _window_word_text(segments, (entry["start_ms"], entry["end_ms"]))
+            )
             canonical_span = (
-                None if canonical is None else _canonical_word_span(canonical, segments)
+                None if canonical is None else _canonical_word_span(
+                    canonical, segments, window_ms=(entry["start_ms"], entry["end_ms"])
+                )
             )
             job = entry["job"]
             result: dict[str, Any] = {
@@ -388,11 +474,15 @@ def _execute_grouped_predecoded_jobs(
                 "canonical_match_support_score": None
                 if canonical_span is None
                 else canonical_span["support_score"],
+                "canonical_match_ambiguous": bool(canonical_span and canonical_span["ambiguous"]),
+                "canonical_start_covered": bool(canonical_span and canonical_span["canonical_start_covered"]),
+                "canonical_end_covered": bool(canonical_span and canonical_span["canonical_end_covered"]),
+                "canonical_match_candidates": [] if canonical_span is None else canonical_span["candidates"],
                 "canonical_match_start_ms": None
-                if canonical_span is None
+                if canonical_span is None or not canonical_span['canonical_start_covered']
                 else canonical_span["start_ms"],
                 "canonical_match_end_ms": None
-                if canonical_span is None
+                if canonical_span is None or not canonical_span['canonical_end_covered']
                 else canonical_span["end_ms"],
                 "canonical_match_word_count": None
                 if canonical_span is None
@@ -417,7 +507,9 @@ def _execute_grouped_predecoded_jobs(
     return {
         "schema_version": ASR_EVIDENCE_SCHEMA_VERSION,
         "backend": "faster_whisper",
-        "execution_strategy": "grouped_multi_clip_v1",
+        "execution_strategy": "disjoint_window_batches_v2",
+        "word_match_policy_id": WORD_MATCH_POLICY_ID,
+        "language_hint_policy_id": ASR_LANGUAGE_HINT_POLICY_ID,
         "config": config.to_dict(),
         "model_loaded": True,
         "job_count": len(results),
@@ -476,7 +568,7 @@ def execute_faster_whisper_jobs(
     except AsrExecutionError:
         raise
     except Exception as exc:
-        raise AsrExecutionError(f"faster-whisper model factory failed: {exc}") from exc
+        raise AsrModelLoadError(f"faster-whisper model factory failed: {exc}") from exc
 
     predecoded_audio = None
     if audio_loader is not None or model_factory is None:
@@ -553,7 +645,9 @@ def execute_faster_whisper_jobs(
             segment_rows.append(row)
             observed_parts.append(text)
         observed = " ".join(observed_parts)
-        support = None if canonical is None else _text_support(canonical, observed)
+        support = None if canonical is None else _text_support(
+            canonical, _window_word_text(segments, (start_ms, end_ms), offset_ms=segment_offset_ms)
+        )
         canonical_span = (
             None
             if canonical is None
@@ -561,6 +655,7 @@ def execute_faster_whisper_jobs(
                 canonical,
                 segments,
                 offset_ms=segment_offset_ms,
+                window_ms=(start_ms, end_ms),
             )
         )
         result: dict[str, Any] = {
@@ -578,8 +673,12 @@ def execute_faster_whisper_jobs(
             if support is None
             else round(float(support), 6),
             "canonical_match_support_score": None if canonical_span is None else canonical_span["support_score"],
-            "canonical_match_start_ms": None if canonical_span is None else canonical_span["start_ms"],
-            "canonical_match_end_ms": None if canonical_span is None else canonical_span["end_ms"],
+            "canonical_match_ambiguous": bool(canonical_span and canonical_span["ambiguous"]),
+            "canonical_start_covered": bool(canonical_span and canonical_span["canonical_start_covered"]),
+            "canonical_end_covered": bool(canonical_span and canonical_span["canonical_end_covered"]),
+            "canonical_match_candidates": [] if canonical_span is None else canonical_span["candidates"],
+            "canonical_match_start_ms": None if canonical_span is None or not canonical_span['canonical_start_covered'] else canonical_span["start_ms"],
+            "canonical_match_end_ms": None if canonical_span is None or not canonical_span['canonical_end_covered'] else canonical_span["end_ms"],
             "canonical_match_word_count": None if canonical_span is None else canonical_span["word_count"],
             "canonical_match_mean_word_probability": None if canonical_span is None else canonical_span["mean_word_probability"],
             "canonical_match_normalized_sha256": None if canonical_span is None else canonical_span["normalized_match_sha256"],
@@ -593,6 +692,9 @@ def execute_faster_whisper_jobs(
     return {
         "schema_version": ASR_EVIDENCE_SCHEMA_VERSION,
         "backend": "faster_whisper",
+        "execution_strategy": "per_job_bounded_words_v2",
+        "word_match_policy_id": WORD_MATCH_POLICY_ID,
+        "language_hint_policy_id": ASR_LANGUAGE_HINT_POLICY_ID,
         "config": config.to_dict(),
         "model_loaded": True,
         "job_count": len(results),

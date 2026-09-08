@@ -59,6 +59,20 @@ class IndependentFinePolicyFreezeTests(unittest.TestCase):
             self.assertFalse(artifact["direct_subtitle_timing_authority"])
             self.assertFalse(artifact["automatic_mutation_allowed"])
 
+    def test_contextual_policy_preserves_exact_observer_identity(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = self._evaluation(Path(temporary))
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            payload.pop("artifact_sha256")
+            identity = dict(observer_variant="contextual", observer_version="1.1.1",
+                            observer_implementation_revision="e" * 64, observer_sample_rate=22050)
+            payload.update(identity)
+            payload["artifact_sha256"] = freeze._sha_json(payload)
+            path.write_text(json.dumps(payload), encoding="utf-8")
+            artifact = freeze.freeze_policy(evaluation_path=path)
+            for key, value in identity.items():
+                self.assertEqual(artifact[key], value)
+
     def test_freeze_rejects_holdout_input(self):
         with tempfile.TemporaryDirectory() as temporary:
             path = self._evaluation(Path(temporary), partition="holdout")

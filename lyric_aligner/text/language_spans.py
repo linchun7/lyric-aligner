@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import unicodedata
 from dataclasses import asdict, dataclass
 from typing import Any
 
@@ -11,6 +12,7 @@ KANA = re.compile(r"[ぁ-ゖァ-ヺー]")
 HAN = re.compile(r"[一-鿿]")
 LATIN = re.compile(r"[A-Za-zÀ-ÖØ-öø-ÿĀ-ž]")
 DIGIT = re.compile(r"[0-9]")
+ASR_LANGUAGE_HINT_POLICY_ID = "local-script-hint-2026-09-07-v3-unicode-japanese-han"
 
 
 @dataclass(frozen=True)
@@ -133,7 +135,21 @@ def asr_language_hint_for_text(text: str, *, track_language: str) -> str | None:
     returns ``None``.
     """
 
-    spans = language_spans(text, track_language=track_language)
+    # Normalize only the inference copy; editor span offsets/text stay intact.
+    text = unicodedata.normalize('NFKC', text)
+    if any(unicodedata.category(c)[0] in {'L','M'} and not any(
+        pattern.fullmatch(c) for pattern in (HANGUL,KANA,HAN,LATIN)) for c in text):
+        return None
+    # Kana supplies local Japanese evidence even without a track tag. Han is
+    # part of ordinary Japanese spelling, not by itself a second language.
+    # Do not infer from the prolonged-sound mark alone, override another known
+    # track language, or suppress explicit Latin/Hangul code switching.
+    hint_profile = track_language
+    if (_base_language(track_language) in {'auto', 'generic', 'unknown'}
+        and re.search(r'[ぁ-ゖァ-ヺ]', text)
+        and not LATIN.search(text) and not HANGUL.search(text)):
+        hint_profile = 'ja'
+    spans = language_spans(text, track_language=hint_profile)
     languages = {
         span.language
         for span in spans

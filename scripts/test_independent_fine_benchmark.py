@@ -16,6 +16,58 @@ from scripts import v4_run_independent_fine_benchmark as runner
 
 
 class IndependentFineBenchmarkTests(unittest.TestCase):
+    def test_contextual_variant_is_recorded_and_does_not_use_legacy_retriever(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root=Path(temporary);manifest,_=self._manifest(root)
+            prediction=dict(version=runner.CONTEXTUAL_FINE_VERSION,top1={'source_start':11.},ambiguous=False)
+            with (mock.patch.object(runner,'REPOSITORY_ROOT',root),
+                  mock.patch.object(runner.librosa,'load',return_value=([0.]*4096,22050)),
+                  mock.patch.object(runner,'extract_percussive_onset_features',return_value=object()),
+                  mock.patch.object(runner,'retrieve_contextual_onset_window',return_value=prediction) as contextual,
+                  mock.patch.object(runner,'retrieve_independent_onset_window') as legacy,
+                  mock.patch.object(runner,'_implementation_identity',return_value={'implementation_revision':'a'*64})):
+                result=runner.run_benchmark(manifest_path=manifest,expected_partition='calibration',observer='contextual')
+            contextual.assert_called_once();legacy.assert_not_called()
+            self.assertEqual(result['observer_variant'],'contextual')
+            self.assertEqual(result['observer_version'],runner.CONTEXTUAL_FINE_VERSION)
+            self.assertEqual(result['records'][0]['prediction'],prediction)
+            self.assertFalse(result['automatic_mutation_allowed'])
+
+    def test_contextual_observer_cannot_reuse_legacy_holdout_freeze(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root=Path(temporary);manifest,_=self._manifest(root,partition='holdout');protocol,_=self._holdout_protocol(root)
+            with mock.patch.object(runner,'REPOSITORY_ROOT',root):
+                with self.assertRaisesRegex(runner.IndependentFineBenchmarkRunError,'own frozen observer'):
+                    runner.run_benchmark(manifest_path=manifest,expected_partition='holdout',observer='contextual',holdout_protocol_path=protocol)
+
+    def test_contextual_identity_requires_revision_and_survives_evaluation(self):
+        identity = {"observer_variant": "contextual", "observer_version": "1.1.1", "sample_rate": 22050,
+                    "implementation": {"implementation_revision": "a" * 64}}
+        result = evaluator.observer_identity(identity)
+        self.assertEqual(result["observer_implementation_revision"], "a" * 64)
+        self.assertEqual(evaluator.observer_identity(result), result)
+        identity.pop("implementation")
+        with self.assertRaisesRegex(ValueError, "identity is incomplete"):
+            evaluator.observer_identity(identity)
+
+    def test_contextual_lock_rejects_reverse_variant_and_changed_sample_rate_before_audio(self):
+        for observer, sample_rate in (("independent", 22050), ("contextual", 8000)):
+            with self.subTest(observer=observer, sample_rate=sample_rate), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                manifest, _ = self._manifest(root, partition="holdout")
+                protocol, payload = self._holdout_protocol(root)
+                payload.pop("artifact_sha256")
+                payload.update(observer_variant="contextual", observer_version=runner.CONTEXTUAL_FINE_VERSION,
+                               observer_implementation_revision="a" * 64, observer_sample_rate=22050)
+                payload["artifact_sha256"] = runner._sha_json(payload)
+                protocol.write_text(json.dumps(payload), encoding="utf-8")
+                with (mock.patch.object(runner, "REPOSITORY_ROOT", root),
+                      mock.patch.object(runner, "_implementation_identity", return_value={"implementation_revision": "a" * 64}),
+                      mock.patch.object(runner, "load_manifest", side_effect=AssertionError("AUDIO_READ_REACHED"))):
+                    with self.assertRaisesRegex(runner.IndependentFineBenchmarkRunError, "observer"):
+                        runner.run_benchmark(manifest_path=manifest, expected_partition="holdout",
+                                             holdout_protocol_path=protocol, observer=observer, sample_rate=sample_rate)
+
     def _manifest(self, root: Path, *, partition: str = "calibration") -> tuple[Path, dict]:
         source = root / "private/source.wav"
         mix = root / "private/mix.wav"

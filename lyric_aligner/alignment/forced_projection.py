@@ -167,6 +167,30 @@ def _project_interval(
     }
 
 
+def project_source_boundary_to_mix(mapping: dict[str, Any], source_ms: int) -> dict[str, Any]:
+    """Project an observed single endpoint without inventing its other edge.
+
+    The retained mix segment is returned so callers composing this observation
+    with a baseline edge can prove that the resulting interval does not cross a
+    cut. This function supplies a coordinate transform, not timing authority.
+    """
+    source_ms = _finite_ms(source_ms, label="source boundary")
+    if mapping.get("kind") != "CUT_AWARE":
+        return {"projection_status": "projected", "projection_reason": None,
+                "mix_ms": _project_continuous_ms(mapping, source_ms),
+                "retained_mix_interval_ms": None, "cut_aware_segment_index": None}
+    segment = _segment_for_source(_cut_segments(mapping), source_ms)
+    if segment is None:
+        return {"projection_status": "unprojectable",
+                "projection_reason": "source_boundary_in_confirmed_gap_or_outside_retained_range",
+                "mix_ms": None, "retained_mix_interval_ms": None, "cut_aware_segment_index": None}
+    return {"projection_status": "projected", "projection_reason": None,
+            "mix_ms": _project_cut_point(segment, source_ms),
+            "retained_mix_interval_ms": [round(float(segment["mix_start"]) * 1000),
+                                          round(float(segment["mix_end"]) * 1000)],
+            "cut_aware_segment_index": int(segment["index"])}
+
+
 def project_forced_alignment_to_mix(
     *,
     forced_evidence: dict[str, Any],

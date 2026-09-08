@@ -69,6 +69,22 @@ class IndependentFineHoldoutProtocolTests(unittest.TestCase):
             self.assertFalse(artifact["direct_subtitle_timing_authority"])
             self.assertFalse(artifact["automatic_mutation_allowed"])
 
+    def test_contextual_protocol_binds_policy_observer_revision(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            policy_path = self._policy(root)
+            payload = json.loads(policy_path.read_text(encoding="utf-8"))
+            payload.pop("artifact_sha256")
+            identity = dict(observer_variant="contextual", observer_version="1.1.1",
+                            observer_implementation_revision="e" * 64, observer_sample_rate=22050)
+            payload.update(identity)
+            self._write_hashed(policy_path, payload)
+            payload = json.loads(policy_path.read_text(encoding="utf-8"))
+            audit_path = self._audit(root, payload["artifact_sha256"])
+            artifact = protocol.freeze_protocol(policy_path=policy_path, audit_path=audit_path)
+            for key, value in identity.items():
+                self.assertEqual(artifact[key], value)
+
     def test_rejects_audit_that_consulted_predictions(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

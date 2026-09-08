@@ -9,6 +9,22 @@ from lyric_aligner.text.language_spans import (
 
 
 class V4LanguageSpanTests(unittest.TestCase):
+    def test_local_kana_resolves_japanese_han_when_track_is_unknown(self):
+        self.assertEqual(asr_language_hint_for_text('今日は君に会いたい',track_language='auto'),'ja')
+        self.assertEqual(asr_language_hint_for_text('今日ハ君ニ会イタイ',track_language='unknown'),'ja')
+
+    def test_local_japanese_inference_does_not_override_mixed_or_other_languages(self):
+        for text,track in [('未知漢字','auto'),('中国ー中国','auto'),
+                           ('君が好き baby','auto'),('君が好き 사랑해','auto'),
+                           ('你好 君が好き','zh'),('君が好き','mixed')]:
+            with self.subTest(text=text,track=track):
+                self.assertIsNone(asr_language_hint_for_text(text,track_language=track))
+
+    def test_unicode_mixed_letters_cannot_be_hidden_from_hint_inference(self):
+        for text in ('君が好き ＢＡＢＹ','君が好き 사랑','君が好き любовь','すき любовь'):
+            with self.subTest(text=text):
+                self.assertIsNone(asr_language_hint_for_text(text,track_language='auto'))
+
     def test_korean_english_line_gets_span_specific_editor_modes(self):
         spans = language_spans("널 사랑해 baby come back", track_language="ko")
         self.assertEqual([span.language for span in spans], ["ko", "en"])

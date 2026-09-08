@@ -24,6 +24,7 @@ from lyric_aligner.audio.independent_fine import (
     retrieve_independent_onset_window,
 )
 from lyric_aligner.contracts.artifacts import atomic_write_json, sha256_file
+from lyric_aligner.audio.contextual_fine import POLICY_VERSION as CONTEXTUAL_FINE_VERSION, retrieve_contextual_onset_window
 
 MANIFEST_SCHEMA_VERSION = "independent-fine-known-transform-manifest-1.0"
 RUN_SCHEMA_VERSION = "independent-fine-known-transform-run-1.0"
@@ -141,11 +142,13 @@ def _load_holdout_protocol(path: Path, *, manifest: Mapping[str, Any]) -> dict[s
     return payload
 
 
-def _implementation_identity() -> dict[str, Any]:
+def _implementation_identity(observer: str = 'independent') -> dict[str, Any]:
     files = [
         Path(__file__).resolve(),
         REPOSITORY_ROOT / "lyric_aligner/audio/independent_fine.py",
     ]
+    if observer == 'contextual':
+        files.append(REPOSITORY_ROOT / 'lyric_aligner/audio/contextual_fine.py')
     rows = [
         {
             "path": path.relative_to(REPOSITORY_ROOT).as_posix(),
@@ -162,9 +165,25 @@ def run_benchmark(
     expected_partition: str,
     sample_rate: int = 22050,
     holdout_protocol_path: Path | None = None,
+    observer: str = 'independent',
 ) -> dict[str, Any]:
+    if observer not in ('independent', 'contextual'):
+        raise IndependentFineBenchmarkRunError('unsupported observer variant')
     if sample_rate < 8000:
         raise IndependentFineBenchmarkRunError("benchmark sample rate is implausibly low")
+    if expected_partition == "holdout":
+        if holdout_protocol_path is None:
+            raise IndependentFineBenchmarkRunError("holdout run requires frozen holdout protocol")
+        frozen = _load_hashed_artifact(holdout_protocol_path)
+        if frozen.get("observer_variant", "independent") != observer:
+            raise IndependentFineBenchmarkRunError("holdout requires its own frozen observer variant")
+        if observer == "contextual" and (
+            frozen.get("observer_implementation_revision") != _implementation_identity(observer)["implementation_revision"]
+            or frozen.get("observer_version") != CONTEXTUAL_FINE_VERSION
+            or type(frozen.get("observer_sample_rate")) is not int
+            or frozen.get("observer_sample_rate") != sample_rate
+        ):
+            raise IndependentFineBenchmarkRunError("contextual holdout requires its own frozen observer implementation and sampling")
     manifest = load_manifest(manifest_path, expected_partition=expected_partition)
     holdout_protocol: dict[str, Any] | None = None
     if expected_partition == "holdout":
@@ -173,6 +192,7 @@ def run_benchmark(
         holdout_protocol = _load_holdout_protocol(holdout_protocol_path, manifest=manifest)
     elif holdout_protocol_path is not None:
         raise IndependentFineBenchmarkRunError("calibration run must not receive holdout protocol")
+    implementation = _implementation_identity(observer)
     feature_cache: dict[tuple[str, str], Any] = {}
 
     def features(relative_path: str, digest: str):
@@ -199,7 +219,8 @@ def run_benchmark(
         try:
             source_bundle = features(base["source_path"], base["source_sha256"])
             mix_bundle = features(base["mix_path"], base["mix_sha256"])
-            result = retrieve_independent_onset_window(
+            retrieve = retrieve_contextual_onset_window if observer == 'contextual' else retrieve_independent_onset_window
+            result = retrieve(
                 mix_bundle,
                 source_bundle,
                 mix_start=float(row["mix_start_s"]),
@@ -214,7 +235,7 @@ def run_benchmark(
                     **base,
                     "status": "aligned",
                     "failure_reason": None,
-                    "prediction": result.to_dict(),
+                    "prediction": result if isinstance(result, dict) else result.to_dict(),
                 }
             )
         except (ValueError, OSError) as exc:
@@ -226,7 +247,8 @@ def run_benchmark(
                     "prediction": None,
                 }
             )
-    implementation = _implementation_identity()
+    if implementation != _implementation_identity(observer):
+        raise IndependentFineBenchmarkRunError("observer implementation changed during benchmark")
     provenance: dict[str, Any] = {}
     for key in ("source_audit_file_sha256", "frozen_policy_sha256", "pair_selection_sha256"):
         value = manifest.get(key)
@@ -243,7 +265,8 @@ def run_benchmark(
         "manifest_sha256": manifest["manifest_sha256"],
         "source_audit_sha256": manifest["source_audit_sha256"],
         **provenance,
-        "observer_version": INDEPENDENT_FINE_VERSION,
+        "observer_version": CONTEXTUAL_FINE_VERSION if observer == 'contextual' else INDEPENDENT_FINE_VERSION,
+        "observer_variant": observer,
         "observer_authority": INDEPENDENT_FINE_AUTHORITY,
         "correlation_group": INDEPENDENT_FINE_CORRELATION_GROUP,
         "sample_rate": sample_rate,
@@ -267,6 +290,7 @@ def main() -> int:
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--sample-rate", type=int, default=22050)
     parser.add_argument("--holdout-protocol", type=Path)
+    parser.add_argument('--observer', choices=('independent','contextual'), default='independent')
     args = parser.parse_args()
     if args.out.exists():
         raise FileExistsError(f"benchmark output already exists: {args.out}")
@@ -275,6 +299,7 @@ def main() -> int:
         expected_partition=args.expected_partition,
         sample_rate=args.sample_rate,
         holdout_protocol_path=args.holdout_protocol,
+        observer=args.observer,
     )
     args.out.parent.mkdir(parents=True, exist_ok=True)
     atomic_write_json(args.out, artifact)

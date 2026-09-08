@@ -73,6 +73,39 @@ class SemanticSyncAuditTests(unittest.TestCase):
             result["tracks"][0]["errors"],
         )
 
+    def test_adjacent_repetitions_consume_distinct_occurrences(self) -> None:
+        source = [Cue(i + 1, 10000 + i * 3000, 12000 + i * 3000,
+                      "whip whiplash") for i in range(4)]
+        candidate = [Cue(c.number, c.start_ms + 200, c.end_ms + 200, c.text)
+                     for c in source]
+        matches = match_track_semantics(source, candidate)
+        self.assertEqual([m['candidate_number'] for m in matches], [1, 2, 3, 4])
+        self.assertEqual([m['delta_ms'] for m in matches], [200] * 4)
+
+    def test_missing_repetitions_do_not_inflate_anchor_coverage(self) -> None:
+        source = [Cue(i + 1, 10000 + i * 3000, 12000 + i * 3000,
+                      "whip whiplash") for i in range(4)]
+        matches = match_track_semantics(source, [source[0]])
+        self.assertEqual(len(matches), 1)
+        audit = audit_semantic_sync(source, [source[0]], self.window)
+        self.assertFalse(audit['passed'])
+        self.assertEqual(audit['tracks'][0]['match_fraction'], .25)
+
+    def test_split_repeat_consumes_all_members_of_previous_match(self) -> None:
+        source = [Cue(1, 10000, 13000, 'alpha beta'),
+                  Cue(2, 15000, 18000, 'alpha beta')]
+        candidate = [Cue(1, 10100, 11000, 'alpha'), Cue(2, 11000, 13000, 'beta'),
+                     Cue(3, 15100, 16000, 'alpha'), Cue(4, 16000, 18000, 'beta')]
+        matches = match_track_semantics(source, candidate)
+        self.assertEqual([(m['candidate_number'], m['candidate_span']) for m in matches],
+                         [(1, 2), (3, 2)])
+
+    def test_merged_candidate_has_only_one_observable_onset(self) -> None:
+        source = [Cue(1, 10000, 11000, 'alpha'), Cue(2, 11000, 13000, 'beta')]
+        matches = match_track_semantics(source, [Cue(1, 10100, 13000, 'alpha beta')])
+        self.assertEqual(len(matches), 1)
+        self.assertEqual(matches[0]['source_number'], 1)
+
 
 class IndependentAudioSemanticSyncTests(unittest.TestCase):
     def setUp(self) -> None:
@@ -136,6 +169,7 @@ class IndependentAudioSemanticSyncTests(unittest.TestCase):
                         "available": True,
                         "boundary_ms": [start + asr_shift_ms, start + asr_shift_ms + 1500],
                         "canonical_match_support_score": 0.95,
+                        "canonical_start_covered": True,
                         "boundary_basis": "canonical_word_span",
                     }
                 )
@@ -248,6 +282,16 @@ class IndependentAudioSemanticSyncTests(unittest.TestCase):
             "asr_plus_reliable_editor",
         )
 
+    def test_historical_fusion_without_prefix_coverage_cannot_authorize_onsets(self):
+        fusion=self.fusion(forced=False,asr=True)
+        for line in fusion['lines']:
+            for family in line['families']:
+                family.pop('canonical_start_covered',None)
+        ep,ef=self.editor_audits(self.cues(),self.cues())
+        result=audit_independent_audio_sync(fusion,self.final_rows(),editor_projection_audit=ep,editor_final_audit=ef)
+        self.assertFalse(result['passed'])
+        self.assertEqual(result['final_sync']['tracks'][0]['audio_anchor_count'],0)
+
     def test_forced_and_asr_conflict_blocks_release(self) -> None:
         projection = self.cues()
         final = self.cues()
@@ -263,6 +307,24 @@ class IndependentAudioSemanticSyncTests(unittest.TestCase):
             "independent_audio_family_conflict",
             result["projection_sync"]["tracks"][0]["errors"],
         )
+
+    def test_failed_projection_does_not_mislabel_repaired_final(self) -> None:
+        editor_projection, editor_final = self.editor_audits(self.cues(shift_ms=12000), self.cues())
+        result = audit_independent_audio_sync(
+            self.fusion(projection_shift_ms=12000, forced=False, asr=True), self.final_rows(),
+            editor_projection_audit=editor_projection, editor_final_audit=editor_final)
+        self.assertFalse(result['passed'])
+        self.assertFalse(result['projection_sync']['passed'])
+        self.assertTrue(result['final_sync']['passed'], result['final_sync'])
+
+    def test_failed_final_does_not_mislabel_good_projection(self) -> None:
+        editor_projection, editor_final = self.editor_audits(self.cues(), self.cues(shift_ms=12000))
+        result = audit_independent_audio_sync(
+            self.fusion(forced=False, asr=True), self.final_rows(shift_ms=12000),
+            editor_projection_audit=editor_projection, editor_final_audit=editor_final)
+        self.assertFalse(result['passed'])
+        self.assertTrue(result['projection_sync']['passed'], result['projection_sync'])
+        self.assertFalse(result['final_sync']['passed'])
 
 
 if __name__ == "__main__":

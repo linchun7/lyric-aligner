@@ -13,7 +13,7 @@ from typing import Any
 
 
 ASR_SECOND_PASS_SCHEMA_VERSION = "1.0"
-ASR_SECOND_PASS_POLICY_ID = "asr-second-pass-bootstrap-2026-08-18-v1"
+ASR_SECOND_PASS_POLICY_ID = "asr-second-pass-edge-coverage-2026-09-07-v2"
 
 
 class AsrRoutingError(ValueError):
@@ -172,10 +172,23 @@ def _route_reasons(
         ):
             reasons.append("high_no_speech_probability")
 
+    # New evidence explicitly distinguishes lexical coverage from text similarity.
+    # Missing fields in historical evidence keep their original routing behavior.
+    for edge in ("start", "end"):
+        key = "canonical_" + edge + "_covered"
+        if key in evidence_job:
+            if type(evidence_job[key]) is not bool:
+                raise AsrRoutingError("canonical edge coverage must be boolean")
+            if evidence_job[key] is False:
+                reasons.append("missing_canonical_" + edge)
+    if evidence_job.get("canonical_match_ambiguous") is True:
+        reasons.append("ambiguous_canonical_match")
+
     snapshot = {
         "canonical_text_support_score": support,
         "language_probability": language_probability,
         **quality,
+        **{key: evidence_job[key] for key in ("canonical_start_covered", "canonical_end_covered", "canonical_match_ambiguous") if key in evidence_job},
     }
     return sorted(set(reasons)), snapshot
 
@@ -198,7 +211,7 @@ def _severity_rank(reasons: list[str]) -> int:
         return 0
     if "missing_segments" in reason_set or "missing_segment_quality" in reason_set:
         return 1
-    if "low_canonical_text_support" in reason_set:
+    if reason_set & {"low_canonical_text_support", "missing_canonical_start", "missing_canonical_end", "ambiguous_canonical_match"}:
         return 2
     return 3
 

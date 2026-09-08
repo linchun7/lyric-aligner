@@ -8,6 +8,8 @@ from lyric_aligner.alignment.asr_executor import (
     AsrExecutionError,
     FasterWhisperExecutionConfig,
     execute_faster_whisper_jobs,
+    _canonical_word_span,
+    _window_word_text,
 )
 
 
@@ -38,6 +40,147 @@ class FakeModel:
 
 
 class V4AsrExecutorTests(unittest.TestCase):
+    def test_unambiguous_han_variants_preserve_canonical_outer_words(self):
+        words=[SimpleNamespace(word=c,start=1+i*.2,end=1.1+i*.2,probability=.9)
+               for i,c in enumerate('愛是菜色糖衣包裝')]
+        span=_canonical_word_span('爱是彩色糖衣包装',[SimpleNamespace(words=words)])
+        self.assertTrue(span['canonical_start_covered'])
+        self.assertTrue(span['canonical_end_covered'])
+        self.assertGreaterEqual(span['support_score'],.72)
+        self.assertEqual(span['start_ms'],1000)
+
+    def test_variant_equivalent_repeated_lyrics_remain_ambiguous(self):
+        words=[SimpleNamespace(word=w,start=t,end=t+.2,probability=.9)
+               for w,t in [('愛',1),('你',1.3),('爱',4),('你',4.3)]]
+        span=_canonical_word_span('爱你',[SimpleNamespace(words=words)])
+        self.assertTrue(span['ambiguous'])
+        self.assertIsNone(span['start_ms'])
+        self.assertFalse(span['canonical_start_covered'])
+
+    def test_zero_duration_interior_keeps_lexical_content_without_inventing_timing(self):
+        for text in ('hello middle world', '我们天生就是派对动物', 'hello世界'):
+            words = [SimpleNamespace(word=c, start=1+i*.1,
+                     end=1+i*.1+(0 if i == 1 else .05), probability=.9)
+                     for i,c in enumerate(text.replace(' ', ''))]
+            span = _canonical_word_span(text, [SimpleNamespace(words=words)])
+            self.assertEqual(span['support_score'], 1.)
+            self.assertTrue(span['canonical_start_covered'])
+            self.assertTrue(span['canonical_end_covered'])
+            self.assertEqual(span['untimed_word_count'], 1)
+            self.assertEqual(span['start_ms'], 1000)
+
+    def test_zero_duration_outer_word_leaves_only_that_edge_unknown(self):
+        for index in (0, 2):
+            words = [SimpleNamespace(word=w, start=1+i,
+                     end=1+i+(0 if i == index else .5), probability=.9)
+                     for i,w in enumerate(('hello', 'middle', 'world'))]
+            span = _canonical_word_span('hello middle world', [SimpleNamespace(words=words)])
+            self.assertEqual(span['support_score'], 1.)
+            self.assertEqual(span['canonical_start_covered'], index != 0)
+            self.assertEqual(span['canonical_end_covered'], index != 2)
+            self.assertEqual(span['start_ms'] is None, index == 0)
+            self.assertEqual(span['end_ms'] is None, index == 2)
+
+    def test_both_execution_paths_export_independent_canonical_edges(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            audio=Path(temporary)/'mix.wav';audio.write_bytes(b'fixture')
+            for predecoded in (False,True):
+                for text,start,end in [('hello world',True,True),('hello world again',True,False),('say hello world',False,True)]:
+                    with self.subTest(predecoded=predecoded,text=text):
+                        plan=self.plan();plan['jobs']=plan['jobs'][:1];plan['jobs'][0]['mix_window_ms']=[0,4000]
+                        result=execute_faster_whisper_jobs(audio_path=audio,plan=plan,
+                            canonical_text_by_job_id={'job-1':text},config=FasterWhisperExecutionConfig(model_id='fixture'),
+                            model_factory=lambda *args,**kwargs:FakeModel(),
+                            audio_loader=(lambda path:[0.0]*64000) if predecoded else None)['jobs'][0]
+                        self.assertEqual(result['canonical_start_covered'],start)
+                        self.assertEqual(result['canonical_end_covered'],end)
+                        self.assertEqual(result['canonical_match_start_ms'] is not None,start)
+                        self.assertEqual(result['canonical_match_end_ms'] is not None,end)
+
+    def test_equal_repeated_matches_do_not_claim_first_occurrence(self):
+        words = [SimpleNamespace(word=w,start=t,end=t+.2,probability=.9)
+                 for w,t in [('for',1.),('someone',1.3),('for',8.),('someone',8.3)]]
+        span = _canonical_word_span('for someone',[SimpleNamespace(words=words)],window_ms=(0,10000))
+        self.assertTrue(span.get('ambiguous',False))
+        self.assertIsNone(span['start_ms'])
+        self.assertIsNone(span['end_ms'])
+        self.assertEqual([r['start_ms'] for r in span['candidates']],[1000,8000])
+
+    def test_outside_segment_text_cannot_support_job_or_skip_second_pass(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            audio = Path(temporary) / "mix.wav"
+            audio.write_bytes(b"fake")
+            class OutsideModel:
+                def transcribe(self, audio, **kwargs):
+                    word = SimpleNamespace(word="hello world", start=0.5, end=0.9, probability=0.99)
+                    segment = SimpleNamespace(start=0.5, end=1.1, text="hello world", words=[word])
+                    return iter([segment]), SimpleNamespace(language="en", language_probability=1.0)
+            for grouped in (False, True):
+                plan = self.plan()
+                if grouped:
+                    plan["jobs"][1].update(mix_window_ms=[1000, 2500], requested_capabilities=["mix_asr"])
+                result = execute_faster_whisper_jobs(
+                    audio_path=audio, plan=plan,
+                    canonical_text_by_job_id={"job-1": "hello world", "job-2": "hello world"},
+                    config=FasterWhisperExecutionConfig(model_id="test-model"),
+                    model_factory=lambda *args, **kwargs: OutsideModel(),
+                    audio_loader=(lambda path: [0.0] * 64000) if grouped else None,
+                )
+                self.assertIsNone(result["jobs"][0]["canonical_text_support_score"])
+                self.assertIsNone(result["jobs"][0]["canonical_match_support_score"])
+
+    def test_invalid_word_is_a_barrier_not_permission_to_join_neighbors(self):
+        for start, end in ((float("nan"), 1.0), (1.5, 1.5), (1.5001, 1.5002)):
+            with self.subTest(start=start, end=end):
+                segments = [SimpleNamespace(words=[
+                    SimpleNamespace(word="hello", start=1.0, end=1.4, probability=0.9),
+                    SimpleNamespace(word="bad", start=start, end=end, probability=0.9),
+                    SimpleNamespace(word="world", start=2.0, end=2.4, probability=0.9),
+                ])]
+                result = _canonical_word_span("hello world", segments)
+                self.assertLess(result["support_score"], 1.0)
+                self.assertEqual(_window_word_text(segments, (0, 10000)), "")
+
+    def test_canonical_match_does_not_join_backwards_word_sequence(self):
+        segments = [SimpleNamespace(words=[
+            SimpleNamespace(word="hello", start=8.0, end=8.4, probability=0.9),
+            SimpleNamespace(word="world", start=3.0, end=3.4, probability=0.9),
+        ])]
+        result = _canonical_word_span("hello world", segments)
+        self.assertLess(result["support_score"], 1.0)
+        self.assertTrue(result["ambiguous"])
+        self.assertIsNone(result["start_ms"])
+        self.assertIsNone(result["end_ms"])
+        self.assertTrue(all(r["end_ms"] > r["start_ms"] for r in result["candidates"]))
+        self.assertEqual(_window_word_text(segments, (0, 10000)), "")
+
+    def test_canonical_match_excludes_words_outside_requested_window(self):
+        segments = [SimpleNamespace(words=[
+            SimpleNamespace(word="hello", start=0.8, end=1.1, probability=0.9),
+            SimpleNamespace(word="world", start=1.2, end=1.5, probability=0.9),
+        ])]
+        result = _canonical_word_span("hello world", segments, window_ms=(1000, 2000))
+        self.assertLess(result["support_score"], 1.0)
+        self.assertGreaterEqual(result["start_ms"], 1000)
+
+    def test_overlapping_jobs_have_separate_backend_batches(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            audio = Path(temporary) / "mix.wav"
+            audio.write_bytes(b"fake")
+            plan = self.plan()
+            plan["jobs"][1].update(mix_window_ms=[1500, 3000], requested_capabilities=["mix_asr"])
+            fake = FakeModel()
+            result = execute_faster_whisper_jobs(
+                audio_path=audio, plan=plan,
+                canonical_text_by_job_id={"job-1": "hello world", "job-2": "hello world"},
+                config=FasterWhisperExecutionConfig(model_id="test-model"),
+                model_factory=lambda *args, **kwargs: fake,
+                audio_loader=lambda path: [0.0] * 64000,
+            )
+            self.assertEqual(len(fake.calls), 2)
+            self.assertIsNone(result["jobs"][1]["canonical_match_start_ms"])
+            self.assertFalse(result["jobs"][1]["canonical_start_covered"])
+
     def plan(self):
         return {
             "mode": "plan_only",

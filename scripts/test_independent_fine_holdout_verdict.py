@@ -92,6 +92,28 @@ class IndependentFineHoldoutVerdictTests(unittest.TestCase):
             self.assertGreater(artifact["result"]["catastrophic_count"], 0)
             self.assertFalse(artifact["policy_retuning_from_holdout_allowed"])
 
+    def test_contextual_verdict_rejects_different_observer_even_with_valid_links(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            protocol_path = self._protocol(root)
+            protocol_payload = json.loads(protocol_path.read_text(encoding="utf-8"))
+            protocol_payload.pop("artifact_sha256")
+            identity = dict(observer_variant="contextual", observer_version="1.1.1",
+                            observer_implementation_revision="e" * 64, observer_sample_rate=22050)
+            protocol_payload.update(identity)
+            self._write_hashed(protocol_path, protocol_payload)
+            protocol_sha = json.loads(protocol_path.read_text(encoding="utf-8"))["artifact_sha256"]
+            evaluation_path = self._evaluation(root, protocol_sha)
+            evaluation = json.loads(evaluation_path.read_text(encoding="utf-8"))
+            evaluation.pop("artifact_sha256")
+            evaluation.update(identity)
+            self._write_hashed(evaluation_path, evaluation)
+            self.assertTrue(verdict.evaluate_verdict(evaluation_path=evaluation_path, protocol_path=protocol_path)["result"]["passed"])
+            evaluation["observer_implementation_revision"] = "f" * 64
+            self._write_hashed(evaluation_path, evaluation)
+            with self.assertRaisesRegex(verdict.IndependentFineHoldoutVerdictError, "observer identity"):
+                verdict.evaluate_verdict(evaluation_path=evaluation_path, protocol_path=protocol_path)
+
     def test_protocol_link_mismatch_fails_closed(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

@@ -1,7 +1,92 @@
 # Lyric Aligner v4 当前实施状态
 
+> **当前执行阶段：维护收敛（2026-09-08，用户已确认）。** 暂停扩张式算法升级，按[维护执行约定](maintenance-convergence-2026-09-08.md)修补现有链路。下文旧实验排期与“下一步”保留为历史，不再自动触发新模型或新策略开发。
+
+
+2026-09-08 第九切片新增旧锚夹持的完整精确词序源锚，只进入显式joint实验。WALK882条重跑共同解码2→3对，恢复219/220，旧两对区间不变；但220与KEEP221仍重叠3017ms，全局采用0、成品时间/文字变化0。历史三首149行得到9个精确锚（4新增），新增8端点MAE165.75ms、最大312ms；这是源锚证据，不是成品或新盲测精度。无条件二段拆词的43076项词典遮蔽验证仅34.84%发音一致，未接入。隔离Python3.12全量1625项通过（4项可选FLOAT跳过）。全部正负实验登记见 references/accuracy-experiment-register-2026-09-08.md；本轮证据见 output/source_context_upgrade9_20260908/delivery_report.md。不封板。
+
+2026-09-08 第八切片已实现显式相邻共同窗口与原子选择。同输入 WALK882条实跑触发4对，2对完成一次共享声学解码，另外2对因缺词dancefloor/缺右锚拒绝。两处内部候选重叠1929/862ms→0，但全局选择0，成品区间变化0，文字变化0；旧FW和旧HFA输出字节一致。这证明局部冲突机制可修复，不证明整段准确率提高；保留实验身份，不默认推广、不封板。下一步需获得长行内部可靠词级锚与可验证发音覆盖，不能靠放宽外部几何强行采用。工程与实测证据见 `output/source_context_upgrade8_20260908/delivery_report.md`。
+
+2026-09-08 第七切片新增通用英文派生词典构建器及anchored-path显式manifest接入。原字典保留，1052项新增发音均来自既有尾撇号词形或固定CMU直接记录。WALK120完整882条重跑：13次推理/17完整候选（此前5），选择0，最终区间0变化。已有三首公开歌保持9/143覆盖和MAE45.222ms，未测到新精度收益。rank18同音频仅加英文提示，词覆盖0→165/203、锚0→3，但候选仍0/44。主要瓶颈为完整源上下文资格和相邻区间兼容；不加搜索预算、不改canonical、不默认推广。最终工程验证、失败日志与复核见 `output/source_context_upgrade7_20260908/delivery_report.md`。
+
+2026-09-08 第六切片已完成显式实验 anchored-path-v1：源时间带进入解码DP，同53行开发回归端点MAE858.321→207.047ms、最大32160→1867ms。另三首新公开歌149行/143内部目标仅覆盖9行（8旧+1新增），两策略输出相同，条件MAE45.222ms、最大107ms；134个无候选，不能宣称普遍增益。隔离Python3.12全量1583项通过、4项可选音频测试跳过。WALK120最终路径重跑882条，HFA候选5、选择0、新增成品改动0。保留实验身份、不封板。完整失败、修正、冻结与最终证据见 `output/source_context_upgrade6_20260908/delivery_report.md`。
+
+第五切片最终工程验证：隔离 Python3.12 完整1564项/187.086秒通过（4项可选FLOAT音频测试跳过，已在音频环境另跑通过）；36项相关隔离测试、skill、实际dirty/untracked文档契约及独立复核通过。首轮因测试误依赖私有文件发生7错误，已只修夹具并保留失败日志。源码与真实字幕产物未在修夹具时改变。
+
+2026-09-08 第五切片新增 HFA 三行 provider、独立 `hfa-only-overlay` 与 `lexical_only_no_ap`。历史 22 行/44 端点 FW→no-AP MAE 291.682→116.727ms、>500ms 9→3；新五首169行只覆盖2行/4端点，462→192ms、>500ms 2→1。均为合格源端点条件指标，不是整曲精确率。真实 WALK120 的882条字幕：Rihanna恢复1个双端候选，但与下句KEEP冲突2379ms，HFA选择0、成品改动0；原FW shadow与接入前字节一致。HFA台账534MB→241KB，完整源观察及最终相对引用核验通过。当前有可运行的新声学候选，尚无该节目新增成品收益，也不封板。最终验证见 `output/source_context_upgrade5_20260908/delivery_report.md`；更早“第五切片进行中”段落是阶段记录。
+
+2026-09-08 新增带左右上下文的forced segment区间提取API，避免取序列末词终态；19项相关测试、三份真实TextGrid重放及隔离Python3.12全量1536项测试通过（179.418秒），独立复核通过实验范围。SOFA同目标三窗口结束时间波动3000→44.13ms，属于窗口稳定性改善，不是绝对准确率；默认pipeline未变。FLOAT无损前处理对照亦已完成，保留旧证据。
+
+2026-09-08 第三切片保留全曲重复位置共识为实验模块，默认shadow策略及生产SRT不变。开发集182行17→24；预冻结新4首137行15→15，新增收益未推广。Qwen整曲/短窗均未胜过已有FW，拒绝接入。新增实验模块经独立复核及隔离Python3.12全量1529项测试通过（312.648秒）。当前不宣称封板或本轮最终SRT精度提升；证据见 output/source_context_upgrade3_20260908/implementation_report.md。
+
+第二切片的独立公开源端对照完成：4 首/182 行，旧、新可选句数为 15/17，共同 15 句不变；新增两句的四个端点误差均 ≤187ms，未定位仍为165行，已有候选最大起点误差3378ms。该小样本结果支持候选覆盖改善，尚不能证明最终混音 SRT 精确率或封板；完整冻结协议与评价见 output/source_context_upgrade2_20260908/public_multiline_v1/。
+
+2026-09-08 第二切片完成目标内部转录错误恢复，并修复孤立 exact、n-best 遮蔽及重复字符计算失控。三期完整 shadow 字幕选择 5/1/6 条、改变起点 4/1/4 和终点 5/1/6，文字不变；相对第一切片只新增 WALK120 两条字幕的时间变化。旧 24 边界新增精度收益仍为 0。隔离 Python 3.12 的 1519 项测试通过（213.629 秒），独立复核 PASS。当前策略仍为实验身份，完整实现、实际差异、哈希回读和公开多行检验记录在 output/source_context_upgrade2_20260908/；不据变化数宣称封板。
+
+2026-09-08 原曲上下文到完整影子字幕链路已完成：整曲识别、容错邻句与精确目标字符归属、有效映射投影、兼容区间联合选择、独立首尾候选、SRT/CSV 回读和当前基线配对报告均接入统一入口。WALK120/H180/KPOP110 三期并行实跑分别选择 4/1/6 条字幕，起点变化 2/1/4、终点变化 4/1/6，文字变化 0；已有 24 个人工边界均未改变，历史起点/终点 MAE 仍为 30/9.17ms。因此本次可确认的是候选与实际写回能力，尚无已标注边界上的精度增益。修复并发缓存半写、失败 staging 重试、既有重叠下的起点逆序和改时后旧人工凭证残留。隔离 Python 3.12 全量 1485 项通过（150.712 秒），独立复核通过；实验身份不替换生产 final，也不声明封板。执行协议见 [原曲上下文与区间联合升级](source-context-shadow-upgrade.md)，证据位于 output/source_shadow_upgrade_20260908/。
+
+2026-09-08 H180最终SRT重生成对照：使用冻结输入和现有已验证证据重跑完整升级/QA/display入口，不是全音频ASR重识别。相对升级前8cue/5start/4end改变、文字0变化；旧24边界的start raw MAE59.17→30ms、end91.17→9.17ms。相对上一份最新声学层及显示层SRT均字节一致，本次新增成品收益0。QA结构通过但4个重建区间仍未完整验证，publish_ready=false。修复旧review重放误计新人工：new_human_annotations恒0，applied_existing_gap_review_records另记实际应用3条，reporting policy1.1；隔离23项相关测试和再次真实重生成通过。下一轮默认timing改写需先取得冲突相邻句末与连续哼唱段的可验证候选及独立收益，当前不为制造变化而继续调参。详见output/rerun_20260908/review-and-next-plan.md与comparison.json。
+
+2026-09-08补识别可用性升级：cascade execution_strategy升级为bounded_first_pass_then_edge_retry_v2_retain_on_model_unavailable。新增AsrModelLoadError区分推理前加载失败；只有自动cascade启用保留首轮，独立P6仍严格失败，plan/audio/inference/evidence错误不降级。复用原composer验证与隐私逻辑，失败时selected保留、executed/adopted=0，second_pass_status在证据、artifact和终端显式输出，未执行轮不冒用策略身份。49项定向、隔离完整1425项回归（160.315秒）通过；CLI摘要后续delta另经39项定向和真实CLI验证。WALK140真实音频+离线空本地retry模型完成1/0/0验证、保留句首3004125ms且句尾未知，正式fusion及SHA回读通过，无模型下载/新人工/SRT修改。此为可用性改善，不计为声学精度增益。证据：output/accuracy_upgrade_20260908/retry_availability_v1/。
+
+2026-09-08最终混音映射验证完成：事先按SHA选定KPOP110的3个occurrence，分别检查9个固定分位窗口与9个既有最低margin歧义窗口。正常9点与旧fine差异<=32ms；歧义组按已冻结margin>=0.05且无歧义条件仅6点合格，与旧fine差异<=36ms。Gee另3点相差1608–2012ms但全未满足冻结条件，不能据此替换时间轴。此为最终mix诊断，无独立边界真值，也不把单曲holdout授权外推到裁切缓冲；本轮没有接入默认mapper或改写SRT。证据：output/accuracy_upgrade_20260907/contextual_final_mix_v1/及contextual_final_mix_ambiguous_v1/。
+
+2026-09-08单义繁简比对修复：真实新观察中的愛/裝与canonical爱/装未被NFKC归一，导致句首缺失及support低于0.72。word-match policy升级为bounded-lexical-match-2026-09-08-v6-opencc131-bijective，仅在ASR词段和text-support副本使用OpenCC1.3.1固定原始字表导出的3626对单义字符；排除所有正反向多义/竞争映射、转换链及不稳定NFKC，發髮乾幹後臺不合并。不改原文、display或CER使用的_normalize，无新增Python依赖。107份既有词段重放仅2份功能评分变化：0.5→0.625、0.714286→0.875，后者句首从缺失恢复；其余变化为规范化匹配哈希。旧日语验证样本本次仅作回归，不宣称新盲测。4字表/47ASR/11Qwen定向、独立复核及完整1421项回归（155.551秒）通过。已有正式计划的真实CLI重跑及artifact回读通过、携带v6身份；该较窄窗口已识别为简体，旧匹配器同样得分1.0，因此这次正式重跑只证明集成正确，不重复计为准确率增益。字表Apache-2.0许可与作者保留在lyric_aligner/text/data/opencc/，证据见output/accuracy_upgrade_20260907/bijective_han_v1/。
+
+2026-09-08连续实跑结论：非词汇输入修复后，KPOP130/KPOP200/WALK140的12个区域全部正式生成候选，cue总数分别786→779、826→826、936→926，规范化歌词全文均一致；另H190的5个区域候选672→671。17份产物全部通过输入SHA、SRT/audit及artifact回读检查。相同fusion下四项目QA前后均未通过，因此没有整体提升为生产成品。对39个>=250ms起点分歧按事先固定哈希规则选11个：Whisper覆盖3个，Qwen仅对8个缺失点补测并新增覆盖3个；6个可比较点里候选相对观察4个更近、2个更远，另5个未知，不据此生成自动替换authority。当前工程回归1415项/154.644秒、17项定向与两次独立复核通过，无新增人工。详见output/accuracy_upgrade_20260907/cross_project_editor_regions_v1/，尤其smart_materialized/audio_proxy_combined_summary.json；本次新增可确认识别改善仍以日语独立录音对照为限，跨语种最终SRT精度尚不能封板。
+
+跨项目局部恢复继续：原始editor扫描67个唯一文字区域，12个通过初步geometry，其中正式入口已在H190产生局部候选，其他保留原因逐项记录。真实KPOP200源cue129只有撇号：strict SRT接受但Smart lexical parser直接报empty text。新增editor-lexical-observation-input-1.0，仅派生文字匹配输入排除非词汇cue，按原ordinal插回并保留原文件/非目标内容；目标段自身含非词汇cue仍拒绝。源SHA、派生SHA、映射和策略进入报告及artifact，17项定向测试及独立复核通过；不是新增声学authority。证据见output/accuracy_upgrade_20260907/cross_project_editor_regions_v1/。
+
+日语hint v3额外验证完成：冻结的另一批12条PJS录音，Qwen字符错误率17.91%→9.66%，终点覆盖9/12→12/12；起点覆盖仍8/12，仍有2个起点、1个终点原始偏差>=500ms。只作为同歌手新录音验证，不代表跨歌手或生产边界授权；验证结果不用于本策略调参。当前代码完整回归1413项/151.472秒通过，独立复核、skill/privacy及dirty docs契约通过。精确逐项结果与固定共同边界比较见output/accuracy_upgrade_20260907/public_singing_v1/verification_v3.json及evaluation_validation_before_validation_after.json。
+
+日语提示v2初次真实对照：冻结12条PJS日语短歌、完整原音频输入，Qwen规范化字符错误率47.58%→17.81%，起点覆盖5/12→9/12，终点6/12→10/12，新终点最大原始偏差62.04ms；起点仍有2个>=500ms偏差。Whisper同样本字符错误率13.49%，起点10/12、终点12/12，但终点最大原始偏差2621.77ms。只适用于本批单歌手外部诊断，不是生产或模型训练排除证明。独立复核发现Unicode混语漏检，已以NFKC副本和未知Unicode字母保守处理修正为hint v3；10语言/45ASR/11Qwen定向测试通过。独立P6和cascade逐轮/逐job保留language及word-match policy，混合结果不再假借首轮身份。另12条未参与诊断的录音按相同哈希选择规则冻结，修复后才开始对照执行，无新增人工。公开来源与完整证据见output/accuracy_upgrade_20260907/public_singing_v1/SOURCES.md。
+
+日语局部提示修复：未给整曲标签时，含假名的普通日语汉字混写行曾因und-han而丢失ja提示。新增local-script-hint-2026-09-07-v2-japanese-han，仅在auto/generic/unknown且有实际假名、无Latin/Hangul时解析同句Han为ja；不改变editor language_spans或可靠度，不覆盖已知其他语言或mixed。提示策略身份随FW/Qwen/cascade和正式artifact导出。9语言、44ASR、11Qwen定向测试通过；PJS外部固定样本的真实反事实复测正在完成。
+
+局部恢复实跑完成：15个唯一文字区域中12个因与保留字幕冲突而排除，3个安全区域写回新候选；WALK120的Super Model局部5/8/12条分别恢复为5/7/9条，整包882→878，规范化全文保持一致。19个可证明原editor cue归属的行起点，相对该既有边界的中位差2452→0ms；这不是人工声学误差。通用QA的固定30个source cue匹配里15项改善、2项变差，且少匹配3项、P90未改善（重复副歌匹配有歧义），因此不能宣称全曲精度已通过。相同fusion下整包QA前后仍失败。完整回归1409项/163.777秒通过，两项独立复核通过，产物及逐项比较见output/accuracy_upgrade_20260907/editor_regions_v1/。
+
+复用已有人工标注复测Qwen：12个outer片段覆盖11首歌、24个起止点，未新增人工；按原gold绑定的8/4分区与阈值评估，起点9/12有预测、有效误差中位50ms/P90 410ms，终点7/12、中位223ms/P90 516ms，均未通过校准。旧边界覆盖12/12，中位有效误差为0ms。这否定Qwen直接替换既有时间轴的方案；不是新的盲测，也不改阈值拟合这些结果。证据：output/accuracy_upgrade_20260907/untimed_lexical_v1/human_outer/evaluation_anchorpolicy.json。该阶段完整工程回归1403项/179.254秒通过。
+
+局部编辑器恢复新增可选canonical_region：只接受两侧同时落在完整editor cue与canonical行边上的唯一精确文字块；baseline对应区域也必须连续且文字完整一致，拒绝与同曲保留字幕重叠。默认整曲模式保持原有行为，区域策略身份独立。正在实跑实际候选，不因此声明声学精度或封板。
+
+2026-09-07 继续升级词汇/时间分离：WORD_MATCH_POLICY v5 在 canonical 匹配中保留零时长字的已观察文字，内部零时长不再截断整句；外层字无正时长时对应边界仍未知，非有限/逆序/越窗与重复歧义继续受限。固定29窗口回放中28项既有匹配和边界保持一致，Qwen扩窗观察从0.666667恢复为完整匹配1.0；正式Qwen CLI再次实跑得到相同候选。此为覆盖恢复，不能当作声学边界精度提升或final写回依据。证据：output/accuracy_upgrade_20260907/untimed_lexical_v1/。
+
+同时修复Qwen在Windows中文环境路径下的nagisa原生模型加载失败：仅在Unicode安装路径时，将已安装包逐文件校验复制到进程临时ASCII目录；原安装及模型权重不变，不下载模型，输出运行兼容身份。11项Qwen测试及独立复核通过，真实CLI不再依赖手工PYTHONPATH。
+
+继续开发 ASR 自动补识别：路由 v2 将显式缺首、缺尾和重复匹配歧义加入现有二次识别；合成 v2 保留首轮已有覆盖能力，第二轮不再无条件替换，并分别记录 executed/adopted。正式执行入口可通过 `--retry-model-id` 一次串联原窗口内的首轮→筛选→第二模型→比较，两模型仍是同一ASR证据家族。28个既有跨项目观察重放新增路由1个walk140缺尾窗口；同窗medium与扩窗turbo均未改善，原句首保留，扩窗未改为默认。此批新增可用边界0，不以“多执行一次”冒充精度提升。41项ASR定向回归通过，实际证据在 `output/accuracy_upgrade_20260907/edge_retry_v1/`。
+
+
+2026-09-07 contextual 1.1.1 自然校准：同一评测器复核 24 窗口，旧/新起点绝对误差中位数 11.58/7.48ms、P90 1121.86/15.18ms；新最大误差 15.91ms。全部为已知校准数据，不能称未见曲精度。另预先排除旧校准、旧holdout、压力测试歌曲，确定7首新自然调速配对；独立RMS真值审计7/7通过，21窗口的contextual holdout按冻结算法/采样率/阈值全部通过：中位6.00ms、P90 12.54ms、最大16.86ms、0个>=500ms错配。这里仍是音频映射基准，不是歌词边界真值或生产final改善率。产物在 `output/accuracy_upgrade_20260907/contextual_fine_v3/`。工程回归1393 tests /168.133s通过，随后身份/采样率修复有37项定向回归及独立复核通过；未把局部工程验证写作整包封板。
+
+
+上下文音频匹配继续开发：contextual-independent-fine-1.1 联合局部和两侧特征，使用三段分数中位数；逐帧精炼避免粗网格相位造成假消歧；强局部竞争者缺上下文时保留歧义。旧 Independent Fine 1.0 不变，新观察仍同一 percussive family，无歌词边界 authority。已接入 v4_run_independent_fine_benchmark.py 的 --observer contextual。
+
+七项目28个真实CLI观察完成，detected language为zh11/ko10/en7，未覆盖日语。按现有0.72支持阈值，新fusion保留5个完整区间和额外3个缺尾句首；3个旧逻辑会误作完整区间的观察已改为仅句首。无首高分误用在这28样本中计0，不伪报减少数。数据只证明本批词汇覆盖处理更可靠，不证明最终SRT精度或未见曲泛化；所有原始/重试选择和输入失败原因保留于general_edge_validation_v1。
+
+通用识别可靠性升级：两个 ASR 后端统一首尾覆盖语义，faster-whisper 两种执行路径分别置空未知端点；fusion 对新覆盖证据只在双端完整时比较整句区间，缺尾时仍保留同一个ASR family的独立句首，semantic QA可使用它而不伪造句尾。正在按冻结选择做跨项目实跑，不能将局部歌曲修复当作整体精度结论。
+
+六曲实际尝试完成：Training Season 51→49、舞娘38→40，另外四曲因跨歌曲边界或canonical流不完整保留基线。新单次升级入口实跑882→880且无新增人工。QA层错误串用已有双向red→green回归修复；新版实物仍12/12失败，因此不能据诊断修复宣称通过。
+
+当前新增按曲 editor-preservation 实际写回与单次升级接入。Training Season 已从 Max 51 cues 恢复到原编辑器 49 cues，同时校正 canonical 文字；39 个真实 canonical 行起点有索引，10 个内嵌起点保留未知。非目标歌曲文字/时间不变。实物 lineage 与 9 项定向测试通过。整体 semantic QA 仍未通过；其旧 projection/final 错误耦合意味着失败曲数不能直接当作新 final 实测错误曲数。未声明发布或跨语种封板。
+
 更新日期：2026-09-07
 主线算法版本：`4.0.0a19`
+
+直接续开发新增两项修复：editor semantic witness 采用 `editor-semantic-disjoint-onsets-1.0`，每个候选 span 只贡献一次起点；六项目重放消除 283 次重复起点复用，但这属于 QA 修复，不计为最终 SRT 精度提升。可选本地 `qwen3_asr` 已接入正式 ASR evidence CLI：仅对独立识别文本定位，缺失首尾分别保持未知，fusion 要求完整区间才比较两端。该入口仍是可选观察后端，尚非自动多模型救援，也未取得生产 timing authority。
+
+WALK120 已生成 Training Season 51 cue 的歌词时钟候选。六处 source/mix 波形观察支持现有映射，source ASR 显示 LRC 自身相对所供音频存在递增偏差。`source-lyric-clock-candidate-1.0` 将 LRC 时钟与声学映射分离。冻结后的额外九条观察中，七条可用于唯一词段 onset 代理比较，全部改善，中位差 3796→284ms、最大差 5765→853ms；两条未知仍保留在报告内。与 editor 的 43 条匹配中位差 3899→181ms、严重偏差 33→0。上述均非人工真值；候选仍 experimental，19 个边界为外推，无生产授权。重复 ASR 匹配已保留并列候选，不再伪报唯一边界。最新完整代码检查为隔离环境 1362 tests / 158.691s。
+
+最新第四份核对已处理：5/5 confirmed，安全写入四个边界，原子 QA 27 个已验证边界、4 条 interval 仍未验证。新增可重放的连续非词汇人声显示合并，实际显示 SRT 781→777 cues，保留全部歌词及原两端，不制造逐行声学边界。原子报告不改写，显示派生产物未声明发布通过。后续开发不等待用户常规试听。
+
+单次升级入口现自动完成 gap review 后的显示派生及迁移后验证，实际结果位于 `output/accuracy_upgrade_20260907/human_gap_ab_v5/h180/`，声学版与显示版分别与上次已验证结果字节一致。每小时续跑已按用户要求暂停，本次直接执行。独立 ASR 时间定位试验发现部分高分匹配只覆盖半句，未据此引入新的整句边界 authority。
+
+历史第三份 gap 核对为 2/5 confirmed，三条连续 Na 未确认；当时写回 1 start + 2 end，H180 QA 验证 26 个边界、4 条 interval 仍未验证。新版可选试听支持选点前/后单独播放、直接输入步长、预设步进和所有片段尽量扩到前后各 30 秒（遇原音频结尾裁止）；已修复键入文本被强制格式化及 44.1 kHz origin 导出问题。无需等待这些人工标注才能继续开发。
+
+新增近等速波形配准实验，已跑真实 K-pop 音频的已知变换和成品候选验证；默认关闭，仅提供独立候选，保留 feature-only path/timewarp/verdict，未提升为生产边界 authority。候选相关性不等于最终 SRT 精度。最新产物与适用边界见本轮实施记录。
+
+本轮最终复核补充：ASR 重叠窗口与窗口外文字支持已修复，新 evidence 使用 v2 执行策略。H180 局部确认值复用的结果不代表其他项目已通过；六个其他项目的现有 semantic QA 仍有覆盖或结构同步阻断，不能把“只剩 5 条 H180 gap”写成全项目结论。模型候选与真实精度的最新可宣称范围见本轮实施记录。
+
+2026-09-07 准确率升级本地交付：已增加配对诊断、分曲抽样及 `exact-human-outer-boundary-reuse-1.2`。后者复用已经确认的 exact audio/lyric 边界，H180 已自动写回 3 个 start、2 个 end，新增人工 0；不授予模型或未确认边界权限。按用户后续要求继续使用旧 24 个片段开发，暂不要求新增 60 个标注。旧 gold 不充当新盲测，局部确认值应用不解除整包 release 阻断，也不代表跨项目封板。新增 `v4_upgrade_subtitles.py` 单次执行入口，已完成 7 项目 / 6041 cues 实跑及 H180 internal→确认值→评估串联；联合 geometry 使用 active interval frontier，覆盖非相邻嵌套重叠；receipt 1.1 已接通逐边界 QA，23 个确认边界通过，仍有原 5 条 gap 阻断。Max Next B/C 泛化写回仍未达到证据条件，不能视为该交接全部完成。详见 [本轮实施记录](accuracy-upgrade-review-2026-09-07.md)。
 工程封板：`4.0.0a19 post-seal authority/provenance hardening`
 当前工程验收：`references/v4-postseal-hardening-verification-2026-09-06.json`；旧 `references/v4-max-engineering-seal-2026-09-06.json` 仅保留为 post-seal review 前的历史工程 seal。
 
@@ -334,3 +419,24 @@ prod-smart-v1.2.5-pro-v1.1.4-20260821
 ### 2026-09-03 封板维护结论
 
 本轮封板维护不改变算法阈值、timing/text authority 或 release authority。只补齐 `soundfile` direct dependency 与环境预检，把 TrackAssets、task manifest/QA JSON 与 task-local run config 统一到 shared atomic writer，把 canonical evaluation render 的 SRT/audit CSV 改为中断安全的原子落盘，并订正文档/注释漂移。既有 structural closeout 与消融结论继续有效；除非出现新的真实 production failure 或新的独立 structural truth，不重新打开已经否决的 heuristic 路线。
+# 2026-09-08 第五切片进展
+
+FLOAT source decode 已实现并完成整曲、完整 shadow SRT 和隔离全量验证，保持显式实验选项。中文完整上下文 SOFA 历史回归仍劣于 current final，不接生产。新的独立英文 HuBERTFA 上下文实验出现局部源端改善，正在同协议扩大未见歌曲复验；目前不能声明最终字幕准确率提高或封板。执行证据位于 `output/source_context_upgrade5_20260908/`，以唯一交接最新记录为准。
+
+### 2026-09-08 第十切片结论
+
+已完成完整链路归因并修复 editor 区域恢复的跨界检查范围与 canonical 字符坐标。真实 WALK 新 SRT 876 cues（旧882），相同语义边界55 start+55 end变化，816非目标cue保持；声学一致性显著改善，但该区域无人工gold，仍不封板。声学长窗口 oracle 与matched对照不支持作为默认升级。新MUSDB素材仅提供词起点gold；独立新歌36行packet只选3行，严格唯一上下文起点评估92/312词MAE539.966ms，不具备通用自动边界可靠性证明。
+
+最终产物为 `output/source_context_upgrade10_20260908/editor_smart_region_v2/4_70/`。初版editor_smart_region/4_70的字幕文字时间相同，但ownership元数据局部坐标错误，由v2取代；保留原证据，不手改历史artifact。所有本轮验收以delivery_report及最终验证收据为准。
+
+## 2026-09-08 第十一切片：普通多语种顺序消歧
+
+普通多语种source shadow v5已接通现有全最优顺序解析。Gee 84目标中候选6→7，真实新增1个终点；Whiplash 114目标中5条采用声学候选，其中1条来自顺序promotion。移除promotion的同候选真实优化/写出消融确认它仅增加1个终点。不能把end提前150/1085ms叫作误差降低；没有这两点人工gold，仍非封板版本。
+
+原剪映KPOP110/130/200的长谐音cue和空洞已逐文件hash统计，支持按区域多证据判断，反对整份依赖剪映或按语种硬编码可靠度。参见 output/source_context_upgrade11_20260908/research_and_plan.md。
+
+## 2026-09-08 第十二切片：逐段语种检测实测
+
+新增默认关闭的 source_asr.multilingual=true（language=null），原生逐段检测、source-observer-1.2 独立缓存；旧默认和1.0/1.1缓存身份不变。Whiplash同turbo/音频对照：auto 5候选/5采用，整曲en 0/0，逐段自动11/10；新模式相对输入写出8 start、10 end，文字不变。这是覆盖和写出变化，没有独立端点gold，不能声称准确率提升。
+
+Al James独立公开词起点诊断：严格唯一上下文匹配92/312，220保留null；新旧共同92起点全部一致，MAE539.966ms、p95 1543.249ms、max5880ms无变化。旧en与新auto+multilingual同时改变两个控制，不能称单因素；归因附加更正保留原报告和收据。无word-end真值、不是blind，不推广默认、不宣布封板。逐段模式开头误识别未恢复，并丢失auto的第36条候选（end55209退回56294ms）；相对auto共11条cue时间变化，不能称无损收益。三组固定对照完整记录于output/source_context_upgrade12_20260908/。

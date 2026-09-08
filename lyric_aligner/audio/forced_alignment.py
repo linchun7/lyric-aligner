@@ -13,6 +13,7 @@ scope passes human-gold calibration and independent evidence agrees.
 from __future__ import annotations
 
 import re
+import math
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable, Literal, Mapping, Sequence
@@ -37,6 +38,7 @@ NONLEXICAL_TOKENS = frozenset(
 
 PADDED_WINDOW_EDGE_GUARD_MS = 120
 PADDED_WINDOW_MIN_EDITOR_DIVERGENCE_MS = 500
+CONTEXTUAL_SEGMENT_INTERVAL_POLICY_ID = "forced-contextual-segment-interval-2026-09-08-v1"
 
 
 class ForcedAlignmentEvidenceError(ValueError):
@@ -304,6 +306,48 @@ def alignment_full_sequence_boundary_ms(
             raise ForcedAlignmentEvidenceError("internal lexical boundary index is invalid")
         local_seconds = lexical[right_token_index].start_s
     return int(round(offset_ms + local_seconds * 1000.0))
+
+
+def alignment_contextual_segment_interval_ms(
+    words: Iterable[Mapping[str, Any] | AlignmentWord],
+    *,
+    window_start_ms: int,
+    segment_tokens: Sequence[Sequence[str]],
+    target_segment_index: int,
+) -> tuple[int, int]:
+    """Extract an interior target's own onset/offset from a full alignment.
+
+    Both canonical context sides are required: a sequence-final phoneme can
+    inherit the decoder's final frame and hence follow the crop boundary.
+    An internal target offset is its last lexical word's offset, NOT the
+    following segment's onset (which can follow a long pause). This only
+    supplies an observation; it does not establish accuracy or authority.
+    """
+    if type(window_start_ms) is not int or window_start_ms < 0:
+        raise ForcedAlignmentEvidenceError("window_start_ms must be a nonnegative integer")
+    if type(target_segment_index) is not int or not 0 < target_segment_index < len(segment_tokens) - 1:
+        raise ForcedAlignmentEvidenceError("target requires left and right canonical context")
+    lexical = lexical_words(words)
+    # Reuse the existing exact full-sequence verification, including segment
+    # normalization and empty-segment rejection. Materialize a generator once.
+    if any(not math.isfinite(w.start_s) or not math.isfinite(w.end_s) for w in lexical):
+        raise ForcedAlignmentEvidenceError("contextual alignment contains nonfinite times")
+    start = alignment_full_sequence_boundary_ms(lexical, window_start_ms=window_start_ms,
+        segment_tokens=segment_tokens, boundary_kind="internal", boundary_index=target_segment_index)
+    lengths = [sum(bool(_normalize_token(t)) and _normalize_token(t) not in NONLEXICAL_TOKENS
+                   for t in tokens) for tokens in segment_tokens]
+    lower = sum(lengths[:target_segment_index])
+    upper = lower + lengths[target_segment_index]
+    relevant = lexical[lower - 1:upper + 1]
+    if any(not math.isfinite(w.start_s) or not math.isfinite(w.end_s) or w.start_s >= w.end_s
+           for w in relevant):
+        raise ForcedAlignmentEvidenceError("contextual endpoints require finite positive word durations")
+    if any(a.end_s > b.start_s for a, b in zip(relevant, relevant[1:])):
+        raise ForcedAlignmentEvidenceError("contextual lexical intervals overlap")
+    end = round(window_start_ms + lexical[upper - 1].end_s * 1000)
+    if start >= end:
+        raise ForcedAlignmentEvidenceError("contextual target interval collapses at millisecond resolution")
+    return start, end
 
 
 def alignment_internal_boundary_ms(

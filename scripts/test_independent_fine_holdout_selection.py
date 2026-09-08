@@ -52,7 +52,7 @@ class IndependentFineHoldoutSelectionTests(unittest.TestCase):
 
             calibration = {
                 "manifest_sha256": "c" * 64,
-                "records": [{"source_sha256": source_shas["A Song"]}],
+                "records": [{"source_sha256": source_shas["A Song"], "source_path": "private/source/A Song.flac"}],
             }
             with (
                 mock.patch.object(selector, "REPOSITORY_ROOT", root),
@@ -66,6 +66,22 @@ class IndependentFineHoldoutSelectionTests(unittest.TestCase):
                     frozen_policy_path=root / "policy.json",
                     pair_count=4,
                 )
+            # A re-encoded, numbered copy must exclude the same song by identity.
+            excluded = root / "01. b song.flac"
+            excluded.write_bytes(b"different encoding")
+            with (
+                mock.patch.object(selector, "REPOSITORY_ROOT", root),
+                mock.patch.object(selector, "load_manifest", return_value=calibration),
+                mock.patch.object(selector, "_load_hashed", return_value=self._policy()),
+            ):
+                excluded_artifact = selector.select_pairs(
+                    source_dir=source_dir, adjusted_dir=adjusted_dir,
+                    calibration_manifest_path=root / "calibration.json",
+                    frozen_policy_path=root / "policy.json", pair_count=4,
+                    exclude_source_paths=(excluded,),
+                )
+            self.assertEqual([r["title"] for r in excluded_artifact["records"]], ["C Song", "D Song", "E Song", "F Song"])
+            self.assertEqual(excluded_artifact["excluded_sources"][0]["source_sha256"], selector.sha256_file(excluded))
             self.assertEqual(artifact["partition"], "holdout")
             self.assertEqual([row["title"] for row in artifact["records"]], ["B Song", "C Song", "D Song", "E Song"])
             self.assertFalse(artifact["independent_fine_predictions_consulted"])

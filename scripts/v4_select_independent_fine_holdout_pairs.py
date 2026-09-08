@@ -62,6 +62,10 @@ def _repo_relative(path: Path) -> str:
     return resolved.relative_to(root).as_posix()
 
 
+def _song_identity(path: Path) -> str:
+    return re.sub(r"^\d+[.、\s]+", "", path.stem).casefold()
+
+
 def select_pairs(
     *,
     source_dir: Path,
@@ -69,6 +73,7 @@ def select_pairs(
     calibration_manifest_path: Path,
     frozen_policy_path: Path,
     pair_count: int,
+    exclude_source_paths: tuple[Path, ...] = (),
 ) -> dict[str, Any]:
     if pair_count < 4:
         raise IndependentFineHoldoutSelectionError("holdout pair_count must be at least four")
@@ -84,6 +89,14 @@ def select_pairs(
         raise IndependentFineHoldoutSelectionError("source/adjusted directory is missing")
 
     used_source_shas = {str(row["source_sha256"]) for row in calibration["records"]}
+    excluded_sources = []
+    used_titles = {_song_identity(Path(row["source_path"])) for row in calibration["records"]}
+    for path in exclude_source_paths:
+        digest = sha256_file(path)
+        identity = _song_identity(path)
+        used_source_shas.add(digest)
+        used_titles.add(identity)
+        excluded_sources.append({"source_path": _repo_relative(path), "source_sha256": digest, "song_identity": identity})
     source_files = {path.stem: path for path in source_dir.glob("*.flac")}
     source_titles = list(source_files)
     candidates: list[dict[str, Any]] = []
@@ -100,7 +113,7 @@ def select_pairs(
             raise IndependentFineHoldoutSelectionError(f"duplicate adjusted title: {title}")
         source = source_files[title]
         source_sha = sha256_file(source)
-        if source_sha in used_source_shas:
+        if source_sha in used_source_shas or _song_identity(source) in used_titles:
             continue
         if source_bpm <= 0 or target_bpm <= 0:
             raise IndependentFineHoldoutSelectionError("parsed BPM must be positive")
@@ -125,7 +138,7 @@ def select_pairs(
         "partition": "holdout",
         "selection_policy": (
             "unused_exact_flac_wav_title_pairs; exclude_Gee_and_names_containing_更; "
-            "exclude_calibration_source_sha; sort_title_codepoint; take_first_n"
+            "exclude_calibration_and_explicit_sources_by_sha_and_normalized_title; sort_title_codepoint; take_first_n"
         ),
         "requested_pair_count": pair_count,
         "selected_pair_count": len(selected),
@@ -133,6 +146,7 @@ def select_pairs(
         "calibration_manifest_sha256": calibration["manifest_sha256"],
         "frozen_policy_sha256": policy["artifact_sha256"],
         "records": selected,
+        "excluded_sources": excluded_sources,
         "independent_fine_predictions_consulted": False,
     }
     artifact["artifact_sha256"] = _sha_json(artifact)
@@ -145,6 +159,7 @@ def main() -> int:
     parser.add_argument("--adjusted-dir", type=Path, required=True)
     parser.add_argument("--calibration-manifest", type=Path, required=True)
     parser.add_argument("--frozen-policy", type=Path, required=True)
+    parser.add_argument("--exclude-source", type=Path, action="append", default=[])
     parser.add_argument("--pair-count", type=int, default=8)
     parser.add_argument("--out", type=Path, required=True)
     args = parser.parse_args()
@@ -156,6 +171,7 @@ def main() -> int:
         calibration_manifest_path=args.calibration_manifest,
         frozen_policy_path=args.frozen_policy,
         pair_count=args.pair_count,
+        exclude_source_paths=tuple(args.exclude_source),
     )
     args.out.parent.mkdir(parents=True, exist_ok=True)
     atomic_write_json(args.out, artifact)
