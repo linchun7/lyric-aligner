@@ -22,6 +22,7 @@ from lyric_aligner.text_repair import (
     CanonicalLine as RepairCanonicalLine,
     SubtitleCue,
     build_repair_plan_v2,
+    build_trusted_lexical_floor_report,
     parse_srt_text,
     render_repaired_srt,
 )
@@ -417,6 +418,13 @@ def smart_repair_srt_text_v11(
     replacements.update(ownership_replacements)
 
     text_repaired = render_repaired_srt(parts, cues, replacements)
+    _, final_text_cues = parse_srt_text(text_repaired)
+    text_lexical_floor = build_trusted_lexical_floor_report(
+        final_text_cues, text_decisions, repair_canonical,
+        require_complete_canonical_coverage=False,
+        policy_id="mapped-trusted-canonical-text-floor-1.0",
+        scope="mapped_auto_finalized_regions",
+    )
     materialized_text_change_count, semantic_text_change_count = (
         _text_materialization_counts(cues, text_repaired)
     )
@@ -480,7 +488,11 @@ def smart_repair_srt_text_v11(
         "text_mapped_review_count": mapped_text_reviews,
         "text_unmapped_review_count": unmapped_text_reviews,
         "text_review_reason_counts": _review_reason_counts(text_decisions),
-        "text_status": "review_required" if text_review_count else "ready",
+        "text_lexical_floor": text_lexical_floor,
+                "text_lexical_floor_status": text_lexical_floor["status"],
+        "text_trusted_region_lexical_error_count": text_lexical_floor["trusted_region_lexical_error_count"],
+        "text_trusted_region_word_boundary_error_count": text_lexical_floor["trusted_region_word_boundary_error_count"],
+        "text_status": "review_required" if (text_review_count or text_lexical_floor["status"] == "failed") else "ready",
         "timing_repair_count": sum(item.action == "repair" for item in timing),
         "timing_review_count": unresolved_count,
         "timing_review_with_proposal_count": timing_review_with_proposal,
@@ -488,10 +500,10 @@ def smart_repair_srt_text_v11(
         "timing_review_reason_counts": _review_reason_counts(timing),
         "timing_validated_preserve_count": sum(item.action == "preserve" for item in timing),
         "timing_status": "review_required" if unresolved_count else "ready",
-        "pro_text_escalation_required": bool(text_review_count),
+        "pro_text_escalation_required": bool(text_review_count or text_lexical_floor["status"] == "failed"),
         "pro_timing_escalation_required": bool(unresolved_count),
-        "pro_escalation_required": bool(unresolved_count or text_review_count),
-        "status": "review_required" if (unresolved_count or text_review_count) else "ready",
+        "pro_escalation_required": bool(unresolved_count or text_review_count or text_lexical_floor["status"] == "failed"),
+        "status": "review_required" if (unresolved_count or text_review_count or text_lexical_floor["status"] == "failed") else "ready",
         "models": _model_payload(models, rate_prior_metadata_by_source, bpm_compatibility),
         "timing_decisions": [asdict(item) for item in timing],
         "text_decisions": text_payload,

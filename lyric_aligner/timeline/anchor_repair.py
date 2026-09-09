@@ -214,13 +214,17 @@ def _decision_grade(
     action = str(decision.get("action", "review"))
     if action == "review":
         return "C"
-    exact = cue.normalized == occurrence.normalized
+    presentation_identity = (
+        _normalize_for_match(cue.text) == _normalize_for_match(occurrence.text)
+    )
+    # Grade from the original editor cue.  A presentation-only replace is safe
+    # identity evidence, but repaired output must never bootstrap its own A grade.
     if (
-        exact
+        presentation_identity
         and score >= 0.995
         and canonical_count == 1
         and cue_count == 1
-        and action == "unchanged"
+        and action in {"unchanged", "replace"}
     ):
         return "A"
     if score >= 0.92 and canonical_count == 1 and action in {"unchanged", "replace"}:

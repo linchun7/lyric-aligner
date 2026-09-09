@@ -579,6 +579,85 @@ def _content_characters(value: str) -> list[str]:
     return [char for char in value if not _is_layout_char(char)]
 
 
+def _is_latin_word_char(char: str) -> bool:
+    return char.isascii() and char.isalnum()
+
+
+def _latin_word_boundary_signature(text: str) -> set[int]:
+    boundaries: set[int] = set()
+    content_index = 0
+    previous_content: str | None = None
+    pending_whitespace = False
+    for char in text:
+        if _is_layout_char(char):
+            if char.isspace() and previous_content is not None:
+                pending_whitespace = True
+            continue
+        if (
+            pending_whitespace
+            and previous_content is not None
+            and _is_latin_word_char(previous_content)
+            and _is_latin_word_char(char)
+        ):
+            boundaries.add(content_index)
+        pending_whitespace = False
+        previous_content = char
+        content_index += 1
+    return boundaries
+
+
+def _latin_word_boundaries_across_cues(texts: Sequence[str]) -> set[int]:
+    boundaries: set[int] = set()
+    offset = 0
+    previous_last: str | None = None
+    for text in texts:
+        content = _content_characters(text)
+        boundaries.update(offset + boundary for boundary in _latin_word_boundary_signature(text))
+        if (
+            previous_last is not None
+            and content
+            and _is_latin_word_char(previous_last)
+            and _is_latin_word_char(content[0])
+        ):
+            boundaries.add(offset)
+        if content:
+            previous_last = content[-1]
+            offset += len(content)
+    return boundaries
+
+
+
+def build_trusted_lexical_floor_report(
+    output_cues: Sequence[SubtitleCue],
+    decisions: Sequence[MatchDecision],
+    canonical: Sequence[CanonicalLine],
+    *,
+    unresolved_canonical_count: int = 0,
+    require_complete_canonical_coverage: bool = False,
+    policy_id: str = "mapped-trusted-canonical-text-floor-1.0",
+    scope: str = "mapped_auto_finalized_regions",
+    timeline_mutation_count: int = 0,
+) -> dict[str, object]:
+    """Audit mapped finalized regions; raw canonical coverage is optional."""
+    by_ordinal = {cue.ordinal: cue for cue in output_cues}
+    groups = {}
+    for item in decisions:
+        if item.action != "review" and item.cue_span is not None and item.canonical_span is not None:
+            groups.setdefault((item.cue_span, item.canonical_span), []).append(item)
+    lexical = boundary = 0
+    diagnostics = []
+    for cue_span, canonical_span in groups:
+        expected_ordinals = list(range(cue_span[0], cue_span[1]))
+        missing_ordinals = [i for i in expected_ordinals if i not in by_ordinal]
+        actual = [by_ordinal[i].text for i in expected_ordinals if i in by_ordinal]
+        expected = " ".join(line.text for line in canonical[canonical_span[0]:canonical_span[1]])
+        ce = bool(missing_ordinals) or _normalize_for_match("".join(actual)) != _normalize_for_match(expected)
+        we = bool(missing_ordinals) or _latin_word_boundaries_across_cues(actual) != _latin_word_boundary_signature(expected)
+        lexical += int(ce); boundary += int(we)
+        if ce or we: diagnostics.append({"cue_span": list(cue_span), "canonical_span": list(canonical_span), "lexical_error": ce, "word_boundary_error": we})
+    unresolved = sum(item.action == "review" for item in decisions)
+    status = "failed" if lexical or boundary else ("review_required" if unresolved or (require_complete_canonical_coverage and unresolved_canonical_count) else "complete")
+    return {"policy_id": policy_id, "scope": scope, "status": status, "trusted_region_count": len(groups), "trusted_region_lexical_error_count": lexical, "trusted_region_word_boundary_error_count": boundary, "unresolved_cue_count": unresolved, "unresolved_canonical_count": int(unresolved_canonical_count), "complete_canonical_coverage_required": bool(require_complete_canonical_coverage), "timeline_mutation_count": int(timeline_mutation_count), "diagnostics": diagnostics, "meaning": "complete means mapped auto-finalized regions have correct characters and Latin word boundaries; raw canonical coverage is included only when explicitly required by the caller"}
 def _edit_script(
     source: Sequence[str],
     target: Sequence[str],
@@ -727,6 +806,42 @@ def _render_preserving_layout(
     return "".join(output), tuple(operations)
 
 
+def _reflow_latin_horizontal_whitespace(
+    skeleton: str,
+    target_content: str,
+    expected_boundaries: set[int],
+) -> tuple[str, bool]:
+    content = _content_characters(skeleton)
+    target = list(target_content)
+    if content != target:
+        return skeleton, False
+    slots: list[list[str]] = [[] for _ in range(len(content) + 1)]
+    content_index = 0
+    for char in skeleton:
+        if _is_layout_char(char):
+            slots[content_index].append(char)
+        else:
+            content_index += 1
+    safe = True
+    for index in range(1, len(content)):
+        left, right = content[index - 1], content[index]
+        if not (_is_latin_word_char(left) and _is_latin_word_char(right)):
+            continue
+        slot = slots[index]
+        if any(char in "\r\n" for char in slot):
+            if index not in expected_boundaries:
+                safe = False
+            continue
+        non_horizontal = [char for char in slot if char not in " \t"]
+        slot[:] = non_horizontal + ([" "] if index in expected_boundaries else [])
+    output: list[str] = []
+    for index, char in enumerate(content):
+        output.extend(slots[index])
+        output.append(char)
+    output.extend(slots[-1])
+    return "".join(output), safe
+
+
 def _safe_auto_match(
     source: str,
     target: str,
@@ -833,6 +948,9 @@ def build_repair_plan_v2(
         source_normalized = "".join(cue.normalized for cue in cue_group)
         target_normalized = "".join(line.normalized for line in line_group)
         target_text = "".join(line.text for line in line_group)
+        target_layout_text = " ".join(line.text for line in line_group)
+        global_expected = _latin_word_boundary_signature(target_layout_text)
+        global_content = _content_characters(target_layout_text)
 
         reason = ""
         if not _safe_auto_match(
@@ -848,6 +966,7 @@ def build_repair_plan_v2(
             reason = "ambiguous_nearby_canonical_match"
 
         targets: list[str] = []
+        rendered_candidates: list[tuple[str, tuple[str, ...]]] = []
         if not reason:
             targets, insertion_reason = _assign_targets(
                 [cue.text for cue in cue_group],
@@ -857,6 +976,40 @@ def build_repair_plan_v2(
                 reason = insertion_reason
             elif len(cue_group) > 1 and any(not target for target in targets):
                 reason = "segmentation_would_empty_existing_cue"
+
+        if not reason:
+            cue_offsets: list[int] = []
+            offset = 0
+            for target in targets:
+                cue_offsets.append(offset)
+                offset += len(target)
+            for boundary in cue_offsets[1:]:
+                if (
+                    0 < boundary < len(global_content)
+                    and _is_latin_word_char(global_content[boundary - 1])
+                    and _is_latin_word_char(global_content[boundary])
+                    and boundary not in global_expected
+                ):
+                    reason = "cue_boundary_splits_canonical_latin_word"
+                    break
+
+        if not reason:
+            target_offset = 0
+            for cue, target in zip(cue_group, targets):
+                local_expected = {
+                    boundary - target_offset
+                    for boundary in global_expected
+                    if target_offset < boundary < target_offset + len(target)
+                }
+                skeleton, edit_operations = _render_preserving_layout(cue.text, target)
+                output_text, safe = _reflow_latin_horizontal_whitespace(
+                    skeleton, target, local_expected
+                )
+                if not safe or _latin_word_boundary_signature(output_text) != local_expected:
+                    reason = "unsafe_latin_layout_boundary"
+                    break
+                rendered_candidates.append((output_text, edit_operations))
+                target_offset += len(target)
 
         if reason:
             for cue in cue_group:
@@ -876,11 +1029,8 @@ def build_repair_plan_v2(
                 )
             continue
 
-        for cue, target in zip(cue_group, targets):
-            output_text, edit_operations = _render_preserving_layout(
-                cue.text,
-                target,
-            )
+        for cue, target, candidate in zip(cue_group, targets, rendered_candidates):
+            output_text, edit_operations = candidate
             if output_text == cue.text:
                 action = "unchanged"
                 decision_reason = "canonical_content_matches_source_segmentation"
@@ -992,53 +1142,30 @@ def repair_srt_text(
             if operation in edit_counts:
                 edit_counts[operation] += 1
 
-    resolved_groups: dict[tuple[tuple[int, int], tuple[int, int]], list[MatchDecision]] = {}
-    for item in decisions:
-        if item.action == "review" or item.cue_span is None or item.canonical_span is None:
-            continue
-        key = (item.cue_span, item.canonical_span)
-        resolved_groups.setdefault(key, []).append(item)
-    trusted_region_lexical_error_count = 0
-    for group in resolved_groups.values():
-        ordered = sorted(group, key=lambda item: item.cue_ordinal)
-        output_stream = _normalize_for_match("".join(item.output_text for item in ordered))
-        canonical_stream = _normalize_for_match(ordered[0].canonical_text)
-        if output_stream != canonical_stream:
-            trusted_region_lexical_error_count += 1
-    lexical_floor_status = (
-        "failed"
-        if trusted_region_lexical_error_count
-        else (
-            "complete"
-            if cue_review_count == 0 and coverage_warning_count == 0
-            else "review_required"
-        )
+    lexical_floor = build_trusted_lexical_floor_report(
+        output_cues, decisions, canonical,
+        unresolved_canonical_count=len(unmatched_canonical),
+        require_complete_canonical_coverage=True,
+        policy_id="trusted-canonical-text-floor-1.1",
+        scope="full_text_only_canonical_coverage",
     )
-
     report = {
         "schema_version": "2.2",
         "mode": "text_only_preserve_timeline",
-        "status": "ready" if review_count == 0 else "review_required",
+        "status": (
+            "review_required"
+            if review_count or lexical_floor["status"] == "failed"
+            else "ready"
+        ),
         "coverage_status": "warning" if coverage_warning_count else "complete",
         "lexical_floor": {
-            "policy_id": "trusted-canonical-text-floor-1.0",
-            "status": lexical_floor_status,
+            **lexical_floor,
             "priority": [
                 "content_correctness",
                 "structure_ownership_correctness",
                 "timing_non_regression",
                 "timing_improvement",
             ],
-            "trusted_region_count": len(resolved_groups),
-            "trusted_region_lexical_error_count": trusted_region_lexical_error_count,
-            "unresolved_cue_count": cue_review_count,
-            "unresolved_canonical_count": coverage_warning_count,
-            "timeline_mutation_count": 0,
-            "meaning": (
-                "complete means every auto-finalized canonical region is lexically exact, "
-                "there are no unresolved cue mappings or unmatched canonical occurrences, "
-                "and the source SRT timeline signature is unchanged"
-            ),
         },
         "cue_count": len(cues),
         "canonical_line_count": len(canonical),
@@ -1051,9 +1178,9 @@ def repair_srt_text(
         "timeline_unchanged": True,
         "cue_count_unchanged": True,
         "formatting_policy": (
-            "preserve_source_timing_numbering_punctuation_spacing_and_line_breaks;"
-            "allow_safe_content_insert_delete_replace_and_bounded_segmentation_spans;"
-            "fail_closed_on_ambiguous_cue_or_whitespace_boundary_insertions"
+            "preserve_timing_numbering_punctuation_and_non_latin_layout;"
+            "normalize_horizontal_whitespace_inside_safe_owned_latin_spans;"
+            "fail_closed_on_mid_word_newline_or_cue_split"
         ),
         "span_match_count": sum(op.kind == "match" for op in operations),
         "segmentation_span_count": sum(
@@ -1094,7 +1221,6 @@ def repair_srt_text(
         ],
     }
     return rendered, report
-
 
 def write_repair_outputs(
     source_srt: Path,

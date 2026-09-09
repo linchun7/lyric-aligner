@@ -606,6 +606,10 @@ Max #68/#70 与后续 reconciliation evaluation / CLI safety / release consisten
 ### 2026-09-07 自动续作复核修正
 
 修复人审复用到 QA 的断链：新增 receipt 1.1 fresh replay 和逐边界 QA scope。修复独立评估缺少 final task identity、最终 SRT 仅比较可重算 hash、QA 输出可能覆盖 receipt、搬迁后 review 路径失效，以及 DP 漏检非相邻嵌套重叠。policy 1.2 保留活动区间 frontier。真实最终 QA 识别 23 个确认边界，清除先前误增的 4 条风险，原 5 条未授权 gap 继续阻断。SOFA/HuBERT 对 gap 重新实测仍未形成完整可授权区间，不将失败候选强行转为生产结果。
+# 2026-09-09 欧美140 Latin lexical floor 1.1
+
+真实英文140运行暴露字符归一化相同仍可能 false-ready。增加 Latin word-boundary floor，mid-word newline/cue split fail closed；Smart 使用 mapped trusted-region，不要求 raw LRC 全覆盖。30-screening 集合 old30->new0（screening，不是人工gold）；unresolved 196->176，A 9->91，新增82 A均为 original editor raw normalized exact+unique 的 presentation-only replace，raw lexical mismatch A=0；timing mutation/repair=0；无human timing gold，不宣称 timing accuracy 提升；当前 review_required，Pro未重跑。
+
 # 2026-09-08 FLOAT 源音观察实验
 
 新增 opt-in FLOAT ASR decode，保持默认身份兼容；真实整曲时钟一致，减少中间整数饱和失真，尚未证明识别准确率收益。完成 781 cue shadow 回读、15 项含真实音频的针对性测试、隔离 Python 3.12 全量 1543 项（4 项可选音频测试跳过，已在音频环境单独通过）、独立 cache 复核。证据在 `output/source_context_upgrade5_20260908/float_implementation_report.md`。

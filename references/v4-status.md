@@ -462,6 +462,10 @@ FLOAT source decode 已实现并完成整曲、完整 shadow SRT 和隔离全量
 Al James独立公开词起点诊断：严格唯一上下文匹配92/312，220保留null；新旧共同92起点全部一致，MAE539.966ms、p95 1543.249ms、max5880ms无变化。旧en与新auto+multilingual同时改变两个控制，不能称单因素；归因附加更正保留原报告和收据。无word-end真值、不是blind，不推广默认、不宣布封板。逐段模式开头误识别未恢复，并丢失auto的第36条候选（end55209退回56294ms）；相对auto共11条cue时间变化，不能称无损收益。三组固定对照完整记录于output/source_context_upgrade12_20260908/。
 
 
+## 2026-09-09 欧美140 lexical floor 1.1 收口
+
+真实英文140运行暴露 Latin horizontal whitespace false-ready；字符归一化相同不足以证明歌词正确。floor 增加 Latin word-boundary，mid-word newline/cue split fail closed；Smart 使用 mapped trusted-region，不要求 raw LRC 全覆盖。冻结30-screening集合 old30->new0（screening，不是人工gold）；Smart unresolved 196->176，A 9->91，新增82 A均来自 original editor raw normalized exact+unique 的 presentation-only replace，raw lexical mismatch A=0，repaired output 不得自证A。timing mutation/repair=0；无human timing gold，不宣称 timing accuracy 提升；当前140 review_required，Pro未重跑。
+
 ## 2026-09-09 editor-first batch + hybrid production（当前）
 
 当前默认升级方向已从“发现 editor 风险后整体重建”收敛为**局部 editor timing/topology 保真 + canonical 结构完整性**。`subtitle-upgrade-job-1.0` 的 `editor_preservation.scope=all_occurrences` 会在整份任务内逐 occurrence 重复寻找 `exact canonical stream + unique occurrence + compatible neighbors` 的完整 editor 区域，直到稳定；无可行区域保持原结果。选择不读取人工 gold、不按语言/曲风硬编码可靠度，也不赋予模型 timing authority。crossfade/overlap 导致同 occurrence 在全局 audit 中非连续时，whole-occurrence 模式仍拒绝，但 auto region 可处理内部连续安全区；纯符号/音乐标记等 nonlexical editor cue 不参与文字匹配并作为 retained content 原样保留。

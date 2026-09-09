@@ -7,6 +7,7 @@ from lyric_aligner.text_repair import (
     CanonicalLine,
     _normalize_for_match,
     build_repair_plan_v2,
+    build_trusted_lexical_floor_report,
     parse_srt_text,
     repair_srt_text,
 )
@@ -20,6 +21,28 @@ def canonical(*lines: str) -> list[CanonicalLine]:
 
 
 class LexicalFloorTests(unittest.TestCase):
+    def test_helper_mapped_scope_does_not_require_raw_coverage(self):
+        _, cues = parse_srt_text("1\n00:00:01,000 --> 00:00:02,000\nHello\n")
+        _, decisions, _ = build_repair_plan_v2(cues, canonical("Hello", "World"))
+        report = build_trusted_lexical_floor_report(cues, decisions, canonical("Hello", "World"), unresolved_canonical_count=1)
+        self.assertEqual(report["status"], "complete")
+        self.assertFalse(report["complete_canonical_coverage_required"])
+
+    def test_helper_can_require_raw_coverage(self):
+        _, cues = parse_srt_text("1\n00:00:01,000 --> 00:00:02,000\nHello\n")
+        _, decisions, _ = build_repair_plan_v2(cues, canonical("Hello", "World"))
+        report = build_trusted_lexical_floor_report(cues, decisions, canonical("Hello", "World"), unresolved_canonical_count=1, require_complete_canonical_coverage=True)
+        self.assertEqual(report["status"], "review_required")
+
+    def test_helper_detects_midword_split_and_cjk_is_not_false_positive(self):
+        _, split_cues = parse_srt_text("1\n00:00:01,000 --> 00:00:01,500\nIntoxi\n\n2\n00:00:01,500 --> 00:00:02,000\ncate\n")
+        _, split_decisions, _ = build_repair_plan_v2(split_cues, canonical("Intoxicate"))
+        split = build_trusted_lexical_floor_report(split_cues, split_decisions, canonical("Intoxicate"))
+        self.assertEqual(split["status"], "review_required")
+        _, cjk_cues = parse_srt_text("1\n00:00:01,000 --> 00:00:02,000\n我爱你\n")
+        _, cjk_decisions, _ = build_repair_plan_v2(cjk_cues, canonical("我爱你"))
+        cjk = build_trusted_lexical_floor_report(cjk_cues, cjk_decisions, canonical("我爱你"))
+        self.assertEqual(cjk["trusted_region_word_boundary_error_count"], 0)
     def test_safe_text_fix_reaches_complete_floor_without_timing_mutation(self):
         source = "1\n00:00:01,000 --> 00:00:02,000\n我真的爱\n"
         output, report = repair_srt_text(source, canonical("我真的爱你"))
@@ -54,6 +77,36 @@ class LexicalFloorTests(unittest.TestCase):
         self.assertEqual(request["proposed_canonical_lines"], ["소녀시대"])
         self.assertEqual(request["cue_ordinals"], [0])
         self.assertNotIn("timing", request)
+
+    def test_latin_spacing_repro(self):
+        source = (
+            "1\n00:00:01,000 --> 00:00:02,000\n"
+            "the team will paint the ground\n"
+        )
+        output, report = repair_srt_text(source, canonical("The team will paint it"))
+        self.assertEqual(output.splitlines()[-1], "The team will paint it")
+        self.assertEqual(report["lexical_floor"]["status"], "complete")
+
+    def test_internal_newline_mid_word_is_reviewed(self):
+        source = "1\n00:00:01,000 --> 00:00:02,000\nIntoxi\ncate\n"
+        output, report = repair_srt_text(source, canonical("Intoxicate"))
+        self.assertEqual(output, source)
+        self.assertEqual(report["status"], "review_required")
+
+    def test_expected_newline_boundary_is_safe(self):
+        source = "1\n00:00:01,000 --> 00:00:02,000\nHello,\nworld\n"
+        output, report = repair_srt_text(source, canonical("Hello world"))
+        self.assertEqual(output.splitlines()[-2:], ["Hello,", "world"])
+        self.assertEqual(report["lexical_floor"]["status"], "complete")
+
+    def test_multi_cue_mid_word_is_reviewed(self):
+        source = (
+            "1\n00:00:01,000 --> 00:00:01,500\nIntoxi\n\n"
+            "2\n00:00:01,500 --> 00:00:02,000\ncate\n"
+        )
+        output, report = repair_srt_text(source, canonical("Intoxicate"))
+        self.assertEqual(output, source)
+        self.assertEqual(report["status"], "review_required")
 
 
 if __name__ == "__main__":

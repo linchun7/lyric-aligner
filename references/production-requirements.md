@@ -1,5 +1,7 @@
 # Lyric Aligner Production Requirements
 
+2026-09-09 lexical floor note: English production verifies Latin word boundaries in addition to normalized characters. Smart audits mapped trusted regions and does not require raw LRC coverage; mid-word newline/cue splits fail closed. oumei140 remains review_required, with no human timing gold or timing-accuracy claim.
+
 Status: normative production baseline
 
 Before using this document for architecture, production, review, or delegation decisions, read `references/project-principles.md`. That file defines the long-term ChatGPT/Codex collaboration model and the intended Standard/Smart/Pro/Max product roles.

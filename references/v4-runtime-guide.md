@@ -465,6 +465,8 @@ python scripts/v4_apply_display_policy.py `
 
 默认 fail-closed 条件包括：每首高置信语义锚点覆盖不足；median absolute onset error >1500ms；或 >2500ms 的大误差比例 >25%。该 QA 绑定 source SRT、final mix audio、song list、run 与 exact final SRT SHA-256。a17 起 `v4_validate_release.py` 必须同时收到 `--run` 和 `--semantic-sync-qa`，且 projection/final 两层都 `passed=true`；缺失、失败或 hash stale 均不得 ready。该 gate 用于阻止“artifact lineage/geometry 全部合法，但 canonical timebase 实际与声音错位”的 false-ready。
 
+Smart text acceptance uses the mapped trusted-region lexical floor, including Latin word boundaries; raw canonical coverage is not required by Smart.
+
 ### Final candidate audit（推荐，release 前最后一层只读 QA）
 
 `scripts/v4_audit_final.py` 是 diagnostic-only 检查，不生成 production artifact，也不授予 timing/text/segmentation/release authority。它要求 final SRT 与 audit CSV exact binding、QA 已 publish-ready，并从同 task 的 run/timeline 读取 authoritative occurrence windows、`content_end` 与已确认 overlap regions；`--out` 不能覆盖 task/direct/run 声明的任何输入路径。
