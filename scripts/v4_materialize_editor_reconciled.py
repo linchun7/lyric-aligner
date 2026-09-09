@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
-"""Materialize a production v4 render after auditable editor-topology reconciliation.
+"""Materialize a hybrid production render after editor-topology reconciliation.
 
-This first production materializer intentionally supports one narrow rebuttal path:
-when the evaluation proves that at least one fully timed canonical cue has no
-possible temporal ownership in the immutable editor SRT topology, preserving that
-topology would necessarily omit canonical lyric truth.  In that case the already
-reviewed canonical evaluation segmentation may become production segmentation,
-provided every canonical audit row carries a supported explicit timing format.
+A topology rebuttal proves that the immutable editor cue set cannot express every
+canonical lyric occurrence, but it does *not* prove that canonical/LRC timing is
+better everywhere else.  Production therefore requires an independently
+materialized editor-preservation batch derived from the exact canonical evaluation.
+The hybrid keeps every canonical identity while restoring only exact, unique and
+neighbor-compatible editor timing regions; a bare global canonical copy is no
+longer production-authoritative.
 """
 
 from __future__ import annotations
@@ -27,6 +28,7 @@ from lyric_aligner import __version__
 from lyric_aligner.contracts.artifacts import (
     atomic_write_json,
     build_artifact_manifest,
+    sha256_file,
     validate_artifact_output,
     validate_upstream_artifact,
 )
@@ -34,6 +36,7 @@ from lyric_aligner.io.path_safety import validate_separate_artifact_paths
 from lyric_aligner.io.task_path_safety import protected_task_input_paths
 from lyric_aligner.qa.final_integrity import FinalIntegrityError, validate_srt_report_binding
 from lyric_aligner.srt import parse_srt_strict
+from lyric_aligner.text_repair import _normalize_for_match
 from task_contract import load_task_manifest, verify_manifest_inputs
 
 
@@ -41,8 +44,12 @@ _SOURCE_SEGMENTATION_AUTHORITY = "canonical_line_evaluation_only"
 _RECONCILIATION_SEGMENTATION_AUTHORITY = "editor_reconciliation_evaluation_only"
 _PRODUCTION_SEGMENTATION_AUTHORITY = "editor_reconciled"
 _SOURCE_RELEASE_BLOCKED_REASON = "editor_cue_reconciliation_required"
-_REBUTTAL_MODE = "canonical_timed_segmentation_after_editor_topology_rebuttal"
+_REBUTTAL_MODE = "hybrid_editor_preservation_after_editor_topology_rebuttal"
 _REBUTTAL_REASON = "canonical_timed_cue_without_editor_temporal_overlap"
+_PRESERVATION_STAGE = "editor_preservation_batch"
+_PRESERVATION_SCHEMA_VERSION = "editor-preservation-batch-materialization-1.0"
+_PRESERVATION_POLICY_ID = "immutable-editor-all-occurrences-batch-1.0"
+_PRESERVATION_TIMING_BASIS = "immutable_editor_only_where_exact_unique_compatible_else_unchanged"
 _SUPPORTED_TIMING_FORMATS = frozenset({"line_lrc", "enhanced_lrc", "qrc_word_timing"})
 
 
@@ -236,6 +243,286 @@ def _validate_reconciliation(
     return result, witnesses
 
 
+def _read_csv_rows(path: Path, *, label: str) -> list[dict[str, str]]:
+    with path.open(encoding="utf-8-sig", newline="") as handle:
+        rows = list(csv.DictReader(handle))
+    if not rows:
+        raise ValueError(f"{label} contains no rows")
+    return rows
+
+
+def _canonical_line_claims(row: dict[str, str], *, position: int) -> tuple[str, list[int]]:
+    occurrence_id = str(row.get("occurrence_id") or "").strip()
+    if not occurrence_id:
+        raise ValueError(f"preserved audit row {position} is missing occurrence identity")
+
+    single: int | None = None
+    single_raw = row.get("canonical_line_index")
+    if single_raw not in (None, ""):
+        try:
+            single = int(single_raw)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                f"preserved audit row {position} has invalid canonical_line_index"
+            ) from exc
+        if single < 0:
+            raise ValueError(f"preserved audit row {position} has negative canonical_line_index")
+
+    multiple: list[int] | None = None
+    multiple_raw = row.get("canonical_line_indices")
+    if multiple_raw not in (None, ""):
+        try:
+            parsed = json.loads(multiple_raw)
+        except (TypeError, ValueError, json.JSONDecodeError) as exc:
+            raise ValueError(
+                f"preserved audit row {position} has invalid canonical_line_indices"
+            ) from exc
+        if not isinstance(parsed, list) or not parsed:
+            raise ValueError(
+                f"preserved audit row {position} has invalid canonical_line_indices"
+            )
+        try:
+            multiple = [int(value) for value in parsed]
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                f"preserved audit row {position} has invalid canonical_line_indices"
+            ) from exc
+        if (
+            any(value < 0 for value in multiple)
+            or len(set(multiple)) != len(multiple)
+            or multiple != sorted(multiple)
+        ):
+            raise ValueError(
+                f"preserved audit row {position} has invalid canonical_line_indices"
+            )
+        if single is not None and single not in multiple:
+            raise ValueError(
+                f"preserved audit row {position} canonical ownership fields disagree"
+            )
+
+    claims = list(multiple if multiple is not None else (() if single is None else (single,)))
+    if not claims:
+        raise ValueError(f"preserved audit row {position} has no canonical ownership")
+    return occurrence_id, claims
+
+
+def _canonical_layout(report: Path):
+    """Build canonical text/character layout for split- and merge-safe validation."""
+    rows = _read_csv_rows(report, label="canonical evaluation audit")
+    identities: dict[tuple[str, int], str] = {}
+    by_occurrence: dict[str, list[tuple[int, str]]] = {}
+    for position, row in enumerate(rows, start=1):
+        occurrence_id = str(row.get("occurrence_id") or "").strip()
+        if not occurrence_id:
+            raise ValueError(f"canonical evaluation row {position} is missing occurrence identity")
+        try:
+            line_index = int(row["canonical_line_index"])
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ValueError(
+                f"canonical evaluation row {position} has invalid canonical_line_index"
+            ) from exc
+        if line_index < 0:
+            raise ValueError(
+                f"canonical evaluation row {position} has negative canonical_line_index"
+            )
+        key = (occurrence_id, line_index)
+        if key in identities:
+            raise ValueError("canonical evaluation contains duplicate canonical identity")
+        text = str(row.get("text") or "")
+        normalized = _normalize_for_match(text)
+        if not normalized:
+            raise ValueError(f"canonical evaluation row {position} has blank canonical text")
+        identities[key] = text
+        by_occurrence.setdefault(occurrence_id, []).append((line_index, normalized))
+
+    streams: dict[str, str] = {}
+    line_spans: dict[tuple[str, int], tuple[int, int]] = {}
+    ordered_indices: dict[str, list[int]] = {}
+    for occurrence_id, values in by_occurrence.items():
+        values.sort(key=lambda item: item[0])
+        cursor = 0
+        parts: list[str] = []
+        ordered_indices[occurrence_id] = []
+        for line_index, normalized in values:
+            start = cursor
+            cursor += len(normalized)
+            line_spans[(occurrence_id, line_index)] = (start, cursor)
+            ordered_indices[occurrence_id].append(line_index)
+            parts.append(normalized)
+        streams[occurrence_id] = "".join(parts)
+    return identities, streams, line_spans, ordered_indices
+
+
+def _validate_preservation(
+    *,
+    fingerprint: str,
+    evaluation_srt: Path,
+    evaluation_report: Path,
+    preserved_srt: Path,
+    preserved_report: Path,
+    preservation_report_path: Path,
+    preservation_artifact: dict,
+) -> tuple[str, dict, int]:
+    _validate_artifact(
+        preservation_artifact,
+        fingerprint=fingerprint,
+        stage=_PRESERVATION_STAGE,
+        outputs=(
+            ("final_srt", preserved_srt),
+            ("audit_csv", preserved_report),
+            ("preservation_report", preservation_report_path),
+        ),
+    )
+    config = preservation_artifact.get("normalized_config")
+    if not isinstance(config, dict):
+        raise ValueError("editor preservation artifact has invalid normalized_config")
+    if str(config.get("policy_id") or "") != _PRESERVATION_POLICY_ID:
+        raise ValueError("editor preservation artifact policy mismatch")
+
+    input_hashes = config.get("input_sha256")
+    if not isinstance(input_hashes, dict):
+        raise ValueError("editor preservation artifact has invalid input hashes")
+    expected_input_hashes = {
+        str(evaluation_srt.resolve()): sha256_file(evaluation_srt),
+        str(evaluation_report.resolve()): sha256_file(evaluation_report),
+    }
+    for path, digest in expected_input_hashes.items():
+        if str(input_hashes.get(path) or "") != digest:
+            raise ValueError("editor preservation is not bound to the exact canonical evaluation")
+
+    preservation = _load_json(preservation_report_path)
+    if str(preservation.get("schema_version") or "") != _PRESERVATION_SCHEMA_VERSION:
+        raise ValueError("editor preservation report schema mismatch")
+    if str(preservation.get("policy_id") or "") != _PRESERVATION_POLICY_ID:
+        raise ValueError("editor preservation report policy mismatch")
+    if preservation.get("task_fingerprint_sha256") != fingerprint:
+        raise ValueError("editor preservation report belongs to another task")
+    if preservation.get("publish_ready") is not False:
+        raise ValueError("editor preservation input must remain publish_ready=false")
+    if preservation.get("model_timing_authority_used") is not False:
+        raise ValueError("editor preservation must not use model timing authority")
+    if str(preservation.get("timing_basis") or "") != _PRESERVATION_TIMING_BASIS:
+        raise ValueError("editor preservation timing basis mismatch")
+
+    expected_hash_fields = {
+        "input_srt_sha256": expected_input_hashes[str(evaluation_srt.resolve())],
+        "input_audit_sha256": expected_input_hashes[str(evaluation_report.resolve())],
+        "final_srt_sha256": sha256_file(preserved_srt),
+        "final_audit_sha256": sha256_file(preserved_report),
+    }
+    for field, digest in expected_hash_fields.items():
+        if str(preservation.get(field) or "") != digest:
+            raise ValueError(f"editor preservation {field} mismatch")
+
+    integer_fields = (
+        "stage_count",
+        "restore_stage_count",
+        "occurrences_with_restore_count",
+        "restored_editor_cues_total",
+    )
+    values = {field: preservation.get(field) for field in integer_fields}
+    if any(type(value) is not int or value < 0 for value in values.values()):
+        raise ValueError("editor preservation report has invalid restore counts")
+    if (
+        values["restore_stage_count"] < 1
+        or values["occurrences_with_restore_count"] < 1
+        or values["restored_editor_cues_total"] < 1
+        or values["stage_count"] < values["restore_stage_count"]
+    ):
+        raise ValueError(
+            "topology rebuttal production requires at least one proven editor timing restoration"
+        )
+
+    validate_srt_report_binding(
+        preserved_srt,
+        preserved_report,
+        expected_task_fingerprint=fingerprint,
+    )
+    canonical, streams, line_spans, ordered_indices = _canonical_layout(evaluation_report)
+    preserved_rows = _read_csv_rows(preserved_report, label="preserved audit")
+    coverage: dict[str, list[tuple[int, int, int]]] = {key: [] for key in streams}
+    for position, row in enumerate(preserved_rows, start=1):
+        occurrence_id, line_indices = _canonical_line_claims(row, position=position)
+        if occurrence_id not in streams:
+            raise ValueError(f"preserved audit row {position} claims unknown occurrence")
+        for line_index in line_indices:
+            if (occurrence_id, line_index) not in canonical:
+                raise ValueError(
+                    f"preserved audit row {position} claims unknown canonical identity"
+                )
+
+        start_raw = row.get("canonical_content_start")
+        end_raw = row.get("canonical_content_end")
+        present = (start_raw not in (None, ""), end_raw not in (None, ""))
+        if present[0] != present[1]:
+            raise ValueError(f"preserved audit row {position} has incomplete canonical content span")
+        row_text = _normalize_for_match(str(row.get("text") or ""))
+        if not row_text:
+            raise ValueError(f"preserved audit row {position} has blank text")
+
+        if all(present):
+            try:
+                start, end = int(start_raw), int(end_raw)
+            except (TypeError, ValueError) as exc:
+                raise ValueError(
+                    f"preserved audit row {position} has invalid canonical content span"
+                ) from exc
+            stream = streams[occurrence_id]
+            if start < 0 or end <= start or end > len(stream):
+                raise ValueError(
+                    f"preserved audit row {position} canonical content span is out of range"
+                )
+            if stream[start:end] != row_text:
+                raise ValueError(
+                    f"preserved audit row {position} text differs from canonical content span"
+                )
+            intersecting = [
+                line_index
+                for line_index in ordered_indices[occurrence_id]
+                if line_spans[(occurrence_id, line_index)][0] < end
+                and line_spans[(occurrence_id, line_index)][1] > start
+            ]
+            if intersecting != line_indices:
+                raise ValueError(
+                    f"preserved audit row {position} line ownership differs from canonical content span"
+                )
+        else:
+            ordered = ordered_indices[occurrence_id]
+            try:
+                positions = [ordered.index(line_index) for line_index in line_indices]
+            except ValueError as exc:
+                raise ValueError(
+                    f"preserved audit row {position} claims unknown canonical identity"
+                ) from exc
+            if positions != list(range(positions[0], positions[-1] + 1)):
+                raise ValueError(
+                    f"preserved audit row {position} canonical ownership is not contiguous"
+                )
+            start = line_spans[(occurrence_id, line_indices[0])][0]
+            end = line_spans[(occurrence_id, line_indices[-1])][1]
+            if streams[occurrence_id][start:end] != row_text:
+                raise ValueError(
+                    f"preserved audit row {position} text differs from claimed canonical stream"
+                )
+        coverage[occurrence_id].append((start, end, position))
+
+    for occurrence_id, stream in streams.items():
+        intervals = sorted(coverage.get(occurrence_id, []))
+        cursor = 0
+        for start, end, position in intervals:
+            if start != cursor:
+                relation = "overlaps" if start < cursor else "leaves a gap in"
+                raise ValueError(
+                    f"preserved audit row {position} {relation} canonical coverage for {occurrence_id}"
+                )
+            cursor = end
+        if cursor != len(stream):
+            raise ValueError(
+                f"editor preservation does not retain complete canonical content coverage for {occurrence_id}"
+            )
+    return str(preservation_artifact["artifact_id"]), preservation, len(canonical)
+
+
 def _validate_timed_canonical_report(
     report: Path,
     *,
@@ -291,6 +578,10 @@ def main() -> int:
     parser.add_argument("--render-artifact", required=True, type=Path)
     parser.add_argument("--reconciliation", required=True, type=Path)
     parser.add_argument("--reconciliation-artifact", required=True, type=Path)
+    parser.add_argument("--preserved-srt", required=True, type=Path)
+    parser.add_argument("--preserved-report", required=True, type=Path)
+    parser.add_argument("--preservation-report", required=True, type=Path)
+    parser.add_argument("--preservation-artifact", required=True, type=Path)
     parser.add_argument("--final-srt", required=True, type=Path)
     parser.add_argument("--final-report", required=True, type=Path)
     parser.add_argument("--final-qa", required=True, type=Path)
@@ -324,6 +615,10 @@ def main() -> int:
                 "evaluation_render_artifact": args.render_artifact,
                 "reconciliation": args.reconciliation,
                 "reconciliation_artifact": args.reconciliation_artifact,
+                "preserved_srt": args.preserved_srt,
+                "preserved_report": args.preserved_report,
+                "preservation_report": args.preservation_report,
+                "preservation_artifact": args.preservation_artifact,
             }
         )
         validate_separate_artifact_paths(
@@ -366,20 +661,45 @@ def main() -> int:
             expected_cue_count=len(evaluation_cues),
         )
 
-        _atomic_copy(args.evaluation_srt, args.final_srt)
-        _atomic_copy(args.report, args.final_report)
+        preservation_artifact = _load_json(args.preservation_artifact)
+        (
+            preservation_artifact_id,
+            preservation_result,
+            canonical_identity_coverage_count,
+        ) = _validate_preservation(
+            fingerprint=fingerprint,
+            evaluation_srt=args.evaluation_srt,
+            evaluation_report=args.report,
+            preserved_srt=args.preserved_srt,
+            preserved_report=args.preserved_report,
+            preservation_report_path=args.preservation_report,
+            preservation_artifact=preservation_artifact,
+        )
+
+        _atomic_copy(args.preserved_srt, args.final_srt)
+        _atomic_copy(args.preserved_report, args.final_report)
+        production_cues = parse_srt_strict(args.final_srt)
 
         production_qa = {
             **source_qa,
             "publish_ready": True,
             "segmentation_authority": _PRODUCTION_SEGMENTATION_AUTHORITY,
             "release_blocked_reason": "",
+            "cue_count": len(production_cues),
+            "canonical_evaluation_cue_count": len(evaluation_cues),
+            "canonical_identity_coverage_count": canonical_identity_coverage_count,
             "production_materialization_mode": _REBUTTAL_MODE,
             "editor_topology_resolution": "rebutted",
+            "editor_timing_resolution": "exact_unique_compatible_regions_preserved",
             "editor_topology_rebuttal_reason": _REBUTTAL_REASON,
             "editor_topology_rebuttal_witness_count": len(witnesses),
             "source_evaluation_render_artifact_id": source_render_artifact_id,
             "editor_reconciliation_artifact_id": reconciliation_artifact_id,
+            "editor_preservation_artifact_id": preservation_artifact_id,
+            "editor_preservation_restore_stage_count": preservation_result["restore_stage_count"],
+            "editor_preservation_restored_editor_cues_total": preservation_result[
+                "restored_editor_cues_total"
+            ],
             "timing_format_counts": timing_format_counts,
         }
         atomic_write_json(args.final_qa, production_qa)
@@ -411,23 +731,39 @@ def main() -> int:
                 "editor_topology_rebuttal_witness_count": len(witnesses),
                 "source_evaluation_render_artifact_id": source_render_artifact_id,
                 "editor_reconciliation_artifact_id": reconciliation_artifact_id,
+                "editor_preservation_artifact_id": preservation_artifact_id,
+                "editor_timing_resolution": "exact_unique_compatible_regions_preserved",
+                "canonical_identity_coverage_count": canonical_identity_coverage_count,
+                "editor_preservation_restore_stage_count": preservation_result["restore_stage_count"],
+                "editor_preservation_restored_editor_cues_total": preservation_result[
+                    "restored_editor_cues_total"
+                ],
                 "legacy_fallback": False,
             },
             producer={"git_commit": args.git_commit} if args.git_commit else {},
             upstream_artifact_ids=(
                 source_render_artifact_id,
                 reconciliation_artifact_id,
+                preservation_artifact_id,
             ),
             evidence={
-                "cue_count": len(evaluation_cues),
+                "cue_count": len(production_cues),
+                "canonical_evaluation_cue_count": len(evaluation_cues),
+                "canonical_identity_coverage_count": canonical_identity_coverage_count,
                 "review_candidate_count": 0,
                 "publish_ready": True,
                 "segmentation_authority": _PRODUCTION_SEGMENTATION_AUTHORITY,
                 "release_blocked_reason": "",
                 "production_materialization_mode": _REBUTTAL_MODE,
                 "editor_topology_resolution": "rebutted",
+                "editor_timing_resolution": "exact_unique_compatible_regions_preserved",
                 "editor_topology_rebuttal_reason": _REBUTTAL_REASON,
                 "editor_topology_rebuttal_witness_count": len(witnesses),
+                "editor_preservation_artifact_id": preservation_artifact_id,
+                "editor_preservation_restore_stage_count": preservation_result["restore_stage_count"],
+                "editor_preservation_restored_editor_cues_total": preservation_result[
+                    "restored_editor_cues_total"
+                ],
                 "timing_format_counts": timing_format_counts,
             },
         )
@@ -450,8 +786,12 @@ def main() -> int:
                 "production_authority_granted": True,
                 "production_materialization_mode": _REBUTTAL_MODE,
                 "editor_topology_resolution": "rebutted",
+                "editor_timing_resolution": "exact_unique_compatible_regions_preserved",
                 "rebuttal_witness_count": len(witnesses),
-                "cue_count": len(evaluation_cues),
+                "cue_count": len(production_cues),
+                "canonical_evaluation_cue_count": len(evaluation_cues),
+                "canonical_identity_coverage_count": canonical_identity_coverage_count,
+                "editor_preservation_restore_stage_count": preservation_result["restore_stage_count"],
                 "artifact_id": production_artifact["artifact_id"],
                 "final_srt": str(args.final_srt),
             }

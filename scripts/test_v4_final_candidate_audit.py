@@ -18,7 +18,36 @@ def row(occurrence_id: str, ordinal: int, line_index: int, *, end_basis="next_li
     }
 
 
+def hybrid_row(occurrence_id: str, ordinal: int, indices, *, single=""):
+    return {
+        "occurrence_id": occurrence_id,
+        "ordinal": str(ordinal),
+        "canonical_line_index": single,
+        "canonical_line_indices": indices,
+        "end_basis": "next_line_start",
+    }
+
+
 class V4FinalCandidateAuditTests(unittest.TestCase):
+    def test_hybrid_ownership_is_preserved_in_short_and_long_details(self):
+        result = audit_final_candidate(
+            [Cue(1, 100, 400, "short"), Cue(2, 1000, 8000, "long")],
+            [hybrid_row("occ-a", 1, "[0, 1]"), hybrid_row("occ-b", 2, "[0, 1]")],
+            occurrence_windows={"occ-a": (0, 500), "occ-b": (900, 9000)},
+        )
+        self.assertTrue(result["passed"])
+        self.assertEqual(result["short_rows"][0]["canonical_line_index"], None)
+        self.assertEqual(result["short_rows"][0]["canonical_line_indices"], [0, 1])
+        self.assertEqual(result["long_rows"][0]["canonical_line_index"], None)
+        self.assertEqual(result["long_rows"][0]["canonical_line_indices"], [0, 1])
+
+    def test_conflicting_single_and_multiple_ownership_fails_closed(self):
+        with self.assertRaisesRegex(FinalCandidateAuditError, "ownership fields disagree"):
+            audit_final_candidate(
+                [Cue(1, 100, 400, "conflict")],
+                [hybrid_row("occ-a", 1, "[5, 6]", single="4")],
+                occurrence_windows={"occ-a": (0, 500)},
+            )
     def test_clean_candidate_passes_and_reports_duration_distribution(self):
         result = audit_final_candidate(
             [

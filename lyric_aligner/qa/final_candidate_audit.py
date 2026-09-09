@@ -6,6 +6,7 @@ This module never grants release, timing, text, or segmentation authority.
 from __future__ import annotations
 
 import statistics
+import json
 from typing import Any, Mapping, Sequence
 
 from lyric_aligner.srt import Cue
@@ -20,6 +21,46 @@ def _int_field(row: Mapping[str, Any], name: str, *, position: int) -> int:
         return int(row[name])
     except (KeyError, TypeError, ValueError) as exc:
         raise FinalCandidateAuditError(f"audit row {position} has invalid {name}") from exc
+
+
+def _ownership(row: Mapping[str, Any], *, position: int) -> tuple[int | None, list[int]]:
+    single_raw = row.get("canonical_line_index")
+    single: int | None = None
+    if single_raw not in (None, ""):
+        if isinstance(single_raw, bool):
+            raise FinalCandidateAuditError(f"audit row {position} has invalid canonical_line_index")
+        try:
+            single = int(single_raw)
+        except (TypeError, ValueError) as exc:
+            raise FinalCandidateAuditError(f"audit row {position} has invalid canonical_line_index") from exc
+        if single < 0 or (isinstance(single_raw, float) and not single_raw.is_integer()):
+            raise FinalCandidateAuditError(f"audit row {position} has invalid canonical_line_index")
+
+    multiple_raw = row.get("canonical_line_indices")
+    multiple: list[int] | None = None
+    if multiple_raw not in (None, ""):
+        try:
+            parsed = json.loads(multiple_raw) if isinstance(multiple_raw, str) else multiple_raw
+        except (TypeError, ValueError, json.JSONDecodeError) as exc:
+            raise FinalCandidateAuditError(f"audit row {position} has invalid canonical_line_indices") from exc
+        if not isinstance(parsed, list) or not parsed:
+            raise FinalCandidateAuditError(f"audit row {position} has invalid canonical_line_indices")
+        try:
+            multiple = [int(value) for value in parsed]
+        except (TypeError, ValueError) as exc:
+            raise FinalCandidateAuditError(f"audit row {position} has invalid canonical_line_indices") from exc
+        if any(value < 0 for value in multiple) or len(set(multiple)) != len(multiple):
+            raise FinalCandidateAuditError(f"audit row {position} has invalid canonical_line_indices")
+        if multiple != sorted(multiple):
+            raise FinalCandidateAuditError(f"audit row {position} has non-monotonic canonical_line_indices")
+        if single is not None and single not in multiple:
+            raise FinalCandidateAuditError(f"audit row {position} canonical ownership fields disagree")
+
+    if multiple is not None:
+        return (None if len(multiple) > 1 else multiple[0], multiple)
+    if single is not None:
+        return single, [single]
+    raise FinalCandidateAuditError(f"audit row {position} has no canonical line ownership")
 
 
 def _percentile(values: Sequence[int], q: float) -> float:
@@ -100,7 +141,7 @@ def audit_final_candidate(
         if not occurrence_id:
             raise FinalCandidateAuditError(f"audit row {position} is missing occurrence_id")
         ordinal = _int_field(row, "ordinal", position=position)
-        line_index = _int_field(row, "canonical_line_index", position=position)
+        line_index, line_indices = _ownership(row, position=position)
         duration = cue.end_ms - cue.start_ms
         durations.append(duration)
 
@@ -140,6 +181,7 @@ def audit_final_candidate(
             "occurrence_id": occurrence_id,
             "ordinal": ordinal,
             "canonical_line_index": line_index,
+            "canonical_line_indices": line_indices,
             "start_ms": cue.start_ms,
             "end_ms": cue.end_ms,
             "duration_ms": duration,

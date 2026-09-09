@@ -28,6 +28,7 @@ from lyric_aligner.srt import parse_srt_strict
 from task_contract import (
     load_task_manifest,
     resolve_manifest_record,
+    resolve_repository_path,
     verify_manifest_inputs,
 )
 
@@ -129,8 +130,8 @@ def _load_effective_timelines(
                 }
             )
             continue
-        timeline_path = Path(timeline_value)
-        artifact_path = Path(artifact_value)
+        timeline_path = resolve_repository_path(timeline_value, REPOSITORY_ROOT)
+        artifact_path = resolve_repository_path(artifact_value, REPOSITORY_ROOT)
         timeline = _load(timeline_path)
         timeline_artifact = _load(artifact_path)
         stage = str(timeline_artifact.get("stage") or "")

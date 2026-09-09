@@ -1,8 +1,14 @@
 # Lyric Aligner v4 当前实施状态
 
+## 2026-09-08 有界终轮实验：候选未升为生产默认
+
+本轮执行调速参考音频对应检查及 SOFA / STARS × 原混音 / HTDemucs 分离人声对照。现有 editor/Smart 基线继续保留；没有独立 final-mix 人工答案与非 oracle 实际收益时，不将候选模型或逐点最优结果宣布为准确率终版。
+
+新增 `evaluation.interval_bottleneck` 离线分解：完整候选区间 oracle、允许单边组合的合法 oracle、忽略几何关系的逐点 oracle 分开报告。未标注相邻 cue 固定，缺失候选保留分母，缺失 gold 归属显式报告。它不写字幕、不增加生产 gate、不改变模型默认值。模型运行和快照证据留在本地 `output/bottleneck_final_20260908/` 与 `output/bottleneck_fresh_final_20260908/`，不进入发布包；新 final-mix 人工标注仍是未完成项。
+
 当前对外能力说明以[能力与使用边界](capabilities-and-limits.md)为准：维护可用，通用无人审核交付尚未证明；下文实验数字须按各自样本和产物层级理解。
 
-> **当前执行阶段：维护收敛（2026-09-08，用户已确认）。** 暂停扩张式算法升级，按[维护执行约定](maintenance-convergence-2026-09-08.md)修补现有链路。下文旧实验排期与“下一步”保留为历史，不再自动触发新模型或新策略开发。
+> **当前执行阶段：editor-first / hybrid 封板维护（2026-09-09）。** 已把可证明的 editor timing 保真、canonical 结构完整性与 production materialization 接成完整链路；仍暂停无独立 final-mix truth 支撑的扩张式声学默认升级。下文 2026-09-08 的实验排期与“下一步”均保留为历史记录，不自动触发。
 
 
 2026-09-08 第九切片新增旧锚夹持的完整精确词序源锚，只进入显式joint实验。WALK882条重跑共同解码2→3对，恢复219/220，旧两对区间不变；但220与KEEP221仍重叠3017ms，全局采用0、成品时间/文字变化0。历史三首149行得到9个精确锚（4新增），新增8端点MAE165.75ms、最大312ms；这是源锚证据，不是成品或新盲测精度。无条件二段拆词的43076项词典遮蔽验证仅34.84%发音一致，未接入。隔离Python3.12全量1625项通过（4项可选FLOAT跳过）。全部正负实验登记见 references/accuracy-experiment-register-2026-09-08.md；本轮证据见 output/source_context_upgrade9_20260908/delivery_report.md。不封板。
@@ -442,3 +448,17 @@ FLOAT source decode 已实现并完成整曲、完整 shadow SRT 和隔离全量
 新增默认关闭的 source_asr.multilingual=true（language=null），原生逐段检测、source-observer-1.2 独立缓存；旧默认和1.0/1.1缓存身份不变。Whiplash同turbo/音频对照：auto 5候选/5采用，整曲en 0/0，逐段自动11/10；新模式相对输入写出8 start、10 end，文字不变。这是覆盖和写出变化，没有独立端点gold，不能声称准确率提升。
 
 Al James独立公开词起点诊断：严格唯一上下文匹配92/312，220保留null；新旧共同92起点全部一致，MAE539.966ms、p95 1543.249ms、max5880ms无变化。旧en与新auto+multilingual同时改变两个控制，不能称单因素；归因附加更正保留原报告和收据。无word-end真值、不是blind，不推广默认、不宣布封板。逐段模式开头误识别未恢复，并丢失auto的第36条候选（end55209退回56294ms）；相对auto共11条cue时间变化，不能称无损收益。三组固定对照完整记录于output/source_context_upgrade12_20260908/。
+
+
+## 2026-09-09 editor-first batch + hybrid production（当前）
+
+当前默认升级方向已从“发现 editor 风险后整体重建”收敛为**局部 editor timing/topology 保真 + canonical 结构完整性**。`subtitle-upgrade-job-1.0` 的 `editor_preservation.scope=all_occurrences` 会在整份任务内逐 occurrence 重复寻找 `exact canonical stream + unique occurrence + compatible neighbors` 的完整 editor 区域，直到稳定；无可行区域保持原结果。选择不读取人工 gold、不按语言/曲风硬编码可靠度，也不赋予模型 timing authority。crossfade/overlap 导致同 occurrence 在全局 audit 中非连续时，whole-occurrence 模式仍拒绝，但 auto region 可处理内部连续安全区；纯符号/音乐标记等 nonlexical editor cue 不参与文字匹配并作为 retained content 原样保留。
+
+旧 topology-rebuttal 的“出现一个 `no_editor_temporal_overlap` witness 就把整份 canonical evaluation SRT 直接升为 production”已撤销。现在 `v4_materialize_editor_reconciled.py` 只接受 hybrid path：canonical evaluation/reconciliation 先证明 editor topology 确实漏内容，再消费**精确绑定该 evaluation 字节**的 `editor_preservation_batch` 产物；要求至少一次真实 editor restore、`model_timing_authority_used=false`，并按 `canonical_content_start/end` 验证每个 occurrence 的归一化 canonical 字符流 100% 连续覆盖、无 gap/overlap/越界。最终 SRT 复制 preservation 结果而不是 canonical evaluation，因此“补漏句”和“保住可信 editor timing”可以同时成立。
+
+KPOP130 真实长混剪已贯通整条链：canonical evaluation 786 cues，经 7 个 restore stage、5/12 occurrences 的 editor 恢复后为 774 cues（63 个 baseline-region cues -> 51 个 editor cues）；reconciliation 有 28 个 `no_editor_temporal_overlap` witnesses，hybrid production 保持 786/786 canonical identity coverage，并获得 `editor_reconciled / publish_ready=true`。随后同一 display policy 在 774 cues 上正常应用：17 条 viewer text 变化（15 条显式 override + 2 个强脏词 mask）和 6 个 shorten-only display end trim，source hybrid artifact 仍精确绑定。已有 8 条 historical development gold 从旧 FRESH_FINAL MAE 584.9375ms 降至最终 viewer display 501.6875ms；7 条不变，唯一变化的“整个城市播着爱的主打歌”起点误差 1000->40ms、终点 481->109ms。该 8 条已参与开发，**不是 blind 泛化证明**。
+
+跨项目结构恢复也通过真实运行：KPOP110 1158->1155（3/17 occurrences，3 restore stages，8->5 cues）；WALK120 882->866（7/14，10 stages，253->237）；WALK140 936->925（4/16，5 stages，76->65）；H190 672->642（10/12，12 stages，308->278）；KPOP200 826->826（2/14，4 stages，5->5）。连同 KPOP130，6 个任务共 85 occurrences，其中 31 个至少恢复一个严格安全区域，共 41 个 restore stages，713 个 baseline-region cues 被 641 个 immutable editor cues 替换。这里只证明跨项目**安全恢复覆盖与稳定性**，不能把 cue 数或恢复数量换算成总体准确率。
+
+工程兼容同时补齐：reference-retimed run 中的仓库相对 timeline/artifact path 统一以 repository root 解析，避免依赖调用者 cwd；nonlexical cue 不再使 region matcher 全批失败；display 层允许 split/merge 后的多行 canonical ownership 继续执行全局 mask/timing policy，但显式 line-bound override 仍只允许唯一单行 identity，冲突字段 fail closed。产品身份继续保留 `4.0.0a19`，新行为由 `immutable-editor-all-occurrences-batch-1.0`、`immutable-editor-auto-region-1.0`、`hybrid_editor_preservation_after_editor_topology_rebuttal` 及 artifact config/lineage 明确区分，不批量改写历史 a19 artifact。
+本次最终封板核对分三层记录：hybrid production/materializer QA 已确认当前 materializer 的 editor-first 结构与 lineage 行为；viewer final structural audit（KPOP130 display v3）`passed=true`，`errors=0`、window violation=0、content-end violation=0，confirmed/unconfirmed overlap 均为0。该 audit 仅有 `long_display_holds` 10 条 warning（duration min 349 / median 1902.5 / p95 4395.3 / max 7563ms，0 条 >=8000ms extreme hold）。semantic/release gate 仍未通过：projection editor witness 2/12 track fail；当前 independent-audio final layer 12/12 fail，`audio_anchor_count=0`。所用 formal fusion SHA `01575459...` 属于 current safety tightening `e22f10d` 之前的旧证据，不含 `canonical_start_covered` / `canonical_match_ambiguous` 等当前 ASR 起点资格字段；当前 gate 的 fail-closed 是预期行为，旧 semantic QA 不得复用为新 final 的 release authority。完整 release-ready 仍需 fresh independent audio evidence/fusion 并通过 semantic gate；`publish_ready=true` 只描述 materializer 层，不等同完整 release-ready。

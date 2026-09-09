@@ -172,11 +172,51 @@ def _write_audit(path: Path, *, fieldnames: list[str], rows: list[dict[str, str]
         raise
 
 
-def _int_field(row: dict[str, str], key: str, *, position: int) -> int:
-    try:
-        return int(row[key])
-    except (KeyError, TypeError, ValueError) as exc:
-        raise ValueError(f"audit row {position} has invalid {key}") from exc
+def _canonical_override_line_index(row: dict[str, str], *, position: int) -> int | None:
+    """Return one unambiguous canonical line for explicit overrides.
+
+    Hybrid editor-preservation may split one canonical line across multiple cues or
+    merge several adjacent canonical lines into one editor cue. Global display
+    masking/timing policy remains valid for those cues, but a line-bound explicit
+    override is only eligible when the row has exactly one canonical line identity.
+    """
+    single_raw = row.get("canonical_line_index")
+    single: int | None = None
+    if single_raw not in (None, ""):
+        try:
+            single = int(single_raw)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"audit row {position} has invalid canonical_line_index") from exc
+        if single < 0:
+            raise ValueError(f"audit row {position} has invalid canonical_line_index")
+
+    multiple_raw = row.get("canonical_line_indices")
+    multiple: list[int] | None = None
+    if multiple_raw not in (None, ""):
+        try:
+            parsed = json.loads(multiple_raw) if isinstance(multiple_raw, str) else multiple_raw
+        except (TypeError, ValueError, json.JSONDecodeError) as exc:
+            raise ValueError(f"audit row {position} has invalid canonical_line_indices") from exc
+        if not isinstance(parsed, list) or not parsed:
+            raise ValueError(f"audit row {position} has invalid canonical_line_indices")
+        try:
+            multiple = [int(value) for value in parsed]
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"audit row {position} has invalid canonical_line_indices") from exc
+        if any(value < 0 for value in multiple) or len(set(multiple)) != len(multiple):
+            raise ValueError(f"audit row {position} has invalid canonical_line_indices")
+        if multiple != sorted(multiple):
+            raise ValueError(f"audit row {position} has non-monotonic canonical_line_indices")
+        if single is not None and single not in multiple:
+            raise ValueError(f"audit row {position} canonical ownership fields disagree")
+
+    if multiple is not None:
+        if len(multiple) > 1:
+            return None
+        return multiple[0]
+    if single is not None:
+        return single
+    raise ValueError(f"audit row {position} has no canonical line ownership")
 
 
 def main() -> int:
@@ -256,9 +296,8 @@ def main() -> int:
             track_id = str(source_row.get("track_id") or "").strip()
             if not occurrence_id or not track_id:
                 raise ValueError(f"audit row {position} lacks occurrence/track identity")
-            canonical_line_index = _int_field(
+            canonical_line_index = _canonical_override_line_index(
                 source_row,
-                "canonical_line_index",
                 position=position,
             )
             result = apply_display_policy(

@@ -1,5 +1,13 @@
 # Lyric Aligner v4 实施记录与关键代码说明
 
+## 完整字幕约束下的离线瓶颈评价
+
+`evaluation.interval_bottleneck.evaluate_interval_bottleneck(cues, gold)` 接收完整 editor/旧 final 序列（包括未标注邻句）、已绑定 cue ID 的完整起止标注及各模型的原子区间候选。调用者负责音频、标注、cue 归属与完整序列的身份核验；该纯计算函数不能从时间自动推断歌词归属，也不估计漏词或错误文字的代价。
+
+函数同时返回三种诊断：逐端点最优误差；只选择完整候选区间的非重叠序列最优误差；允许已有候选与 editor 的端点组合后、仍满足完整序列约束的最优误差。第三种显式标记混合来源，不表示某个模型确实输出过该组合，更不表示在线 selector 能选择它。动态规划使用 `(端点绝对误差, 改动 cue 数)` 排序，无标注 cue 只提供 editor 选项。输入基线必须有序、非负、正时长且不重叠；候选失败保留覆盖分母。gold 中找不到的 cue ID 返回 `incomplete_ownership`，没有可评分端点时误差为 null。
+
+这是候选能力与选择瓶颈的测量工具。不能将其用于生成生产决策，不能将原子区间上限当作单边修复的上限，也不能将历史标注回放或波形注册精度作为独立 final-mix 字幕准确率。
+
 同轮路径修正由合格canonical行的source区间生成词/音素状态时间带，SP状态自由，DP转移后屏蔽不合法的目的状态。这样正确锚点不再只是裁窗信息，而能阻止重复歌词跨长间奏串位。旧三行不加时间带；不同上下文策略有独立身份。无限时间带的递推须与绑定vendor结果一致，无可行路径或词序失配须隔离失败，不能返回人工修过的时间。
 
 第六切片复用已有 `source_context_hubertfa.prepare_occurrence` 的完整 canonical lattice/sequence，以 `prepare_anchored_blocks` 为缺失目标确定最近合格外侧锚点；不重新计算局部重复 promotion。一次 variable-length canonical 音素路径经共享 contextual interval API 按多个内部 index 提取，再走旧投影与 interval DP。此增量不改 `source_packets`、`source_sequence` 或几何选择规则；adapter 仅在独立 block 策略下接受有固定资源上限的多行输入。完整协议见 [原曲上下文与区间联合升级](source-context-shadow-upgrade.md)。
@@ -734,3 +742,17 @@ TrackAssets、task manifest/QA JSON 与 task-local run config 统一使用 share
 按用户确认停止扩张式升级，改为维护既有链路。普通与shadow作业入口拒绝误拼/未知配置，防止source_config未生效或human_confirmation被当无证据跳过；39份历史作业字段检查兼容。区域恢复同时读取完整canonical字符范围与旧行索引，修复WALK已恢复字幕再次同区域处理报missing/noncontiguous的问题；字符范围按已选文字顺序验证连续性，支持旧/新混合输入，不靠查找相同歌词猜重复位置。保留现有source候选、DP代价、几何规则、生产默认与历史artifact身份。
 
 当前优先级见[维护收敛执行约定](maintenance-convergence-2026-09-08.md)，真实修前失败、修后重放与验证收据存output/maintenance_convergence_20260908/。工程恢复可用性不等于新增声学准确率；不以测试通过或候选数量宣布封板。
+
+
+## 2026-09-09 editor-first batch / hybrid materialization 实施
+
+`v4_preserve_editor_occurrence.py` 现将“可恢复 editor 区域”限定为完整、唯一 canonical 字符流与完整 editor cue 的交集，并在写出前复核 baseline ownership、邻接重叠、cue 顺序、输入 hash 与 artifact lineage。`canonical_content_start/end` 是 split/merge 后的主归属坐标；旧单行 `canonical_line_index` 继续可读。region 模式允许 occurrence 因 crossfade 在全局 audit 中被其它歌曲 cue 插入，但最终选中的 target positions 仍必须是一个连续完整区域。nonlexical source cue 不进入 exact stream matcher，仍保留为不可无证据删除的原字幕内容。
+
+`scripts/v4_preserve_editor_batch.py` 将上述选择扩展为任务级事务：按 run 中 occurrence 顺序循环，每首歌反复选择最大可行区域，restore 后继续寻找下一块，直到 KEEP；任何异常发生在临时目录，不发布半成品。报告使用 `editor-preservation-batch-materialization-1.0 / immutable-editor-all-occurrences-batch-1.0`，记录 input/final SRT 与 audit SHA、stage/restore/occurrence 计数和每轮候选原因，且固定 `publish_ready=false / fresh_product_QA_required`。同一 batch 内 editor SRT + canonical bindings 的 Smart observation 按 source SHA + assets artifact ID + Smart policy identity 缓存；baseline、ownership、邻接与输出完整性不缓存。KPOP130 缓存前后 SRT/CSV SHA 逐字节一致。
+
+`v4_materialize_editor_reconciled.py` 不再把 topology rebuttal 当成“canonical LRC timing 全局优于 editor”的证明。新 hybrid contract 同时消费 canonical evaluation/reconciliation 与 exact-bound preservation batch：前者证明存在 editor topology 无法表达的 canonical 内容，后者恢复能严格证明的 editor timing。production 前逐 occurrence 重建 normalized canonical character stream，preserved rows 必须按 character span 连续覆盖全文且不得 gap/overlap；至少有一个真实 restore，且 preservation 不得使用模型 timing authority。production artifact 的 upstream 同时绑定 source render、reconciliation 与 preservation，并记录 `hybrid_editor_preservation_after_editor_topology_rebuttal`。
+
+repository-relative timeline/artifact 路径经 `task_contract.resolve_repository_path()` 统一从 repo root 解析，绝对历史路径继续兼容，相对路径禁止逃逸仓库；planner/editor/ASR/fusion/forced consumers 共用该语义。display materializer 则把全局 mask/shorten-only timing policy 与显式 line override 分开：multi-line ownership 可正常执行前两者，只有唯一单行 canonical identity 才能命中显式 override。
+
+真实验收见当前状态页。KPOP130 从 canonical evaluation 到 hybrid production 再到 viewer display 全链通过，并在 8 条 historical development gold 上保持 584.9375->501.6875ms；KPOP110/WALK120/WALK140/H190/KPOP200 提供跨任务结构覆盖，不作为 blind accuracy。该升级不新增声学默认、不放宽现有 source/reference/final-mix 时间基保护。
+最终验收必须分开读取三层：hybrid production/materializer QA 只证明 editor-first 的结构与 lineage；viewer final structural audit 只证明最终展示几何/内容边界；semantic/release gate 仍须由 fresh independent audio evidence/fusion 授权。KPOP130 display v3 的 viewer audit 为 `passed=true`、errors/window/content-end/overlap 均为0，但这不覆盖 semantic gate；多值 `canonical_line_indices` 仅表示 split/merge ownership，不会把 materializer `publish_ready=true`提升为完整 release-ready。

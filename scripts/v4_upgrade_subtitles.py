@@ -33,7 +33,8 @@ _UPGRADE_JOB_FIELDS = frozenset({
     'calibrated_stages', 'human_confirmations', 'gap_review', 'qa',
 })
 _EDITOR_PRESERVATION_FIELDS = frozenset({
-    'run', 'run_artifact', 'assets', 'assets_artifact', 'occurrence_id', 'canonical_region',
+    'run', 'run_artifact', 'assets', 'assets_artifact', 'scope', 'occurrence_id', 'canonical_region',
+    'max_passes_per_occurrence',
 })
 _CALIBRATED_STAGE_FIELDS = frozenset({'mode', 'plan', 'evidence', 'decisions', 'bundle'})
 _HUMAN_CONFIRMATION_FIELDS = frozenset({'gold', 'selection_lock', 'predictions'})
@@ -274,8 +275,19 @@ def run_editor_job(job, job_path, manifest_path, manifest, report_path, srt_path
         raise ValueError('editor preservation requires its own job; run fresh QA on its output')
     config = job['editor_preservation']
     _reject_unknown_fields(config, _EDITOR_PRESERVATION_FIELDS, label='editor_preservation')
-    if not isinstance(config, dict) or not isinstance(config.get('occurrence_id'), str) or not config['occurrence_id']:
-        raise ValueError('editor preservation requires an occurrence_id')
+    scope=config.get('scope','single_occurrence')
+    if scope not in ('single_occurrence','all_occurrences'):
+        raise ValueError('editor preservation scope must be single_occurrence or all_occurrences')
+    if scope=='single_occurrence':
+        if not isinstance(config.get('occurrence_id'),str) or not config['occurrence_id']:
+            raise ValueError('single-occurrence editor preservation requires an occurrence_id')
+        if 'max_passes_per_occurrence' in config:
+            raise ValueError('max_passes_per_occurrence is only valid for all_occurrences scope')
+    else:
+        if config.get('occurrence_id') not in (None,''):
+            raise ValueError('all-occurrences editor preservation cannot specify occurrence_id')
+        if 'canonical_region' in config:
+            raise ValueError('all-occurrences editor preservation selects exact regions automatically')
     inputs = {key: path(config[key]) for key in ('run', 'run_artifact', 'assets', 'assets_artifact')}
     direct = dict(job=job_path, manifest=manifest_path, report=report_path, srt=srt_path, **inputs)
     validate_materializer_preflight(manifest_path=manifest_path, manifest=manifest,
@@ -283,19 +295,32 @@ def run_editor_job(job, job_path, manifest_path, manifest, report_path, srt_path
         output_dir=output_dir.resolve(), outputs={})
     hashes = {str(value):sha256_file(value) for value in direct.values()}
     before = parse_srt_strict(srt_path)
-    from scripts.v4_preserve_editor_occurrence import materialize as preserve_editor
-    report = preserve_editor(manifest_path=manifest_path, srt_path=srt_path, audit_path=report_path,
+    if scope=='single_occurrence':
+        from scripts.v4_preserve_editor_occurrence import materialize as preserve_editor
+        report = preserve_editor(manifest_path=manifest_path, srt_path=srt_path, audit_path=report_path,
         occurrence_id=config['occurrence_id'], output_dir=output_dir,
-        canonical_region=config.get('canonical_region'),
+        canonical_region=config.get('canonical_region','auto'),
         **{key+'_path':value for key,value in inputs.items()})
+        kept=(report.get('automatic_selection') or {}).get('action')=='keep'  # scope result
+    else:
+        from scripts.v4_preserve_editor_batch import materialize_batch
+        report=materialize_batch(manifest_path=manifest_path,srt_path=srt_path,audit_path=report_path,
+            output_dir=output_dir,max_passes_per_occurrence=config.get('max_passes_per_occurrence',128),
+            **{key+'_path':value for key,value in inputs.items()})
+        kept=report.get('restore_stage_count')==0
     if any(sha256_file(Path(value)) != digest for value,digest in hashes.items()):
         raise ValueError('editor upgrade input changed during execution')
+    after=parse_srt_strict(output_dir/'final.srt')
+    aligned=len(before)==len(after)
     result = dict(schema_version='subtitle-upgrade-result-1.0',
         task_fingerprint_sha256=manifest['task_fingerprint_sha256'], inputs=hashes,
-        before_cues=len(before), after_cues=len(parse_srt_strict(output_dir/'final.srt')),
-        position_comparison_available=False, start_changed_count=None, end_changed_count=None,
-        text_changed_count=None, new_human_annotations=0,
-        quality_status='canonical_text_on_immutable_editor_timing_requires_fresh_QA',
+        editor_preservation_scope=scope,
+        before_cues=len(before), after_cues=len(after),
+        position_comparison_available=aligned,
+        start_changed_count=sum(a.start_ms!=b.start_ms for a,b in zip(before,after)) if aligned else None,
+        end_changed_count=sum(a.end_ms!=b.end_ms for a,b in zip(before,after)) if aligned else None,
+        text_changed_count=sum(a.text!=b.text for a,b in zip(before,after)) if aligned else None, new_human_annotations=0,
+        quality_status='unchanged_no_compatible_editor_region' if kept else 'canonical_text_on_immutable_editor_timing_requires_fresh_QA',
         publish_ready=False, release_status='fresh_product_QA_required',
         preservation=report, preservation_artifact_sha256=sha256_file(output_dir/'preservation.artifact.json'),
         output_srt_sha256=sha256_file(output_dir/'final.srt'),

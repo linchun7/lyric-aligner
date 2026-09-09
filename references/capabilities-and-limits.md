@@ -1,6 +1,6 @@
 # 当前能力与使用边界
 
-评估日期：2026-09-08。基于维护快照 `maintenance-20260908` 的代码、回归验证与既有成品实验；产品身份仍为 `4.0.0a19`。本页是当前能力说明，历史状态中的封板结论须结合后续撤销记录阅读。
+评估日期：2026-09-09。基于当前 editor-first / hybrid 封板候选代码、六个真实长项目结构回归、KPOP130 viewer display 与既有历史标注；产品身份仍为 `4.0.0a19`，新生产语义由独立 policy/mode/artifact lineage 区分。总体准确率仍因缺少代表性的 untouched final-mix truth 而未知。
 
 ## 定位与评分
 
@@ -25,7 +25,8 @@
 | Smart | 使用timed canonical、剪映多数锚点和变速先验进行无音频修复 | 依赖可识别锚点；不是声学验证，不按语种直接推断剪映可靠度。 |
 | Pro / Max | 按需加入局部音频或完整Source-to-Mix映射、对齐与重建 | 需要相应音频、模型与有效证据；更高模式不保证更准。 |
 | 已确认结果复用 | 在录音和目标身份匹配时复用人工边界、重放修补 | 减少同一材料的重复劳动，不证明新歌泛化。 |
-| 剪映区域恢复 | 根据文字归属、顺序和范围恢复已有可信区域，支持切分后的字符坐标 | 不能把所有剪映时间当真值，不能从少数锚点无条件外推整曲。 |
+| 剪映区域恢复 | 根据文字归属、顺序和范围恢复已有可信区域，支持任务级 all-occurrences 重复恢复和切分后的字符坐标 | 不能把所有剪映时间当真值，不能从少数锚点无条件外推整曲；无可证明区域保持原结果。 |
+| Hybrid topology reconciliation | canonical evaluation 负责结构/漏句完整性，严格 editor-preservation 负责局部可信 timing，再以完整 character coverage 合并为 production | 只接受 exact-bound preservation/reconciliation；至少一次真实 editor restore；不是 LRC 全局 timing authority。 |
 | QA与审计 | 追踪来源、配置、版本、边界证据及最终产物，保留review/BLOCK | 证明可追溯与约束成立，不等于全部听感正确。 |
 | 辅助试听 | A/B、选点前后试听、步长输入与时间显示 | 是纠错辅助工具，不是算法必须持续依赖的训练循环。 |
 
@@ -44,18 +45,19 @@
 
 共同窗口实验曾把两处候选重叠1929/862ms降至0，但因其他区间冲突，最终选择为0、成品未改变。部分新公开源端实验仅覆盖9/143个目标；不能只报这9个目标的低误差而忽略134个缺失。详见[实验登记](accuracy-experiment-register-2026-09-08.md)。
 
-source shadow、HFA/joint、FLOAT及multilingual等保留显式实验身份，不因实现存在或候选增多而自动推广。当前仍存在未完成验证的成品区间，不能声明全项目准确率封板。
+source shadow、HFA/joint、FLOAT及multilingual等继续保留显式实验身份，不因实现存在或候选增多而自动推广。2026-09-09 的 editor-first / hybrid production 已完成工程封板候选与真实长项目回归，但只有 KPOP130 有本轮可量化的 historical development 边界收益；仍不能声明全项目或未见歌曲的总体准确率。
 
 ## 维护与重新升级的条件
 
 优先处理可复现缺陷、运行可靠性和文档入口一致性。大型模块值得在实际修改时逐步拆分，但不为评分新增一次全面重构。重新做算法升级，应先确定错误类别、冻结未参与调参的独立数据，并同时报告最终SRT的覆盖率、端点误差分布、严重错误、回退/拒绝和运行成本；改善须超过旧final及editor基线且不损害原本正确部分。
 
-最强的反方证据是现有局部声学实验确有改善，说明算法并非理论上无路可走；当前最大风险是把少量已见目标上的改善误认成通用进展。足量独立成品配对结果若证明稳定净收益，将推翻目前暂停扩张的判断。现阶段按[维护收敛约定](maintenance-convergence-2026-09-08.md)执行。
+最强的反方证据是现有局部声学实验确有改善，说明算法并非理论上无路可走；当前最大风险是把少量已见目标上的改善误认成通用进展。足量独立成品配对结果若证明稳定净收益，将推翻目前暂停扩张的判断。现阶段以 editor-first / hybrid 作为保守生产升级方向，并继续按[维护收敛约定](maintenance-convergence-2026-09-08.md)限制无证据的算法扩张。
 
 ## 公开仓库范围
 
 仓库提供通用源码、合成测试夹具、接口说明及脱敏结果摘要。私有任务脚本、音视频、歌词/SRT、模型、人工标注、完整运行证据和本机路径不得随源码上传。文档中的`output/`引用是本地证据位置，不是公开下载地址；公开读者无法仅靠这些摘要重现私有歌曲指标。
 
-维护快照的既有验证为隔离Python3.12共1642项（1638通过、4项轻量环境缺音频依赖跳过），补充音频环境4/4通过。本页更新不修改算法，不把该历史验证写成本轮重新识别或新精度测试；仓库CI结果应以对应提交的实际运行状态为准。
+2026-09-08 维护快照的历史验证为隔离Python3.12共1642项（1638通过、4项轻量环境缺音频依赖跳过），补充音频环境4/4通过；这些数字只描述当时快照。2026-09-09 editor-first / hybrid 改动后的最终回归必须以当前工作区实际测试结果为准，不能沿用旧快照数字替代。本页中的 KPOP130 MAE 与六任务恢复覆盖分别属于 historical development 与结构回归证据，不是新盲测总体准确率。
 
 上传前再次全量回归出现1次Windows `WinError 5`：shadow将staging目录重命名为最终目录时被拒绝访问；该模块28项立即重跑全部通过。文件访问失败的具体外部诱因尚未证明，不能声称已根治。应保留失败产物并检查占用/权限后重试；这是运行可靠性限制，不是识别精度结论。
+2026-09-09 最终封板事实分三层：hybrid production/materializer QA 已完成 editor-first 结构收口；KPOP130 viewer display v3 structural audit 通过（passed=true、errors/window/content-end/overlap均为0，10条 long-display warning，最大7563ms）；semantic/release gate 尚未通过（projection editor witness 2/12 fail，independent-audio final layer 12/12 fail，audio_anchor_count=0）。因此当前不声称总体 accuracy 或完整 release-ready；materializer 的 `publish_ready=true` 仅是该层状态，完整发布仍需 fresh independent audio evidence/fusion 与 semantic gate。

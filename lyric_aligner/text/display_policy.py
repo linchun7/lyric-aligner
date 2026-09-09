@@ -258,14 +258,18 @@ def apply_display_policy(
     *,
     occurrence_id: str,
     track_id: str,
-    canonical_line_index: int,
+    canonical_line_index: int | None,
     policy: DisplayPolicy,
 ) -> DisplayTextResult:
     current = text
     reasons: list[str] = []
     override_applied = False
-    key = (occurrence_id, track_id, canonical_line_index)
-    override = policy.overrides.get(key)
+    key = (
+        (occurrence_id, track_id, canonical_line_index)
+        if canonical_line_index is not None
+        else None
+    )
+    override = policy.overrides.get(key) if key is not None else None
     if override is not None:
         if current != override.expected_text:
             raise DisplayPolicyError(

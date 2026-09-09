@@ -21,6 +21,7 @@ from lyric_aligner.text.display_policy import (
 )
 from semantic_sync_test_support import write_passing_semantic_sync_fixture
 from task_contract import build_task_manifest, write_json_atomic
+from v4_apply_display_policy import _canonical_override_line_index
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -63,6 +64,48 @@ class DisplayPolicyUnitTests(unittest.TestCase):
             "f* F* f* f* s* B* b* a* c* sexy shot bullet damn shitake",
         )
         self.assertEqual(count, 9)
+
+    def test_multiline_cue_keeps_global_masking_but_cannot_take_line_override(self):
+        override = DisplayOverride(
+            occurrence_id="occ-1",
+            track_id="track-1",
+            canonical_line_index=0,
+            expected_text="whole canonical line",
+            display_text="reviewed display line",
+            reason="synthetic line override",
+            reviewer="synthetic-model",
+        )
+        policy = DisplayPolicy(
+            policy_id="policy",
+            task_fingerprint_sha256="f" * 64,
+            mask_profile="strong_profanity_v1",
+            overrides={override.key: override},
+            reviewer_model="synthetic-model",
+            timing_policy=None,
+        )
+        result = apply_display_policy(
+            "merged fuck cue",
+            occurrence_id="occ-1",
+            track_id="track-1",
+            canonical_line_index=None,
+            policy=policy,
+        )
+        self.assertEqual(result.text, "merged f* cue")
+        self.assertFalse(result.override_applied)
+        self.assertEqual(result.sensitive_mask_count, 1)
+
+    def test_legacy_multiline_advisory_disables_override_without_rejecting_row(self):
+        self.assertIsNone(
+            _canonical_override_line_index(
+                {"canonical_line_index": "4", "canonical_line_indices": "[4, 5]"},
+                position=1,
+            )
+        )
+        with self.assertRaisesRegex(ValueError, "ownership fields disagree"):
+            _canonical_override_line_index(
+                {"canonical_line_index": "4", "canonical_line_indices": "[5, 6]"},
+                position=2,
+            )
 
     def test_expected_text_mismatch_fails_closed(self):
         override = DisplayOverride(

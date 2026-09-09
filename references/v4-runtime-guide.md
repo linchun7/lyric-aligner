@@ -360,7 +360,7 @@ Running `scripts/v4_validate_release.py` on the current canonical-line evaluatio
 normalized_config.segmentation_authority = editor_reconciled
 ```
 
-That value must be produced by a validated production materializer that consumes Editor-Cue Reconciliation evidence. The current narrow topology-rebuttal path is `v4_materialize_editor_reconciled.py`; a future preserve-topology materializer is still required for `full_topology_candidate=true`. Resolving transition/cut/overlap review alone does not create this authority.
+That value must be produced by a validated production materializer that consumes Editor-Cue Reconciliation evidence. The current incomplete-topology production path is the hybrid `v4_materialize_editor_reconciled.py`; `full_topology_candidate=true` remains evaluation evidence only and is not itself production authority. Resolving transition/cut/overlap review alone does not create this authority.
 
 ## 10. Editor-Cue Reconciliation evaluation — 2026-08-23
 
@@ -377,7 +377,7 @@ python scripts/v4_editor_cue_reconcile.py `
   --artifact-out "output/<任务>/EDITOR_RECONCILE_EVAL.artifact.json"
 ```
 
-输入 `final_render` 必须仍是 #70 contract：
+输入 `final_render` 必须仍是 evaluation contract：
 
 ```text
 segmentation_authority = canonical_line_evaluation_only
@@ -400,9 +400,11 @@ production_authority_granted = false
 - `resolved`：canonical interval(s) 完整落入唯一 editor cue，且同 cue 内 canonical material 不互相 overlap；
 - `still_review`：跨 editor boundary、多个重叠 editor cue ownership ambiguity、或同 editor cue 内 canonical overlap；
 - `not_evaluable`：没有 canonical temporal evidence；
-- `rebutted`：schema 保留，但首版不会自动产生。
+- `rebutted`：schema 保留，但 evaluator 本身不会自动授予 production authority。
 
-`full_topology_candidate=true` 仍不能直接进入 release；它不是 `editor_reconciled`。对于另一类经 evaluation 明确证明 editor topology 不完整的任务，可使用 `v4_materialize_editor_reconciled.py` 的窄 rebuttal path：必须存在至少一个 `canonical_unassigned.reason=no_editor_temporal_overlap` witness，reconciliation 内部 assigned/unassigned/status 计数必须闭合，而且 canonical audit 的每一行必须来自 `line_lrc / enhanced_lrc / qrc_word_timing` 显式 timing。editor SRT 文件顺序通常必须单调；若存在逆序，只有当**每一个相邻逆序对在时间上完全不重叠**（逆序后的 cue 已在前一个 cue 开始前结束）时，evaluation 才会显式记录 `editor_file_order_recoverable_nonoverlap_reordering=true`，rebuttal materializer 才可接受该可恢复文件顺序。任何时间重叠的逆序仍 fail closed；`full_topology_candidate` 本身仍要求原始 editor file order 单调。普通跨 editor boundary 不能单独触发 rebuttal。
+`full_topology_candidate=true` 仍不能直接进入 release；它不是 `editor_reconciled`。对于 evaluation 明确证明 editor topology 不完整的任务，`v4_materialize_editor_reconciled.py` 只开放 hybrid rebuttal path：仍要求至少一个 `canonical_unassigned.reason=no_editor_temporal_overlap` witness、reconciliation assigned/unassigned/status 计数闭合、canonical audit 使用受支持的显式 timing，editor 文件顺序单调或仅包含 evaluation 明确认可的非重叠可恢复逆序；普通跨 editor boundary 不能单独触发 rebuttal。
+
+在 production materializer 之前，先用 exact canonical evaluation SRT/audit 运行任务级 editor preservation，例如 `v4_upgrade_subtitles.py` 的 `editor_preservation.scope=all_occurrences`。该阶段只恢复 exact + unique + neighbor-compatible 的 immutable editor timing/topology，输出仍 `publish_ready=false`。crossfade 下全局 occurrence 可非连续，但实际恢复区域必须连续；nonlexical editor cue 保留且不参与 canonical stream matcher。
 
 ```powershell
 python scripts/v4_materialize_editor_reconciled.py `
@@ -413,23 +415,27 @@ python scripts/v4_materialize_editor_reconciled.py `
   --render-artifact <canonical_eval.artifact.json> `
   --reconciliation <editor_reconciliation.json> `
   --reconciliation-artifact <editor_reconciliation.artifact.json> `
+  --preserved-srt <editor_preservation/final.srt> `
+  --preserved-report <editor_preservation/final.csv> `
+  --preservation-report <editor_preservation/preservation.json> `
+  --preservation-artifact <editor_preservation/preservation.artifact.json> `
   --final-srt <FINAL.srt> `
   --final-report <FINAL.audit.csv> `
   --final-qa <FINAL.qa.json> `
   --artifact-out <FINAL.render.artifact.json>
 ```
 
-成功时 final SRT/audit 与 canonical evaluation 逐字节一致；只有 QA 与新的 `final_render` artifact 获得 production authority。新 artifact 必须记录 source evaluation render、reconciliation artifact、rebuttal witness count 与 timing-format counts，且三层 production authority 均为 `editor_reconciled` / `publish_ready=true`。随后仍必须正常运行 `v4_validate_release.py`；release validator 没有 topology-rebuttal 特例。
+成功时 final SRT/audit 来自经过验证的 preservation 产物，**不再要求也通常不会与 canonical evaluation 逐字节一致**。materializer 会核对 preservation 精确绑定 evaluation SRT/audit、至少一次真实 restore、`model_timing_authority_used=false`，并用 `canonical_content_start/end` 验证每个 occurrence 的 normalized canonical character stream 完整连续覆盖；任何 gap、overlap、越界或 ownership 冲突均 fail closed。新 `final_render` artifact 同时绑定 source evaluation、reconciliation、preservation 三个 upstream，并记录 `production_materialization_mode=hybrid_editor_preservation_after_editor_topology_rebuttal`。随后仍必须正常运行 `v4_audit_final.py` / semantic audit / `v4_validate_release.py`；release validator 没有绕过完整性检查的 topology 特例。
 
 ### Production display policy（可选，production authority 之后）
 
-已获得 `editor_reconciled` / `publish_ready=true` 的 production render 如需做平台展示处理，可再运行 `scripts/v4_apply_display_policy.py`。该阶段不重新推导歌词时间轴：cue 数量、编号、开始时间、occurrence、track 与 canonical line identity 必须完全保持不变。viewer-facing 文本可以按下面的严格规则改写；结束时间只允许在显式启用 `trim_extreme_unknown_end_v1` 时**缩短**，禁止延长、禁止移动开始时间。
+已获得 `editor_reconciled / publish_ready=true` 的 production render 如需平台展示处理，可再运行 `scripts/v4_apply_display_policy.py`。该阶段不重新推导歌词结构：cue 数量、编号、开始时间、occurrence、track 与 canonical character ownership 都保持；结束时间只允许显式 shorten-only policy 缩短，禁止延长、禁止移动 start。
 
-显式模型修订通过 task-bound `display-text-policy-1.0` JSON 提供；每条 override 必须绑定 `occurrence_id + track_id + canonical_line_index + expected_text`，并明确 `confidence=high`、reviewer 与 reason。源 SRT 文本与 `expected_text` 不完全一致、override 未命中或命中不唯一时均 fail closed。模型修订不得回写 canonical lyric truth。
+hybrid preservation 允许一个 canonical line 被多个 editor cue 切分，或一个 editor cue 覆盖多个连续 canonical lines。因此 display 层把全局 policy 与显式 override 分开：`strong_profanity_v1` 和 shorten-only timing 可应用于多行 ownership cue；显式模型 override 仍必须唯一绑定 `occurrence_id + track_id + 单一 canonical_line_index + expected_text`。若 cue 具有多个 canonical line identities，则该 cue 不接受 line-bound override；若 policy 中某个 override 因 split/merge 最终无法命中恰好一次，整次 display materialization fail closed。模型修订不得回写 canonical lyric truth。
 
 `strong_profanity_v1` 是窄自动打码 profile，只处理明确强脏词，例如 `fuck/fucking -> f*`；`sexy`、`shot`、`bullet`、`kill`、`damn` 等语境相关词不会自动改写，必须由模型/人工语境审查决定。
 
-可选 `timing_policy.mode=trim_extreme_unknown_end_v1` 只解决 line-LRC 没有真实 vocal-end、被 `next_line_start` 被动拉长的极端挂字幕：`source_end_basis` 只能是 `next_line_start`；只有源 duration 达到 policy 阈值时才允许把显示 end 缩到 `start + max_display_hold_ms`，且 `max_display_hold_ms` 必须小于触发阈值。`open_end`、显式 word timing、普通短/中等 duration 均不受该规则影响。输出 audit 必须同时保留 source/display start/end、`canonical_text` / `display_text`、policy identity、reviewer 与 change reasons，并重新计算 final `text_sha256/cue_id`。
+可选 `timing_policy.mode=trim_extreme_unknown_end_v1` 只解决 line-LRC 没有真实 vocal-end、被 `next_line_start` 被动拉长的极端挂字幕：`source_end_basis` 只能是 `next_line_start`；只有源 duration 达到 policy 阈值时才允许把显示 end 缩到 `start + max_display_hold_ms`，且 `max_display_hold_ms` 必须小于触发阈值。`open_end`、显式 word timing、普通短/中等 duration 均不受该规则影响。输出 audit 同时保留 source/display start/end、`canonical_text` / `display_text`、policy identity、reviewer 与 change reasons，并重新计算 final `text_sha256/cue_id`。
 
 ```powershell
 python scripts/v4_apply_display_policy.py `
@@ -445,7 +451,7 @@ python scripts/v4_apply_display_policy.py `
   --artifact-out <DISPLAY_FINAL.render.artifact.json>
 ```
 
-该阶段生成一个新的、仍为 `stage=final_render` 的 hash-bound production artifact，并以上一层 production render 为 upstream。发布时只把**新的 display final-render artifact**交给 `v4_validate_release.py`，因此现有“exactly one final_render”与三层 `editor_reconciled` authority gate 不需要任何例外。
+该阶段生成新的、仍为 `stage=final_render` 的 hash-bound production artifact，并以上一层 hybrid production render 为 upstream。发布时只把新的 display final-render artifact 交给 release validator；display policy 不能绕过 `editor_reconciled` authority、semantic sync 或 final structural audit。
 
 ### Semantic timing audit（a17 起 release 硬门）
 
@@ -458,3 +464,4 @@ python scripts/v4_apply_display_policy.py `
 `scripts/v4_audit_final.py` 是 diagnostic-only 检查，不生成 production artifact，也不授予 timing/text/segmentation/release authority。它要求 final SRT 与 audit CSV exact binding、QA 已 publish-ready，并从同 task 的 run/timeline 读取 authoritative occurrence windows、`content_end` 与已确认 overlap regions；`--out` 不能覆盖 task/direct/run 声明的任何输入路径。
 
 它统一报告 cue duration 分布、<500 ms 短 cue、>6 s 长驻留、>=8 s 极端驻留、final file order、occurrence-window containment、content-end 越界，以及 cue overlap。长驻留只作为 presentation warning，不自动判错；跨 occurrence overlap 只有在交集完整落入该 pair 的 confirmed-overlap region 时才允许，同 occurrence overlap 或未确认 cross-track overlap 都是 structural error。命令返回 `0` 表示结构检查通过（可以仍有 warning），返回 `2` 表示发现 structural error。该检查不能替代 `v4_validate_release.py`；推荐顺序是 production/display materialization -> `v4_audit_final.py` -> `v4_validate_release.py`。
+对于 hybrid split/merge，`canonical_line_indices` 可为多值并表达一个 editor cue 对多个连续 canonical line 的 ownership；这只影响 ownership/display policy 的绑定，不改变 semantic/release gate 的独立 audio evidence 要求。

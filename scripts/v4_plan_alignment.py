@@ -28,7 +28,7 @@ from lyric_aligner.contracts.artifacts import (
     validate_artifact_output,
     validate_upstream_artifact,
 )
-from task_contract import load_task_manifest, verify_manifest_inputs
+from task_contract import load_task_manifest, resolve_repository_path, verify_manifest_inputs
 
 
 _RUN_ROLES = {
@@ -100,8 +100,8 @@ def _load_timelines(
         artifact_value = str(occurrence.get("timeline_artifact_path") or "").strip()
         if not timeline_value or not artifact_value:
             continue
-        timeline_path = Path(timeline_value)
-        artifact_path = Path(artifact_value)
+        timeline_path = resolve_repository_path(timeline_value, REPOSITORY_ROOT)
+        artifact_path = resolve_repository_path(artifact_value, REPOSITORY_ROOT)
         timeline = _load(timeline_path)
         timeline_artifact = _load(artifact_path)
         stage = str(timeline_artifact.get("stage") or "")

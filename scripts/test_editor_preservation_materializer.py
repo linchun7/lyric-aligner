@@ -6,6 +6,7 @@ from lyric_aligner.assets.bindings import bindings_from_payload
 from lyric_aligner.contracts.artifacts import build_artifact_manifest,validate_artifact_output
 from lyric_aligner.srt import Cue,parse_srt_strict
 from task_contract import build_task_manifest,write_json_atomic
+import v4_preserve_editor_occurrence as preservation
 from v4_preserve_editor_occurrence import _select_region_target_positions,materialize
 from v4_shadow_upgrade import _cue_ranges
 
@@ -25,6 +26,55 @@ class EditorMaterializerTests(unittest.TestCase):
         from v4_materialize_calibrated_alignment import _write_srt
         _write_srt(args['srt_path'],[row,second])
         return args
+
+    def test_auto_region_restores_without_manual_line_numbers(self):
+        args=self.region_fixture()
+        report=materialize(**args,canonical_region='auto')
+        self.assertEqual(report['canonical_region'],[0,1])
+        self.assertEqual(report['automatic_selection']['action'],'restore')
+        cues=parse_srt_strict(args['output_dir']/'final.srt')
+        self.assertEqual([(c.start_ms,c.end_ms) for c in cues],[(1000,3000),(8000,9000)])
+
+    def test_auto_region_keeps_conflicting_region_without_partial_mutation(self):
+        args=self.region_fixture(overlapping=True)
+        before=args['srt_path'].read_bytes()
+        report=materialize(**args,canonical_region='auto')
+        self.assertEqual(report['automatic_selection']['action'],'keep')
+        self.assertIn('overlaps retained',report['automatic_selection']['candidates'][0]['reason'])
+        self.assertEqual(parse_srt_strict(args['output_dir']/'final.srt'),parse_srt_strict(args['srt_path']))
+        self.assertEqual(args['srt_path'].read_bytes(),before)
+        self.assertEqual(report['restored_editor_cues'],0)
+
+    def test_auto_region_allows_interleaved_foreign_cue_but_whole_occurrence_refuses(self):
+        args=self.region_fixture()
+        with args['audit_path'].open(encoding='utf-8') as handle:
+            rows=list(csv.DictReader(handle))
+        foreign=dict(rows[0],start_ms=7500,end_ms=7800,text='foreign overlap track',
+                     occurrence_id='foreign-occurrence',canonical_line_index='77')
+        combined=[rows[0],foreign,rows[1]]
+        with args['audit_path'].open('w',encoding='utf-8',newline='') as handle:
+            writer=csv.DictWriter(handle,fieldnames=list(combined[0]));writer.writeheader();writer.writerows(combined)
+        from v4_materialize_calibrated_alignment import _write_srt
+        _write_srt(args['srt_path'],combined)
+        with self.assertRaisesRegex(ValueError,'whole-occurrence restoration requires contiguous'):
+            materialize(**args)
+        self.assertFalse(args['output_dir'].exists())
+        report=materialize(**args,canonical_region='auto')
+        self.assertEqual(report['automatic_selection']['action'],'restore')
+        cues=parse_srt_strict(args['output_dir']/'final.srt')
+        self.assertEqual([(cue.start_ms,cue.end_ms,cue.text) for cue in cues],[
+            (1000,3000,'Deeper than I’ve ever known'),
+            (7500,7800,'foreign overlap track'),
+            (8000,9000,'unresolved content'),
+        ])
+
+    def test_auto_region_repeat_is_noop(self):
+        args=self.region_fixture();materialize(**args,canonical_region='auto')
+        again=dict(args,srt_path=args['output_dir']/'final.srt',audit_path=args['output_dir']/'final.csv',
+                   output_dir=args['output_dir'].with_name('repeat'))
+        report=materialize(**again,canonical_region='auto')
+        self.assertEqual(report['automatic_selection']['action'],'keep')
+        self.assertEqual(parse_srt_strict(again['output_dir']/'final.srt'),parse_srt_strict(again['srt_path']))
 
     def test_region_preserves_unselected_content_in_same_occurrence(self):
         args=self.region_fixture();report=materialize(**args,canonical_region=[0,1])
@@ -319,6 +369,27 @@ class EditorMaterializerTests(unittest.TestCase):
         return dict(manifest_path=mp,srt_path=srt,audit_path=audit,run_path=rp,run_artifact_path=rap,
             assets_path=assetp,assets_artifact_path=assetap,occurrence_id=oid,output_dir=root/'result')
 
+    def test_auto_region_ignores_nonlexical_source_cue_but_retains_baseline_cue(self):
+        args=self.fixture(source_srt_text=(
+            "1\n00:00:00,500 --> 00:00:00,900\n'\n\n"
+            "2\n00:00:01,000 --> 00:00:03,000\ndeep than i've ever known\n"
+        ))
+        with args['audit_path'].open(encoding='utf-8') as handle:
+            canonical=next(csv.DictReader(handle))
+        nonlexical=dict(canonical,start_ms=500,end_ms=900,text="'",canonical_line_index='99')
+        canonical=dict(canonical,start_ms=5000,end_ms=7000,canonical_line_index='0')
+        with args['audit_path'].open('w',encoding='utf-8',newline='') as handle:
+            writer=csv.DictWriter(handle,fieldnames=list(canonical));writer.writeheader();writer.writerows([nonlexical,canonical])
+        from v4_materialize_calibrated_alignment import _write_srt
+        _write_srt(args['srt_path'],[nonlexical,canonical])
+        report=materialize(**args,canonical_region='auto')
+        self.assertEqual(report['automatic_selection']['action'],'restore')
+        cues=parse_srt_strict(args['output_dir']/'final.srt')
+        self.assertEqual([(cue.start_ms,cue.end_ms,cue.text) for cue in cues],[
+            (500,900,"'"),(1000,3000,'Deeper than I’ve ever known')
+        ])
+        self.assertIn(1,report['smart_input_preparation']['nonlexical_source_cue_numbers'])
+
     def test_nonlexical_editor_cue_does_not_block_other_occurrence(self):
         args=self.fixture(nonlexical=True)
         with args['audit_path'].open(encoding='utf-8') as f: row=next(csv.DictReader(f))
@@ -375,6 +446,78 @@ class EditorMaterializerTests(unittest.TestCase):
         self.assertEqual(parse_srt_strict(args['output_dir']/'final.srt')[0].start_ms,1000)
         artifact=json.loads((args['output_dir']/'preservation.artifact.json').read_text(encoding='utf-8'))
         self.assertEqual(validate_artifact_output(artifact,role='final_srt',path=args['output_dir']/'final.srt'),[])
+
+    def test_batch_preservation_is_atomic_and_idempotent(self):
+        from v4_preserve_editor_batch import materialize_batch
+        args=self.fixture()
+        batch_args={key:args[key] for key in ('manifest_path','srt_path','audit_path','run_path','run_artifact_path','assets_path','assets_artifact_path','output_dir')}
+        report=materialize_batch(**batch_args)
+        self.assertEqual(report['occurrence_count'],1)
+        self.assertEqual(report['restore_stage_count'],1)
+        self.assertEqual(report['stage_count'],2)
+        self.assertEqual(report['restored_editor_cues_total'],1)
+        self.assertEqual(parse_srt_strict(args['output_dir']/'final.srt')[0].start_ms,1000)
+        artifact=json.loads((args['output_dir']/'preservation.artifact.json').read_text(encoding='utf-8'))
+        for role,name in [('final_srt','final.srt'),('audit_csv','final.csv'),('preservation_report','preservation.json')]:
+            self.assertEqual(validate_artifact_output(artifact,role=role,path=args['output_dir']/name),[])
+        repeat=args['output_dir'].with_name('batch_repeat')
+        second=materialize_batch(**dict(batch_args,srt_path=args['output_dir']/'final.srt',
+            audit_path=args['output_dir']/'final.csv',output_dir=repeat))
+        self.assertEqual(second['restore_stage_count'],0)
+        self.assertEqual((args['output_dir']/'final.srt').read_bytes(),(repeat/'final.srt').read_bytes())
+
+    def test_batch_reuses_smart_observation_after_restore(self):
+        from v4_preserve_editor_batch import materialize_batch
+        import v4_preserve_editor_batch as batch
+        preservation._EDITOR_OBSERVATION_CACHE.clear()
+        args=self.fixture(baseline_specs=[(5000,7000,'Deeper than I’ve ever known',0)])
+        calls=[]
+        original=preservation.smart_repair_srt_text
+        def counted(*a,**kw):
+            calls.append(1)
+            return original(*a,**kw)
+        preservation.smart_repair_srt_text=counted
+        batch.materialize_occurrence.__globals__['smart_repair_srt_text']=counted
+        preservation._EDITOR_OBSERVATION_CACHE.clear()
+        self.addCleanup(lambda: setattr(preservation,'smart_repair_srt_text',original))
+        self.addCleanup(lambda: preservation.materialize.__globals__.update(smart_repair_srt_text=original))
+        batch_args={key:args[key] for key in ('manifest_path','srt_path','audit_path','run_path','run_artifact_path','assets_path','assets_artifact_path','output_dir')}
+        materialize_batch(**batch_args)
+        self.assertEqual(len(calls),1)
+
+    def test_batch_preservation_pass_limit_leaves_no_partial_product(self):
+        from v4_preserve_editor_batch import materialize_batch
+        args=self.fixture()
+        batch_args={key:args[key] for key in ('manifest_path','srt_path','audit_path','run_path','run_artifact_path','assets_path','assets_artifact_path','output_dir')}
+        with self.assertRaisesRegex(ValueError,'did not converge'):
+            materialize_batch(**batch_args,max_passes_per_occurrence=1)
+        self.assertFalse(args['output_dir'].exists())
+
+    def test_upgrade_entry_can_restore_all_occurrences_transactionally(self):
+        from v4_upgrade_subtitles import run_job
+        args=self.fixture();root=args['output_dir'].parent
+        config={key:str(args[key+'_path']) for key in ('run','run_artifact','assets','assets_artifact')}
+        config['scope']='all_occurrences'
+        job=dict(schema_version='subtitle-upgrade-job-1.0',task_manifest=str(args['manifest_path']),
+            srt=str(args['srt_path']),report=str(args['audit_path']),editor_preservation=config)
+        jp=root/'batch_job.json';write_json_atomic(jp,job)
+        result=run_job(jp,args['output_dir'])
+        self.assertEqual(result['editor_preservation_scope'],'all_occurrences')
+        self.assertEqual(result['preservation']['restore_stage_count'],1)
+        self.assertFalse(result['publish_ready'])
+        self.assertEqual(parse_srt_strict(args['output_dir']/'final.srt')[0].start_ms,1000)
+
+    def test_all_occurrences_scope_rejects_manual_occurrence_identity(self):
+        from v4_upgrade_subtitles import run_job
+        args=self.fixture();root=args['output_dir'].parent
+        config={key:str(args[key+'_path']) for key in ('run','run_artifact','assets','assets_artifact')}
+        config.update(scope='all_occurrences',occurrence_id=args['occurrence_id'])
+        job=dict(schema_version='subtitle-upgrade-job-1.0',task_manifest=str(args['manifest_path']),
+            srt=str(args['srt_path']),report=str(args['audit_path']),editor_preservation=config)
+        jp=root/'bad_batch_job.json';write_json_atomic(jp,job)
+        with self.assertRaisesRegex(ValueError,'cannot specify occurrence_id'):
+            run_job(jp,args['output_dir'])
+        self.assertFalse(args['output_dir'].exists())
 
     def test_preservation_rejects_incompatible_locked_stage(self):
         from v4_upgrade_subtitles import run_job

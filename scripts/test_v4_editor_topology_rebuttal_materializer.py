@@ -7,8 +7,8 @@ import unittest
 from pathlib import Path
 
 from lyric_aligner import __version__
-from lyric_aligner.contracts.artifacts import build_artifact_manifest
-from lyric_aligner.srt import Cue, cue_id, text_sha256
+from lyric_aligner.contracts.artifacts import build_artifact_manifest, sha256_file
+from lyric_aligner.srt import Cue, cue_id, parse_srt_strict, text_sha256
 from semantic_sync_test_support import write_passing_semantic_sync_fixture
 from task_contract import build_task_manifest, write_json_atomic
 
@@ -62,8 +62,8 @@ class V4EditorTopologyRebuttalMaterializerTests(unittest.TestCase):
         source_srt = input_dir / "source.srt"
         if gap_witness:
             editor_cues = [
-                Cue(10, 0, 1000, "editor alpha"),
-                Cue(20, 3000, 4000, "editor beta"),
+                Cue(10, 0, 1000, "canonical alpha"),
+                Cue(20, 3000, 4000, "canonical beta"),
             ]
             canonical_cues = [
                 Cue(1, 200, 800, "canonical alpha"),
@@ -74,7 +74,7 @@ class V4EditorTopologyRebuttalMaterializerTests(unittest.TestCase):
                 editor_cues = [editor_cues[1], editor_cues[0]]
         else:
             editor_cues = [
-                Cue(10, 0, 1000, "editor alpha"),
+                Cue(10, 0, 1000, "canonical alpha"),
                 Cue(20, 1000, 2000, "editor beta"),
             ]
             canonical_cues = [Cue(1, 500, 1500, "canonical crossing boundary")]
@@ -216,6 +216,85 @@ class V4EditorTopologyRebuttalMaterializerTests(unittest.TestCase):
         )
         self.assertEqual(reconcile_result.returncode, 0, msg=reconcile_result.stderr)
 
+        preservation_dir = root / "preservation"
+        preservation_dir.mkdir()
+        preserved_srt = preservation_dir / "final.srt"
+        if gap_witness:
+            preserved_cues = [
+                Cue(1, 0, 1000, "canonical alpha"),
+                Cue(2, 1600, 2200, "canonical missing topology"),
+                Cue(3, 3000, 4000, "canonical beta"),
+            ]
+        else:
+            preserved_cues = list(canonical_cues)
+        write_srt(preserved_srt, preserved_cues)
+
+        preserved_report = preservation_dir / "final.csv"
+        preserved_fieldnames = [*fieldnames, "canonical_line_indices"]
+        with preserved_report.open("w", encoding="utf-8-sig", newline="") as handle:
+            writer = csv.DictWriter(handle, fieldnames=preserved_fieldnames)
+            writer.writeheader()
+            for position, cue in enumerate(preserved_cues, start=1):
+                editor_timing = bool(gap_witness and position in {1, 3})
+                writer.writerow(
+                    {
+                        "position": position,
+                        "cue_number": cue.number,
+                        "start_ms": cue.start_ms,
+                        "end_ms": cue.end_ms,
+                        "text": cue.text,
+                        "occurrence_id": "occ-1",
+                        "track_id": "track-1",
+                        "ordinal": 1,
+                        "canonical_line_index": position - 1,
+                        "canonical_line_indices": json.dumps([position - 1]),
+                        "timing_format": "editor_preserved" if editor_timing else timing_format,
+                        "end_basis": "immutable_editor" if editor_timing else "next_line_start",
+                        "task_fingerprint_sha256": fingerprint,
+                        "cue_id": cue_id(position, cue),
+                        "text_sha256": text_sha256(cue.text),
+                    }
+                )
+
+        preservation_report = preservation_dir / "preservation.json"
+        preservation_payload = {
+            "schema_version": "editor-preservation-batch-materialization-1.0",
+            "policy_id": "immutable-editor-all-occurrences-batch-1.0",
+            "task_fingerprint_sha256": fingerprint,
+            "stage_count": 2,
+            "restore_stage_count": 1,
+            "occurrences_with_restore_count": 1,
+            "restored_editor_cues_total": 2 if gap_witness else 1,
+            "timing_basis": "immutable_editor_only_where_exact_unique_compatible_else_unchanged",
+            "model_timing_authority_used": False,
+            "input_srt_sha256": sha256_file(evaluation_srt),
+            "input_audit_sha256": sha256_file(report),
+            "final_srt_sha256": sha256_file(preserved_srt),
+            "final_audit_sha256": sha256_file(preserved_report),
+            "publish_ready": False,
+        }
+        write_json_atomic(preservation_report, preservation_payload)
+        preservation_artifact = build_artifact_manifest(
+            task_fingerprint_sha256=fingerprint,
+            stage="editor_preservation_batch",
+            algorithm_version=__version__,
+            outputs=(
+                ("final_srt", preserved_srt),
+                ("audit_csv", preserved_report),
+                ("preservation_report", preservation_report),
+            ),
+            normalized_config={
+                "policy_id": "immutable-editor-all-occurrences-batch-1.0",
+                "input_sha256": {
+                    str(evaluation_srt.resolve()): sha256_file(evaluation_srt),
+                    str(report.resolve()): sha256_file(report),
+                },
+            },
+            upstream_artifact_ids=(str(render_artifact["artifact_id"]),),
+        )
+        preservation_artifact_path = preservation_dir / "preservation.artifact.json"
+        write_json_atomic(preservation_artifact_path, preservation_artifact)
+
         return {
             "manifest_path": manifest_path,
             "evaluation_srt": evaluation_srt,
@@ -225,6 +304,11 @@ class V4EditorTopologyRebuttalMaterializerTests(unittest.TestCase):
             "render_artifact": render_artifact,
             "reconciliation": reconciliation,
             "reconciliation_artifact": reconciliation_artifact,
+            "preserved_srt": preserved_srt,
+            "preserved_report": preserved_report,
+            "preservation_report": preservation_report,
+            "preservation_artifact": preservation_artifact,
+            "preservation_artifact_path": preservation_artifact_path,
         }
 
     def materialize_command(self, fixture: dict, out_dir: Path) -> list[str]:
@@ -245,6 +329,14 @@ class V4EditorTopologyRebuttalMaterializerTests(unittest.TestCase):
             str(fixture["reconciliation"]),
             "--reconciliation-artifact",
             str(fixture["reconciliation_artifact"]),
+            "--preserved-srt",
+            str(fixture["preserved_srt"]),
+            "--preserved-report",
+            str(fixture["preserved_report"]),
+            "--preservation-report",
+            str(fixture["preservation_report"]),
+            "--preservation-artifact",
+            str(fixture["preservation_artifact_path"]),
             "--final-srt",
             str(out_dir / "FINAL.srt"),
             "--final-report",
@@ -254,6 +346,52 @@ class V4EditorTopologyRebuttalMaterializerTests(unittest.TestCase):
             "--artifact-out",
             str(out_dir / "FINAL.render.artifact.json"),
         ]
+
+    def test_bare_global_canonical_copy_requires_preservation_evidence(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            fixture = self.build_fixture(root, gap_witness=True)
+            command = self.materialize_command(fixture, root / "production")
+            for flag in (
+                "--preserved-srt",
+                "--preserved-report",
+                "--preservation-report",
+                "--preservation-artifact",
+            ):
+                index = command.index(flag)
+                del command[index : index + 2]
+            result = run_command(command)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("--preserved-srt", result.stderr)
+
+    def test_zero_restore_preservation_cannot_authorize_global_copy(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            fixture = self.build_fixture(root, gap_witness=True)
+            preservation = json.loads(
+                fixture["preservation_report"].read_text(encoding="utf-8")
+            )
+            preservation["restore_stage_count"] = 0
+            preservation["occurrences_with_restore_count"] = 0
+            preservation["restored_editor_cues_total"] = 0
+            write_json_atomic(fixture["preservation_report"], preservation)
+            old_artifact = fixture["preservation_artifact"]
+            rebuilt = build_artifact_manifest(
+                task_fingerprint_sha256=preservation["task_fingerprint_sha256"],
+                stage="editor_preservation_batch",
+                algorithm_version=__version__,
+                outputs=(
+                    ("final_srt", fixture["preserved_srt"]),
+                    ("audit_csv", fixture["preserved_report"]),
+                    ("preservation_report", fixture["preservation_report"]),
+                ),
+                normalized_config=old_artifact["normalized_config"],
+                upstream_artifact_ids=old_artifact["upstream_artifact_ids"],
+            )
+            write_json_atomic(fixture["preservation_artifact_path"], rebuilt)
+            result = run_command(self.materialize_command(fixture, root / "production"))
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("at least one proven editor timing restoration", result.stderr)
 
     def test_gap_witness_materializes_and_passes_release_guard(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -270,16 +408,41 @@ class V4EditorTopologyRebuttalMaterializerTests(unittest.TestCase):
 
             self.assertEqual(
                 (out_dir / "FINAL.srt").read_bytes(),
-                fixture["evaluation_srt"].read_bytes(),
+                fixture["preserved_srt"].read_bytes(),
             )
             self.assertEqual(
                 (out_dir / "FINAL.csv").read_bytes(),
-                fixture["report"].read_bytes(),
+                fixture["preserved_report"].read_bytes(),
+            )
+            self.assertNotEqual(
+                (out_dir / "FINAL.srt").read_bytes(), fixture["evaluation_srt"].read_bytes()
+            )
+            final_cues = parse_srt_strict(out_dir / "FINAL.srt")
+            self.assertEqual(
+                [(cue.start_ms, cue.end_ms, cue.text) for cue in final_cues],
+                [
+                    (0, 1000, "canonical alpha"),
+                    (1600, 2200, "canonical missing topology"),
+                    (3000, 4000, "canonical beta"),
+                ],
             )
             qa = json.loads((out_dir / "FINAL.qa.json").read_text(encoding="utf-8"))
             self.assertTrue(qa["publish_ready"])
             self.assertEqual(qa["segmentation_authority"], "editor_reconciled")
             self.assertEqual(qa["editor_topology_resolution"], "rebutted")
+            self.assertEqual(
+                qa["production_materialization_mode"],
+                "hybrid_editor_preservation_after_editor_topology_rebuttal",
+            )
+            self.assertEqual(
+                qa["editor_timing_resolution"], "exact_unique_compatible_regions_preserved"
+            )
+            self.assertEqual(qa["cue_count"], 3)
+            self.assertEqual(qa["canonical_evaluation_cue_count"], 3)
+            self.assertEqual(qa["canonical_identity_coverage_count"], 3)
+            self.assertEqual(
+                qa["editor_preservation_artifact_id"], fixture["preservation_artifact"]["artifact_id"]
+            )
             self.assertEqual(qa["release_blocked_reason"], "")
 
             production_artifact_path = out_dir / "FINAL.render.artifact.json"
@@ -294,6 +457,11 @@ class V4EditorTopologyRebuttalMaterializerTests(unittest.TestCase):
             )
             self.assertIn(
                 fixture["render_artifact"]["artifact_id"],
+                production_artifact["upstream_artifact_ids"],
+            )
+
+            self.assertIn(
+                fixture["preservation_artifact"]["artifact_id"],
                 production_artifact["upstream_artifact_ids"],
             )
 

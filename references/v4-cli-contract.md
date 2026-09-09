@@ -328,3 +328,12 @@ source shadow job 的 `source_asr.multilingual` 可显式设为布尔 `true`，�
 普通升级job与显式shadow job仅接受各自实现声明的字段，未知或误拼字段在输出/推理前报错并列出字段名。普通job的editor_preservation、calibrated_stages、human_confirmations、gap_review和qa，以及shadow的source_asr与sources项同样核对键名。source_asr.multilingual为正确入口；source_config、human_confirmation、canonical_regions等不是别名，不能被默默当作默认或无证据作业。未提供的可选项仍按原默认执行，历史产物读取身份不改。
 
 区域恢复重放兼容既有行索引和已写出的完整canonical字符归属；同一区域再次处理的验收是最终SRT保持，而非再次产生字幕移动。当前开发范围见[维护收敛约定](maintenance-convergence-2026-09-08.md)。
+
+
+#### 2026-09-09 editor preservation batch / hybrid contract
+
+`subtitle-upgrade-job-1.0.editor_preservation` 必须提供 `run`、`run_artifact`、`assets`、`assets_artifact`。默认 `scope="single_occurrence"`：要求 `occurrence_id`，`canonical_region` 省略/`"auto"` 时自动选择本 occurrence 最大安全区域，显式 `[first,end]` 继续支持，显式 `null` 仍是严格 whole-occurrence。`scope="all_occurrences"` 时禁止 `occurrence_id` 与 `canonical_region`，可提供 `max_passes_per_occurrence`；materializer 按 run occurrence 顺序重复 auto restore 直到每首歌稳定。batch 输出仍 `publish_ready=false`，必须进入 fresh product QA / hybrid authority 链。
+
+region 模式允许 crossfade 导致的全局 occurrence 非连续，但实际选中区域必须完整连续；whole-occurrence 仍拒绝非连续 ownership。nonlexical editor cue 不参与 exact canonical stream 匹配并保持原样。run 中 timeline/timeline artifact 的仓库相对路径统一相对 repository root 解析，不依赖调用 cwd，`..` 逃逸拒绝。
+
+`v4_materialize_editor_reconciled.py` 的 production rebuttal 还必须提供 `--preserved-srt / --preserved-report / --preservation-report / --preservation-artifact`。这些输入必须来自 exact-bound `editor_preservation_batch`，至少包含一次 restore，且完整 canonical character coverage 验证通过；成功模式为 `hybrid_editor_preservation_after_editor_topology_rebuttal`。旧“只给 canonical evaluation + reconciliation 就直接发布”的调用不再合法。

@@ -1,6 +1,6 @@
 # 字幕项目下一阶段唯一交接：Max Expected-Loss Production Upgrade
 
-> **当前执行阶段：维护收敛（2026-09-08，用户已确认）。** 暂停扩张式算法升级，按[维护执行约定](maintenance-convergence-2026-09-08.md)修补现有链路。下文旧实验排期与“下一步”保留为历史，不再自动触发新模型或新策略开发。
+> **2026-09-09 当前封板候选：** 本轮已完成 editor-first all-occurrences batch 与 hybrid topology-rebuttal production 链，并在 KPOP130 真实长混剪贯通到 viewer display；历史 development 8 条 MAE 584.9375->501.6875ms。KPOP110/WALK120/WALK140/H190/KPOP200 的真实运行证明该保守恢复机制具有跨项目覆盖，但不构成 blind accuracy。下文 2026-09-08 的 source/HFA/词典/新声学“下一步”均保留为历史实验记录，**不再是自动待办**。未来若重新扩张声学策略，必须先冻结新的 untouched final-mix truth，并证明最终 viewer SRT 相对 editor/当前 hybrid 的净收益。
 
 
 第九切片后续数据入口：已由官方Range取得完整 `private/source_context_upgrade9_20260908/musdb_fresh/test/Al James - Schoolboy Facination.stem.mp4`，SHA256 `206d1ed3f140305c152496dc8be1e6476531e94b92ffb1022cc1dca84cebc10e`，约200.327秒，5条音频流；尚未提取mixture、读取标注或预测。使用 `output/source_context_upgrade9_20260908/musdb_fresh_asset_receipt_v2.json` 及selection_v2中的更正，保留v1。选曲来源是3989267行标注目录而非15547046词级API；先确认适用标注粒度、冻结后续预测，再评价，不能当已有独立收益。今天正负实验总表为 [准确率实验登记](accuracy-experiment-register-2026-09-08.md)。
@@ -693,3 +693,6 @@ WALK实际归因：696–736秒15个波形patch相对旧mapping偏差仅2.28–2
 新增默认关闭的 source_asr.multilingual=true（language=null），原生逐段检测、source-observer-1.2 独立缓存；旧默认和1.0/1.1缓存身份不变。Whiplash同turbo/音频对照：auto 5候选/5采用，整曲en 0/0，逐段自动11/10；新模式相对输入写出8 start、10 end，文字不变。这是覆盖和写出变化，没有独立端点gold，不能声称准确率提升。
 
 Al James独立公开词起点诊断：严格唯一上下文匹配92/312，220保留null；新旧共同92起点全部一致，MAE539.966ms、p95 1543.249ms、max5880ms无变化。旧en与新auto+multilingual同时改变两个控制，不能称单因素；归因附加更正保留原报告和收据。无word-end真值、不是blind，不推广默认、不宣布封板。逐段模式开头误识别未恢复，并丢失auto的第36条候选（end55209退回56294ms）；相对auto共11条cue时间变化，不能称无损收益。三组固定对照完整记录于output/source_context_upgrade12_20260908/。
+## 2026-09-09 editor-first / hybrid 最终封板文档收口
+
+当前收口必须区分 hybrid production/materializer QA、viewer final structural audit 与 semantic/release gate。KPOP130 viewer display v3 structural audit 已通过：`passed=true`、errors=0、window violation=0、content-end violation=0、confirmed/unconfirmed overlap 均为0；warning仅 `long_display_holds` 10条（duration min349 / median1902.5 / p95 4395.3 / max7563ms，0条>=8000ms）。但 semantic/release gate 仍失败：projection editor witness 2/12 track fail，independent-audio final layer 12/12 fail，`audio_anchor_count=0`。formal fusion SHA `01575459...` 为 `e22f10d` 前旧证据，缺少当前 `canonical_start_covered` / `canonical_match_ambiguous` 等资格字段；不得复用旧 semantic QA。完整 release-ready 仍需 fresh independent audio evidence/fusion 并通过 semantic gate，不能把 materializer `publish_ready=true`作为完整发布结论。

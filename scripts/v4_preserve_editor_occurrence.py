@@ -29,6 +29,46 @@ from scripts.v4_smart_repair import _json_safe
 
 
 SMART_INPUT_POLICY_ID = "editor-lexical-observation-input-1.0"
+_EDITOR_OBSERVATION_CACHE = {}
+
+
+def _editor_observation_context(*, source_path, bindings, assets_artifact_id):
+    """Build the immutable editor/Smart observation once per input identity.
+
+    Batch preservation changes only the downstream baseline after each restored
+    region. Re-running Smart over the same immutable source SRT and canonical
+    bindings for every region is expensive and semantically redundant. Cache
+    only the observation layer; ownership, neighbor, overlap, lineage and output
+    integrity checks still run for every region.
+    """
+    source_sha=sha256_file(source_path)
+    key=(source_sha,str(assets_artifact_id),SMART_POLICY_ID,SMART_INPUT_POLICY_ID)
+    cached=_EDITOR_OBSERVATION_CACHE.get(key)
+    if cached is not None:
+        source,repaired,lexical_ordinals,input_preparation,smart,canonical=cached
+        return list(source),list(repaired),list(lexical_ordinals),dict(input_preparation),smart,list(canonical),source_sha
+    source=parse_srt_strict(source_path)
+    timed=[];canonical=[]
+    for ordinal,binding in enumerate(bindings):
+        for line in parse_canonical_lyrics(Path(binding.canonical_lyric_path),original_index_by_timestamp=binding.original_index_by_timestamp):
+            normalized=_normalize_for_match(line.text)
+            if not normalized:continue
+            index=len(timed)
+            timed.append(TimedCanonicalOccurrence(index,Path(binding.canonical_lyric_path).name,ordinal,
+                line.time_ms,line.text,normalized,line.tokens,line.timing_format))
+            canonical.append(CanonicalLine(index,Path(binding.canonical_lyric_path).name,line.text,normalized,ordinal))
+    smart_input,lexical_ordinals,input_preparation=_prepare_smart_input(source_path.read_text(encoding='utf-8-sig'),source)
+    repaired_text,smart=smart_repair_srt_text(smart_input,timed,canonical)
+    _,parsed=parse_srt_text(repaired_text)
+    if len(parsed)!=len(lexical_ordinals):raise ValueError('Smart changed editor cue count')
+    repaired=list(source)
+    for source_index,p in zip(lexical_ordinals,parsed):
+        if int(p.number)!=source[source_index].number:raise ValueError('Smart changed editor cue identity')
+        repaired[source_index]=Cue(int(p.number),parse_time(p.timing.split('-->')[0]),
+            parse_time(p.timing.split('-->')[1]),p.text)
+    if len(_EDITOR_OBSERVATION_CACHE)>=8:_EDITOR_OBSERVATION_CACHE.clear()
+    _EDITOR_OBSERVATION_CACHE[key]=(tuple(source),tuple(repaired),tuple(lexical_ordinals),dict(input_preparation),smart,tuple(canonical))
+    return source,repaired,lexical_ordinals,input_preparation,smart,canonical,source_sha
 
 
 def _prepare_smart_input(source_text, source):
@@ -198,6 +238,50 @@ def _select_region_target_positions(*, baseline, baseline_rows, candidate_positi
     return selected
 
 
+AUTO_REGION_POLICY_ID = 'immutable-editor-auto-region-1.0'
+
+
+def _choose_editor_region(*, regions, selected, source, repaired, selected_lines,
+                          binding, baseline, baseline_rows, target_positions, first, last):
+    """Choose a proven, compatible region without model predictions or human gold."""
+    outcomes=[];eligible=[]
+    bound=parse_canonical_lyrics(Path(binding.canonical_lyric_path),
+        original_index_by_timestamp=binding.original_index_by_timestamp)
+    bound_stream=''.join(_normalize_for_match(line.text) for line in bound)
+    for region in regions:
+        span=region['canonical_line_range'];a,b=span;x,y=region['editor_cue_range']
+        indices=selected[x:y];lines=selected_lines[a:b]
+        item=dict(canonical_region=span,editor_cue_count=len(indices))
+        try:
+            if not indices or any(source[i].start_ms<first or source[i].end_ms>last for i in indices):
+                raise ValueError('editor cue crosses occurrence boundary')
+            prefix=_absolute_canonical_content_prefix(binding,lines)
+            positions=_select_region_target_positions(baseline=baseline,baseline_rows=baseline_rows,
+                candidate_positions=target_positions,selected_lines=lines,
+                content_prefix=prefix,bound_stream=bound_stream)
+            if ''.join(_normalize_for_match(baseline[i].text) for i in positions)!=_normalize_for_match(' '.join(r['text'] for r in lines)):
+                raise ValueError('baseline region canonical content differs')
+            restored,_=canonical_editor_cues([source[i] for i in indices],
+                [repaired[i] for i in indices],[r['text'] for r in lines])
+            retained=[c for i,c in enumerate(baseline) if i not in set(positions)]
+            if any(n.start_ms<o.end_ms and o.start_ms<n.end_ms for n in restored for o in retained):
+                raise ValueError('restored editor cue overlaps retained subtitle content')
+            proposed=baseline[:positions[0]]+restored+baseline[positions[-1]+1:]
+            if any(l.start_ms>r.start_ms for l,r in zip(proposed,proposed[1:])):
+                raise ValueError('restoration reverses cue order')
+            signature=lambda cues:[(c.start_ms,c.end_ms,c.text) for c in cues]
+            if signature(restored)==signature([baseline[i] for i in positions]):
+                item.update(status='keep',reason='already_preserved')
+            else:
+                item.update(status='eligible',reason='exact_canonical_stream_and_compatible_neighbors')
+                eligible.append((len(indices),a,span))
+        except ValueError as exc:
+            item.update(status='keep',reason=str(exc))
+        outcomes.append(item)
+    chosen=sorted(eligible,key=lambda r:(-r[0],r[1]))[0][2] if eligible else None
+    return chosen,outcomes
+
+
 def materialize(*,manifest_path,srt_path,audit_path,run_path,run_artifact_path,
                 assets_path,assets_artifact_path,occurrence_id,output_dir,canonical_region=None):
     paths={name:Path(value).resolve() for name,value in dict(manifest=manifest_path,srt=srt_path,
@@ -227,8 +311,10 @@ def materialize(*,manifest_path,srt_path,audit_path,run_path,run_artifact_path,
     validate_srt_report_binding(paths['srt'],paths['audit'],expected_task_fingerprint=fingerprint)
     baseline=parse_srt_strict(paths['srt']);baseline_rows=read_audit_rows(paths['audit'])
     target_positions=[i for i,r in enumerate(baseline_rows) if r.get('occurrence_id')==occurrence_id]
-    if not target_positions or target_positions!=list(range(target_positions[0],target_positions[-1]+1)):
-        raise ValueError('target occurrence is missing or noncontiguous in baseline')
+    if not target_positions:
+        raise ValueError('target occurrence is missing from baseline')
+    if canonical_region is None and target_positions!=list(range(target_positions[0],target_positions[-1]+1)):
+        raise ValueError('whole-occurrence restoration requires contiguous baseline ownership')
     if any(c.start_ms<first or c.end_ms>last for i,c in enumerate(baseline) if i in target_positions):
         raise ValueError('baseline occurrence extends beyond selected window')
     source_path=resolve_manifest_record(paths['manifest'],manifest['inputs']['source_srt'])
@@ -246,28 +332,11 @@ def materialize(*,manifest_path,srt_path,audit_path,run_path,run_artifact_path,
     for dependency in declared_input_paths({'run':run,'assets':assets}).values():
         if dependency.is_file():input_hashes[str(dependency.resolve())]=sha256_file(dependency)
     input_hashes[str(source_path)]=sha256_file(source_path)
-    timed=[];canonical=[]
-    for ordinal,binding in enumerate(bindings):
-        for line in parse_canonical_lyrics(Path(binding.canonical_lyric_path),original_index_by_timestamp=binding.original_index_by_timestamp):
-            key=_normalize_for_match(line.text)
-            if not key:continue
-            index=len(timed)
-            timed.append(TimedCanonicalOccurrence(index,Path(binding.canonical_lyric_path).name,ordinal,
-                line.time_ms,line.text,key,line.tokens,line.timing_format))
-            canonical.append(CanonicalLine(index,Path(binding.canonical_lyric_path).name,line.text,key,ordinal))
     binding=next(b for b in bindings if b.occurrence_id==occurrence_id)
     if binding.canonical_selection_sha256!=timeline['canonical_selection_sha256'] or binding.track_id!=timeline['track_id']:
         raise ValueError('canonical selection differs between assets and timeline')
-    smart_input,lexical_ordinals,input_preparation=_prepare_smart_input(source_path.read_text(encoding='utf-8-sig'),source)
-    repaired_text,smart=smart_repair_srt_text(smart_input,timed,canonical)
-    # Parse in memory; there is no provisional SRT on disk before validation.
-    _,parsed=parse_srt_text(repaired_text)
-    if len(parsed)!=len(lexical_ordinals):raise ValueError('Smart changed editor cue count')
-    repaired=list(source)
-    for source_index,p in zip(lexical_ordinals,parsed):
-        if int(p.number)!=source[source_index].number:raise ValueError('Smart changed editor cue identity')
-        repaired[source_index]=Cue(int(p.number),parse_time(p.timing.split('-->')[0]),
-            parse_time(p.timing.split('-->')[1]),p.text)
+    source,repaired,lexical_ordinals,input_preparation,smart,canonical,_=_editor_observation_context(
+        source_path=source_path,bindings=bindings,assets_artifact_id=assets_artifact['artifact_id'])
     # Timing must be compared to the actual Smart output, not reconstructed away.
     for i in selected:
         if (repaired[i].number,repaired[i].start_ms,repaired[i].end_ms)!=(source[i].number,source[i].start_ms,source[i].end_ms):
@@ -287,18 +356,32 @@ def materialize(*,manifest_path,srt_path,audit_path,run_path,run_artifact_path,
                 basis='bound_single_cue_single_word_suffix'))
             repaired[i]=replace(repaired[i],text=corrected)
     selected_lines=timeline['lines']
+    # Region matching needs lexical content, while punctuation/music-marker cues
+    # remain immutable retained subtitle content. Whole-occurrence restoration
+    # keeps its historical all-cue contract and therefore does not use this filter.
+    region_selected=(selected if canonical_region is None else
+        [i for i in selected if _normalize_for_match(repaired[i].text)])
+    auto_requested=canonical_region=='auto'
+    auto_outcomes=[]
+    auto_keep=False
+    if auto_requested:
+        regions=canonical_editor_regions([repaired[i] for i in region_selected],[r['text'] for r in selected_lines])
+        canonical_region,auto_outcomes=_choose_editor_region(regions=regions,selected=region_selected,
+            source=source,repaired=repaired,selected_lines=selected_lines,binding=binding,
+            baseline=baseline,baseline_rows=baseline_rows,target_positions=target_positions,first=first,last=last)
+        auto_keep=canonical_region is None
     effective_policy=POLICY_ID
     content_prefix=None
     if canonical_region is not None:
         if (not isinstance(canonical_region,(list,tuple)) or len(canonical_region)!=2
             or any(type(v) is not int for v in canonical_region)):
             raise ValueError('canonical region must be two integer line positions')
-        regions=canonical_editor_regions([repaired[i] for i in selected],[r['text'] for r in selected_lines])
+        regions=canonical_editor_regions([repaired[i] for i in region_selected],[r['text'] for r in selected_lines])
         region=next((r for r in regions if r['canonical_line_range']==list(canonical_region)),None)
         if region is None:raise ValueError('requested canonical region is not a unique exact whole-cue region')
         a,b=canonical_region
         selected_lines=selected_lines[a:b]
-        x,y=region['editor_cue_range'];selected=selected[x:y]
+        x,y=region['editor_cue_range'];selected=region_selected[x:y]
         if not selected or any(source[i].start_ms<first or source[i].end_ms>last for i in selected):
             raise ValueError('editor cue crosses occurrence boundary or occurrence is empty')
         content_prefix=_absolute_canonical_content_prefix(binding,selected_lines)
@@ -313,10 +396,13 @@ def materialize(*,manifest_path,srt_path,audit_path,run_path,run_artifact_path,
             raise ValueError('baseline region does not contain exactly the selected canonical stream')
         corrections=[r for r in corrections if r['original_cue'] in {source[i].number for i in selected}]
         effective_policy=REGION_POLICY_ID
-    if content_prefix is None:
-        content_prefix=_absolute_canonical_content_prefix(binding,selected_lines)
-    restored,ownership=canonical_editor_cues([source[i] for i in selected],[repaired[i] for i in selected],
-        [r['text'] for r in selected_lines])
+    if auto_keep:
+        selected=[];target_positions=[];restored=[];ownership=[];content_prefix=0;corrections=[]
+    else:
+        if content_prefix is None:
+            content_prefix=_absolute_canonical_content_prefix(binding,selected_lines)
+        restored,ownership=canonical_editor_cues([source[i] for i in selected],[repaired[i] for i in selected],
+            [r['text'] for r in selected_lines])
     fresh=[]
     for cue,owner in zip(restored,ownership):
         owner=dict(owner)
@@ -332,7 +418,8 @@ def materialize(*,manifest_path,srt_path,audit_path,run_path,run_artifact_path,
             canonical_selection_sha256=timeline['canonical_selection_sha256'],canonical_text=cue.text,
             canonical_text_sha256=text_sha256(cue.text),text_policy_id=effective_policy))
     rows=[dict(r,upstream_position=i+1,upstream_cue_id=r.get('cue_id','')) for i,r in enumerate(baseline_rows)]
-    rows[target_positions[0]:target_positions[-1]+1]=fresh
+    if target_positions:
+        rows[target_positions[0]:target_positions[-1]+1]=fresh
     for position,row in enumerate(rows,1):
         cue=Cue(position,int(row['start_ms']),int(row['end_ms']),row['text'])
         row.update(position=position,cue_number=position,cue_id=cue_id(position,cue),
@@ -354,17 +441,20 @@ def materialize(*,manifest_path,srt_path,audit_path,run_path,run_artifact_path,
     if outside_before!=outside_after:raise ValueError('non-target occurrence changed')
     report=dict(schema_version='editor-preservation-materialization-1.0',policy_id=effective_policy,
         canonical_region=canonical_region,
+        automatic_selection=None if not auto_requested else dict(policy_id=AUTO_REGION_POLICY_ID,
+            action='keep' if auto_keep else 'restore',candidates=auto_outcomes,
+            selection_basis='largest compatible exact editor region; earliest canonical position breaks ties'),
         task_fingerprint_sha256=fingerprint,occurrence_id=occurrence_id,inputs=input_hashes,
         baseline_target_cues=len(target_positions),restored_editor_cues=len(restored),
-        timing_basis='immutable_editor',model_timing_authority_used=False,
-        canonical_stream_verified=True,non_target_content_and_timing_unchanged=True,
+        timing_basis='unchanged_baseline' if auto_keep else 'immutable_editor',model_timing_authority_used=False,
+        canonical_stream_verified=not auto_keep,non_target_content_and_timing_unchanged=True,
         text_corrections=corrections,editor_source_cue_numbers=[c.number for c in restored],
         smart_policy_id=SMART_POLICY_ID,smart_input_preparation=input_preparation,smart_report=_json_safe(smart),
         publish_ready=False,qa_status='fresh_product_QA_required')
     atomic_write_json(staging/'preservation.json',report)
     artifact=build_artifact_manifest(task_fingerprint_sha256=fingerprint,stage='editor_preservation',
         algorithm_version=__version__,outputs=(('final_srt',staging/'final.srt'),('audit_csv',staging/'final.csv'),('preservation_report',staging/'preservation.json')),
-        normalized_config=dict(policy_id=effective_policy,smart_input_policy_id=SMART_INPUT_POLICY_ID,occurrence_id=occurrence_id,canonical_region=canonical_region,input_sha256=input_hashes),
+        normalized_config=dict(policy_id=effective_policy,auto_region_policy_id=AUTO_REGION_POLICY_ID if auto_requested else None,smart_input_policy_id=SMART_INPUT_POLICY_ID,occurrence_id=occurrence_id,canonical_region=canonical_region,input_sha256=input_hashes),
         upstream_artifact_ids=tuple(sorted({run_artifact['artifact_id'],assets_artifact['artifact_id'],*timeline_ids})))
     # Paths in the artifact must refer to the transaction's final destination.
     for record in artifact['outputs']:record['path']=str(destination/Path(record['path']).name)

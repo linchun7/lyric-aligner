@@ -1,5 +1,13 @@
 # Lyric Aligner v4 关键变更记录
 
+## 2026-09-08：终轮瓶颈实验与合法区间收益分解
+
+- 新增离线 `evaluation/interval_bottleneck.py`：在完整有序 editor 序列上求最小标注端点误差；同成本优先少改动。分别计算逐点、完整模型区间及可混合单边的合法上限，避免将整句替换与局部修复混为一谈。无标注 cue 固定，不能为 oracle 免费挪动邻句。
+- 缺失候选、非法候选、缺失 gold cue 归属及无 gold 都有显式结果；误差只针对可评分端点，不能用部分覆盖推断全曲准确率。输出仅为诊断，既不授权写回也不训练 selector。
+- 实测采用固定参考窗口、历史 final-mix 对照和待人工标注的新 final-mix 预测。实验模型与依赖保持在本地实验目录，既有生产模型、版本与历史产物保持原状；没有依据本轮历史 gold 接管生产默认。
+- 回归覆盖：跨模型最优边不能冒充完整候选、未标注邻句约束、联合可行路径、缺失覆盖、同成本保留及穷举最优对照。完整检查结果记录于本轮本地实验报告。
+- 兼容与回滚：新增独立离线 API，不修改既有 artifact schema 或 CLI。撤回该模块及其测试即可撤回本次持久代码变更；本地实验结果保留供复核。
+
 2026-09-08 第九切片新增旧锚夹持的完整精确词序源锚，只进入显式joint实验。WALK882条重跑共同解码2→3对，恢复219/220，旧两对区间不变；但220与KEEP221仍重叠3017ms，全局采用0、成品时间/文字变化0。历史三首149行得到9个精确锚（4新增），新增8端点MAE165.75ms、最大312ms；这是源锚证据，不是成品或新盲测精度。无条件二段拆词的43076项词典遮蔽验证仅34.84%发音一致，未接入。隔离Python3.12全量1625项通过（4项可选FLOAT跳过）。全部正负实验登记见 references/accuracy-experiment-register-2026-09-08.md；本轮证据见 output/source_context_upgrade9_20260908/delivery_report.md。不封板。
 
 2026-09-08 第八切片已实现显式相邻共同窗口与原子选择。同输入 WALK882条实跑触发4对，2对完成一次共享声学解码，另外2对因缺词dancefloor/缺右锚拒绝。两处内部候选重叠1929/862ms→0，但全局选择0，成品区间变化0，文字变化0；旧FW和旧HFA输出字节一致。这证明局部冲突机制可修复，不证明整段准确率提高；保留实验身份，不默认推广、不封板。下一步需获得长行内部可靠词级锚与可验证发音覆盖，不能靠放宽外部几何强行采用。工程与实测证据见 `output/source_context_upgrade8_20260908/delivery_report.md`。
@@ -623,3 +631,15 @@ Al James独立公开词起点诊断：严格唯一上下文匹配92/312，220保
 ## 2026-09-08 能力说明与源码上传准备
 
 新增能力与使用边界说明，区分工程评分、辅助修复成熟度与未知的整体识别正确率；同步SKILL和状态入口。此次文档更新不改算法、生产版本或历史产物，不上传私有任务数据及代码。源码推送不等于字幕成品发布或新的准确率封板。
+
+
+## 2026-09-09 editor-first / hybrid production 封板升级
+
+- 新增任务级 `editor_preservation.scope=all_occurrences` 与事务式 batch：每个 occurrence 重复恢复 exact、unique、neighbor-compatible 的 immutable editor 区域直到稳定；Smart immutable observation 同批缓存，真实 KPOP130 输出与未缓存/逐段链逐字节一致。
+- 修复旧 topology rebuttal 的全局替换风险：单个 `no_editor_temporal_overlap` witness 不再授权整份 canonical evaluation timing。production 改为 exact-bound hybrid，要求 preservation 至少真实恢复一次 editor、完整 canonical character coverage、无 gap/overlap，并同时绑定 source render/reconciliation/preservation lineage。
+- 修复三类真实长项目兼容缺陷：reference-retimed 相对路径不再依赖 cwd；crossfade 下 occurrence 全局非连续不再阻断内部安全 region；纯符号/音乐标记等 nonlexical cue 原样保留且不进入文字 region matcher。
+- display policy 支持 hybrid split/merge ownership：全局 mask 与 shorten-only timing 继续工作，显式 override 仍要求唯一单行 identity；KPOP130 viewer display 774 cues 实跑通过，15 explicit overrides、2 masks、6 end trims，仍精确绑定 hybrid production artifact。
+- KPOP130 historical development 8 条边界从旧 FRESH_FINAL MAE 584.9375ms 降至最终 viewer display 501.6875ms；该集已参与开发，不称 blind。六个真实任务合计 85 occurrences，其中 31 个有严格安全恢复、41 restore stages、713->641 region cues；该数字只表示恢复覆盖，不表示总体准确率。
+- 产品版本继续为 `4.0.0a19`，新能力由独立 policy/mode/artifact lineage 标识；不改写历史 a19 artifact，不把此前未获独立收益的 SOFA/STARS/Qwen/HFA 等实验模型提升为生产默认。
+- 最终三层封板核对：KPOP130 viewer display v3 structural audit `passed=true`、errors=0、window/content-end violation=0、confirmed/unconfirmed overlap=0；仅有10条 `long_display_holds` warning，最大7563ms且无>=8000ms extreme hold。该结果属于 viewer structural QA，不等同 semantic/release gate。
+- 当前 semantic/release gate 仍 fail closed：projection editor witness 2/12 track fail，independent-audio final layer 12/12 fail，`audio_anchor_count=0`。formal fusion `01575459...` 是 `e22f10d` safety tightening 前旧证据，缺少当前 ASR 起点资格字段；需 fresh independent audio evidence/fusion，不能复用旧 semantic QA，也不能把 materializer `publish_ready=true`写成完整 release-ready。

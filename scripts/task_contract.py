@@ -47,6 +47,25 @@ def repository_relative(path: Path, root: Path) -> str:
         raise ValueError(f"task input must stay inside the repository: {resolved}") from exc
 
 
+def resolve_repository_path(value: str | Path, root: Path) -> Path:
+    """Resolve artifact paths independently of the caller's current directory.
+
+    Historical run artifacts may store either absolute paths or repository-relative
+    paths. Relative values are always rooted at the explicit repository root and
+    may not escape it; absolute values retain the legacy acceptance semantics.
+    """
+    path = Path(value)
+    root = root.resolve()
+    if path.is_absolute():
+        return path.resolve()
+    resolved = (root / path).resolve()
+    try:
+        resolved.relative_to(root)
+    except ValueError as exc:
+        raise ValueError(f"repository-relative artifact path escapes repository: {value}") from exc
+    return resolved
+
+
 def file_record(path: Path, root: Path) -> dict[str, Any]:
     if not path.is_file():
         raise FileNotFoundError(f"task input file does not exist: {path}")
