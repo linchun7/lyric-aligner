@@ -425,13 +425,17 @@ python scripts/v4_materialize_editor_reconciled.py `
   --artifact-out <FINAL.render.artifact.json>
 ```
 
-成功时 final SRT/audit 来自经过验证的 preservation 产物，**不再要求也通常不会与 canonical evaluation 逐字节一致**。materializer 会核对 preservation 精确绑定 evaluation SRT/audit、至少一次真实 restore、`model_timing_authority_used=false`，并用 `canonical_content_start/end` 验证每个 occurrence 的 normalized canonical character stream 完整连续覆盖；任何 gap、overlap、越界或 ownership 冲突均 fail closed。新 `final_render` artifact 同时绑定 source evaluation、reconciliation、preservation 三个 upstream，并记录 `production_materialization_mode=hybrid_editor_preservation_after_editor_topology_rebuttal`。随后仍必须正常运行 `v4_audit_final.py` / semantic audit / `v4_validate_release.py`；release validator 没有绕过完整性检查的 topology 特例。
+成功时 final SRT/audit 来自经过验证的 preservation 产物，**不再要求也通常不会与 canonical evaluation 逐字节一致**。materializer 会核对 preservation 精确绑定 evaluation SRT/audit、至少一次真实 restore、`model_timing_authority_used=false`，并用 `canonical_content_start/end` 验证每个 occurrence 的 normalized canonical character stream 完整连续覆盖；任何 gap、overlap、越界或 ownership 冲突均 fail closed。新 `final_render` artifact 同时绑定 source evaluation、reconciliation、preservation 三个 upstream，并记录 `production_materialization_mode=hybrid_editor_preservation_after_editor_topology_rebuttal`。
+
+这一层之后可额外运行 `scripts/v4_audit_lexical_floor.py --canonical-evaluation-audit ... --final-srt ... --final-audit ... --out ...`，把 materializer 的字符 ownership 约束单独汇总为 product lexical floor：报告 resolved canonical character 总数、实际覆盖、lexical mismatch、gap、overlap 和 unowned cue。它只证明**相对已经解析出的 canonical occurrence**没有丢字/改字/重复覆盖，不证明原歌词源或版本本身绝对正确。若怀疑 canonical wording 有误，必须走独立 `canonical-semantic-rebuttal` 候选/证据链；普通 display policy 不得承担 lexical truth 修订。
+
+随后仍必须正常运行 `v4_audit_final.py` / semantic audit / `v4_validate_release.py`；release validator 没有绕过完整性检查的 topology 特例。
 
 ### Production display policy（可选，production authority 之后）
 
 已获得 `editor_reconciled / publish_ready=true` 的 production render 如需平台展示处理，可再运行 `scripts/v4_apply_display_policy.py`。该阶段不重新推导歌词结构：cue 数量、编号、开始时间、occurrence、track 与 canonical character ownership 都保持；结束时间只允许显式 shorten-only policy 缩短，禁止延长、禁止移动 start。
 
-hybrid preservation 允许一个 canonical line 被多个 editor cue 切分，或一个 editor cue 覆盖多个连续 canonical lines。因此 display 层把全局 policy 与显式 override 分开：`strong_profanity_v1` 和 shorten-only timing 可应用于多行 ownership cue；显式模型 override 仍必须唯一绑定 `occurrence_id + track_id + 单一 canonical_line_index + expected_text`。若 cue 具有多个 canonical line identities，则该 cue 不接受 line-bound override；若 policy 中某个 override 因 split/merge 最终无法命中恰好一次，整次 display materialization fail closed。模型修订不得回写 canonical lyric truth。
+hybrid preservation 允许一个 canonical line 被多个 editor cue 切分，或一个 editor cue 覆盖多个连续 canonical lines。因此 display 层把全局 policy 与显式 override 分开：`strong_profanity_v1` 和 shorten-only timing 可应用于多行 ownership cue；显式模型 override 仍必须唯一绑定 `occurrence_id + track_id + 单一 canonical_line_index + expected_text`。**display override 还必须与 expected text 在 normalized lexical stream 上完全等价**；只允许空格、标点、大小写/排版等 presentation 修订。任何 `know -> no` 这类 normalized lexical 变化会在 policy 加载阶段直接拒绝，必须先通过独立 canonical-semantic-rebuttal authority。若 cue 具有多个 canonical line identities，则该 cue 不接受 line-bound override；若 policy 中某个 override 因 split/merge 最终无法命中恰好一次，整次 display materialization fail closed。
 
 `strong_profanity_v1` 是窄自动打码 profile，只处理明确强脏词，例如 `fuck/fucking -> f*`；`sexy`、`shot`、`bullet`、`kill`、`damn` 等语境相关词不会自动改写，必须由模型/人工语境审查决定。
 
@@ -451,7 +455,9 @@ python scripts/v4_apply_display_policy.py `
   --artifact-out <DISPLAY_FINAL.render.artifact.json>
 ```
 
-该阶段生成新的、仍为 `stage=final_render` 的 hash-bound production artifact，并以上一层 hybrid production render 为 upstream。发布时只把新的 display final-render artifact 交给 release validator；display policy 不能绕过 `editor_reconciled` authority、semantic sync 或 final structural audit。
+该阶段生成新的、仍为 `stage=final_render` 的 hash-bound production artifact，并以上一层 hybrid production render 为 upstream。随后运行 `scripts/v4_audit_viewer_lexical_floor.py --final-srt ... --final-audit ... --out ...` 检查**实际 viewer 文本**：normalized-equivalent presentation 变化与显式 profanity mask 可接受；normalized lexical model override 必须对应已授权的 canonical truth overlay，否则 `unauthorized_lexical_change_count>0` 并失败。这样 pre-display character coverage 与 viewer-facing text 各自都有独立下限检查。
+
+发布时只把新的 display final-render artifact 交给 release validator；display policy 不能绕过 `editor_reconciled` authority、semantic sync 或 final structural audit。
 
 ### Semantic timing audit（a17 起 release 硬门）
 
@@ -465,3 +471,9 @@ python scripts/v4_apply_display_policy.py `
 
 它统一报告 cue duration 分布、<500 ms 短 cue、>6 s 长驻留、>=8 s 极端驻留、final file order、occurrence-window containment、content-end 越界，以及 cue overlap。长驻留只作为 presentation warning，不自动判错；跨 occurrence overlap 只有在交集完整落入该 pair 的 confirmed-overlap region 时才允许，同 occurrence overlap 或未确认 cross-track overlap 都是 structural error。命令返回 `0` 表示结构检查通过（可以仍有 warning），返回 `2` 表示发现 structural error。该检查不能替代 `v4_validate_release.py`；推荐顺序是 production/display materialization -> `v4_audit_final.py` -> `v4_validate_release.py`。
 对于 hybrid split/merge，`canonical_line_indices` 可为多值并表达一个 editor cue 对多个连续 canonical line 的 ownership；这只影响 ownership/display policy 的绑定，不改变 semantic/release gate 的独立 audio evidence 要求。
+
+### Timing decision blind validation（策略升级前，不是 release gate）
+
+当要证明新的 timing selector 是否稳定优于旧 final/editor 时，不再按“变化数”挑样本。先在**完全不读取人工 gold**的状态运行 `v4_build_timing_decision_pack.py`：按唯一 `occurrence_id + canonical_line_index` 绑定旧 final 与 frozen hybrid，只选 normalized text 一致的单行 identity；冻结 `>=100ms`（或预先声明阈值）的真实变化边界，再以 case-id hash 固定抽取 unchanged controls。输出写明 `gold_read=false` 和 `selection_lock_sha256`。
+
+随后 `v4_build_timing_decision_review.py` 从 exact final mix 生成音频片段和 candidate-blind HTML；题面只显示目标歌词、boundary kind、音频与相对片段位置输入，不显示 old/hybrid/editor candidate timing。人工可以标 `invalid/unscorable` 并写原因，不能被迫猜时间；这类 case 保留在 population 统计中。`v4_ingest_timing_decision_review.py` 将完整 response 与 review/selection lock 绑定成人工 gold，再由 `v4_evaluate_timing_decision_pack.py` 输出 improved/regressed、>100ms harm、>500ms new error、rescue、missed rescue、P90/worst 与 manual-repair reduction。开发可见数据只能验证 wiring/回归，不能重新命名为 blind/untouched；真正 production policy 提权必须在新的 pre-gold locked 项目上完成。

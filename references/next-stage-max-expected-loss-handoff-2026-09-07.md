@@ -1,5 +1,13 @@
 # 字幕项目下一阶段唯一交接：Max Expected-Loss Production Upgrade
 
+> **2026-09-09 冻结后的产品下限决策：** `676b37f` 的 editor-first / hybrid timing 架构先冻结，不以继续增加 timing 功能为下一优先级。下一轮 P0 先建立“歌词内容保底层”：在 trusted canonical 与实际 occurrence/内容身份已经成立时，优先把 editor 的错字、漏字、多字、谐音、乱码、跨语种误识别恢复为正确 canonical 内容；若只是文字修复，必须保持 cue 数量/编号及所有 start/end 完全不变。整体优先级固定为 **Content correctness > Structure/ownership correctness > Timing non-regression > Timing improvement**。所谓内容“完全正确”只对已确认实际存在于 final mix 的 trusted canonical 内容成立；canonical 选择、occurrence、cut/repeat/overlap 本身仍有歧义时必须显式保留未知，不能用机械字符覆盖制造确定性。完成这一保底层及其验收后，再进入 untouched/blind timing decision validation 与 expected-loss selector。
+
+> **大模型使用原则：** 下一轮不能把 lexical/structural resolver 做成纯规则系统。LLM/其它 foundation model 应在语义歧义、严重 ASR 乱码、谐音/音译/romanization、混语种、复杂 `1↔N/N↔1/N↔N` ownership、repeat/ad-lib/occurrence/cut/crossfade 候选解释与高价值复核中提供候选和裁决信息；程序继续负责字符覆盖、单调性、occurrence/window、overlap、timestamp immutability、hash/lineage 与 release gate 等可证明约束。原则是 **模型提出/比较假设，程序验证并物化**。文本大模型不得凭自身语义判断直接移动 timing；具备音频能力的 foundation model 也只能先成为有明确 model/runtime/prompt/policy identity 的新 evidence family，经过冻结评测/校准后才能获得自动 timing authority。不得把模型自己生成的文字映射再当成独立证据给自己授时。
+>
+> **2026-09-09 lexical floor 当前实现：** Standard/raw-LRC 层已能在 timeline 完全冻结下修字并报告严格 `lexical_floor`；Max production 新增 resolved-canonical character audit，KPOP130 pre-display hybrid 对 786 条 resolved canonical / 12,539 normalized characters 达到 12,539/12,539 覆盖，lexical mismatch/gap/overlap/unowned cue 均为 0。这个结论只相对已经解析出的 canonical evaluation 成立，**不证明原歌词文件/版本/canonical wording 本身绝对正确**。因此又新增 `canonical-semantic-rebuttal` shadow 层：规范化字词真正改变才算 lexical rebuttal；纯空格/标点仍属 presentation-only；自动授权必须 high-confidence、至少两个独立 `supports_corrected_text` evidence family，且不能同时存在直接 `supports_canonical_text` 反证。授权后仍先生成 `publish_ready=false`、timing immutable 的 shadow，不倒灌 timing authority。
+>
+> **2026-09-09 timing validation 当前实现：** 已新增 pre-gold `timing-decision-pack`、candidate-blind audio review manifest/UI、hash-bound review response→human gold ingestion 与 decision evaluator。KPOP130 只作为 development-visible wiring：758 个共享唯一 canonical identity 中按 `>=100ms` 变化冻结 60 个 changed boundary + 20 个 deterministic unchanged controls，共 80 case，selection lock=`f2ea01a158abffe420c4617a265273cae5023cdabdce0a28ed7bfde780a01818`，生成时 `gold_read=false`；它**不是** blind/untouched 精度证据。真实下一批新项目须先锁 pack/clip/hash，再由候选隐藏界面标 gold；人工可显式标 invalid/unscorable，不能被迫猜边界或从分母中静默删除。
+
 > **2026-09-09 当前封板候选：** 本轮已完成 editor-first all-occurrences batch 与 hybrid topology-rebuttal production 链，并在 KPOP130 真实长混剪贯通到 viewer display；历史 development 8 条 MAE 584.9375->501.6875ms。KPOP110/WALK120/WALK140/H190/KPOP200 的真实运行证明该保守恢复机制具有跨项目覆盖，但不构成 blind accuracy。下文 2026-09-08 的 source/HFA/词典/新声学“下一步”均保留为历史实验记录，**不再是自动待办**。未来若重新扩张声学策略，必须先冻结新的 untouched final-mix truth，并证明最终 viewer SRT 相对 editor/当前 hybrid 的净收益。
 
 
@@ -165,6 +173,21 @@ private/<任务>/input/
 - cut/repeat/overlap 等结构自洽；
 - 尽量少人工；
 - display text 清理、敏感词显示策略、异常长尾等发布层规则可以继续存在，但必须与“真实 timing accuracy 提升”分开统计，不能拿文字/显示层变化冒充边界精度升级。
+
+### 0.6 产品最低质量契约与“大模型 + 程序”分工
+
+即使当前还不能普遍证明 timing 修正比 editor 更准，项目也必须有确定的产品下限：
+
+1. **Content correctness**：trusted canonical 与实际内容身份已成立的地方，不保留已知错误的 editor ASR 文字。
+2. **Structure / ownership correctness**：正确歌曲、occurrence、字符归属、split/merge 与实际 cut/repeat/overlap 语义优先于时间微调；结构仍有多个合理解释时保留未知。
+3. **Timing non-regression**：纯文字修复不得顺带移动时间；没有更强证据时保留已有 editor/hybrid timing。
+4. **Timing improvement**：只有候选在冻结评测/校准下证明预期收益后，才获得自动 timing 写回资格。
+
+因此项目即使暂时不动一个毫秒，也应该能把“时间尚可但文字识别很差”的字幕变成 **文字明显更可靠、结构不被破坏、原时间轴完整保留** 的可用成品。这是项目最低价值，不依赖是否已经解决帧级 timing。
+
+这一层不应只靠字符串相似度、DP 和手写规则。大模型最适合处理程序难以表达但人能理解的语言/语义问题，例如严重乱码仍对应哪段 canonical、音译/谐音/romanization、混语种、歌词缩写/变体、复杂分句、重复段语义和候选结构解释。大模型可以输出结构化候选、理由和不确定性，再由确定性程序检查：完整字符 ownership、顺序单调、不得跨未知 occurrence、不得吞掉其它 cue、纯文字修复 timeline signature 必须完全不变等硬约束。模型无法满足这些约束时不自动物化。
+
+大模型也可以承担“选择下一步看哪里”的职责：阅读多 observer 的冲突摘要、找出最值得追加声学证据或人工 gold 的区域、分类失败模式，从而把昂贵模型预算集中到真正困难的少数 cue。它不是 canonical 真源，也不是未经校准的 timing 真值。
 
 ---
 

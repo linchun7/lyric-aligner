@@ -1,5 +1,17 @@
 # Lyric Aligner v4 关键变更记录
 
+## 2026-09-09：Lexical Floor、canonical rebuttal 与 pre-gold timing validation
+
+- 冻结 `676b37f` 的 editor-first / hybrid timing 决策，不以本轮文字下限升级重新打开 timing selector。产品优先级明确为 `Content correctness -> Structure/ownership correctness -> Timing non-regression -> Timing improvement`。
+- Text Repair 报告升级为独立 lexical-floor 语义：保持旧 status 兼容，同时显式报告 trusted-region lexical mismatch、unresolved cue、unmatched canonical 与 `timeline_mutation_count=0`。新增 bounded semantic request/response shadow protocol；大模型只能对已经有限框定的 canonical span 做 accept/abstain/partition，所有 request/bundle/model identity 均 hash-bound，不能提出 timestamp。
+- 新增 resolved-canonical production lexical audit：不再把整曲 raw LRC 机械当 final-mix coverage 真源，而是对已经解析出的 occurrence/canonical evaluation 做字符 ownership/coverage。KPOP130 真实 pre-display hybrid：786 canonical rows、12 occurrence、12,539 normalized characters，覆盖 12,539/12,539，lexical mismatch/gap/overlap/unowned 均为 0。
+- 新增 `canonical-semantic-rebuttal`：canonical 是默认文字真源而非不可反驳；normalized lexical 变化与 presentation-only 修订分离。自动授权必须 high-confidence、满足独立 `supports_corrected_text` evidence-family 下限，且不能同时存在直接 `supports_canonical_text` 反证。若 evidence 携带 raw observation，程序重新计算 variant role，避免把 `but I don't` 之类非目标短语误计为 `no I don't`。授权后也只生成 timing-immutable、`publish_ready=false` shadow。
+- KPOP130 Fever Pitch 双模型 source-audio 复核实际跑通 Qwen3-ASR 1.7B 与 faster-whisper large-v3-turbo。A 组 `know/no` 只有 Qwen 一处明确支持 `no`，Whisper未明确区分；B 组 `hear/heal` 出现 Qwen/Whisper直接分歧。因此两组 canonical rebuttal 均未授权。早期 probe 将 `but I don't` 误判为 `no I don't` 的 aggregate verdict 已被纠正，不进入 production authority。
+- display policy 现在在加载阶段硬拒绝 normalized lexical 改字；显式 override 只能做空格、标点、大小写/排版等 normalized-equivalent presentation 修订。新增 viewer lexical audit 再核对实际 SRT：presentation-equivalent、deterministically recomputed strong-profanity mask、或已授权 canonical truth overlay 才允许。仅写一个 `strong_profanity_mask` reason 不能放行任意改字。
+- KPOP130 当前 lexical-safe viewer：774 cues，15 条 presentation-only override、2 条 mask、0 条未授权 lexical 变化、6 条既有 shorten-only display-end trim；相对旧 viewer v3 所有 start/end 完全一致。3 个未授权 `know -> no` 被撤回，同时保留安全空格修复为 `know I don't`。正式 final structural audit：0 errors、1 个 long-hold warning、0 occurrence-window/content-end/overlap violation，duration min/median/P95/max=`349/1902.5/4395.3/7563ms`。
+- 新增 timing decision pre-gold validation 链：按稳定 canonical identity 比较 frozen old final 与 hybrid，在读取人工 truth 前冻结 changed boundaries + deterministic unchanged controls，生成 selection lock、候选隐藏的音频 review 包、hash-bound response→gold ingestion 与 selector evaluator。人工可显式标 `invalid/unscorable` 并保留分母，不强迫猜值。KPOP130 development wiring 冻结 60 changed + 20 controls 共 80 case、80/80 非空音频片段；它只证明流程可运行，不是新的 blind/untouched timing 精度证据。
+- 本轮 lexical/structural/display gate 不解除完整 semantic release gate。旧 fusion 仍是当前安全契约收紧前的 stale evidence；fresh independent semantic audio evidence 仍需后续重建，不能用本轮 lexical floor 通过冒充完整 release-ready。
+
 ## 2026-09-08：终轮瓶颈实验与合法区间收益分解
 
 - 新增离线 `evaluation/interval_bottleneck.py`：在完整有序 editor 序列上求最小标注端点误差；同成本优先少改动。分别计算逐点、完整模型区间及可混合单边的合法上限，避免将整句替换与局部修复混为一谈。无标注 cue 固定，不能为 oracle 免费挪动邻句。

@@ -24,9 +24,13 @@ Max      -> Full V4 Alignment（具体算法版本以 references/v4-status.md / 
 smart-validation-policy-2026-08-22-v1.2.10
 ```
 
-这个项目的生产原则不是“让 ASR 重写歌词”，而是：**canonical lyric 决定最终文字与顺序；canonical LRC line break 不等于最终 subtitle cue boundary；Jianying timing / cue segmentation 是强但可推翻的先验；Smart 先用 timed canonical + editor majority anchors 做 0-audio 验证；Pro/Max 才引入 Source-to-Mix acoustic evidence。**
+这个项目的生产原则不是“让 ASR 重写歌词”，而是：**canonical lyric 是最终文字与顺序的默认真源；只有独立、可审计的 canonical-semantic-rebuttal 证据链才能推翻 normalized lexical truth；canonical LRC line break 不等于最终 subtitle cue boundary；Jianying timing / cue segmentation 是强但可推翻的先验；Smart 先用 timed canonical + editor majority anchors 做 0-audio 验证；Pro/Max 才引入 Source-to-Mix acoustic evidence。**
 
 更高模式可以增加证据和修复能力，但没有更强独立反证时，不得破坏较低模式已经安全成立的 text / cue ownership / timing。任何无法由现有证据安全证明的情况继续 review/BLOCK，**不得静默回退 v3.9，不得手工拼/改 artifact 绕过 lineage。**
+
+### 最低质量契约
+
+所有模式共同遵守：`Content correctness -> Structure/ownership correctness -> Timing non-regression -> Timing improvement`。纯文字修复不得顺带移动时间；Max/hybrid 成品应以 resolved canonical occurrence 做字符级 lexical floor 审计，而不是把整曲未使用 LRC 行机械算成漏词。大模型可以提出/比较 lexical/structural 假设，但确定性程序负责 ownership、单调性、timeline immutability、hash/lineage 与物化。display policy 只允许 normalized-equivalent 的空格、标点、大小写/排版修正和显式敏感词 mask；改变 normalized lexical content 必须先通过 `canonical-semantic-rebuttal`，不能借 display override 越权改字。
 
 ## 生产模式选择：任何真实任务必须先做
 
@@ -54,7 +58,7 @@ python scripts/v4_text_repair.py ...
 ```text
 audio_read = false
 cue count / number / start / end 全部冻结
-canonical lyric = final text/order truth
+canonical lyric = default final text/order truth; normalized lexical rebuttal requires separate audited authority
 trusted editor cue ownership = display segmentation prior
 LRC line break != subtitle cue boundary authority
 ```

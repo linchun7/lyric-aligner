@@ -165,6 +165,34 @@ class DisplayPolicyUnitTests(unittest.TestCase):
         self.assertFalse(explicit.changed)
         self.assertEqual(explicit.end_ms, 12000)
 
+    def test_policy_rejects_lexical_override_even_when_high_confidence(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "policy.json"
+            payload = {
+                "schema_version": "display-text-policy-1.0",
+                "task_fingerprint_sha256": "f" * 64,
+                "mask_profile": "none",
+                "model_review": {"reviewer_model": "synthetic-model"},
+                "overrides": [
+                    {
+                        "occurrence_id": "occ-1",
+                        "track_id": "track-1",
+                        "canonical_line_index": 0,
+                        "expected_text": "know I don't",
+                        "display_text": "no I don't",
+                        "reason": "synthetic lexical correction",
+                        "reviewer": "synthetic-model",
+                        "confidence": "high",
+                    }
+                ],
+            }
+            path.write_text(json.dumps(payload), encoding="utf-8")
+            with self.assertRaisesRegex(
+                DisplayPolicyError,
+                "changes normalized lexical content.*canonical-semantic-rebuttal",
+            ):
+                load_display_policy(path, expected_task_fingerprint="f" * 64)
+
     def test_policy_rejects_non_high_confidence_override(self):
         with tempfile.TemporaryDirectory() as temporary:
             path = Path(temporary) / "policy.json"

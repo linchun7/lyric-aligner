@@ -8,7 +8,17 @@
 
 当前对外能力说明以[能力与使用边界](capabilities-and-limits.md)为准：维护可用，通用无人审核交付尚未证明；下文实验数字须按各自样本和产物层级理解。
 
-> **当前执行阶段：editor-first / hybrid 封板维护（2026-09-09）。** 已把可证明的 editor timing 保真、canonical 结构完整性与 production materialization 接成完整链路；仍暂停无独立 final-mix truth 支撑的扩张式声学默认升级。下文 2026-09-08 的实验排期与“下一步”均保留为历史记录，不自动触发。
+> **当前执行阶段：editor-first / hybrid timing 冻结 + lexical floor（2026-09-09）。** `676b37f` 作为当前 timing 冻结基线；不继续扩大未经 blind final-mix truth 证明的 timing 自动修改。下一优先级是产品最低下限：Content correctness > Structure/ownership correctness > Timing non-regression > Timing improvement。Standard/raw-LRC text-only 路径继续提供“只修文字、时间签名不变”的保守能力；Max production 则必须基于已经解析出的 occurrence/canonical evaluation 做字符 ownership/coverage 审计，不能重新把整曲 raw LRC 串联后把未进入 final mix 的歌词误算为缺失。
+
+> 本轮新增 `trusted-canonical-text-floor-1.0` 报告层、`v4_lexical_floor.py`、有 hash/模型身份绑定且永不授予 timing authority 的 bounded semantic-model request/response shadow protocol，以及离线 timing-decision validator。KPOP130 原始 607-cue editor SRT 的 raw-LRC诊断自动修复97 cue、时间/编号0变化，但仍有413 cue review、762 raw canonical unmatched、402 semantic requests；该结果只证明 standalone Text Repair 的能力边界，**不是 Max production lexical coverage 结论**，因为 raw LRC 包含未使用/未解析内容。正式 production lexical floor 以后续 `KPOP130_CANONICAL_EVAL.audit.csv` 等 resolved canonical occurrence 为真源。
+>
+> **KPOP130 resolved lexical floor 已实跑通过。** pre-display hybrid 对 786 条 resolved canonical、12 个 occurrence、12,539 个 normalized lexical characters 实现 12,539/12,539 覆盖；`lexical_error/gap/overlap/unowned=0`。随后发现旧 viewer v3 的 15 条 GPT-5.6 Sol override 中有 3 条把 normalized lexical `know` 改为 `no`。双模型 source-audio 复核没有得到足够独立且无冲突的反证，因此这 3 条未获得 canonical rebuttal authority；旧 display policy 现在会被 lexical hard gate 直接拒绝。当前 lexical-safe viewer 位于 `output/lexical_floor_kpop130_20260909/viewer_final/FINAL.srt`：774 cues，15 条 normalized-equivalent presentation 修订、2 条强脏词 mask、0 条未授权 lexical 变化、6 条既有 shorten-only end trim；相对旧 viewer v3 的 start/end 数组完全相同。正式 final structural audit 已通过：0 errors、1 个 long-hold warning、0 occurrence-window/content-end/overlap violation，duration min/median/P95/max=`349/1902.5/4395.3/7563ms`。
+>
+> **canonical 不再被视为不可反驳，但反驳权限独立且更严。** 新 `canonical-semantic-rebuttal` 层把真正改变 normalized lexical content 的修改与 presentation-only 修订分开；候选绑定 exact canonical/task/model/evidence identity。授权必须 high-confidence、满足独立 supporting evidence family 数量，而且存在直接 `supports_canonical_text` 反证时 fail closed。原始声学 observation 若声明支持某 variant，程序会重新按 raw text 计算角色，避免把 `but I don't` 误登记成 `no I don't`。即使授权也先产生 timing-immutable、`publish_ready=false` 的 shadow，不借文字修正获取 timing authority。
+>
+> **timing 下一阶段已具备 pre-gold blind wiring，但尚未获得新准确率结论。** KPOP130 作为 development-visible 工程样本，在 758 个共享唯一 canonical identity 中冻结了 60 个 `>=100ms` changed boundary + 20 个 deterministic unchanged controls，共 80 case；`gold_read=false`、selection lock=`f2ea01a158abffe420c4617a265273cae5023cdabdce0a28ed7bfde780a01818`。候选隐藏 review 包已真实生成 80/80 非空音频片段；人工可显式标 `invalid/unscorable`，不能被迫猜值。该 80-case pack 只证明流程可运行，**不是 blind/untouched timing accuracy evidence**；真正 selector 提权仍须在新的 pre-gold locked 项目上完成。
+>
+> 完整 semantic/release gate 仍未因本轮文字下限升级而自动解除：旧独立音频 fusion 仍属于当前契约收紧前的 stale evidence，fresh semantic evidence 尚未重建。materializer/display/lexical/structural QA 通过不能替代完整 release readiness。
 
 
 2026-09-08 第九切片新增旧锚夹持的完整精确词序源锚，只进入显式joint实验。WALK882条重跑共同解码2→3对，恢复219/220，旧两对区间不变；但220与KEEP221仍重叠3017ms，全局采用0、成品时间/文字变化0。历史三首149行得到9个精确锚（4新增），新增8端点MAE165.75ms、最大312ms；这是源锚证据，不是成品或新盲测精度。无条件二段拆词的43076项词典遮蔽验证仅34.84%发音一致，未接入。隔离Python3.12全量1625项通过（4项可选FLOAT跳过）。全部正负实验登记见 references/accuracy-experiment-register-2026-09-08.md；本轮证据见 output/source_context_upgrade9_20260908/delivery_report.md。不封板。

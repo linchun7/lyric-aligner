@@ -992,11 +992,54 @@ def repair_srt_text(
             if operation in edit_counts:
                 edit_counts[operation] += 1
 
+    resolved_groups: dict[tuple[tuple[int, int], tuple[int, int]], list[MatchDecision]] = {}
+    for item in decisions:
+        if item.action == "review" or item.cue_span is None or item.canonical_span is None:
+            continue
+        key = (item.cue_span, item.canonical_span)
+        resolved_groups.setdefault(key, []).append(item)
+    trusted_region_lexical_error_count = 0
+    for group in resolved_groups.values():
+        ordered = sorted(group, key=lambda item: item.cue_ordinal)
+        output_stream = _normalize_for_match("".join(item.output_text for item in ordered))
+        canonical_stream = _normalize_for_match(ordered[0].canonical_text)
+        if output_stream != canonical_stream:
+            trusted_region_lexical_error_count += 1
+    lexical_floor_status = (
+        "failed"
+        if trusted_region_lexical_error_count
+        else (
+            "complete"
+            if cue_review_count == 0 and coverage_warning_count == 0
+            else "review_required"
+        )
+    )
+
     report = {
-        "schema_version": "2.1",
+        "schema_version": "2.2",
         "mode": "text_only_preserve_timeline",
         "status": "ready" if review_count == 0 else "review_required",
         "coverage_status": "warning" if coverage_warning_count else "complete",
+        "lexical_floor": {
+            "policy_id": "trusted-canonical-text-floor-1.0",
+            "status": lexical_floor_status,
+            "priority": [
+                "content_correctness",
+                "structure_ownership_correctness",
+                "timing_non_regression",
+                "timing_improvement",
+            ],
+            "trusted_region_count": len(resolved_groups),
+            "trusted_region_lexical_error_count": trusted_region_lexical_error_count,
+            "unresolved_cue_count": cue_review_count,
+            "unresolved_canonical_count": coverage_warning_count,
+            "timeline_mutation_count": 0,
+            "meaning": (
+                "complete means every auto-finalized canonical region is lexically exact, "
+                "there are no unresolved cue mappings or unmatched canonical occurrences, "
+                "and the source SRT timeline signature is unchanged"
+            ),
+        },
         "cue_count": len(cues),
         "canonical_line_count": len(canonical),
         "replacement_count": sum(item.action == "replace" for item in decisions),

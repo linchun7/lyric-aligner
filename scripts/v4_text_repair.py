@@ -88,6 +88,7 @@ def main() -> int:
         "mode",
         "status",
         "coverage_status",
+        "lexical_floor",
         "cue_count",
         "canonical_line_count",
         "replacement_count",

@@ -21,13 +21,40 @@ Typical inputs are:
 - original/source song audio for most songs when acoustic fallback is needed;
 - song order and, when available, original BPM, target BPM, or the exact time-stretch ratio.
 
-Canonical lyrics are the authority for lyric text and lyric order. Editor ASR, generic ASR, and acoustic models may establish identity or timing evidence, but must not rewrite canonical lyric truth from recognition guesses.
+Canonical lyrics are the default authority for lyric text and lyric order. Editor ASR, generic ASR, and acoustic models may establish identity or timing evidence, but must not casually rewrite canonical lyric truth from recognition guesses. **Default authority is not infallibility:** a source lyric can itself contain transcription, contraction, spacing, version, or copy errors. A lexical change that genuinely rebuts normalized canonical content must therefore use a separate, auditable canonical-semantic-rebuttal path: bind the exact canonical identity and source hash, retain the original text, record model/prompt identity and evidence roles, require independently supporting evidence before authorization, and remain non-authoritative when direct evidence still supports the canonical wording. Pure punctuation/spacing changes stay presentation-only. Canonical rebuttal never grants timing or occurrence authority.
 
 **Canonical text/order authority is not canonical line-break authority.** A line break in LRC/QRC is a grouping/onset representation, not unconditional authority over the final subtitle cue boundary. When editor cue segmentation is already credible, do not move words across cue boundaries merely to mimic canonical line grouping. Re-segmentation requires stronger independent boundary evidence such as word/token timing or audio-derived evidence.
 
 **Text certainty and timing certainty are separate axes.** If canonical sequence can be independently established while cue timing still needs review, repair the known-wrong editor text and keep only the timing question unresolved. A timing review is not permission to preserve editor ASR text that contradicts already-proven canonical lyrics.
 
 **Severe ASR must not create a text-first bootstrap deadlock.** The worse an editor cue is recognized, the less useful raw lexical similarity becomes. When song identity, canonical order, surrounding strong identities, and timed-canonical projection jointly establish a unique sequence, Smart may recover canonical text without lowering lexical thresholds or pretending the recovered cue is a timing anchor.
+
+### Product-quality floor
+
+The mandatory product priority is:
+
+`lexical content correctness -> structural identity/ownership correctness -> timing non-regression -> timing improvement`
+
+This ordering is a product floor, not a claim that upstream canonical selection is infallible. “Lexically correct” means correct relative to a trusted canonical lyric and a sufficiently established occurrence/content identity in the exact final mix. If canonical identity, occurrence, cut/repeat state, or whether the lyric is actually present remains ambiguous, the system must preserve/review that ambiguity rather than manufacture 100% coverage.
+
+When lexical truth is established but timing is not, the system should still repair known editor recognition errors. A lexical-only repair must preserve the exact source timeline signature: cue numbering/count and every start/end timestamp remain unchanged unless a separately authorized structural/timing operation is performed. A missing canonical lyric may be inserted automatically only when its actual presence/occurrence and a bounded placement are independently established; otherwise it remains unresolved rather than receiving invented timing.
+
+The minimum useful product is therefore a subtitle whose trusted lyric content/ownership is better than the editor while its still-unproven timing is conservatively preserved. Timing improvement is a higher layer and must be evaluated separately from lexical improvement.
+
+### Model-assisted semantic reasoning
+
+Do not reduce the production system to deterministic string rules alone. Large language/foundation models should be used selectively where semantic reasoning adds information, while deterministic code remains the final verifier of hard invariants. The governing rule is: **the model proposes or adjudicates hypotheses; the contract verifies and materializes them.**
+
+Good model-assisted uses include:
+
+- reconciling severe editor ASR corruption with a trusted canonical sequence when literal similarity is weak, including homophones, transliteration/romanization, code-switching, mixed scripts, contractions, and unusual segmentation;
+- proposing bounded cue-to-canonical span ownership for difficult `1<->N / N<->1 / N<->N` text mappings;
+- comparing competing canonical/source interpretations and explaining why a case remains ambiguous, without inventing a new canonical truth when source provenance is unresolved;
+- ranking or classifying repeat/ad-lib/occurrence/cut/crossfade hypotheses from structured evidence summaries so expensive acoustic work is spent on the highest-value unresolved cases;
+- reviewing final lexical/display differences and classifying expected presentation transforms versus likely lyric corruption;
+- when an audio-capable foundation model is available, generating an additional acoustic/timing candidate or diagnostic observation under an explicit model/runtime identity.
+
+Model output is not by itself authority to overwrite canonical truth, choose an ambiguous occurrence, move a timestamp, or pass a release gate. Production-affecting model proposals must be converted to bounded structured data and checked by deterministic constraints such as complete character ownership, monotonicity, occurrence bounds, overlap/cut rules, immutable-timeline assertions for text-only repair, artifact lineage, and calibration policy. A model-generated mapping must not become independent timing evidence merely because the same model generated it. Any model that can change production output must have auditable model/prompt/policy identity and must be evaluated on frozen data before its decisions receive automatic authority.
 
 ## 2. Language distribution
 
@@ -204,12 +231,19 @@ MUST:
 
 Measure at least:
 
+- trusted-canonical lexical error / missing / unexpected-duplicate counts in auto-finalized regions;
+- lexical-only timeline mutation count (must be zero);
+- unresolved identity/occurrence cases incorrectly materialized as certain;
 - false text repairs;
 - false cross-cue text moves / segmentation regressions;
 - canonical-text recovery rate on severely corrupted editor ASR;
+- model-assisted lexical/structural proposal precision and false-auto rate after deterministic validation;
+- canonical-semantic-rebuttal candidate / authorized / rejected counts, supporting-vs-opposing evidence families, and false rebuttal rate; presentation-only formatting changes must be reported separately from lexical rebuttals;
 - sequence-projection false-auto rate;
 - number of primary timing anchors before/after text recovery (must not grow from self-recovered text);
 - false timing repairs;
+- on pre-gold locked decision-sensitive cases: improved / regressed / >100ms harm / >500ms new-error / rescue / missed-rescue counts, P90/worst, and manual-repair reduction; changed and unchanged controls must be selected before human truth is read;
+- blind-review invalid/unscorable count and reasons must remain in the population report rather than forcing a guessed boundary or silently dropping hard cases;
 - false-ready decisions;
 - percentage of original trusted cues preserved;
 - timing error on intentionally corrupted cues;
@@ -219,4 +253,4 @@ Measure at least:
 - runtime by mode;
 - Chinese ordinary-job performance separately from multilingual hard-set performance.
 
-Private real-song calibration and blind evaluation should decide whether new evidence is safe enough for automatic write-back. Production safety thresholds must not be loosened merely to reduce review count. Every real production failure used for development should be converted to a generic synthetic regression without publishing or hard-coding the real song, cue number, timestamp, or lyric text.
+Private real-song calibration and blind evaluation should decide whether new evidence is safe enough for automatic write-back. Decision-sensitive timing evaluation must freeze case identities, candidate outputs, final-mix hash, changed-case threshold and deterministic unchanged controls **before** any human boundary truth is read; the review surface must hide old/hybrid/editor candidate positions. A human may mark a case invalid/unscorable instead of guessing; such cases remain explicitly counted and may only be replaced under a separately predeclared deterministic replacement protocol. A development-visible pack can test wiring but must never be renamed blind/untouched. Production safety thresholds must not be loosened merely to reduce review count. Every real production failure used for development should be converted to a generic synthetic regression without publishing or hard-coding the real song, cue number, timestamp, or lyric text.

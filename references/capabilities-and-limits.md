@@ -21,12 +21,16 @@
 
 | 能力 | 当前可做 | 前提与边界 |
 | --- | --- | --- |
-| Standard | 按canonical修正文案并冻结cue编号、数量和起止时间 | 不修复原时间轴错误；规范歌词本身须正确。 |
+| Standard / Lexical Floor | 按可信 canonical 修正文案并冻结 cue 编号、数量和起止时间；单独报告 unresolved cue / unmatched canonical，而不是把“程序没报错”当成文字完成 | 不修复原时间轴错误；raw-LRC 全曲未使用内容不能直接当作 final-mix 漏词。 |
 | Smart | 使用timed canonical、剪映多数锚点和变速先验进行无音频修复 | 依赖可识别锚点；不是声学验证，不按语种直接推断剪映可靠度。 |
 | Pro / Max | 按需加入局部音频或完整Source-to-Mix映射、对齐与重建 | 需要相应音频、模型与有效证据；更高模式不保证更准。 |
 | 已确认结果复用 | 在录音和目标身份匹配时复用人工边界、重放修补 | 减少同一材料的重复劳动，不证明新歌泛化。 |
 | 剪映区域恢复 | 根据文字归属、顺序和范围恢复已有可信区域，支持任务级 all-occurrences 重复恢复和切分后的字符坐标 | 不能把所有剪映时间当真值，不能从少数锚点无条件外推整曲；无可证明区域保持原结果。 |
 | Hybrid topology reconciliation | canonical evaluation 负责结构/漏句完整性，严格 editor-preservation 负责局部可信 timing，再以完整 character coverage 合并为 production | 只接受 exact-bound preservation/reconciliation；至少一次真实 editor restore；不是 LRC 全局 timing authority。 |
+| Resolved-canonical lexical floor | 对已解析到 final mix 的 occurrence 做字符级 ownership/coverage 审计；KPOP130 当前 786 canonical rows / 12,539 normalized characters 已做到 12,539/12,539 覆盖且 mismatch/gap/overlap/unowned=0 | 只证明相对 resolved canonical 的生产链不丢字/改字，不证明歌词源、版本或 canonical wording 本身绝对正确。 |
+| 大模型语义复核 / canonical rebuttal | 将严重 ASR、音译/混语种、canonical 疑似错词变成 hash-bound 结构化候选；程序重新验证 evidence role、ownership 与 timeline immutability | canonical lexical rebuttal 需独立支持证据且不得有直接 canonical 反证；目前先 shadow，不能靠语义“读起来更顺”自动定真。 |
+| Viewer lexical gate | display policy 只允许 normalized-equivalent 的空格/标点/大小写/排版变化及显式 mask；未经 canonical rebuttal 授权的 lexical 改字在加载/最终 audit 两层都会失败 | 展示层不再拥有绕过 canonical truth 的改字权限；敏感词 mask 与 lexical truth 分开审计。 |
+| Blind timing decision evaluation | 可在读人工 truth 前冻结 changed boundary + deterministic unchanged controls，生成候选隐藏的音频复核包，并统计 harm/rescue/catastrophic/manual-repair 等 selector 指标 | KPOP130 80-case 只是 development wiring，不是 untouched/blind 精度证据；真实结论需新项目先锁题再标 gold。 |
 | QA与审计 | 追踪来源、配置、版本、边界证据及最终产物，保留review/BLOCK | 证明可追溯与约束成立，不等于全部听感正确。 |
 | 辅助试听 | A/B、选点前后试听、步长输入与时间显示 | 是纠错辅助工具，不是算法必须持续依赖的训练循环。 |
 
@@ -34,7 +38,7 @@
 
 - 对未见的K-pop、日语、混合语言、说唱、拖长音、重复副歌和多人重叠提供稳定的端到端质量保证。
 - 在剪映严重漏识、大段连续或谐音误识时，自动补齐全部歌词并可靠确定所有内部边界。
-- 从不完整/错误的canonical自动恢复权威歌词；当前文字与顺序仍由canonical决定。
+- 从任意不完整/错误 canonical 自动恢复权威歌词。当前已能把 canonical 疑似错词变成大模型/声学证据绑定的 rebuttal candidate，并阻止未经授权的 viewer 改字；但没有足量独立支持且仍有直接反证时不会自动推翻 canonical。
 - 对每条输出给出经过独立校准的“正确概率”，以及已验证的全量覆盖率、尾部误差和自动交付率。
 - 在不增加人工或独立真值的情况下，证明新策略优于现有最终SRT；旧标注能回归，不能反复充当新盲测。
 - 开箱即用的带模型离线产品与统一硬件性能承诺；源码仓库不附私有媒体、模型或人工标注。

@@ -2,9 +2,12 @@
 
 Canonical lyrics remain the text/order evidence source.  This module only governs
 what is shown to viewers after a production subtitle has already earned timing and
-segmentation authority.  It supports three deliberately narrow operations:
+segmentation authority. Explicit overrides are presentation-equivalent only: they may
+repair spacing, punctuation, case or equivalent layout, but may not change normalized
+lexical content. A real lyric-word correction must first pass the separate auditable
+canonical-semantic-rebuttal layer. It supports three deliberately narrow operations:
 
-* task-bound, identity-bound explicit display overrides reviewed by a model/human;
+* task-bound, identity-bound presentation-equivalent display overrides reviewed by a model/human;
 * deterministic masking of a small strong-profanity profile;
 * optional shorten-only trimming of extreme line-LRC end holds whose source end is
   only the next lyric start, never an explicit vocal-end timestamp.
@@ -22,6 +25,8 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+
+from lyric_aligner.text_repair import _normalize_for_match
 
 
 class DisplayPolicyError(ValueError):
@@ -209,6 +214,11 @@ def load_display_policy(
             raise DisplayPolicyError(f"{context} has invalid canonical_line_index")
         expected_text = _required_text(row, "expected_text", context=context)
         display_text = _required_text(row, "display_text", context=context)
+        if _normalize_for_match(expected_text) != _normalize_for_match(display_text):
+            raise DisplayPolicyError(
+                f"{context} changes normalized lexical content; "
+                "use canonical-semantic-rebuttal before the display layer"
+            )
         reason = _required_text(row, "reason", context=context)
         reviewer = _required_text(row, "reviewer", context=context)
         confidence = str(row.get("confidence") or "").strip().lower()
