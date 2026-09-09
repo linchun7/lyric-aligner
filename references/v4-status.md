@@ -8,6 +8,8 @@
 
 当前对外能力说明以[能力与使用边界](capabilities-and-limits.md)为准：维护可用，通用无人审核交付尚未证明；下文实验数字须按各自样本和产物层级理解。
 
+> **生产基线身份（2026-09-09）：** current production code baseline = 本次发布提交（以最终 commit SHA 为准）；frozen timing decision baseline = `676b37f`。代码基线升级不等于 KPOP130 当前具体成品通过完整 semantic/release gate；旧 stale audio fusion 仍不能冒充 release-ready。完整 semantic/release gate 仍需 fresh independent audio evidence。
+
 > **当前执行阶段：editor-first / hybrid timing 冻结 + lexical floor（2026-09-09）。** `676b37f` 作为当前 timing 冻结基线；不继续扩大未经 blind final-mix truth 证明的 timing 自动修改。下一优先级是产品最低下限：Content correctness > Structure/ownership correctness > Timing non-regression > Timing improvement。Standard/raw-LRC text-only 路径继续提供“只修文字、时间签名不变”的保守能力；Max production 则必须基于已经解析出的 occurrence/canonical evaluation 做字符 ownership/coverage 审计，不能重新把整曲 raw LRC 串联后把未进入 final mix 的歌词误算为缺失。
 
 > 本轮新增 `trusted-canonical-text-floor-1.0` 报告层、`v4_lexical_floor.py`、有 hash/模型身份绑定且永不授予 timing authority 的 bounded semantic-model request/response shadow protocol，以及离线 timing-decision validator。KPOP130 原始 607-cue editor SRT 的 raw-LRC诊断自动修复97 cue、时间/编号0变化，但仍有413 cue review、762 raw canonical unmatched、402 semantic requests；该结果只证明 standalone Text Repair 的能力边界，**不是 Max production lexical coverage 结论**，因为 raw LRC 包含未使用/未解析内容。正式 production lexical floor 以后续 `KPOP130_CANONICAL_EVAL.audit.csv` 等 resolved canonical occurrence 为真源。
