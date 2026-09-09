@@ -125,13 +125,15 @@ output artifact -> overwrite any production input
 rare piecewise case -> force all normal songs through heavy mapping
 ```
 
-## 2. Standard / Text Repair V2.1
+## 2. Standard / Text Repair V2.1 + Lexical Floor 1.1
 
 Standard 冻结 editor timeline，只做 deterministic canonical text repair。它不读取 audio，不改变 cue count/number/start/end；production text threshold floor = 0.72。
 
 Text Repair V2 负责 lexical-first 主文本匹配，包括 bounded 1↔N / N↔1 / N↔N span。similarity、length-ratio、ambiguity、layout-boundary guards 不因 Smart 升级而降低。
 
 `text_repair._assign_targets()` 以 editor 原字符 ownership 为主做 canonical edit script。连续 editor/canonical 文本已经一致而仅 LRC 换行不同的 span，必须保持 editor cue segmentation；LRC 行边界本身不拥有跨 cue 搬字权限。
+
+Lexical Floor 1.1 不再只比较去掉空格/标点后的字符流。对 Latin/digit 相邻字符，它同时验证 canonical word-boundary signature；安全 ownership 内的 horizontal whitespace 可以按 canonical 词边界重排，但不会借此跨 cue 搬字。已有 newline 或 cue boundary 如果切进 canonical Latin 单词则 fail closed，不能返回 false-ready。Standard 的 `trusted-canonical-text-floor-1.1` 仍要求 raw canonical coverage；字符或词边界任一错误都不能达到 complete。
 
 严重 ASR 乱码如果 lexical evidence 不够，会进入 review；Smart 可以用独立 sequence/timing/BPM-validated text evidence继续处理，但不得通过降低 Text Repair threshold 来制造更多 false auto。
 
@@ -153,7 +155,7 @@ lyric_aligner/io/path_safety.py
 Smart report schema 继续 `smart-1.1`；当前 policy id：
 
 ```text
-smart-validation-policy-2026-08-21-v1.2.4
+smart-validation-policy-2026-08-22-v1.2.10
 ```
 
 ### 3.1 Canonical representation
@@ -175,10 +177,14 @@ RepairCanonicalLine text view
 主 timing identity grade：
 
 ```text
-A: exact + unique + 1:1 + unchanged
+A: original editor normalized exact + unique + 1:1 + action unchanged/presentation-only replace
 B: 1:1 + high similarity + safe text repair
 C: merge/split/gap/repeated/ambiguous/sequence/BPM-recovered/other
 ```
+
+A 的身份必须来自**原始 editor cue**，不能由 repaired output 自证。若 action=`replace` 但原始 editor normalized lexical 本来就与 canonical 完全一致，则该变化只属于大小写/标点/空格等 presentation 修正，在 1:1、双侧唯一且 score 足够高时仍可作为 A；任何 raw lexical mismatch、split/merge、重复 identity 或 recovered text 都不能因此升 A。
+
+Smart 在所有 text recovery 与 ownership materialization 之后运行 `mapped-trusted-canonical-text-floor-1.0`。它只审计已经自动映射/物化的 trusted regions，分别检查 normalized character stream 与 Latin word-boundary signature；任一错误都会令 text/status fail closed。该 mapped floor **不要求整份 raw LRC 全覆盖**，因此不会把 final mix 未使用的整曲歌词机械算成缺失。
 
 只有 A 可建立 `SongTimingModel`。普通单曲仍优先：
 
