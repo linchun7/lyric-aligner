@@ -143,7 +143,7 @@ Lexical Floor 1.1 不再只比较去掉空格/标点后的字符流。对 Latin/
 
 严重 ASR 乱码如果 lexical evidence 不够，会进入 review；Smart 可以用独立 sequence/timing/BPM-validated text evidence继续处理，但不得通过降低 Text Repair threshold 来制造更多 false auto。
 
-## 3. Smart / Sequence Reconciliation + Anchor Timeline Repair（正式生产基线 v1.2.10；当前工作树候选 v1.2.11）
+## 3. Smart / Sequence Reconciliation + Anchor Timeline Repair v1.2.11
 
 核心文件：
 
@@ -158,13 +158,13 @@ scripts/v4_smart_repair.py
 lyric_aligner/io/path_safety.py
 ```
 
-Smart report schema 继续 `smart-1.1`；正式已发布生产基线 policy 为：
+Smart report schema 继续 `smart-1.1`；当前 `main` policy 为：
 
 ```text
-smart-validation-policy-2026-08-22-v1.2.10
+smart-validation-policy-2026-09-10-v1.2.11
 ```
 
-当前工作树候选通过 `smart_current` 绑定 `smart-validation-policy-2026-09-10-v1.2.11`。v1.2.11 已在 SHE25 真实 A/B 上证明相对 v1.2.10 的 cue timing signature、完整 timing decisions 与 rendered SRT 均不变；其新增行为仅为 final canonical ownership / connected lexical-floor authority 收紧。在候选整体验收、提交与正式晋级前，不得把它写成已发布生产版本。
+`smart_current` 是唯一 current-production facade，并绑定 `smart-validation-policy-2026-09-10-v1.2.11`。v1.2.11 已在 SHE25 真实 A/B 上证明相对 v1.2.10 的 cue timing signature、完整 timing decisions 与 rendered SRT 均不变；其新增行为仅为 final canonical ownership / connected lexical-floor authority 收紧。v1.2.10 保留为历史 regression baseline。
 
 ### 3.1 Canonical representation
 

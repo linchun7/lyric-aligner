@@ -34,7 +34,8 @@
 - `__pycache__/`、`*.pyc`、`.pytest_cache/`；
 - feature cache、resume sidecar、临时 decode/cache 文件；
 - 已完成实验的重复 stdout/stderr 临时副本；
-- 明确标记为 disposable execution optimization、且不承担最终审计证据的缓存。
+- 明确标记为 disposable execution optimization、且不承担最终审计证据的缓存；
+- 无活动 handoff/runner 依赖的仓库本地 `tmp/`、`.ai-bridge/`、Playwright/debug/agent 临时输出。Git worktree/stash 不属于普通临时目录，删除前必须先确认引用并建立可恢复归档。
 
 如果缓存本身被 benchmark、性能回归或 artifact lineage 明确引用，则升级为 KEEP/ARCHIVE，不按本条删除。
 

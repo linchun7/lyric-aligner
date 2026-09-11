@@ -251,3 +251,11 @@ tools/__pycache__/
 # Task-specific evidence must stay local unless deliberately anonymized
 *_manual_overrides.json
 *_regression_cases.json
+
+# Repository-local orchestration / debug residue
+/.ai-bridge/
+/tmp/
+/.playwright-cli/
+/agent-status.md
+/execution-log.jsonl
+/implementation-diff.patch

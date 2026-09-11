@@ -137,7 +137,7 @@ python scripts/v4_text_repair.py ...
 python scripts/v4_smart_repair.py ...
 ```
 
-正式已发布 Smart 生产基线为 v1.2.10；当前工作树候选由 `smart_current` 指向 v1.2.11。普通“大部分时间轴正确”的任务仍先走 Smart；候选未完成整体验收/晋级前，不把 v1.2.11 写成已发布版本。
+当前 `main` 的 Smart selector 为 v1.2.11。普通“大部分时间轴正确”的任务先走 Smart；是否能结束任务仍由该次 report 的 `status/pro_escalation_required` 和后续 release gate 决定，不因版本号自动视为发布通过。
 
 ### Pro
 

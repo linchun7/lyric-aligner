@@ -5,25 +5,25 @@ description: Reconstruct, review, materialize, diagnose and render multilingual 
 
 # Lyric Aligner
 
-2026-09-10 工作树候选：Smart current=v1.2.11、Max=4.0.0a20、Pro acoustic schema=1.5。以下“正式生产版本”保留已发布基线；候选尚未通过 a20 semantic release，不能把开发 selector 或工程封存当成发布。最新收敛事实见 [a20 交接](references/oumei140-a20-source-clock-upgrade-handoff-2026-09-10.md)。
+2026-09-11 当前主线：Smart current=v1.2.11、Max=4.0.0a20、Pro acoustic schema=1.5。仓库 selector 已在 `main`，但具体字幕任务仍必须独立通过 lexical/structural/semantic/release gate；欧美经典140 a20 当前仍有 7 首 semantic BLOCK。当前入口见 [README](README.md)，任务级历史与证据见 [a20 交接](references/oumei140-a20-source-clock-upgrade-handoff-2026-09-10.md)。
 
 当前生产主路径为 **Standard -> Smart -> Pro -> Max**。
 
 当前能力、评分依据与未具备事项见[能力与使用边界](references/capabilities-and-limits.md)。当前为维护收敛阶段；工程验收不代表任意新歌的准确率封板。
 
-当前正式生产版本：
+当前仓库生产实现：
 
 ```text
 Standard -> Text Repair V2.1
-Smart    -> Sequence Reconciliation + Anchor Timeline Repair v1.2.10
+Smart    -> Sequence Reconciliation + Anchor Timeline Repair v1.2.11
 Pro      -> Selective Audio Repair v1.2.7
-Max      -> Full V4 Alignment（具体算法版本以 references/v4-status.md / runtime snapshot 为准）
+Max      -> Full V4 Alignment 4.0.0a20
 ```
 
 当前 Smart policy：
 
 ```text
-smart-validation-policy-2026-08-22-v1.2.10
+smart-validation-policy-2026-09-10-v1.2.11
 ```
 
 这个项目的生产原则不是“让 ASR 重写歌词”，而是：**canonical lyric 是最终文字与顺序的默认真源；只有独立、可审计的 canonical-semantic-rebuttal 证据链才能推翻 normalized lexical truth；canonical LRC line break 不等于最终 subtitle cue boundary；Jianying timing / cue segmentation 是强但可推翻的先验；Smart 先用 timed canonical + editor majority anchors 做 0-audio 验证；Pro/Max 才引入 Source-to-Mix acoustic evidence。**
@@ -246,7 +246,7 @@ schema_version = smart-1.1
 policy_id      = smart-validation-policy-2026-09-10-v1.2.11
 ```
 
-这里描述的是当前工作树候选 selector；正式已发布 Smart 生产基线仍为 v1.2.10。候选 v1.2.11 已完成 SHE25 真实 timing non-regression，但在候选代码完成整体验收前不得写成已发布生产版本。
+这里描述的是当前 `main` 的 Smart selector。v1.2.11 已完成 SHE25 真实 timing non-regression，并保持 v1.2.10 timing authority 不变；具体任务仍需按各自 report/release gate 判断是否可结束，不能把仓库版本直接等同于成品发布资格。
 
 生产判断：
 
@@ -278,7 +278,7 @@ OR pro_escalation_required == true
 python scripts/v4_pro_selective.py ...
 ```
 
-Pro v1.2.7 必须绑定**当前 Smart schema + current Smart policy + exact Smart SRT/canonical hashes**。当前只接受 `schema_version=smart-1.1` 且 `policy_id=smart-validation-policy-2026-08-22-v1.2.10`；旧 Smart artifact 不能直接复用，版本/policy/hash 不匹配时先重新跑当前 Smart。
+Pro v1.2.7 必须绑定**当前 Smart schema + current Smart policy + exact Smart SRT/canonical hashes**。当前只接受 `schema_version=smart-1.1` 且 `policy_id=smart-validation-policy-2026-09-10-v1.2.11`；旧 Smart artifact 不能直接复用，版本/policy/hash 不匹配时先重新跑当前 Smart。
 
 实现上，`smart_policy.py` 是 frozen v1.2.4 base contract，v1.2.5/v1.2.6/v1.2.7/v1.2.8 是顺序 wrapper；**`smart_current.py` 才是唯一 current-production Smart facade**。Smart CLI 与 Pro compatibility gate 都必须从它取得当前 schema/policy/function binding，不能从旧版本模块的常量推断 current policy。
 
@@ -517,7 +517,7 @@ V2.1 先用唯一 exact 文本锚点把长字幕切成局部区间，再在区�
 
 这个入口完全不读取音频，也不依据 LRC timestamp 修改 SRT timing，因此 **BPM 加速/减速不会改变 Standard 的文字修复规则**。
 
-### 2. Smart / Sequence Reconciliation + Anchor Timeline Repair（正式 v1.2.10；当前工作树候选 v1.2.11）
+### 2. Smart / Sequence Reconciliation + Anchor Timeline Repair v1.2.11
 
 日常“剪映 timing 大部分正确”的任务优先：
 
@@ -542,7 +542,7 @@ python scripts/v4_smart_repair.py `
 --source-bpm "01.lrc=128"
 ```
 
-`target_bpm/source_bpm` 只作为 soft prior；不要把它伪装成 exact DAW rate。BPM text-only recovery 自 v1.2.2 引入；当前工作树候选 v1.2.11 仍要求该 soft prior 被多个 baseline-safe text anchors 独立验证后才可用于**文字 recovery**，并且不增加 timing mutation authority。v1.2.5 A-bounded、v1.2.6 final recovery、v1.2.7 cross-script recovery 以及 v1.2.11 final ownership/lexical-floor hardening 都发生在 final timing 冻结之后，不重新建立 timing model。
+`target_bpm/source_bpm` 只作为 soft prior；不要把它伪装成 exact DAW rate。BPM text-only recovery 自 v1.2.2 引入；当前 v1.2.11 仍要求该 soft prior 被多个 baseline-safe text anchors 独立验证后才可用于**文字 recovery**，并且不增加 timing mutation authority。v1.2.5 A-bounded、v1.2.6 final recovery、v1.2.7 cross-script recovery 以及 v1.2.11 final ownership/lexical-floor hardening 都发生在 final timing 冻结之后，不重新建立 timing model。
 
 Smart 输出后：
 

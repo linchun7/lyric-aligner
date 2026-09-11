@@ -238,9 +238,9 @@ Versioned Smart modules remain historical implementations: `smart_policy.py`
 is the frozen v1.2.4 base contract; `smart_policy_v125.py` and
 `smart_policy_v126.py` / `smart_policy_v127.py` / `smart_policy_v128.py` /
 `smart_policy_v129.py` / `smart_policy_v1210.py` / `smart_policy_v1211.py` are versioned wrappers. `smart_current.py` is the **only
-current working-tree facade**; it currently binds schema `smart-1.1`, policy
+current-production facade**; it currently binds schema `smart-1.1`, policy
 v1.2.11 and the v1.2.11 repair function. Both the Smart CLI and Pro compatibility gate import
-through this facade. The formally released production baseline remains Smart v1.2.10 / Pro v1.2.7 until the candidate closeout is committed and promoted.
+through this facade. Smart v1.2.10 remains a historical regression baseline; v1.2.11 is the current selector on `main`.
 Therefore a future Smart promotion changes one current binding instead of
 independently changing multiple consumers. v1.2.4 and earlier Smart reports are
 stale and must be rerun.
@@ -273,10 +273,10 @@ blind validation establishes safe evidence combinations and false-repair bounds.
 Max also follows the same segmentation authority contract: line-LRC grouping is
 not sufficient evidence by itself to resegment a trusted editor subtitle cue.
 
-## Current working-tree candidate: Smart v1.2.11 / formal production baseline: Smart v1.2.10 + Pro v1.2.7
+## Current contract: Smart v1.2.11 + Pro v1.2.7
 
 The current Smart facade binds `smart-1.1` to
-`smart-validation-policy-2026-09-10-v1.2.11` in the current candidate. The formally released baseline remains v1.2.10. Shared canonical parsing filters
+`smart-validation-policy-2026-09-10-v1.2.11` on `main`. v1.2.10 remains a historical comparison baseline. Shared canonical parsing filters
 explicit roles before canonical lines/ordinals exist. Bare CJK lines remain
 lexical unless same-file explicit multi-cast evidence proves the name, or a
 strong repeated ensemble-label grammar proves an otherwise missing member.

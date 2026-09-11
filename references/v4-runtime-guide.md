@@ -2,9 +2,9 @@
 
 Source-clock authority 1.1 运行须同时提供 map、promotion analysis、promotion selection、promotion protocol 四份文件，CLI 参数见 [CLI 契约](v4-cli-contract.md)。原 source-clock 1.0 QA 不能直接继承新资格；应在同一 final/fusion 上重放。a20 新重放结果仍为 semantic FAIL，禁止据工程单测通过发布成品。
 
-2026-09-10 工程候选注意：local acoustic 新输出 schema 1.5。Pro 与 source-ASR shadow consumers 要求显式、坐标一致的 projection domain 和完整原有 eligibility 条件；旧缺字段文件可诊断读取，但不会自动取得 timing 资格。prefix-v2 不接生产 semantic authority；R4 的 7 缓存/56 frozen 样本结果为 0 eligible。当前候选/生产状态区别见 [a20 交接](oumei140-a20-source-clock-upgrade-handoff-2026-09-10.md)。
+当前 local acoustic 输出 schema 为 1.5。Pro 与 source-ASR shadow consumers 要求显式、坐标一致的 projection domain 和完整 eligibility 条件；旧缺字段文件只可诊断读取，不能自动取得 timing 资格。prefix-v2 / English final-mix HuBERTFA 均保持 shadow/研究身份，不接生产 semantic authority；当前成品状态以各任务自己的 semantic/release artifact 为准。
 
-更新：2026-09-10
+更新：2026-09-11
 主线算法版本：`4.0.0a20`
 
 > 真实生产 workload 与产品设计基线见 `references/production-requirements.md`；Smart / Pro v1.1 设计细节见 `references/smart-pro-v1-1.md`。

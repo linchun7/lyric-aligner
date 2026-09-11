@@ -1,67 +1,109 @@
 # 当前能力与使用边界
 
-评估日期：2026-09-09。基于当前 editor-first / hybrid 封板候选代码、六个真实长项目结构回归、KPOP130 viewer display 与既有历史标注；产品身份仍为 `4.0.0a19`，新生产语义由独立 policy/mode/artifact lineage 区分。总体准确率仍因缺少代表性的 untouched final-mix truth 而未知。
+更新：2026-09-11
 
-## 定位与评分
+当前仓库主线为 `main`，算法版本 `4.0.0a20`；生产路径为 `Standard -> Smart v1.2.11 -> Pro v1.2.7 -> Max 4.0.0a20`。本页只描述当前可依赖的能力与限制；历史实验数字见 [实验台账](accuracy-experiment-register-2026-09-08.md) 和 [v4 change record](v4-change-record.md)。
 
-当前适合充当**有规范歌词和剪映字幕输入的、可追溯的字幕修复与审核工具**。尚不具备任意歌曲、任意语种、无需审核即可保证准确的自动字幕生产能力。
+## 1. 项目定位
 
-工程质量综合 **7.0/10**：四个维度等权平均。以下为基于代码与证据的工程判断，不是实测识别正确率，也不是与商业产品的排行榜比较。
+本项目适合处理“已有 editor/剪映 SRT + 规范歌词 + 可选原曲/最终混音”的歌词字幕修复、对齐、审核和发布门禁。
 
-| 维度 | 分数 | 判断依据与扣分原因 |
+它不是“任意歌曲、任意语种、无需审核即可保证正确”的全自动字幕器。当前没有代表所有歌曲/语种/制作方式的 untouched final-mix truth，因此**不能负责任地给出总体准确率百分比**。
+
+核心原则：
+
+```text
+Content correctness
+> Structure / ownership correctness
+> Timing non-regression
+> Timing improvement
+```
+
+证据不足时保持 editor/既有安全结果并进入 review/BLOCK，而不是放宽阈值制造通过。
+
+## 2. 当前已具备能力
+
+| 能力 | 当前可做 | 主要边界 |
 | --- | --- | --- |
-| 架构 | 7/10 | 文字、映射、边界证据、选择与写出已有分层；旧总入口仍承载解析、QA及流程编排，跨层维护成本较高。 |
-| 代码可维护性 | 6/10 | 有版本化策略、显式异常和回归保护；`redo_karaoke_pipeline.py` 超过5600行，source packet与内部切分模块均超过1200行，实验分支及兼容路径较多。 |
-| 工程验证 | 8/10 | 具备单元测试、文档契约、产物身份检查、回放与CI矩阵；单元测试不能替代真实歌曲质量评测，公开源码也不包含私有媒体和gold。 |
-| 性能与风险控制 | 7/10 | 有缓存、有限搜索预算和不确定性拒绝；音频模型环境复杂，完整跨语种时延、资源与错误率尚无统一测量，拒绝输出不能算正确识别。 |
+| Standard / Text Repair V2.1 | 按 canonical 修正文案，冻结 cue count/number/start/end；处理安全的 1↔N/N↔1 ownership 差异 | 不修原时间轴错误；LRC line break 不是 cue boundary authority |
+| Smart v1.2.11 | no-audio 使用 timed canonical、editor majority anchors、sequence 与 exact/soft BPM prior 做文字恢复和少量受控 timing 判断 | v1.2.11 不扩大 v1.2.10 timing authority；review 仍需 Pro/人工 |
+| Pro v1.2.7 | 仅对 Smart unresolved 的 bounded region 规划 local acoustic、ASR/forced evidence 和 adjudication | 默认 `timing_mutation_performed=false`；局部 evidence 不自动写成最终字幕 |
+| Max 4.0.0a20 | 完整 Source-to-Mix、cut/overlap/recomposition、editor preservation、canonical evaluation、semantic/release lineage | 更重不等于更准；结构/语义 gate 未过仍 BLOCK |
+| Canonical lexical floor | 对 resolved canonical occurrence 做字符 ownership、coverage、Latin word-boundary 等审计 | 证明生产链不静默丢字/改字，不证明歌词源本身绝对正确 |
+| Canonical rebuttal | 允许独立 hash-bound evidence 对 normalized canonical lexical truth 提出反证 | 语义“看起来更顺”本身没有改字 authority |
+| Editor preservation / hybrid | 在 canonical 完整性与 editor timing/topology 可同时证明时保留可信 editor cue，并补结构遗漏 | 只接受显式 exact/lineage-bound 区域；不把 editor 整体升级成真值 |
+| Human Gold / Review | 复用已经确认的边界、review decision、blind/calibration split 与 selection lock | 旧 gold 可回归，但不能反复包装成新的 blind 泛化证据 |
+| QA / release | 验证 input/config/artifact/version/hash lineage、结构、lexical floor、semantic evidence、release authority | QA 通过只证明对应 gate；不能替代未运行的其它 gate |
 
-按本项目有准备输入的辅助修复目标，实用能力约 **7/10**；若目标改为“任意新歌全自动、无人复核交付”，成熟度约 **4/10**。两者是不同使用目标，不能平均成正确率。当前缺少有代表性的独立成品真值集，**无法负责任地给出总体准确率百分比**。
+## 3. Smart / Pro 当前边界
 
-## 已具备的能力
+当前 Smart schema/policy：
 
-| 能力 | 当前可做 | 前提与边界 |
-| --- | --- | --- |
-| Standard / Lexical Floor | 按可信 canonical 修正文案并冻结 cue 编号、数量和起止时间；单独报告 unresolved cue / unmatched canonical，而不是把“程序没报错”当成文字完成 | 不修复原时间轴错误；raw-LRC 全曲未使用内容不能直接当作 final-mix 漏词。 |
-| Smart | 使用timed canonical、剪映多数锚点和变速先验进行无音频修复 | 依赖可识别锚点；不是声学验证，不按语种直接推断剪映可靠度。 |
-| Pro / Max | 按需加入局部音频或完整Source-to-Mix映射、对齐与重建 | 需要相应音频、模型与有效证据；更高模式不保证更准。 |
-| 已确认结果复用 | 在录音和目标身份匹配时复用人工边界、重放修补 | 减少同一材料的重复劳动，不证明新歌泛化。 |
-| 剪映区域恢复 | 根据文字归属、顺序和范围恢复已有可信区域，支持任务级 all-occurrences 重复恢复和切分后的字符坐标 | 不能把所有剪映时间当真值，不能从少数锚点无条件外推整曲；无可证明区域保持原结果。 |
-| Hybrid topology reconciliation | canonical evaluation 负责结构/漏句完整性，严格 editor-preservation 负责局部可信 timing，再以完整 character coverage 合并为 production | 只接受 exact-bound preservation/reconciliation；至少一次真实 editor restore；不是 LRC 全局 timing authority。 |
-| Resolved-canonical lexical floor | 对已解析到 final mix 的 occurrence 做字符级 ownership/coverage 审计；KPOP130 当前 786 canonical rows / 12,539 normalized characters 已做到 12,539/12,539 覆盖且 mismatch/gap/overlap/unowned=0 | 只证明相对 resolved canonical 的生产链不丢字/改字，不证明歌词源、版本或 canonical wording 本身绝对正确。 |
-| 大模型语义复核 / canonical rebuttal | 将严重 ASR、音译/混语种、canonical 疑似错词变成 hash-bound 结构化候选；程序重新验证 evidence role、ownership 与 timeline immutability | canonical lexical rebuttal 需独立支持证据且不得有直接 canonical 反证；目前先 shadow，不能靠语义“读起来更顺”自动定真。 |
-| Viewer lexical gate | display policy 只允许 normalized-equivalent 的空格/标点/大小写/排版变化及显式 mask；未经 canonical rebuttal 授权的 lexical 改字在加载/最终 audit 两层都会失败 | 展示层不再拥有绕过 canonical truth 的改字权限；敏感词 mask 与 lexical truth 分开审计。 |
-| Blind timing decision evaluation | 可在读人工 truth 前冻结 changed boundary + deterministic unchanged controls，生成候选隐藏的音频复核包，并统计 harm/rescue/catastrophic/manual-repair 等 selector 指标 | KPOP130 80-case 只是 development wiring，不是 untouched/blind 精度证据；真实结论需新项目先锁题再标 gold。 |
-| QA与审计 | 追踪来源、配置、版本、边界证据及最终产物，保留review/BLOCK | 证明可追溯与约束成立，不等于全部听感正确。 |
-| 辅助试听 | A/B、选点前后试听、步长输入与时间显示 | 是纠错辅助工具，不是算法必须持续依赖的训练循环。 |
+```text
+schema_version = smart-1.1
+policy_id      = smart-validation-policy-2026-09-10-v1.2.11
+```
 
-## 尚未具备或尚未证明
+`smart_current.py` 是唯一 current-production Smart facade。v1.2.10 保留为 regression baseline。
 
-- 对未见的K-pop、日语、混合语言、说唱、拖长音、重复副歌和多人重叠提供稳定的端到端质量保证。
-- 在剪映严重漏识、大段连续或谐音误识时，自动补齐全部歌词并可靠确定所有内部边界。
-- 从任意不完整/错误 canonical 自动恢复权威歌词。当前已能把 canonical 疑似错词变成大模型/声学证据绑定的 rebuttal candidate，并阻止未经授权的 viewer 改字；但没有足量独立支持且仍有直接反证时不会自动推翻 canonical。
-- 对每条输出给出经过独立校准的“正确概率”，以及已验证的全量覆盖率、尾部误差和自动交付率。
-- 在不增加人工或独立真值的情况下，证明新策略优于现有最终SRT；旧标注能回归，不能反复充当新盲测。
-- 开箱即用的带模型离线产品与统一硬件性能承诺；源码仓库不附私有媒体、模型或人工标注。
+SHE25 真实回归已证明：在同一真实 610-cue 输入与同参数下，v1.2.11 相比 v1.2.10 的 cue timing signature、完整 timing decisions 和 rendered SRT 均不变；v1.2.11 的新增影响是把最终 canonical ownership / lexical-floor 无法证明的区域继续留在 review，而不是重新建立 timing model。
 
-## 实验结果应如何理解
+Pro 只接受当前 Smart schema/policy + exact Smart SRT/canonical hash。旧 Smart artifact 即使 schema 名相同，只要 policy/hash 不匹配，也必须先重跑 Smart。
 
-既有历史成品对照中，24个已确认边界的起点/终点MAE曾由59.17/91.17ms降至30/9.17ms，主要来自既有确认值复用。这不是跨歌曲的新模型准确率。维护阶段同区域重复恢复成功、最终876条字幕字节不变，证明执行稳定性，不代表新的精度提升。
+## 4. Max / timing 当前边界
 
-共同窗口实验曾把两处候选重叠1929/862ms降至0，但因其他区间冲突，最终选择为0、成品未改变。部分新公开源端实验仅覆盖9/143个目标；不能只报这9个目标的低误差而忽略134个缺失。详见[实验登记](accuracy-experiment-register-2026-09-08.md)。
+Max 可处理复杂 cut、overlap、重复 occurrence、reference retime、editor reconciliation 等结构问题，但普通音频相关性、ASR 一致、两个模型接近、或 shadow observer 得分高都不等于 production timing truth。
 
-source shadow、HFA/joint、FLOAT及multilingual等继续保留显式实验身份，不因实现存在或候选增多而自动推广。2026-09-09 的 editor-first / hybrid production 已完成工程封板候选与真实长项目回归，但只有 KPOP130 有本轮可量化的 historical development 边界收益；仍不能声明全项目或未见歌曲的总体准确率。
+2026-09-11 已停止继续调两条现有 timing 研究 family：
 
-## 维护与重新升级的条件
+1. source-ASR -> harmonic/local acoustic retrieval；
+2. English exact-final-mix HuBERTFA forced-alignment shadow。
 
-优先处理可复现缺陷、运行可靠性和文档入口一致性。大型模块值得在实际修改时逐步拆分，但不为评分新增一次全面重构。重新做算法升级，应先确定错误类别、冻结未参与调参的独立数据，并同时报告最终SRT的覆盖率、端点误差分布、严重错误、回退/拒绝和运行成本；改善须超过旧final及editor基线且不损害原本正确部分。
+原因是冻结实验未获得足以授予 production authority 的覆盖/尾部质量，并出现非边缘多秒 collapse。没有新的独立 final-mix truth、预先冻结的新评测集或明确 production failure 时，不重新对旧样本调 window、dictionary、margin、segment geometry、observer 或 selector threshold。
 
-最强的反方证据是现有局部声学实验确有改善，说明算法并非理论上无路可走；当前最大风险是把少量已见目标上的改善误认成通用进展。足量独立成品配对结果若证明稳定净收益，将推翻目前暂停扩张的判断。现阶段以 editor-first / hybrid 作为保守生产升级方向，并继续按[维护收敛约定](maintenance-convergence-2026-09-08.md)限制无证据的算法扩张。
+这些实现可继续作为显式诊断/研究模块，但不能从 shadow 身份直接升级成 release authority。
 
-## 公开仓库范围
+## 5. 当前任务实例的已知状态
 
-仓库提供通用源码、合成测试夹具、接口说明及脱敏结果摘要。私有任务脚本、音视频、歌词/SRT、模型、人工标注、完整运行证据和本机路径不得随源码上传。文档中的`output/`引用是本地证据位置，不是公开下载地址；公开读者无法仅靠这些摘要重现私有歌曲指标。
+### 欧美经典140 a20
 
-2026-09-08 维护快照的历史验证为隔离Python3.12共1642项（1638通过、4项轻量环境缺音频依赖跳过），补充音频环境4/4通过；这些数字只描述当时快照。2026-09-09 editor-first / hybrid 改动后的最终回归必须以当前工作区实际测试结果为准，不能沿用旧快照数字替代。本页中的 KPOP130 MAE 与六任务恢复覆盖分别属于 historical development 与结构回归证据，不是新盲测总体准确率。
+当前 semantic release artifact 仍 `passed=false`。source-clock authority 已有 7 首合法晋级，但 ordinal：
 
-上传前再次全量回归出现1次Windows `WinError 5`：shadow将staging目录重命名为最终目录时被拒绝访问；该模块28项立即重跑全部通过。文件访问失败的具体外部诱因尚未证明，不能声称已根治。应保留失败产物并检查占用/权限后重试；这是运行可靠性限制，不是识别精度结论。
-2026-09-09 最终封板事实分三层：hybrid production/materializer QA 已完成 editor-first 结构收口；KPOP130 viewer display v3 structural audit 通过（passed=true、errors/window/content-end/overlap均为0，10条 long-display warning，最大7563ms）；semantic/release gate 尚未通过（projection editor witness 2/12 fail，independent-audio final layer 12/12 fail，audio_anchor_count=0）。因此当前不声称总体 accuracy 或完整 release-ready；materializer 的 `publish_ready=true` 仅是该层状态，完整发布仍需 fresh independent audio evidence/fusion 与 semantic gate。
+```text
+4 / 5 / 6 / 10 / 11 / 14 / 15
+```
+
+继续 BLOCK。因此“代码已经在 main”“static lexical/structural QA 通过”都不能解释为该成品已经 release-ready。
+
+### SHE25
+
+Smart v1.2.11 的 BPM soft-prior 配置相对无 prior 可减少一部分 text review，并保持 timing 不变；但当前真实结果仍为 `review_required` / `pro_escalation_required=true`，不能写成无人审核 final-ready。
+
+## 6. 尚未具备或尚未证明
+
+- 任意新歌/新语种在无人审核下稳定端到端交付；
+- 在 editor 严重漏识、重复副歌、拖长音、多人叠唱、复杂 cut/crossfade 下自动确定全部真实边界；
+- 从任意错误 canonical 自动恢复 authoritative lyrics；
+- 为每条字幕给出经独立校准、跨项目有效的“正确概率”；
+- 仅靠更多模型/候选/改动数量证明最终 SRT 更准确；
+- 用旧 development-visible gold 反复调参后仍称其为 blind 泛化证据。
+
+## 7. 什么时候可以重新做 accuracy 升级
+
+必须同时具备：
+
+1. 可复现的真实 production failure / 明确错误类别；
+2. 与旧调参样本隔离的独立 truth；
+3. 修改前冻结的 candidate/selector/threshold/runtime identity；
+4. 对 final SRT 报告完整分母、coverage、median/P90/max、catastrophic harm 和回退率；
+5. 相比 editor/旧 final 有净收益，并且原本正确区域不退化。
+
+否则优先维护 current editor-first / fail-closed 架构，而不是增加 heuristic 复杂度。
+
+## 8. 工程与可复现性边界
+
+当前源码仓库只提供通用代码、合成测试、接口/契约和脱敏摘要。私有音视频、歌词/SRT、模型、Gold/Review 和完整运行 evidence 保持本地。
+
+本地清理遵循 [local-artifact-retention.md](local-artifact-retention.md)：production final、manifest/run config、Gold/Review、blind/truth、calibration、regression baseline、被文档/release 直接引用的 evidence 默认保留；`__pycache__`、tmp/debug、明确 disposable cache 才是优先清理对象。
+
+当前运行和开发入口见 [README](../README.md) 与 [workflow](workflow.md)。
