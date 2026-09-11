@@ -331,7 +331,32 @@ def _jobs_from_release_semantic_asr_anchors(
         occurrence = occurrences.get(str(occurrence_row.get("occurrence_id") or ""))
         if occurrence is None:
             continue
-        selected = _spread_anchor_lines([line for (oid, _), line in lines.items() if oid == occurrence["occurrence_id"]], config.release_semantic_anchors_per_track)
+        by_index = {int(row.get("canonical_line_index")): row for row in occurrence_row.get("lines", [])}
+
+        def release_asr_eligible(line: dict[str, Any]) -> bool:
+            row = by_index.get(int(line["canonical_line_index"]))
+            if not row or not row.get("best_editor_cue_number") or row.get("suggested_onset_delta_ms") is None:
+                return False
+            margin = row.get("best_candidate_margin_uncalibrated")
+            candidates = row.get("candidates")
+            if margin is None or float(margin) <= config.editor_ambiguous_margin_max or not candidates:
+                return False
+            top = candidates[0]
+            if float(top.get("timing_support_score", 0)) < 0.50:
+                return False
+            direct_ok = top.get("direct_text_support_score") is not None and float(top["direct_text_support_score"]) >= 0.65
+            phonetic_ok = top.get("phonetic_support_score") is not None and float(top["phonetic_support_score"]) >= 0.65
+            if not (direct_ok or phonetic_ok):
+                return False
+            if top.get("editor_start_ms") is None or top.get("editor_end_ms") is None:
+                return False
+            return int(top["editor_end_ms"]) > int(top["editor_start_ms"])
+
+        eligible = [
+            line for (oid, _), line in lines.items()
+            if oid == occurrence["occurrence_id"] and release_asr_eligible(line)
+        ]
+        selected = _spread_anchor_lines(eligible, config.release_semantic_anchors_per_track)
         by_index = {int(row.get("canonical_line_index")): row for row in occurrence_row.get("lines", [])}
         for line in selected:
             row = by_index.get(int(line["canonical_line_index"]))

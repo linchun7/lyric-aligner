@@ -23,7 +23,7 @@ class SmartPolicyV1210Tests(unittest.TestCase):
             SMART_POLICY_ID,
             "smart-validation-policy-2026-08-22-v1.2.10",
         )
-        self.assertEqual(smart_current.SMART_POLICY_ID, SMART_POLICY_ID)
+        self.assertNotEqual(smart_current.SMART_POLICY_ID, SMART_POLICY_ID)
         self.assertEqual(
             report["segmentation_internal_timing_semantics"],
             "multi_cue_single_line_internal_onset_requires_exact_word_token_boundary",

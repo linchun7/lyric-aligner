@@ -173,6 +173,96 @@ class ProductionLexicalFloorTests(unittest.TestCase):
             self.assertEqual(report["status"], "failed")
             self.assertEqual(report["coverage_gap_count"], 1)
 
+    def test_nonzero_absolute_span_origin_is_inferred_from_text_and_line_ownership(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            canonical = root / "canonical.csv"
+            final_audit = root / "final.csv"
+            final_srt = root / "final.srt"
+            write_csv(
+                canonical,
+                CANONICAL_FIELDS,
+                [
+                    {"occurrence_id": "occ1", "canonical_line_index": 1, "text": "ABC"},
+                    {"occurrence_id": "occ1", "canonical_line_index": 2, "text": "DEF"},
+                ],
+            )
+            write_csv(
+                final_audit,
+                FINAL_FIELDS,
+                [
+                    {
+                        "position": 1,
+                        "cue_number": 1,
+                        "text": "AB",
+                        "occurrence_id": "occ1",
+                        "canonical_line_index": 1,
+                        "canonical_line_indices": "[1]",
+                        "canonical_content_start": 2,
+                        "canonical_content_end": 4,
+                    },
+                    {
+                        "position": 2,
+                        "cue_number": 2,
+                        "text": "CDEF",
+                        "occurrence_id": "occ1",
+                        "canonical_line_index": 1,
+                        "canonical_line_indices": "[1, 2]",
+                        "canonical_content_start": 4,
+                        "canonical_content_end": 8,
+                    },
+                ],
+            )
+            final_srt.write_text(
+                "1\n00:00:01,000 --> 00:00:02,000\nAB\n\n"
+                "2\n00:00:02,000 --> 00:00:03,000\nCDEF\n",
+                encoding="utf-8",
+            )
+            report = audit_resolved_lexical_floor(
+                canonical_evaluation_audit=canonical,
+                final_srt=final_srt,
+                final_audit=final_audit,
+            )
+            self.assertEqual(report["status"], "complete")
+            self.assertEqual(report["inferred_canonical_content_origins"], {"occ1": 2})
+            self.assertEqual(report["covered_character_count"], 6)
+
+    def test_ambiguous_nonzero_absolute_span_origin_fails_closed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            canonical = root / "canonical.csv"
+            final_audit = root / "final.csv"
+            final_srt = root / "final.srt"
+            write_csv(
+                canonical,
+                CANONICAL_FIELDS,
+                [{"occurrence_id": "occ1", "canonical_line_index": 1, "text": "ABAB"}],
+            )
+            write_csv(
+                final_audit,
+                FINAL_FIELDS,
+                [{
+                    "position": 1,
+                    "cue_number": 1,
+                    "text": "AB",
+                    "occurrence_id": "occ1",
+                    "canonical_line_index": 1,
+                    "canonical_line_indices": "[1]",
+                    "canonical_content_start": 5,
+                    "canonical_content_end": 7,
+                }],
+            )
+            final_srt.write_text(
+                "1\n00:00:01,000 --> 00:00:02,000\nAB\n",
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(ValueError, "unique canonical content origin"):
+                audit_resolved_lexical_floor(
+                    canonical_evaluation_audit=canonical,
+                    final_srt=final_srt,
+                    final_audit=final_audit,
+                )
+
     def test_fallback_full_line_ownership_works_for_unmodified_canonical_cues(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

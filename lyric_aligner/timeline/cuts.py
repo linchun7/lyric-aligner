@@ -16,6 +16,7 @@ from typing import Any
 from lyric_aligner.assets.bindings import ResolvedAssetBinding
 from lyric_aligner.text.canonical_lyrics import CanonicalLine, CanonicalToken, parse_canonical_lyrics
 from lyric_aligner.timeline.projector import mix_time_for_source
+from lyric_aligner.timeline.source_clock import SourceClockTransform
 
 
 class CutTimelineProjectionError(ValueError):
@@ -226,6 +227,8 @@ def _word_timed_fragments(
 def project_cut_aware_lines(
     lines: list[CanonicalLine],
     mapping: dict[str, Any],
+    *,
+    source_clock: SourceClockTransform | None = None,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
     segments = _segments(mapping)
     projected: list[dict[str, Any]] = []
@@ -233,7 +236,21 @@ def project_cut_aware_lines(
     omitted: list[dict[str, Any]] = []
 
     for index, line in enumerate(lines):
-        source_start_ms, source_end_ms, end_basis = _line_source_bounds(lines, index)
+        canonical_clock_start_ms, canonical_clock_end_ms, end_basis = _line_source_bounds(lines, index)
+        if source_clock is not None and line.tokens:
+            raise CutTimelineProjectionError(
+                "source-clock cut projection currently refuses token-timed canonical lines"
+            )
+        source_start_ms = (
+            source_clock.map_ms(canonical_clock_start_ms)
+            if source_clock is not None
+            else canonical_clock_start_ms
+        )
+        source_end_ms = (
+            source_clock.map_ms(canonical_clock_end_ms)
+            if source_clock is not None and canonical_clock_end_ms is not None
+            else canonical_clock_end_ms
+        )
         if line.tokens:
             fragments, fragment_issues = _word_timed_fragments(line, mapping, segments)
             projected.extend(fragments)
@@ -337,6 +354,9 @@ def project_cut_aware_lines(
                 "tokens": [],
             }
         )
+        if source_clock is not None:
+            projected[-1]["canonical_clock_start_ms"] = canonical_clock_start_ms
+            projected[-1]["canonical_clock_end_ms"] = canonical_clock_end_ms
 
     projected.sort(
         key=lambda row: (
@@ -351,18 +371,22 @@ def project_cut_aware_lines(
 def project_binding_cut_timeline(
     binding: ResolvedAssetBinding,
     mapping: dict[str, Any],
+    *,
+    source_clock: SourceClockTransform | None = None,
 ) -> dict[str, Any]:
     lines = parse_canonical_lyrics(
         Path(binding.canonical_lyric_path),
         original_index_by_timestamp=binding.original_index_by_timestamp,
     )
-    projected, issues, omitted = project_cut_aware_lines(lines, mapping)
+    projected, issues, omitted = project_cut_aware_lines(
+        lines, mapping, source_clock=source_clock
+    )
     segments = _segments(mapping)
     window = {
         "start_ms": int(round(float(segments[0]["mix_start"]) * 1000.0)),
         "end_ms": int(round(float(segments[-1]["mix_end"]) * 1000.0)),
     }
-    return {
+    payload = {
         "occurrence_id": binding.occurrence_id,
         "ordinal": binding.ordinal,
         "track_id": binding.track_id,
@@ -378,3 +402,6 @@ def project_binding_cut_timeline(
         "omitted_lines": omitted,
         "projection_issues": issues,
     }
+    if source_clock is not None:
+        payload["source_clock"] = source_clock.to_dict()
+    return payload

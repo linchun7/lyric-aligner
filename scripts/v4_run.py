@@ -11,7 +11,7 @@ ROOT = SCRIPTS.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from lyric_aligner.contracts.run_config import expand_run_config_argv
+from lyric_aligner.contracts.run_config import expand_run_config_argv, strip_run_config_control_argv
 from lyric_aligner.io.run_output_path_safety import validate_run_output_tree_from_argv
 from lyric_aligner.pipeline.run_lock import OutputRunLock, OutputRunLockError
 
@@ -44,6 +44,13 @@ def _out_dir_from_argv(argv: list[str]) -> Path | None:
     return None
 
 
+def _uses_source_clock(argv: list[str]) -> bool:
+    return any(
+        value == "--source-clock-map" or value.startswith("--source-clock-map=")
+        for value in argv
+    )
+
+
 def main() -> int:
     original_argv = sys.argv
     try:
@@ -54,13 +61,16 @@ def main() -> int:
             print(f"v4_run.py: error: {exc}", file=sys.stderr)
             return 2
 
-        sys.argv = [original_argv[0], *argv]
-        out_dir = _out_dir_from_argv(argv)
+        uses_source_clock = _uses_source_clock(argv)
+        execution_argv = strip_run_config_control_argv(argv) if uses_source_clock else argv
+        sys.argv = [original_argv[0], *execution_argv]
+        out_dir = _out_dir_from_argv(execution_argv)
+        selected_main = _CORE._IMPLEMENTATION_MAIN if uses_source_clock else _OPTIMIZED.main
         if out_dir is None:
-            return _OPTIMIZED.main()
+            return selected_main()
         try:
             with OutputRunLock(out_dir):
-                return _OPTIMIZED.main()
+                return selected_main()
         except OutputRunLockError as exc:
             print(f"v4_run.py: error: {exc}", file=sys.stderr)
             return 2

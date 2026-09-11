@@ -1,8 +1,8 @@
 # 多语言混剪歌词字幕：当前生产工作流
 
-更新：2026-09-05
+更新：2026-09-10
 当前路径：`Standard -> Smart -> Pro -> Max`
-当前 Max：`4.0.0a19`
+当前 Max：`4.0.0a20`
 
 本文件是当前生产工作流总览。历史 `v3.9` / `redo_karaoke_pipeline.py` 仅保留为兼容、回归与历史实现，不再是新任务默认入口。更细的 Max authority 与 CLI 约束分别见 `v4-runtime-guide.md`、`v4-cli-contract.md`。
 
@@ -113,7 +113,7 @@ canonical lyric = final text/order truth
 python scripts/v4_smart_repair.py ...
 ```
 
-当前 Smart v1.2.10。使用 canonical sequence、A-anchor majority、word/token timing、exact DAW 或 soft BPM plausibility。Smart 不因外语自动升级 Max，也不让自身恢复出的 text 反过来制造 primary timing anchor。
+当前 Smart v1.2.11。使用 canonical sequence、A-anchor majority、word/token timing、exact DAW 或 soft BPM plausibility；v1.2.11 只追加最终 canonical ownership / connected lexical-floor hardening，不扩大 v1.2.10 timing authority。Smart 不因外语自动升级 Max，也不让自身恢复出的 text 反过来制造 primary timing anchor。
 
 ### 4.3 Pro：局部音频证据
 

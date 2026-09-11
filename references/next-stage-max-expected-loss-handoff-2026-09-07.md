@@ -121,7 +121,9 @@ private/<任务>/input/
 
 ### 0.2 final mix 才是最终时间轴；调速后单曲不是成品真值
 
-用户工作流中经常有“原曲/调速后单曲 WAV”，它们非常有价值，但不能等同于最终节目音频。
+用户工作流中经常有“原曲/调速后单曲 WAV”，它们非常有价值，但不能等同于最终节目音频。**生产目录中的 `source-audio` 可能就是调速后单曲，而不是原速原曲。** 欧美140即属于这种情况：`source-audio` 已按 `bpm.txt` 调到目标步频，而 canonical LRC 仍可能保留原曲时钟。后续实现不得仅因字段名叫 source 就假定两者同一时基。
+
+当 canonical lyric clock 与 bound source-audio clock 不同时，先做两者之间的显式 source-clock transform；已知 BPM 变速时 rate 固定为 `input_bpm / target_bpm`，offset 再由调速后单曲的独立音频证据验证。只有完成该层后，canonical timestamp 才能进入 Source-to-Mix mapping；不能让 final-mix 结果反向拟合这个 source clock。
 
 进入 final mix 后还可能发生：
 

@@ -23,6 +23,7 @@ from lyric_aligner.text_repair import (
     SubtitleCue,
     build_repair_plan_v2,
     build_trusted_lexical_floor_report,
+    TEXT_ANCHOR_POLICY_ID,
     parse_srt_text,
     render_repaired_srt,
 )
@@ -454,6 +455,7 @@ def smart_repair_srt_text_v11(
     )
     report: dict[str, object] = {
         "schema_version": SMART_SCHEMA_VERSION,
+        "text_anchor_policy_id": TEXT_ANCHOR_POLICY_ID,
         "policy_id": SMART_POLICY_ID,
         "mode": "smart_anchor_timeline_repair_no_audio",
         "audio_read": False,

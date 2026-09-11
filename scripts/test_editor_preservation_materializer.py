@@ -170,6 +170,10 @@ class EditorMaterializerTests(unittest.TestCase):
         )
         report=materialize(**args,canonical_region=[1,3])
         self.assertEqual(report['canonical_region'],[1,3])
+        # The evaluated occurrence begins at canonical index 3 (``bridge``),
+        # while persisted ownership spans remain absolute to the full bound LRC.
+        # Record that translation origin explicitly for hybrid production.
+        self.assertEqual(report['evaluation_canonical_content_origin'],16)
         cues=parse_srt_strict(args['output_dir']/'final.srt')
         self.assertEqual([(cue.start_ms,cue.end_ms,cue.text) for cue in cues],[
             (1000,2000,'bridge'),(3000,5000,'charlie delta'),(6000,7000,'echo'),

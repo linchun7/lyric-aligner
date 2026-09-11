@@ -22,6 +22,7 @@ _PATH_FLAGS = (
     "--language-map",
     "--middle-cut-map",
     "--lyric-role-map",
+    "--source-clock-map",
 )
 _DIRECT_INPUT_FLAGS = (
     "--run-config",
@@ -29,6 +30,7 @@ _DIRECT_INPUT_FLAGS = (
     "--language-map",
     "--middle-cut-map",
     "--lyric-role-map",
+    "--source-clock-map",
 )
 
 

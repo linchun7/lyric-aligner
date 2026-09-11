@@ -1,5 +1,7 @@
 # Lyric Aligner v4 当前实施状态
 
+2026-09-10 收敛检查：当前工作树为 a20 工程候选，Smart current 已指向 v1.2.11，Pro local acoustic schema 为 1.5；这不是成品 release 晋级。prefix-v2 的 R4 冻结样本为 56 -> 10 source onset -> 0 eligible，仍 shadow-only。source-clock authority 1.1 已补齐 selection/protocol 身份与 ledger 指标重算；同一真实输入重放后仍为 7 首已晋级、7 首 final semantic FAIL。详细事实与最终检查记录见 [a20 交接](oumei140-a20-source-clock-upgrade-handoff-2026-09-10.md)。
+
 ## 2026-09-08 有界终轮实验：候选未升为生产默认
 
 本轮执行调速参考音频对应检查及 SOFA / STARS × 原混音 / HTDemucs 分离人声对照。现有 editor/Smart 基线继续保留；没有独立 final-mix 人工答案与非 oracle 实际收益时，不将候选模型或逐点最优结果宣布为准确率终版。
@@ -89,8 +91,8 @@
 
 当前新增按曲 editor-preservation 实际写回与单次升级接入。Training Season 已从 Max 51 cues 恢复到原编辑器 49 cues，同时校正 canonical 文字；39 个真实 canonical 行起点有索引，10 个内嵌起点保留未知。非目标歌曲文字/时间不变。实物 lineage 与 9 项定向测试通过。整体 semantic QA 仍未通过；其旧 projection/final 错误耦合意味着失败曲数不能直接当作新 final 实测错误曲数。未声明发布或跨语种封板。
 
-更新日期：2026-09-07
-主线算法版本：`4.0.0a19`
+更新日期：2026-09-10
+主线算法版本：`4.0.0a20`
 
 直接续开发新增两项修复：editor semantic witness 采用 `editor-semantic-disjoint-onsets-1.0`，每个候选 span 只贡献一次起点；六项目重放消除 283 次重复起点复用，但这属于 QA 修复，不计为最终 SRT 精度提升。可选本地 `qwen3_asr` 已接入正式 ASR evidence CLI：仅对独立识别文本定位，缺失首尾分别保持未知，fusion 要求完整区间才比较两端。该入口仍是可选观察后端，尚非自动多模型救援，也未取得生产 timing authority。
 
@@ -130,7 +132,7 @@ WALK120 已生成 Training Season 51 cue 的歌词时钟候选。六处 source/m
 
 ```text
 Standard -> Text Repair V2.1
-Smart    -> Canonical Sequence Reconciliation + Anchor Timeline Repair v1.2.10（no-audio）
+Smart    -> Canonical Sequence Reconciliation + Anchor Timeline Repair v1.2.11（no-audio）
 Pro      -> Selective Audio Repair v1.2.7（bounded audio evidence + automatic adjudication）
 Max      -> Full V4 Alignment
 ```
@@ -156,9 +158,9 @@ Standard = Text Repair V2.1，适用于 timing 已可信、只修文字：
 - ambiguous/mixed/unsafe layout fail closed；
 - production auto threshold `>=0.72`；report schema `2.1`。
 
-## 3. Smart v1.2.10
+## 3. Smart v1.2.11
 
-Smart 是日常主力 no-audio 模式。当前 facade 使用 v1.2.10，并继续满足：
+Smart 是日常主力 no-audio 模式。当前 facade 使用 v1.2.11；v1.2.11 保持 v1.2.10 timing authority 不变，并在最终 display segmentation 后重新验证 canonical ownership / connected lexical floor。它继续满足：
 
 - canonical text/order authority；
 - four-A primary timing model gate 不降低；
@@ -189,7 +191,7 @@ timing_mutation_performed = false
 
 v1.2.7 在 v1.2.6 planner 之上新增 decision schema 1.1 / adjudication policy v1.3：authority 为 `automatic_adjudication_no_srt_mutation`，scope 为 `decision_support_no_srt_mutation`。证据可自动收敛为 `candidate_confirmed_advisory`、`keep_editor_advisory` 或 canonical text/occurrence support advisory，并把人工任务区分为 confirm-recommendation 与 investigate；但所有 timing/text review 仍保留人工确认，`automatic_review_resolution_allowed=false`。Pro 继续固定 `automatic_timing_change_allowed=false`、`automatic_text_change_allowed=false`、`timing_mutation_performed=false`。
 
-Acoustic schema 1.4 同时审计 slope 与 source-start 搜索边界；命中/接近任一搜索边界的 optimum 只能作为 diagnostic，不参与 timing fusion。ASR 只在 canonical-local language 与已知 source language 一致时固定语言；code-switch/mixed/unknown/source-auto 保持 backend auto-detect。
+Acoustic schema 1.5 同时审计 slope、source-start 搜索边界与 exact job mix-window projection domain；预测 onset 若落在该 job `mix_window_ms` 外，即使 merged region 内检索分数很高也属于 extrapolation，只能 diagnostic，不参与 timing fusion。ASR 只在 canonical-local language 与已知 source language 一致时固定语言；code-switch/mixed/unknown/source-auto 保持 backend auto-detect。
 
 ## 5. Max — Full V4 Alignment
 
@@ -427,7 +429,7 @@ Public CI 必须继续证明：
 
 ## 8. 历史 Smart/Pro 基线 freeze tag（不代表当前 selector）
 
-当前 production selector 为 Smart v1.2.10 / Pro v1.2.7。以下旧 tag 仅作为历史 production baseline，必须保持不动：
+正式已发布 production selector 仍为 Smart v1.2.10 / Pro v1.2.7；当前工作树候选 `smart_current` 已指向 v1.2.11，但在整体验收、提交与晋级前不视为已发布生产版本。以下旧 tag 仅作为历史 production baseline，必须保持不动：
 
 ```text
 prod-smart-v1.2.5-pro-v1.1.4-20260821
@@ -478,3 +480,10 @@ KPOP130 真实长混剪已贯通整条链：canonical evaluation 786 cues，经 
 
 工程兼容同时补齐：reference-retimed run 中的仓库相对 timeline/artifact path 统一以 repository root 解析，避免依赖调用者 cwd；nonlexical cue 不再使 region matcher 全批失败；display 层允许 split/merge 后的多行 canonical ownership 继续执行全局 mask/timing policy，但显式 line-bound override 仍只允许唯一单行 identity，冲突字段 fail closed。产品身份继续保留 `4.0.0a19`，新行为由 `immutable-editor-all-occurrences-batch-1.0`、`immutable-editor-auto-region-1.0`、`hybrid_editor_preservation_after_editor_topology_rebuttal` 及 artifact config/lineage 明确区分，不批量改写历史 a19 artifact。
 本次最终封板核对分三层记录：hybrid production/materializer QA 已确认当前 materializer 的 editor-first 结构与 lineage 行为；viewer final structural audit（KPOP130 display v3）`passed=true`，`errors=0`、window violation=0、content-end violation=0，confirmed/unconfirmed overlap 均为0。该 audit 仅有 `long_display_holds` 10 条 warning（duration min 349 / median 1902.5 / p95 4395.3 / max 7563ms，0 条 >=8000ms extreme hold）。semantic/release gate 仍未通过：projection editor witness 2/12 track fail；当前 independent-audio final layer 12/12 fail，`audio_anchor_count=0`。所用 formal fusion SHA `01575459...` 属于 current safety tightening `e22f10d` 之前的旧证据，不含 `canonical_start_covered` / `canonical_match_ambiguous` 等当前 ASR 起点资格字段；当前 gate 的 fail-closed 是预期行为，旧 semantic QA 不得复用为新 final 的 release authority。完整 release-ready 仍需 fresh independent audio evidence/fusion 并通过 semantic gate；`publish_ready=true` 只描述 materializer 层，不等同完整 release-ready。
+# 2026-09-09 positional transition adjudication
+
+Added a conservative second-stage positional adjudicator for global transition
+ambiguity. Automatic scope is `resolved_clear` only; overlap and weak/stale
+mapping cases remain review. The corrected oumei140 Max2 shadow run produced
+14/14 review, 0 auto-clear, and 0 possible-overlap recommendations, so no
+review apply or downstream render/materialization was authorized.

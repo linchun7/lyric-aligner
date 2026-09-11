@@ -1,5 +1,11 @@
 # Lyric Aligner v4 实施记录与关键代码说明
 
+## 2026-09-10 工程候选：acoustic projection domain
+
+Source-clock authority 同轮收紧为 1.1：显式读取冻结 selection/protocol，核对其 SHA、source/canonical/occurrence 身份与变换，将 analysis ledger 与 frozen probes 绑定并重算 errors/metrics/risk/human verdict。此契约仍以 content-bound analysis ledger 为观察输入，不重新执行或声称重放 raw ASR shards。真实 authority 仍为原 7 首，final semantic 仍 7 首失败。
+
+`local_acoustic_v11` schema 1.5 在原 retrieval、slope/source boundary 门槛之外，要求 predicted_mix_start_ms 落在本 job 的闭区间 mix_window_ms 内；输出 projection_within_mix_window 与 projection_extrapolation_ms。共享 `alignment/acoustic_eligibility.py` 在 Pro fusion 与 source-ASR shadow binder/evaluator 重新核对 typed coordinates 及原有 eligibility 条件，拒绝旧缺字段或矛盾资格；binder 还核对 plan/result window 一致。score/margin 阈值不变。prefix-v2 固定 56 个目标的真实 R4 为 10 source onsets、0 eligible，保持 shadow-only，不能取得 semantic authority。完整事实见 [a20 交接第 8 节](oumei140-a20-source-clock-upgrade-handoff-2026-09-10.md)。
+
 ## 完整字幕约束下的离线瓶颈评价
 
 `evaluation.interval_bottleneck.evaluate_interval_bottleneck(cues, gold)` 接收完整 editor/旧 final 序列（包括未标注邻句）、已绑定 cue ID 的完整起止标注及各模型的原子区间候选。调用者负责音频、标注、cue 归属与完整序列的身份核验；该纯计算函数不能从时间自动推断歌词归属，也不估计漏词或错误文字的代价。
@@ -137,7 +143,7 @@ Lexical Floor 1.1 不再只比较去掉空格/标点后的字符流。对 Latin/
 
 严重 ASR 乱码如果 lexical evidence 不够，会进入 review；Smart 可以用独立 sequence/timing/BPM-validated text evidence继续处理，但不得通过降低 Text Repair threshold 来制造更多 false auto。
 
-## 3. Smart / Sequence Reconciliation + Anchor Timeline Repair v1.2.10
+## 3. Smart / Sequence Reconciliation + Anchor Timeline Repair（正式生产基线 v1.2.10；当前工作树候选 v1.2.11）
 
 核心文件：
 
@@ -152,11 +158,13 @@ scripts/v4_smart_repair.py
 lyric_aligner/io/path_safety.py
 ```
 
-Smart report schema 继续 `smart-1.1`；当前 policy id：
+Smart report schema 继续 `smart-1.1`；正式已发布生产基线 policy 为：
 
 ```text
 smart-validation-policy-2026-08-22-v1.2.10
 ```
+
+当前工作树候选通过 `smart_current` 绑定 `smart-validation-policy-2026-09-10-v1.2.11`。v1.2.11 已在 SHE25 真实 A/B 上证明相对 v1.2.10 的 cue timing signature、完整 timing decisions 与 rendered SRT 均不变；其新增行为仅为 final canonical ownership / connected lexical-floor authority 收紧。在候选整体验收、提交与正式晋级前，不得把它写成已发布生产版本。
 
 ### 3.1 Canonical representation
 
@@ -762,3 +770,12 @@ repository-relative timeline/artifact 路径经 `task_contract.resolve_repositor
 
 真实验收见当前状态页。KPOP130 从 canonical evaluation 到 hybrid production 再到 viewer display 全链通过，并在 8 条 historical development gold 上保持 584.9375->501.6875ms；KPOP110/WALK120/WALK140/H190/KPOP200 提供跨任务结构覆盖，不作为 blind accuracy。该升级不新增声学默认、不放宽现有 source/reference/final-mix 时间基保护。
 最终验收必须分开读取三层：hybrid production/materializer QA 只证明 editor-first 的结构与 lineage；viewer final structural audit 只证明最终展示几何/内容边界；semantic/release gate 仍须由 fresh independent audio evidence/fusion 授权。KPOP130 display v3 的 viewer audit 为 `passed=true`、errors/window/content-end/overlap 均为0，但这不覆盖 semantic gate；多值 `canonical_line_indices` 仅表示 split/merge ownership，不会把 materializer `publish_ready=true`提升为完整 release-ready。
+# Positional transition adjudication
+
+The adjacent positional adjudicator is an independent second-stage boundary
+evidence component. The global transition probe remains a broad diagnostic;
+the adjudicator is allowed to consume only exact task/run-bound primary
+mapping lineage and local expected-position retrieval. It can recommend clear
+sequential transition only when both sides have repeated strong local support,
+the support crosses monotonically, and no simultaneous expected-position
+support exists. It never auto-confirms overlap and never mutates timing.

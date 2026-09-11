@@ -1,5 +1,11 @@
 # Lyric Aligner v4 关键变更记录
 
+## 2026-09-10：prefix-v2 / acoustic 1.5 工程候选收敛
+
+Source-clock authority 收紧至 1.1，补齐真实 selection/protocol 身份与 ledger summary 重放，拒绝不一致 pass 标志。audit/release CLI 改为四份显式 authority 输入并绑定 SHA。同输入真实重放仍保留原 7 个 authority tracks、7 个 final semantic FAIL；未改 SRT、未重跑 source/final-mix ASR。
+
+修复可靠检索把区间外 onset 外推误授予 timing eligibility 的通用缺陷；producer 标记 projection domain，Pro 和 shadow consumers 重新核对窗口/预测坐标及原有门槛，旧证据 fail closed。新增 producer/consumer/shadow 回归，真实 R4 沿用 7 缓存、56 frozen targets 与原阈值，10 source onsets、0 eligible。prefix-v2 保持 projection 1.1/v2；a20 semantic 仍 7 首失败，不做成品 release 或 commit/push。见 [当前交接](oumei140-a20-source-clock-upgrade-handoff-2026-09-10.md)。
+
 ## 2026-09-09：Lexical Floor、canonical rebuttal 与 pre-gold timing validation
 
 - 冻结 `676b37f` 的 editor-first / hybrid timing 决策，不以本轮文字下限升级重新打开 timing selector。产品优先级明确为 `Content correctness -> Structure/ownership correctness -> Timing non-regression -> Timing improvement`。
@@ -659,3 +665,10 @@ Al James独立公开词起点诊断：严格唯一上下文匹配92/312，220保
 - 产品版本继续为 `4.0.0a19`，新能力由独立 policy/mode/artifact lineage 标识；不改写历史 a19 artifact，不把此前未获独立收益的 SOFA/STARS/Qwen/HFA 等实验模型提升为生产默认。
 - 最终三层封板核对：KPOP130 viewer display v3 structural audit `passed=true`、errors=0、window/content-end violation=0、confirmed/unconfirmed overlap=0；仅有10条 `long_display_holds` warning，最大7563ms且无>=8000ms extreme hold。该结果属于 viewer structural QA，不等同 semantic/release gate。
 - 当前 semantic/release gate 仍 fail closed：projection editor witness 2/12 track fail，independent-audio final layer 12/12 fail，`audio_anchor_count=0`。formal fusion `01575459...` 是 `e22f10d` safety tightening 前旧证据，缺少当前 ASR 起点资格字段；需 fresh independent audio evidence/fusion，不能复用旧 semantic QA，也不能把 materializer `publish_ready=true`写成完整 release-ready。
+# 2026-09-09 — adjacent positional transition adjudication
+
+Introduced `adjacent-transition-positional-v1-conservative` as a bounded
+second-stage evidence path. It narrows retrieval around source positions
+predicted by accepted adjacent primary mappings; it is not a global threshold
+relaxation. Only clear sequential transitions may be recommended automatically;
+possible overlap remains human review.

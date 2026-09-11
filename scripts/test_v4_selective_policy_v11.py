@@ -436,13 +436,14 @@ class SelectivePolicyV11Tests(unittest.TestCase):
         self.assertEqual(sum(path == mix for path in calls), 1)
         self.assertEqual(extract.call_count, 1 + len(acoustic_jobs))
         self.assertEqual(result["job_count"], len(acoustic_jobs))
-        self.assertEqual(result["schema_version"], "1.4")
+        self.assertEqual(result["schema_version"], "1.5")
         self.assertFalse(result["automatic_timing_change_allowed"])
         self.assertFalse(result["automatic_text_change_allowed"])
         self.assertFalse(result["timing_mutation_performed"])
         for row in result["jobs"]:
             self.assertTrue(row["local_match_gate_passed"])
-            self.assertTrue(row["timing_fusion_evidence_eligible"])
+            self.assertEqual(row["timing_fusion_evidence_eligible"],
+                             row["mix_window_ms"][0] <= row["predicted_mix_start_ms"] <= row["mix_window_ms"][1])
             self.assertFalse(row["slope_search_boundary_hit"])
             self.assertFalse(row["source_search_boundary_hit"])
             self.assertLess(row["slope_search_min"], row["estimated_slope"])
@@ -459,6 +460,45 @@ class SelectivePolicyV11Tests(unittest.TestCase):
             self.assertFalse(row["automatic_timing_change_allowed"])
             self.assertFalse(row["automatic_text_change_allowed"])
             self.assertFalse(row["timing_mutation_performed"])
+
+    def test_projection_domain_qualifies_actual_job_window(self) -> None:
+        # All retrieval gates pass; only target position changes. A merged
+        # region must not authorize an onset outside this job's query.
+        with tempfile.TemporaryDirectory() as temporary:
+            audio = Path(temporary) / "audio.wav"
+            audio.write_bytes(b"fake")
+            best = SimpleNamespace(source_start=5.0, estimated_slope=1.0,
+                                   fused_score=0.99, chroma_score=0.99,
+                                   mfcc_score=0.99, feature_agreement=2)
+            with patch("lyric_aligner.alignment.local_acoustic_v11.extract_harmonic_features",
+                       return_value=SimpleNamespace(duration_seconds=30.0)), patch(
+                "lyric_aligner.alignment.local_acoustic_v11.retrieve_coarse_window",
+                return_value=SimpleNamespace(top1=best, margin=0.02, ambiguous=False),
+            ):
+                for source_onset, predicted, distance in [
+                    (3280, 8280, 1720), (5000, 10000, 0),
+                    (7000, 12000, 0), (10000, 15000, 0), (10001, 15001, 1),
+                ]:
+                    with self.subTest(source_onset=source_onset):
+                        result = execute_region_source_match_jobs(
+                            mix_audio_path=audio,
+                            plan={"mode": "plan_only", "backend_execution_performed": False,
+                                  "jobs": [{"job_id": "domain", "source_ordinal": 0,
+                                            "requested_capabilities": ["source_local_acoustic_match"],
+                                            "mix_window_ms": [10000, 15000],
+                                            "region_mix_window_ms": [5000, 20000],
+                                            "source_window_ms": [0, 30000], "rate_prior": 1.0,
+                                            "expected_source_time_ms": source_onset}]},
+                            source_audio_by_source_ordinal={0: audio},
+                            audio_loader=lambda path, sr, start_ms, end_ms: np.zeros(sr * 30),
+                        )["jobs"][0]
+                        self.assertTrue(result["local_match_gate_passed"])
+                        self.assertFalse(result["slope_search_boundary_hit"])
+                        self.assertFalse(result["source_search_boundary_hit"])
+                        self.assertEqual(result["predicted_mix_start_ms"], predicted)
+                        self.assertEqual(result["timing_fusion_evidence_eligible"], distance == 0)
+                        self.assertEqual(result["projection_within_mix_window"], distance == 0)
+                        self.assertEqual(result["projection_extrapolation_ms"], distance)
 
     def test_slope_search_endpoint_is_diagnostic_only(self) -> None:
         minimum, maximum, boundary_hit = _slope_search_metadata(

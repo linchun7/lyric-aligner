@@ -47,7 +47,10 @@ class V4LanguageSpanTests(unittest.TestCase):
         spans = language_spans("aku cinta kamu", track_language="auto")
         self.assertEqual(len(spans), 1)
         self.assertEqual(spans[0].language, "generic")
-        self.assertEqual(editor_mode_for_span(spans[0]), "timing_hint")
+        self.assertIsNone(asr_language_hint_for_text("aku cinta kamu", track_language="auto"))
+        # Generic Latin may expose a language-neutral exact-string measurement
+        # without relabelling the language as English or granting authority.
+        self.assertEqual(editor_mode_for_span(spans[0]), "direct_text")
 
     def test_unknown_han_is_not_silently_called_mandarin(self):
         spans = language_spans("未知漢字", track_language="auto")

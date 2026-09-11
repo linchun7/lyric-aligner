@@ -31,6 +31,8 @@ _SRT_TIMING = re.compile(
 _DECORATIVE = frozenset("♪♫♬♩★☆")
 DEFAULT_AUTO_THRESHOLD = 0.72
 PRODUCTION_MIN_AUTO_THRESHOLD = DEFAULT_AUTO_THRESHOLD
+TEXT_ANCHOR_POLICY_ID = "continuous-stream-unique-exact-2026-09-10-v2"
+TEXT_FLOOR_POLICY_ID = "connected-canonical-ownership-floor-2026-09-10-v3"
 
 
 @dataclass(frozen=True)
@@ -305,6 +307,27 @@ def _unique_exact_anchors(
     """Return the stable longest monotonic chain of unique exact anchors in O(n log n)."""
     cue_counts = Counter(cue.normalized for cue in cues)
     canonical_counts = Counter(line.normalized for line in canonical)
+    # Line uniqueness does not prove occurrence uniqueness: the same phrase can
+    # occur elsewhere across a different canonical/editor line break. Such an
+    # exact match must not become a monotonic anchor for the wrong repeat.
+    canonical_streams: dict[int, str] = {}
+    for line in canonical:
+        canonical_streams[line.source_ordinal] = (
+            canonical_streams.get(line.source_ordinal, "") + line.normalized
+        )
+    cue_stream = "".join(cue.normalized for cue in cues)
+
+    def unique_in_streams(needle: str, streams: Iterable[str]) -> bool:
+        found = 0
+        for stream in streams:
+            first = stream.find(needle)
+            if first < 0:
+                continue
+            found += 1
+            if found > 1 or stream.find(needle, first + 1) >= 0:
+                return False
+        return found == 1
+
     canonical_index = {
         line.normalized: index
         for index, line in enumerate(canonical)
@@ -316,6 +339,8 @@ def _unique_exact_anchors(
         if len(cue.normalized) >= 4
         and cue_counts[cue.normalized] == 1
         and cue.normalized in canonical_index
+        and unique_in_streams(cue.normalized, canonical_streams.values())
+        and unique_in_streams(cue.normalized, (cue_stream,))
     ]
     if not candidates:
         return []
@@ -634,7 +659,7 @@ def build_trusted_lexical_floor_report(
     *,
     unresolved_canonical_count: int = 0,
     require_complete_canonical_coverage: bool = False,
-    policy_id: str = "mapped-trusted-canonical-text-floor-1.0",
+    policy_id: str = TEXT_FLOOR_POLICY_ID,
     scope: str = "mapped_auto_finalized_regions",
     timeline_mutation_count: int = 0,
 ) -> dict[str, object]:
@@ -644,20 +669,83 @@ def build_trusted_lexical_floor_report(
     for item in decisions:
         if item.action != "review" and item.cue_span is not None and item.canonical_span is not None:
             groups.setdefault((item.cue_span, item.canonical_span), []).append(item)
+    # Cue-level decisions may jointly describe one connected canonical stream.
+    # Merge adjacent cue claims that overlap in canonical ownership so a
+    # legitimate split line is audited once, while separate duplicate/reversed
+    # ownership remains detectable.
+    merged: list[tuple[tuple[int, int], tuple[int, int]]] = []
+    for cue_span, canonical_span in sorted(groups):
+        if merged:
+            old_cues, old_lines = merged[-1]
+            if (
+                cue_span[0] <= old_cues[1]
+                and canonical_span[0] < old_lines[1]
+                and canonical_span[1] > old_lines[0]
+            ):
+                merged[-1] = (
+                    (old_cues[0], max(old_cues[1], cue_span[1])),
+                    (min(old_lines[0], canonical_span[0]), max(old_lines[1], canonical_span[1])),
+                )
+                continue
+        merged.append((cue_span, canonical_span))
+
+    # A review can retain a multi-cue envelope after display-boundary recovery.
+    # Every cue in that envelope stays unresolved; checking only cue_ordinal
+    # would leak sibling cues back into the trusted floor.
+    reviewed_cues: set[int] = set()
+    for item in decisions:
+        if item.action != "review":
+            continue
+        if item.cue_span is not None:
+            reviewed_cues.update(range(item.cue_span[0], item.cue_span[1]))
+        else:
+            reviewed_cues.add(item.cue_ordinal)
+
+    finalized = [
+        (cue_span, canonical_span)
+        for cue_span, canonical_span in merged
+        if not reviewed_cues.intersection(range(cue_span[0], cue_span[1]))
+    ]
+    ownership_conflicts: set[tuple[tuple[int, int], tuple[int, int]]] = set()
+    for index, (cue_span, canonical_span) in enumerate(finalized):
+        for previous_cues, previous_lines in finalized[:index]:
+            if cue_span[0] < previous_cues[1] or canonical_span[0] < previous_lines[1]:
+                ownership_conflicts.update(
+                    ((cue_span, canonical_span), (previous_cues, previous_lines))
+                )
+
     lexical = boundary = 0
+    partial_regions = 0
+    trusted_regions = 0
     diagnostics = []
-    for cue_span, canonical_span in groups:
+    for cue_span, canonical_span in merged:
         expected_ordinals = list(range(cue_span[0], cue_span[1]))
+        if reviewed_cues.intersection(expected_ordinals):
+            partial_regions += 1
+            continue
+        trusted_regions += 1
         missing_ordinals = [i for i in expected_ordinals if i not in by_ordinal]
         actual = [by_ordinal[i].text for i in expected_ordinals if i in by_ordinal]
-        expected = " ".join(line.text for line in canonical[canonical_span[0]:canonical_span[1]])
-        ce = bool(missing_ordinals) or _normalize_for_match("".join(actual)) != _normalize_for_match(expected)
+        canonical_in_bounds = 0 <= canonical_span[0] < canonical_span[1] <= len(canonical)
+        expected_lines = canonical[canonical_span[0]:canonical_span[1]] if canonical_in_bounds else []
+        expected = " ".join(line.text for line in expected_lines)
+        invalid_ownership = (
+            (cue_span, canonical_span) in ownership_conflicts
+            or not canonical_in_bounds
+            or len({line.source_ordinal for line in expected_lines}) != 1
+        )
+        ce = (
+            bool(missing_ordinals)
+            or invalid_ownership
+            or _normalize_for_match("".join(actual)) != _normalize_for_match(expected)
+        )
         we = bool(missing_ordinals) or _latin_word_boundaries_across_cues(actual) != _latin_word_boundary_signature(expected)
         lexical += int(ce); boundary += int(we)
-        if ce or we: diagnostics.append({"cue_span": list(cue_span), "canonical_span": list(canonical_span), "lexical_error": ce, "word_boundary_error": we})
+        if ce or we:
+            diagnostics.append({"cue_span": list(cue_span), "canonical_span": list(canonical_span), "lexical_error": ce, "word_boundary_error": we, "ownership_error": invalid_ownership})
     unresolved = sum(item.action == "review" for item in decisions)
     status = "failed" if lexical or boundary else ("review_required" if unresolved or (require_complete_canonical_coverage and unresolved_canonical_count) else "complete")
-    return {"policy_id": policy_id, "scope": scope, "status": status, "trusted_region_count": len(groups), "trusted_region_lexical_error_count": lexical, "trusted_region_word_boundary_error_count": boundary, "unresolved_cue_count": unresolved, "unresolved_canonical_count": int(unresolved_canonical_count), "complete_canonical_coverage_required": bool(require_complete_canonical_coverage), "timeline_mutation_count": int(timeline_mutation_count), "diagnostics": diagnostics, "meaning": "complete means mapped auto-finalized regions have correct characters and Latin word boundaries; raw canonical coverage is included only when explicitly required by the caller"}
+    return {"policy_id": policy_id, "implementation_policy_id": TEXT_FLOOR_POLICY_ID, "scope": scope, "status": status, "trusted_region_count": trusted_regions, "partially_unresolved_region_count": partial_regions, "trusted_region_lexical_error_count": lexical, "trusted_region_word_boundary_error_count": boundary, "unresolved_cue_count": unresolved, "unresolved_canonical_count": int(unresolved_canonical_count), "complete_canonical_coverage_required": bool(require_complete_canonical_coverage), "timeline_mutation_count": int(timeline_mutation_count), "diagnostics": diagnostics, "meaning": "complete means mapped auto-finalized regions have correct characters and Latin word boundaries; raw canonical coverage is included only when explicitly required by the caller"}
 def _edit_script(
     source: Sequence[str],
     target: Sequence[str],
@@ -1151,6 +1239,7 @@ def repair_srt_text(
     )
     report = {
         "schema_version": "2.2",
+        "text_anchor_policy_id": TEXT_ANCHOR_POLICY_ID,
         "mode": "text_only_preserve_timeline",
         "status": (
             "review_required"

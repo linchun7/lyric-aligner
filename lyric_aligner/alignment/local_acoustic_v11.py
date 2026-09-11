@@ -20,7 +20,7 @@ from lyric_aligner.alignment.local_acoustic_match import (
 )
 from lyric_aligner.audio.features import extract_harmonic_features, retrieve_coarse_window
 
-LOCAL_ACOUSTIC_V11_SCHEMA_VERSION = "1.4"
+LOCAL_ACOUSTIC_V11_SCHEMA_VERSION = "1.5"
 
 
 def _window(row: Mapping[str, Any], key: str) -> tuple[int, int]:
@@ -280,8 +280,18 @@ def execute_region_source_match_jobs(
                     boundary_margin_seconds=config.source_boundary_margin_seconds,
                 )
             )
+            # Retrieval observes this job's query, not the entire merged
+            # decode region. A target outside it is an extrapolation even
+            # when the retrieved source offset and slope are interior.
+            projection_extrapolation_ms = max(
+                mix_start_ms - predicted_mix_start_ms,
+                predicted_mix_start_ms - mix_end_ms,
+                0,
+            )
+            projection_within_mix_window = projection_extrapolation_ms == 0
             timing_fusion_eligible = (
                 reliable and not slope_boundary_hit and not source_boundary_hit
+                and projection_within_mix_window
             )
             acoustic_shift = (
                 None if editor_start is None else predicted_mix_start_ms - int(editor_start)
@@ -319,9 +329,13 @@ def execute_region_source_match_jobs(
                         "local_retrieval_gate_only_not_timing_authority"
                     ),
                     "timing_fusion_evidence_eligible": timing_fusion_eligible,
+                    "projection_within_mix_window": projection_within_mix_window,
+                    "projection_extrapolation_ms": projection_extrapolation_ms,
                     "timing_fusion_evidence_status": (
                         "eligible_bounded_interior_optimum"
                         if timing_fusion_eligible
+                        else "diagnostic_projection_extrapolation"
+                        if reliable and not projection_within_mix_window
                         else "diagnostic_search_boundary_limited"
                         if reliable and (slope_boundary_hit or source_boundary_hit)
                         else "retrieval_gate_failed"

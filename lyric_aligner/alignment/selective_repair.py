@@ -32,6 +32,8 @@ class SelectiveRepairConfig:
     source_context_after_ms: int = 5000
     min_mix_window_ms: int = 4500
     max_jobs: int = 100
+    mix_duration_ms: int | None = None
+    mix_audio_sha256: str | None = None
 
     def validate(self) -> None:
         for label, value in (
@@ -44,9 +46,26 @@ class SelectiveRepairConfig:
                 raise SelectiveRepairPlanningError(f"{label} must be >= 0")
         if self.max_jobs < 1:
             raise SelectiveRepairPlanningError("max_jobs must be >= 1")
+        if self.mix_duration_ms is not None and (
+            isinstance(self.mix_duration_ms, bool)
+            or not isinstance(self.mix_duration_ms, int)
+            or self.mix_duration_ms <= 0
+        ):
+            raise SelectiveRepairPlanningError("mix_duration_ms must be a positive integer")
+        if self.mix_audio_sha256 is not None and (
+            not isinstance(self.mix_audio_sha256, str)
+            or len(self.mix_audio_sha256) != 64
+            or any(char not in "0123456789abcdef" for char in self.mix_audio_sha256)
+        ):
+            raise SelectiveRepairPlanningError("mix_audio_sha256 must be lowercase SHA-256")
 
     def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
+        value = asdict(self)
+        if self.mix_duration_ms is None:
+            value.pop("mix_duration_ms")
+        if self.mix_audio_sha256 is None:
+            value.pop("mix_audio_sha256")
+        return value
 
 
 def _sha(value: Any) -> str:
@@ -68,8 +87,11 @@ def _bounded_mix_window(
     *,
     context_ms: int,
     minimum_ms: int,
+    duration_ms: int | None = None,
 ) -> list[int]:
     start, end = _cue_times(cue)
+    if duration_ms is not None and (duration_ms <= 0 or end > duration_ms or start >= duration_ms):
+        raise SelectiveRepairPlanningError("editor cue extends beyond mix audio duration")
     left = max(0, start - context_ms)
     right = end + context_ms
     if right - left < minimum_ms:
@@ -80,6 +102,9 @@ def _bounded_mix_window(
         right += grow_right
         if left == 0 and right - left < minimum_ms:
             right = minimum_ms
+    if duration_ms is not None:
+        right = min(right, duration_ms)
+        left = min(left, max(0, right - minimum_ms))
     return [left, right]
 
 
@@ -219,6 +244,7 @@ def build_selective_repair_plan(
             cue,
             context_ms=config.mix_context_ms,
             minimum_ms=config.min_mix_window_ms,
+            duration_ms=config.mix_duration_ms,
         )
         start_ms, end_ms = _cue_times(cue)
         priority = "high" if timing_review else "medium"
@@ -269,6 +295,7 @@ def build_selective_repair_plan(
             "source_window_ms": source_window,
             "reasons": sorted(reasons),
             "canonical_text_sha256": canonical_sha,
+            "mix_audio_sha256": config.mix_audio_sha256,
         }
         jobs.append(
             {
@@ -281,6 +308,7 @@ def build_selective_repair_plan(
                 "cue_ordinal": cue.ordinal,
                 "canonical_line_index": canonical_ordinal,
                 "canonical_text_sha256": canonical_sha,
+            "mix_audio_sha256": config.mix_audio_sha256,
                 "language_profile": language_profile,
                 "asr_language_hint": asr_hint or "auto",
                 "asr_force_auto_detect": asr_force_auto,

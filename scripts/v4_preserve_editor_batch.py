@@ -33,6 +33,7 @@ def _load(path):return json.loads(Path(path).read_text(encoding='utf-8-sig'))
 def _compact_stage(report,iteration):
     selection=report.get('automatic_selection') or {}
     return dict(occurrence_id=report.get('occurrence_id'),iteration=iteration,
+        evaluation_canonical_content_origin=report.get('evaluation_canonical_content_origin'),
         action=selection.get('action'),canonical_region=report.get('canonical_region'),
         baseline_target_cues=report.get('baseline_target_cues'),restored_editor_cues=report.get('restored_editor_cues'),
         selection_policy_id=selection.get('policy_id'),selection_basis=selection.get('selection_basis'),
@@ -82,6 +83,7 @@ def materialize_batch(*,manifest_path,srt_path,audit_path,run_path,run_artifact_
         if directory.exists():raise FileExistsError('batch output/staging directory must be new')
 
     stage_reports=[];restore_stage_count=0;restored_editor_cues_total=0;replaced_baseline_cues_total=0
+    evaluation_canonical_content_origins={}
     occurrences_with_restore=set();current_srt=paths['srt'];current_audit=paths['audit'];global_stage=0
     with tempfile.TemporaryDirectory(prefix='lyric-aligner-editor-batch-') as temporary:
         scratch=Path(temporary)
@@ -93,6 +95,13 @@ def materialize_batch(*,manifest_path,srt_path,audit_path,run_path,run_artifact_
                     assets_artifact_path=paths['assets_artifact'],occurrence_id=occurrence_id,
                     output_dir=stage_dir,canonical_region='auto')
                 compact=_compact_stage(report,iteration);stage_reports.append(compact);action=compact['action']
+                origin=compact.get('evaluation_canonical_content_origin')
+                if type(origin) is not int or origin < 0:
+                    raise ValueError('editor preservation produced an invalid evaluation canonical content origin')
+                prior_origin=evaluation_canonical_content_origins.get(occurrence_id)
+                if prior_origin is not None and prior_origin != origin:
+                    raise ValueError('editor preservation evaluation canonical content origin changed across passes')
+                evaluation_canonical_content_origins[occurrence_id]=origin
                 if action=='keep':break
                 if action!='restore' or not report.get('restored_editor_cues') or not report.get('baseline_target_cues'):
                     raise ValueError('automatic preservation produced an invalid mutation action')
@@ -115,6 +124,7 @@ def materialize_batch(*,manifest_path,srt_path,audit_path,run_path,run_artifact_
             max_passes_per_occurrence=max_passes_per_occurrence,
             selection_semantics='repeat exact unique compatible editor-region restoration until every occurrence is stable',
             timing_basis='immutable_editor_only_where_exact_unique_compatible_else_unchanged',model_timing_authority_used=False,
+            evaluation_canonical_content_origins=evaluation_canonical_content_origins,
             input_srt_sha256=input_hashes[str(paths['srt'])],input_audit_sha256=input_hashes[str(paths['audit'])],
             final_srt_sha256=sha256_file(staging/'final.srt'),final_audit_sha256=sha256_file(staging/'final.csv'),
             stages=stage_reports,publish_ready=False,qa_status='fresh_product_QA_required')
@@ -123,7 +133,8 @@ def materialize_batch(*,manifest_path,srt_path,audit_path,run_path,run_artifact_
             algorithm_version=__version__,outputs=(('final_srt',staging/'final.srt'),('audit_csv',staging/'final.csv'),
                 ('preservation_report',staging/'preservation.json')),
             normalized_config=dict(policy_id=BATCH_POLICY_ID,auto_region_policy_id=AUTO_REGION_POLICY_ID,
-                occurrence_ids=occurrence_ids,max_passes_per_occurrence=max_passes_per_occurrence,input_sha256=input_hashes),
+                occurrence_ids=occurrence_ids,max_passes_per_occurrence=max_passes_per_occurrence,
+                evaluation_canonical_content_origins=evaluation_canonical_content_origins,input_sha256=input_hashes),
             upstream_artifact_ids=tuple(sorted({run_artifact['artifact_id'],assets_artifact['artifact_id'],*timeline_ids})))
         for record in artifact['outputs']:record['path']=str(destination/Path(record['path']).name)
         artifact['artifact_id']=canonical_json_sha256({k:v for k,v in artifact.items() if k!='artifact_id'})

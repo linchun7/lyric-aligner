@@ -501,6 +501,15 @@ def main() -> int:
                 ],
                 "result": merged_result,
             }
+            source_clock_map_sha256 = primary_timeline.get("source_clock_map_sha256")
+            if source_clock_map_sha256 is not None:
+                source_clock_map_sha256 = str(source_clock_map_sha256).strip().lower()
+                if (
+                    len(source_clock_map_sha256) != 64
+                    or any(char not in "0123456789abcdef" for char in source_clock_map_sha256)
+                ):
+                    raise ValueError("primary timeline has invalid source_clock_map_sha256")
+                recomposed_timeline["source_clock_map_sha256"] = source_clock_map_sha256
             atomic_write_json(recomposed_timeline_path, recomposed_timeline)
             recomposed_timeline_artifact_path = (
                 out_dir / f"{safe_id}.overlap.timeline.artifact.json"
@@ -520,6 +529,10 @@ def main() -> int:
                     **context.artifact_config(),
                     "source_timeline_artifact_id": primary_artifact_id,
                     "review_artifact_id": str(review_artifact["artifact_id"]),
+                    "source_clock_map_sha256": source_clock_map_sha256,
+                    "source_clock": primary_artifact.get("normalized_config", {}).get(
+                        "source_clock"
+                    ),
                     "confirmed_region_ids": [
                         region.region_id for region in regions_by_occurrence[occurrence_id]
                     ],

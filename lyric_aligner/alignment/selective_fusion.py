@@ -16,6 +16,7 @@ from dataclasses import asdict, dataclass
 from typing import Any, Mapping
 
 from lyric_aligner.alignment.selective_policy import PRO_POLICY_ID
+from lyric_aligner.alignment.acoustic_eligibility import projection_domain_qualified, timing_evidence_qualified
 from lyric_aligner.timeline.smart_current import (
     SMART_POLICY_ID,
     SMART_SCHEMA_VERSION,
@@ -125,17 +126,11 @@ def _timing_fusion_gate(row: Mapping[str, Any] | None) -> bool:
     """Require an explicit interior-optimum grant for timing adjudication.
 
     Local retrieval success and timing authority are separate.  Old artifacts
-    without the explicit current boundary fields fail closed instead of silently inheriting
+    without explicit boundary and projection-domain fields fail closed instead of inheriting
     authority they were never designed to carry.
     """
 
-    return bool(
-        _local_gate(row)
-        and row is not None
-        and row.get("timing_fusion_evidence_eligible") is True
-        and row.get("slope_search_boundary_hit") is False
-        and row.get("source_search_boundary_hit") is False
-    )
+    return timing_evidence_qualified(row)
 
 
 def _timing_state(
@@ -467,6 +462,8 @@ def build_pro_decisions(
                 "timing_evidence_semantics": (
                     "correlated_canonical_timeline_observation_not_vocal_onset"
                     if _timing_fusion_gate(acoustic.get(job_id))
+                    else "diagnostic_only_projection_domain_unqualified"
+                    if _local_gate(acoustic.get(job_id)) and not projection_domain_qualified(acoustic.get(job_id))
                     else "diagnostic_only_search_boundary_limited"
                     if _local_gate(acoustic.get(job_id))
                     else "no_local_acoustic_gate_support"

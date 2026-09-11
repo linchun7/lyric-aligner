@@ -13,6 +13,7 @@ from typing import Any, Iterable
 
 from lyric_aligner.assets.bindings import ResolvedAssetBinding
 from lyric_aligner.text.canonical_lyrics import CanonicalLine, parse_canonical_lyrics
+from lyric_aligner.timeline.source_clock import SourceClockTransform
 
 
 class TimelineProjectionError(ValueError):
@@ -201,6 +202,7 @@ def _project_canonical_lines_with_coverage(
     mapping: dict[str, Any],
     *,
     window: ProjectionWindow | None = None,
+    source_clock: SourceClockTransform | None = None,
 ) -> tuple[list[dict[str, Any]], int]:
     rows = list(lines)
     projected: list[dict[str, Any]] = []
@@ -209,7 +211,17 @@ def _project_canonical_lines_with_coverage(
     authority_omitted_line_count = 0
 
     for index, line in enumerate(rows):
-        source_start_ms, source_end_ms, end_basis = _line_source_bounds(rows, index)
+        canonical_clock_start_ms, canonical_clock_end_ms, end_basis = _line_source_bounds(rows, index)
+        source_start_ms = (
+            source_clock.map_ms(canonical_clock_start_ms)
+            if source_clock is not None
+            else canonical_clock_start_ms
+        )
+        source_end_ms = (
+            source_clock.map_ms(canonical_clock_end_ms)
+            if source_clock is not None and canonical_clock_end_ms is not None
+            else canonical_clock_end_ms
+        )
         mix_start_ms = _project_ms(mapping, source_start_ms)
         mix_end_ms = (
             _project_ms(mapping, source_end_ms)
@@ -222,6 +234,10 @@ def _project_canonical_lines_with_coverage(
             if effective_end <= window.start_ms or mix_start_ms >= window.end_ms:
                 continue
 
+        if source_clock is not None and line.tokens:
+            raise TimelineProjectionError(
+                "source-clock projection currently refuses token-timed canonical lines"
+            )
         tokens: list[dict[str, Any]] = []
         for token in line.tokens:
             token_start = _project_ms(mapping, token.start_ms)
@@ -271,6 +287,9 @@ def _project_canonical_lines_with_coverage(
                 "tokens": tokens,
             }
         )
+        if source_clock is not None:
+            projected[-1]["canonical_clock_start_ms"] = canonical_clock_start_ms
+            projected[-1]["canonical_clock_end_ms"] = canonical_clock_end_ms
     return projected, authority_omitted_line_count
 
 
@@ -279,6 +298,7 @@ def project_canonical_lines(
     mapping: dict[str, Any],
     *,
     window: ProjectionWindow | None = None,
+    source_clock: SourceClockTransform | None = None,
 ) -> list[dict[str, Any]]:
     """Project line/token timing, respecting any proven terminal authority cap."""
 
@@ -286,6 +306,7 @@ def project_canonical_lines(
         lines,
         mapping,
         window=window,
+        source_clock=source_clock,
     )
     return projected
 
@@ -295,6 +316,7 @@ def project_binding_timeline(
     mapping: dict[str, Any],
     *,
     window: ProjectionWindow | None = None,
+    source_clock: SourceClockTransform | None = None,
 ) -> dict[str, Any]:
     lines = parse_canonical_lyrics(
         Path(binding.canonical_lyric_path),
@@ -304,6 +326,7 @@ def project_binding_timeline(
         lines,
         mapping,
         window=window,
+        source_clock=source_clock,
     )
     payload = {
         "occurrence_id": binding.occurrence_id,
@@ -319,6 +342,8 @@ def project_binding_timeline(
         "line_count": len(projected),
         "lines": projected,
     }
+    if source_clock is not None:
+        payload["source_clock"] = source_clock.to_dict()
     authority = _mapping_projection_authority(mapping)
     if authority is not None:
         payload["projection_coverage"] = {

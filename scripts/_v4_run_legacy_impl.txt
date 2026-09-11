@@ -28,6 +28,7 @@ from lyric_aligner.audio.fine_alignment import should_run_fine_alignment
 from lyric_aligner.contracts.artifacts import (
     atomic_write_json,
     build_artifact_manifest,
+    sha256_file,
     validate_artifact_output,
 )
 from lyric_aligner.pipeline.context import build_pipeline_context
@@ -36,6 +37,10 @@ from lyric_aligner.timeline.projector import (
     ProjectionWindow,
     effective_timewarp,
     project_binding_timeline,
+)
+from lyric_aligner.timeline.source_clock import (
+    source_clock_for_binding,
+    source_clock_map_rows,
 )
 from task_contract import (
     load_task_manifest,
@@ -211,6 +216,7 @@ def main() -> int:
     parser.add_argument("--language-map", type=Path)
     parser.add_argument("--middle-cut-map", type=Path)
     parser.add_argument("--lyric-role-map", type=Path)
+    parser.add_argument("--source-clock-map", type=Path)
     parser.add_argument("--git-commit", default="")
     args = parser.parse_args()
 
@@ -287,6 +293,31 @@ def main() -> int:
             asset_artifact=asset_artifact_payload,
             verify_asset_files=True,
         )
+        source_clock_rows = None
+        source_clock_map_sha256 = None
+        source_clock_path = None
+        if args.source_clock_map is not None:
+            source_clock_path = args.source_clock_map.resolve()
+            if not source_clock_path.is_file():
+                raise ValueError("source clock map does not exist")
+            try:
+                source_clock_path.relative_to(REPOSITORY_ROOT.resolve())
+            except ValueError as exc:
+                raise ValueError("source clock map must stay inside the repository") from exc
+            source_clock_payload = _load(source_clock_path)
+            if str(source_clock_payload.get("algorithm_version") or "") != __version__:
+                raise ValueError("source clock map algorithm version mismatch")
+            if str(source_clock_payload.get("task_fingerprint_sha256") or "") != fingerprint:
+                raise ValueError("source clock map belongs to another task")
+            source_clock_rows = source_clock_map_rows(source_clock_payload)
+            known_ordinals = {binding.ordinal for binding in context.bindings}
+            unknown_ordinals = sorted(set(source_clock_rows) - known_ordinals)
+            if unknown_ordinals:
+                raise ValueError(
+                    "source clock map contains unknown occurrence ordinals: "
+                    + ", ".join(str(value) for value in unknown_ordinals)
+                )
+            source_clock_map_sha256 = sha256_file(source_clock_path)
         extent = detect_audio_content_extent(mix_audio)
         extent_record = manifest["inputs"].get("mix_content_extent")
         if extent_record is not None:
@@ -426,10 +457,12 @@ def main() -> int:
             timeline_path: Path | None = None
             timeline_artifact_path: Path | None = None
             timeline_line_count = 0
+            source_clock = None
             if not mapping_blocked:
                 binding = context.binding_by_occurrence_id[
                     item.occurrence_id
                 ]
+                source_clock = source_clock_for_binding(binding, source_clock_rows)
                 projected = project_binding_timeline(
                     binding,
                     mapping,
@@ -437,6 +470,7 @@ def main() -> int:
                         int(round(item.primary_start * 1000)),
                         int(round(item.primary_end * 1000)),
                     ),
+                    source_clock=source_clock,
                 )
                 timeline_line_count = int(projected["line_count"])
                 timeline_path = timeline_dir / f"{safe_id}.timeline.json"
@@ -451,6 +485,7 @@ def main() -> int:
                     "occurrence_id": item.occurrence_id,
                     "track_id": binding.track_id,
                     "mapping_source": mapping_source,
+                    "source_clock_map_sha256": source_clock_map_sha256,
                     "result": projected,
                 }
                 atomic_write_json(timeline_path, timeline_payload)
@@ -475,6 +510,10 @@ def main() -> int:
                         "mapping_source": mapping_source,
                         "primary_start": item.primary_start,
                         "primary_end": item.primary_end,
+                        "source_clock_map_sha256": source_clock_map_sha256,
+                        "source_clock": (
+                            source_clock.to_dict() if source_clock is not None else None
+                        ),
                     },
                     producer=(
                         {"git_commit": args.git_commit}
@@ -510,6 +549,11 @@ def main() -> int:
                     ),
                     "mapping_source": mapping_source,
                     "mapping_blocked": mapping_blocked,
+                    "source_clock": (
+                        source_clock.to_dict()
+                        if not mapping_blocked and source_clock is not None
+                        else None
+                    ),
                     "discontinuity_candidate_count": len(
                         occurrence_discontinuities
                     ),
@@ -734,6 +778,11 @@ def main() -> int:
             "transitions": transition_summaries,
             "issues": issues,
         }
+        if (
+            source_clock_path is not None
+            and sha256_file(source_clock_path) != source_clock_map_sha256
+        ):
+            raise ValueError("source clock map changed during production run")
         atomic_write_json(run_path, run_payload)
         run_artifact_path = out_dir / "v4_run.artifact.json"
         run_artifact = build_artifact_manifest(
@@ -751,6 +800,7 @@ def main() -> int:
                     "candidate_when_forward_discontinuity_is_replayable"
                 ),
                 "primary_mapping_provenance_materialized": True,
+                "source_clock_map_sha256": source_clock_map_sha256,
                 "legacy_fallback": False,
             },
             producer=(

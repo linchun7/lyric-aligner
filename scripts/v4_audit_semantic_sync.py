@@ -25,6 +25,7 @@ from lyric_aligner.io.materializer_path_safety import declared_input_paths
 from lyric_aligner.io.path_safety import validate_separate_artifact_paths
 from lyric_aligner.io.task_path_safety import protected_task_input_paths
 from lyric_aligner.qa.final_integrity import read_audit_rows, validate_srt_report_binding
+from lyric_aligner.qa.source_clock_authority import build_verified_source_clock_authority
 from lyric_aligner.qa.semantic_sync import (
     audit_independent_audio_sync,
     audit_semantic_sync,
@@ -40,6 +41,7 @@ from task_contract import (
 
 
 _SEMANTIC_SYNC_SCHEMA = "semantic-sync-qa-1.1"
+_SEMANTIC_SYNC_SOURCE_CLOCK_SCHEMA = "semantic-sync-qa-1.2"
 _SEMANTIC_SYNC_MODE = "independent_audio_semantic_release_gate"
 
 
@@ -99,10 +101,22 @@ def main() -> int:
     parser.add_argument("--fusion", required=True, type=Path)
     parser.add_argument("--final-srt", required=True, type=Path)
     parser.add_argument("--final-report", required=True, type=Path)
+    parser.add_argument("--source-clock-map", type=Path)
+    parser.add_argument("--source-clock-promotion-analysis", type=Path)
+    parser.add_argument("--source-clock-promotion-selection", type=Path)
+    parser.add_argument("--source-clock-promotion-protocol", type=Path)
     parser.add_argument("--out", required=True, type=Path)
     args = parser.parse_args()
 
     try:
+        source_clock_inputs = (
+            args.source_clock_map,
+            args.source_clock_promotion_analysis,
+            args.source_clock_promotion_selection,
+            args.source_clock_promotion_protocol,
+        )
+        if any(value is not None for value in source_clock_inputs) and not all(value is not None for value in source_clock_inputs):
+            raise ValueError("source-clock authority requires map, promotion analysis, promotion selection and promotion protocol together")
         task = load_task_manifest(args.task_manifest)
         issues = verify_manifest_inputs(args.task_manifest, task)
         if issues:
@@ -141,6 +155,11 @@ def main() -> int:
             }
         )
         protected.update(declared_input_paths({"run": run}))
+        if args.source_clock_map is not None:
+            protected["source_clock_map"] = args.source_clock_map
+            protected["source_clock_promotion_analysis"] = args.source_clock_promotion_analysis
+            protected["source_clock_promotion_selection"] = args.source_clock_promotion_selection
+            protected["source_clock_promotion_protocol"] = args.source_clock_promotion_protocol
         validate_separate_artifact_paths(
             inputs=protected,
             outputs={"semantic_sync_qa": args.out},
@@ -165,6 +184,30 @@ def main() -> int:
         final_cues = parse_srt_strict(args.final_srt)
         windows = parse_song_windows(song_list, content_end_ms=content_end_ms)
 
+        source_clock_authority = {}
+        if args.source_clock_map is not None:
+            source_clock_map = _load_json(args.source_clock_map)
+            promotion_analysis = _load_json(args.source_clock_promotion_analysis)
+            promotion_selection = _load_json(args.source_clock_promotion_selection)
+            promotion_protocol = _load_json(args.source_clock_promotion_protocol)
+            timelines_by_ordinal = {
+                int(occurrence["ordinal"]): _load_json(_timeline_path(occurrence.get("timeline_path")))
+                for occurrence in run.get("occurrences", [])
+                if isinstance(occurrence, dict) and occurrence.get("ordinal") is not None
+            }
+            source_clock_authority = build_verified_source_clock_authority(
+                source_clock_map=source_clock_map,
+                promotion_analysis=promotion_analysis,
+                promotion_selection=promotion_selection,
+                promotion_protocol=promotion_protocol,
+                run=run,
+                timelines_by_ordinal=timelines_by_ordinal,
+                source_clock_map_sha256=sha256(args.source_clock_map),
+                promotion_analysis_sha256=sha256(args.source_clock_promotion_analysis),
+                promotion_selection_sha256=sha256(args.source_clock_promotion_selection),
+                promotion_protocol_sha256=sha256(args.source_clock_promotion_protocol),
+            )
+
         editor_projection = audit_semantic_sync(source_cues, projection_cues, windows)
         editor_final = audit_semantic_sync(source_cues, final_cues, windows)
         audio_sync = audit_independent_audio_sync(
@@ -172,12 +215,17 @@ def main() -> int:
             final_rows,
             editor_projection_audit=editor_projection,
             editor_final_audit=editor_final,
+            verified_source_clock_authority_by_ordinal=source_clock_authority,
         )
         projection = audio_sync["projection_sync"]
         final = audio_sync["final_sync"]
         passed = bool(audio_sync["passed"])
         payload = {
-            "schema_version": _SEMANTIC_SYNC_SCHEMA,
+            "schema_version": (
+                _SEMANTIC_SYNC_SOURCE_CLOCK_SCHEMA
+                if source_clock_authority
+                else _SEMANTIC_SYNC_SCHEMA
+            ),
             "algorithm_version": __version__,
             "task_fingerprint_sha256": fingerprint,
             "mode": _SEMANTIC_SYNC_MODE,
@@ -202,6 +250,20 @@ def main() -> int:
             "projection_sync": projection,
             "final_sync": final,
         }
+        if args.source_clock_map is not None:
+            payload["bindings"]["source_clock_map_sha256"] = sha256(args.source_clock_map)
+            payload["bindings"]["source_clock_promotion_analysis_sha256"] = sha256(args.source_clock_promotion_analysis)
+            payload["bindings"]["source_clock_promotion_selection_sha256"] = sha256(args.source_clock_promotion_selection)
+            payload["bindings"]["source_clock_promotion_protocol_sha256"] = sha256(args.source_clock_promotion_protocol)
+            payload["verified_source_clock_authority"] = {
+                "track_count": len(source_clock_authority),
+                "ordinals": sorted(source_clock_authority),
+                "policy_ids": sorted({str(row.get("policy_id") or "") for row in source_clock_authority.values()}),
+                "timeline_map_bindings": {
+                    str(ordinal): row.get("timeline_map_binding")
+                    for ordinal, row in sorted(source_clock_authority.items())
+                },
+            }
         atomic_write_json(args.out, payload)
     except (OSError, KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
         parser.error(str(exc))

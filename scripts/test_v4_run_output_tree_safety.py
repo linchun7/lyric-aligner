@@ -113,5 +113,25 @@ class V4RunOutputTreeSafetyTests(unittest.TestCase):
                 )
 
 
+    def test_source_clock_map_is_protected_from_output_tree(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            manifest_path, _task_root, _lyrics_dir = self._task_fixture(temporary)
+            config_dir = Path(temporary) / "source-clock-config"
+            config_dir.mkdir()
+            source_clock_map = config_dir / "source_clock_map.json"
+            source_clock_map.write_text("{}\n", encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "materialization tree contains input cli_source_clock_map"):
+                validate_run_output_tree_from_argv(
+                    [
+                        "--task-manifest",
+                        str(manifest_path),
+                        "--out-dir",
+                        str(config_dir),
+                        "--source-clock-map",
+                        str(source_clock_map),
+                    ]
+                )
+
+
 if __name__ == "__main__":
     unittest.main()

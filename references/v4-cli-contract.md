@@ -1,5 +1,7 @@
 # Lyric Aligner V4 CLI Safety Contract
 
+2026-09-10 source-clock authority 1.1：`v4_audit_semantic_sync.py` 的 authority 路径必须同时提供 `--source-clock-map`、`--source-clock-promotion-analysis`、`--source-clock-promotion-selection`、`--source-clock-promotion-protocol`；`v4_validate_release.py` 对应参数在四者前加 `semantic-`，即 `--semantic-source-clock-map` 等。四份文件作为受保护输入，QA/release 记录各自 SHA；selection 身份/transform、analysis ledger 指标及 frozen protocol verdict 必须一致。旧无 authority 路径不变；旧 1.0 authority 报告不得直接作为 1.1 release 依据。当前 a20 重放仍 7 首 final FAIL，见 [交接第 9 节](oumei140-a20-source-clock-upgrade-handoff-2026-09-10.md)。
+
 同轮修正增加独立 `context_policy: anchored-path-v1`：合格源时间带参与声学解码路径，仍要求 `lexical_only_no_ap`，复用原 shadow CLI 与单独 HFA overlay。旧 `anchored-block-v1` 可重放，但新公开测试已否决其直接生产应用。时间带使用既有1500ms余量，不是开放的调优参数；未启用仍保持原三行行为。
 
 2026-09-08 第六切片增加 HFA job 内可选 `context_policy: anchored-block-v1`（默认 `three-line-v1`），要求已有 `lexical_only_no_ap` 声学策略，复用同一 shadow CLI。最近两侧合格 anchor 之间共享推理以补齐相邻句；固定12内部行/256词/45秒（含padding）资源上限，只作用新增block。外侧anchor不输出，旧三行候选保留。字段、证据与输出仍遵循 [原曲上下文与区间联合升级](source-context-shadow-upgrade.md)。
@@ -119,9 +121,9 @@ all output paths are pairwise distinct
 - canonical `v4_run.py` 必须在 `OutputRunLock` 创建 output directory 或 `.v4-run.lock` 前检查；
 - direct optimized entrypoint 必须在 `cache/`、verified-input session、stage directory 创建前检查；
 - direct legacy entrypoint 必须在 stage directories 创建前检查；
-- task manifest、所有 manifest-bound input roots/subtrees，以及显式 `--profile`、`--language-map`、`--middle-cut-map`、`--lyric-role-map` 都属于 protected inputs；
+- task manifest、所有 manifest-bound input roots/subtrees，以及显式 `--profile`、`--language-map`、`--middle-cut-map`、`--lyric-role-map`、`--source-clock-map` 都属于 protected inputs；
 - `4.0.0a14` 起，若 task-local `qa/v4_run_config.json` 存在，三个 public run entrypoint 必须在任何 output mutation 前自动发现并验证它；该 config 自身也属于 direct protected input；
-- run config 绑定 exact task fingerprint，并记录 `profile/language_map/middle_cut_map/lyric_role_map` 的 path/size/SHA；缺失 semantic CLI 由 wrapper 自动展开，显式 CLI 与 config 不一致、绑定文件变化或 config-null 角色被临时填入时 fail closed；
+- run config 绑定 exact task fingerprint，并记录 `profile/language_map/middle_cut_map/lyric_role_map` 的 path/size/SHA；缺失 semantic CLI 由 wrapper 自动展开，显式 CLI 与 config 不一致、绑定文件变化或 config-null 角色被临时填入时 fail closed；`v4-run-config-1.0` 不新增 `source_clock_map` 字段，避免破坏历史 config 指纹，a20 的 source-clock 首次接入仅接受显式 `--source-clock-map`；
 - wrapper-only `--run-config` 只用于 preflight/auto-expansion，ownership gate 完成后必须从 argv 移除，再进入原 production parser；不存在 run config 的 legacy task 保持旧显式 flag 兼容；
 - output tree 位于任一 protected input 内，或 output tree 反向包含 protected input，都必须 fail closed。
 

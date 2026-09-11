@@ -1,7 +1,11 @@
 # Lyric Aligner v4 生产运行手册
 
-更新：2026-09-05
-主线算法版本：`4.0.0a19`
+Source-clock authority 1.1 运行须同时提供 map、promotion analysis、promotion selection、promotion protocol 四份文件，CLI 参数见 [CLI 契约](v4-cli-contract.md)。原 source-clock 1.0 QA 不能直接继承新资格；应在同一 final/fusion 上重放。a20 新重放结果仍为 semantic FAIL，禁止据工程单测通过发布成品。
+
+2026-09-10 工程候选注意：local acoustic 新输出 schema 1.5。Pro 与 source-ASR shadow consumers 要求显式、坐标一致的 projection domain 和完整原有 eligibility 条件；旧缺字段文件可诊断读取，但不会自动取得 timing 资格。prefix-v2 不接生产 semantic authority；R4 的 7 缓存/56 frozen 样本结果为 0 eligible。当前候选/生产状态区别见 [a20 交接](oumei140-a20-source-clock-upgrade-handoff-2026-09-10.md)。
+
+更新：2026-09-10
+主线算法版本：`4.0.0a20`
 
 > 真实生产 workload 与产品设计基线见 `references/production-requirements.md`；Smart / Pro v1.1 设计细节见 `references/smart-pro-v1-1.md`。
 
@@ -34,7 +38,7 @@ python scripts/v4_text_repair.py `
 
 Text Repair V2.1 冻结 cue count/number/start/end，canonical 是最终文字/顺序 truth，production `--auto-threshold >= 0.72`。
 
-## 3. Smart v1.2.10
+## 3. Smart v1.2.11
 
 ### 3.1 基本调用
 
@@ -103,7 +107,7 @@ B-grade 不能建立 timing model，只能由 already-ready A-anchor model 二�
 
 因此两条 cue 即使分别检查安全，但组合后互相冲突，也会统一降级 review。
 
-Smart report schema 仍是 `smart-1.1`，current policy 为 `smart-validation-policy-2026-08-22-v1.2.10`；产品字段：
+Smart report schema 仍是 `smart-1.1`，current policy 为 `smart-validation-policy-2026-09-10-v1.2.11`；v1.2.11 保持 v1.2.10 timing authority 不变，只在最终 display segmentation 上重新验证 canonical ownership / connected lexical floor，并把无法证明的区域留在 review。产品字段：
 
 ```text
 status
@@ -128,7 +132,7 @@ timing_review_count  # legacy unresolved total，不是人工队列
 
 角色/metadata 过滤发生在 shared canonical parser 建立 canonical lines/ordinal 之前，会影响所有下游模式。裸中文短行默认保留；明确角色词、多人分隔名单和显式角色括号直接过滤。v1.2.9 允许同文件多人 cast 证明 exact bare member；cast 外裸标签只有在强 ensemble grammar、重复出现且每次两秒内紧接 lexical 行时才过滤。“夏天：”“白天：”“向前：”回归仍必须保留。
 
-v1.2.10 通过版本隔离开关启用 split-line guard，历史 policy 的显式入口保持可复现。它不再把一个 canonical line onset 重复授予映射到该行的多个 editor cues。span 首 cue 可继续使用 line onset；内部 cue 只有在合并后的 editor 文本与 canonical token stream 精确一致、且内部边界正好落在严格后移、仍处于该 canonical line 内的可靠 token boundary 时，才使用对应 token onset。否则输出 `segmentation_internal_boundary_unvalidated` 且不生成 timing proposal。
+v1.2.10 通过版本隔离开关启用 split-line guard，历史 policy 的显式入口保持可复现。它不再把一个 canonical line onset 重复授予映射到该行的多个 editor cues。span 首 cue 可继续使用 line onset；内部 cue 只有在合并后的 editor 文本与 canonical token stream 精确一致、且内部边界正好落在严格后移、仍处于该 canonical line 内的可靠 token boundary 时，才使用对应 token onset。否则输出 `segmentation_internal_boundary_unvalidated` 且不生成 timing proposal。v1.2.11 在这条 timing 结果冻结后追加 final ownership/lexical-floor recheck；若恢复 display/editor boundary 后 canonical 归属无法证明，或 trusted ownership 仍有 duplicate/reorder/word-split 冲突，则整段 review envelope fail closed，不把 quarantine 当作已验收。
 
 ## 4. Pro v1.2.7
 
@@ -144,7 +148,7 @@ python scripts/v4_pro_selective.py `
   --plan-out "output/<任务>/<任务>_PRO_PLAN.json"
 ```
 
-Pro v1.2.7 必须读取**当前 Smart v1.2.10 policy** 产出的 `smart-1.1` report。旧 Smart report 即使 schema 相同，只要 policy id 不是当前版本，也会要求重新跑 Smart。
+Pro v1.2.7 必须读取**当前 Smart v1.2.11 policy** 产出的 `smart-1.1` report。旧 Smart report 即使 schema 相同，只要 policy id 不是当前版本，也会要求重新跑 Smart。
 
 reason-aware routing：
 
@@ -275,6 +279,19 @@ Smart 继续 `Affine first`。同一首歌出现少量多 rate 时，先表现�
 
 ## 6. Max
 
+### 6.0 Adjacent transition positional adjudication
+
+`scripts/v4_adjudicate_transitions.py` is a second-stage, mapping-constrained
+evidence pass for `transition_ambiguity/ambiguous_source_occurrence`. It uses
+only the two adjacent occurrences' accepted, unblocked primary mappings to
+predict expected source positions, then reruns existing coarse retrieval in a
+narrow source radius. It does not search the whole source and does not change
+the legacy transition probe's semantics. Its automatic authority is limited to
+`resolved_clear`; `confirmed_overlap` is never automatic. Missing, stale,
+conflicting, simultaneous, or insufficient evidence remains review-required.
+The evidence records `timing_mutation_performed=false` and cannot itself write
+timeline or primary mapping data.
+
 Smart/Pro 解决不了、或整体 timeline 本来就不可信时再运行完整 Source-to-Mix 主链。Max 不再是普通 timing 修复默认入口。
 
 `4.0.0a14` 起，`init_task.py` 会创建 `private/<任务>/qa/v4_run_config.json`。该文件单独绑定可后补的 `profile / language_map / middle_cut_map / lyric_role_map`，并绑定 exact task fingerprint 与每个非空配置文件的 size/SHA。旧任务可用 `scripts/init_v4_run_config.py` 建立或有意识 `--replace` 迁移配置；`--replace` 是整份配置替换，未再次指定的语义项会变为 `null`。
@@ -338,7 +355,7 @@ Public CI 能验证 deterministic policy、最终 overlap guard、soft BPM seman
 
 `python scripts/v4_smart_repair.py --help` 与 `python scripts/v4_pro_selective.py --help` 现在会自行把 repository root 加入 import path，正式文档中的直接入口不要求调用者额外设置 `PYTHONPATH`。
 
-当前 Pro v1.2.7 的 `--max-jobs` 仍是 **primary unresolved-cue budget**；planner policy 保持 v1.2.6。Shadow boundary competitors 只附着于已经选中的 primary，属于 additive evidence；`plan.config.max_jobs` 对外报告调用者请求的 primary budget，内部完整 candidate-pool 扩池不是公开预算语义。Acoustic schema 1.4 同时记录 slope 与 source-start 搜索边界；任一 optimum 命中/接近边界时都不得参与 timing fusion。
+当前 Pro v1.2.7 的 `--max-jobs` 仍是 **primary unresolved-cue budget**；planner policy 保持 v1.2.6。Shadow boundary competitors 只附着于已经选中的 primary，属于 additive evidence；`plan.config.max_jobs` 对外报告调用者请求的 primary budget，内部完整 candidate-pool 扩池不是公开预算语义。Acoustic schema 1.5 在 1.4 的 slope/source-start 边界门之上增加 exact job mix-window projection-domain gate：`predicted_mix_start_ms` 必须位于该 job 自己的 `mix_window_ms` 闭区间内，`projection_extrapolation_ms=0`；merged decode region 不扩大单 job timing authority。任一条件不满足都只能 diagnostic，不参与 timing fusion。
 
 ## Max evaluation render vs production release — 2026-08-22 safety contract
 

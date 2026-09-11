@@ -9,6 +9,7 @@ from pathlib import Path
 from lyric_aligner import __version__
 from lyric_aligner.contracts.artifacts import build_artifact_manifest, sha256_file
 from lyric_aligner.srt import Cue, cue_id, parse_srt_strict, text_sha256
+from lyric_aligner.text_repair import _normalize_for_match
 from semantic_sync_test_support import write_passing_semantic_sync_fixture
 from task_contract import build_task_manifest, write_json_atomic
 
@@ -51,6 +52,9 @@ class V4EditorTopologyRebuttalMaterializerTests(unittest.TestCase):
         gap_witness: bool,
         timing_format: str = "line_lrc",
         recoverable_nonmonotonic: bool = False,
+        canonical_index_offset: int = 0,
+        evaluation_content_origin: int = 0,
+        absolute_content_spans: bool = False,
     ) -> dict:
         task_root = root / "private" / "generic-topology-rebuttal"
         input_dir = task_root / "input"
@@ -86,6 +90,7 @@ class V4EditorTopologyRebuttalMaterializerTests(unittest.TestCase):
         song_list.write_text("00:00 Generic Artist - Generic Track\n", encoding="utf-8")
         lyric_file = lyrics_dir / "generic.lrc"
         lyric_file.write_text(
+            ("[00:00.00]omitted prefix\n" if canonical_index_offset else "") +
             "[00:00.20]canonical alpha\n"
             "[00:01.60]canonical missing topology\n"
             "[00:03.20]canonical beta\n",
@@ -140,7 +145,7 @@ class V4EditorTopologyRebuttalMaterializerTests(unittest.TestCase):
                         "occurrence_id": "occ-1",
                         "track_id": "track-1",
                         "ordinal": 1,
-                        "canonical_line_index": position - 1,
+                        "canonical_line_index": position - 1 + canonical_index_offset,
                         "timing_format": timing_format,
                         "end_basis": "next_line_start",
                         "task_fingerprint_sha256": fingerprint,
@@ -230,12 +235,19 @@ class V4EditorTopologyRebuttalMaterializerTests(unittest.TestCase):
         write_srt(preserved_srt, preserved_cues)
 
         preserved_report = preservation_dir / "final.csv"
-        preserved_fieldnames = [*fieldnames, "canonical_line_indices"]
+        preserved_fieldnames = [
+            *fieldnames,
+            "canonical_line_indices",
+            "canonical_content_start",
+            "canonical_content_end",
+        ]
         with preserved_report.open("w", encoding="utf-8-sig", newline="") as handle:
             writer = csv.DictWriter(handle, fieldnames=preserved_fieldnames)
             writer.writeheader()
+            content_cursor = evaluation_content_origin
             for position, cue in enumerate(preserved_cues, start=1):
                 editor_timing = bool(gap_witness and position in {1, 3})
+                content_end = content_cursor + len(_normalize_for_match(cue.text))
                 writer.writerow(
                     {
                         "position": position,
@@ -246,8 +258,10 @@ class V4EditorTopologyRebuttalMaterializerTests(unittest.TestCase):
                         "occurrence_id": "occ-1",
                         "track_id": "track-1",
                         "ordinal": 1,
-                        "canonical_line_index": position - 1,
-                        "canonical_line_indices": json.dumps([position - 1]),
+                        "canonical_line_index": position - 1 + canonical_index_offset,
+                        "canonical_line_indices": json.dumps([position - 1 + canonical_index_offset]),
+                        "canonical_content_start": content_cursor if absolute_content_spans else "",
+                        "canonical_content_end": content_end if absolute_content_spans else "",
                         "timing_format": "editor_preserved" if editor_timing else timing_format,
                         "end_basis": "immutable_editor" if editor_timing else "next_line_start",
                         "task_fingerprint_sha256": fingerprint,
@@ -255,12 +269,14 @@ class V4EditorTopologyRebuttalMaterializerTests(unittest.TestCase):
                         "text_sha256": text_sha256(cue.text),
                     }
                 )
+                content_cursor = content_end
 
         preservation_report = preservation_dir / "preservation.json"
         preservation_payload = {
             "schema_version": "editor-preservation-batch-materialization-1.0",
             "policy_id": "immutable-editor-all-occurrences-batch-1.0",
             "task_fingerprint_sha256": fingerprint,
+            "evaluation_canonical_content_origins": {"occ-1": evaluation_content_origin},
             "stage_count": 2,
             "restore_stage_count": 1,
             "occurrences_with_restore_count": 1,
@@ -285,6 +301,7 @@ class V4EditorTopologyRebuttalMaterializerTests(unittest.TestCase):
             ),
             normalized_config={
                 "policy_id": "immutable-editor-all-occurrences-batch-1.0",
+                "evaluation_canonical_content_origins": {"occ-1": evaluation_content_origin},
                 "input_sha256": {
                     str(evaluation_srt.resolve()): sha256_file(evaluation_srt),
                     str(report.resolve()): sha256_file(report),
@@ -392,6 +409,58 @@ class V4EditorTopologyRebuttalMaterializerTests(unittest.TestCase):
             result = run_command(self.materialize_command(fixture, root / "production"))
             self.assertNotEqual(result.returncode, 0)
             self.assertIn("at least one proven editor timing restoration", result.stderr)
+
+    def test_absolute_preservation_spans_translate_from_nonzero_evaluation_origin(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            fixture = self.build_fixture(
+                root,
+                gap_witness=True,
+                canonical_index_offset=1,
+                evaluation_content_origin=len(_normalize_for_match("omitted prefix")),
+                absolute_content_spans=True,
+            )
+            out_dir = root / "production"
+            result = run_command(self.materialize_command(fixture, out_dir))
+            self.assertEqual(result.returncode, 0, msg=result.stderr)
+            qa = json.loads((out_dir / "FINAL.qa.json").read_text(encoding="utf-8"))
+            self.assertTrue(qa["publish_ready"])
+            self.assertEqual(qa["segmentation_authority"], "editor_reconciled")
+
+    def test_nonzero_evaluation_origin_missing_from_preservation_fails_closed(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            fixture = self.build_fixture(
+                root,
+                gap_witness=True,
+                canonical_index_offset=1,
+                evaluation_content_origin=len(_normalize_for_match("omitted prefix")),
+                absolute_content_spans=True,
+            )
+            preservation = json.loads(
+                fixture["preservation_report"].read_text(encoding="utf-8")
+            )
+            preservation.pop("evaluation_canonical_content_origins", None)
+            write_json_atomic(fixture["preservation_report"], preservation)
+            old_artifact = fixture["preservation_artifact"]
+            config = dict(old_artifact["normalized_config"])
+            config.pop("evaluation_canonical_content_origins", None)
+            rebuilt = build_artifact_manifest(
+                task_fingerprint_sha256=preservation["task_fingerprint_sha256"],
+                stage="editor_preservation_batch",
+                algorithm_version=__version__,
+                outputs=(
+                    ("final_srt", fixture["preserved_srt"]),
+                    ("audit_csv", fixture["preserved_report"]),
+                    ("preservation_report", fixture["preservation_report"]),
+                ),
+                normalized_config=config,
+                upstream_artifact_ids=old_artifact["upstream_artifact_ids"],
+            )
+            write_json_atomic(fixture["preservation_artifact_path"], rebuilt)
+            result = run_command(self.materialize_command(fixture, root / "production"))
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("lacks evaluation canonical content origin", result.stderr)
 
     def test_gap_witness_materializes_and_passes_release_guard(self):
         with tempfile.TemporaryDirectory() as temporary:

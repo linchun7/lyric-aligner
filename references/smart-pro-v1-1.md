@@ -6,7 +6,7 @@ Normative workload baseline remains `references/production-requirements.md`.
 Smart and Pro remain the daily primary modes; this change does not expand
 Max/Full V4 as the default path.
 
-## Smart v1.2.10
+## Smart v1.2.11
 
 Smart still reads no audio. The primary v1 A-anchor affine timing engine remains
 unchanged from the established base policy. v1.2.0 added a separate canonical-
@@ -18,7 +18,10 @@ proof needed to remove real bare ensemble roles without reviving surname matchin
 v1.2.10 additionally prevents multiple editor cues mapped to one line-timed
 canonical row from reusing the same line onset. An internal cue receives a
 timing hypothesis only when its text boundary exactly matches reliable canonical
-token timing; otherwise it is explicitly unvalidated.
+token timing; otherwise it is explicitly unvalidated. v1.2.11 leaves that timing
+authority unchanged and adds a final canonical-ownership / connected lexical-floor
+recheck after display segmentation. Unproven ownership or a quarantined multi-cue
+review envelope remains review-required rather than being counted as trusted text.
 
 Primary timing hardenings remain:
 
@@ -33,7 +36,7 @@ Primary timing hardenings remain:
 - rate prior provenance remains explicit: `exact_daw`, `bpm_derived`, or
   `anchor_estimated`; exact DAW stretch remains stronger than BPM-derived prior;
 - Smart report schema remains `smart-1.1`; current policy id is
-  `smart-validation-policy-2026-08-22-v1.2.10`.
+  `smart-validation-policy-2026-09-10-v1.2.11`.
 
 ### Segmentation authority and mode monotonicity
 
@@ -228,16 +231,16 @@ upstream contract is:
 
 ```text
 schema_version = smart-1.1
-policy_id      = smart-validation-policy-2026-08-22-v1.2.10
+policy_id      = smart-validation-policy-2026-09-10-v1.2.11
 ```
 
 Versioned Smart modules remain historical implementations: `smart_policy.py`
 is the frozen v1.2.4 base contract; `smart_policy_v125.py` and
 `smart_policy_v126.py` / `smart_policy_v127.py` / `smart_policy_v128.py` /
-`smart_policy_v129.py` / `smart_policy_v1210.py` are versioned wrappers. `smart_current.py` is the **only
-current-production facade**; it currently binds schema `smart-1.1`, policy
-v1.2.10 and the v1.2.10 repair function. Both the Smart CLI and Pro v1.2.7 import
-through this facade.
+`smart_policy_v129.py` / `smart_policy_v1210.py` / `smart_policy_v1211.py` are versioned wrappers. `smart_current.py` is the **only
+current working-tree facade**; it currently binds schema `smart-1.1`, policy
+v1.2.11 and the v1.2.11 repair function. Both the Smart CLI and Pro compatibility gate import
+through this facade. The formally released production baseline remains Smart v1.2.10 / Pro v1.2.7 until the candidate closeout is committed and promoted.
 Therefore a future Smart promotion changes one current binding instead of
 independently changing multiple consumers. v1.2.4 and earlier Smart reports are
 stale and must be rerun.
@@ -270,10 +273,10 @@ blind validation establishes safe evidence combinations and false-repair bounds.
 Max also follows the same segmentation authority contract: line-LRC grouping is
 not sufficient evidence by itself to resegment a trusted editor subtitle cue.
 
-## Current superseding contract: Smart v1.2.10 / Pro v1.2.7
+## Current working-tree candidate: Smart v1.2.11 / formal production baseline: Smart v1.2.10 + Pro v1.2.7
 
 The current Smart facade binds `smart-1.1` to
-`smart-validation-policy-2026-08-22-v1.2.10`. Shared canonical parsing filters
+`smart-validation-policy-2026-09-10-v1.2.11` in the current candidate. The formally released baseline remains v1.2.10. Shared canonical parsing filters
 explicit roles before canonical lines/ordinals exist. Bare CJK lines remain
 lexical unless same-file explicit multi-cast evidence proves the name, or a
 strong repeated ensemble-label grammar proves an otherwise missing member.

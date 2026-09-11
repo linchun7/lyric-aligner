@@ -26,6 +26,23 @@ class V4EditorEvidenceTests(unittest.TestCase):
         self.assertEqual({row["mode"] for row in zh}, {"direct_text"})
         self.assertGreater(text_support_score("hello world", "hello world"), 0.99)
 
+    def test_auto_latin_exposes_direct_measurement_without_text_authority(self):
+        policy = span_policy("hello world", track_language="auto")
+        self.assertEqual([row["language"] for row in policy], ["generic"])
+        self.assertEqual([row["script"] for row in policy], ["latin"])
+        self.assertEqual([row["mode"] for row in policy], ["direct_text"])
+        self.assertEqual([row["text_weight"] for row in policy], [0.0])
+        row = evidence_for_line(
+            self.line("hello world"),
+            [Cue(1, 1000, 2200, "hello world")],
+            track_language="auto",
+        )
+        best = row["candidates"][0]
+        self.assertGreater(best["direct_text_support_score"], 0.99)
+        self.assertIsNone(best["text_support_score"])
+        self.assertEqual(best["effective_text_weight"], 0.0)
+        self.assertFalse(row["automatic_timing_change_allowed"])
+
     def test_korean_latin_phonetic_editor_output_is_weak_evidence_only(self):
         score, backend = phonetic_support_score("ko", "안녕", "annyeong")
         self.assertIsNotNone(score)

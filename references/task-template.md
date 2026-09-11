@@ -1,8 +1,8 @@
 # 音乐混剪歌词字幕：当前任务模板
 
-更新：2026-09-05
+更新：2026-09-10
 当前产品路径：`Standard -> Smart -> Pro -> Max`
-当前 Max 主线版本：`4.0.0a19`
+当前 Max 主线版本：`4.0.0a20`
 
 本文件只描述当前生产入口。历史 v3.9/`redo_karaoke_pipeline.py` 仍保留用于回归与历史兼容，但不再是新任务默认生产路径。
 
@@ -137,7 +137,7 @@ python scripts/v4_text_repair.py ...
 python scripts/v4_smart_repair.py ...
 ```
 
-当前 Smart 为 v1.2.10。普通“大部分时间轴正确”的任务应先走这里。
+正式已发布 Smart 生产基线为 v1.2.10；当前工作树候选由 `smart_current` 指向 v1.2.11。普通“大部分时间轴正确”的任务仍先走 Smart；候选未完成整体验收/晋级前，不把 v1.2.11 写成已发布版本。
 
 ### Pro
 

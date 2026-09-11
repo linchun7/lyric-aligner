@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import unittest
 
-from lyric_aligner.alignment.selective_fusion import build_pro_decisions
+from lyric_aligner.timeline.smart_current import SMART_POLICY_ID
+from lyric_aligner.alignment.selective_fusion import build_pro_decisions, _timing_fusion_gate
 
 
 def _timing(cue: int, *, proposal: int | None) -> dict:
@@ -47,12 +48,17 @@ def _acoustic(
         "cue_ordinal": cue,
         "editor_start_residual_ms": -shift_ms,
         "predicted_mix_start_ms": editor + shift_ms,
+        "mix_window_ms": [editor + shift_ms - 2000, editor + shift_ms + 2000],
         "local_match_gate_passed": passed,
         "reliable_local_match": passed,
+        "ambiguous": False,
+        "feature_agreement": 2,
         "slope_search_min": 0.94,
         "slope_search_max": 1.06,
         "slope_search_boundary_hit": boundary_hit,
         "source_search_boundary_hit": source_boundary_hit,
+        "projection_within_mix_window": True,
+        "projection_extrapolation_ms": 0,
         "timing_fusion_evidence_eligible": (
             passed and not boundary_hit and not source_boundary_hit
         ),
@@ -61,10 +67,45 @@ def _acoustic(
 
 
 class ProDecisionFusionV120Tests(unittest.TestCase):
+    def test_projection_qualification_is_required_and_fail_closed(self) -> None:
+        row = _acoustic(1, shift_ms=650)
+        row.update(projection_within_mix_window=True, projection_extrapolation_ms=0)
+        self.assertTrue(_timing_fusion_gate(row))
+        for field, value in [("projection_within_mix_window", False),
+                             ("projection_within_mix_window", None),
+                             ("projection_within_mix_window", "true"),
+                             ("projection_extrapolation_ms", 1720),
+                             ("projection_extrapolation_ms", None)]:
+            with self.subTest(field=field, value=value):
+                self.assertFalse(_timing_fusion_gate({**row, field: value}))
+        self.assertFalse(_timing_fusion_gate({**row, "predicted_mix_start_ms": 864690,
+                                             "mix_window_ms": [866410, 872858]}))
+        for invalid in (None, [], [0], [2, 1], [0, float("inf")], [False, 20000]):
+            self.assertFalse(_timing_fusion_gate({**row, "mix_window_ms": invalid}))
+        for field in ("projection_within_mix_window", "projection_extrapolation_ms"):
+            legacy = dict(row)
+            legacy.pop(field)
+            self.assertFalse(_timing_fusion_gate(legacy))
+
+    def test_extrapolation_cannot_adjudicate_smart_candidate(self) -> None:
+        acoustic = _acoustic(1, shift_ms=650)
+        acoustic.update(projection_within_mix_window=False, projection_extrapolation_ms=1720)
+        result = build_pro_decisions(
+            smart_report={"schema_version": "smart-1.1", "policy_id": SMART_POLICY_ID,
+                          "timing_decisions": [_timing(1, proposal=11200)],
+                          "text_decisions": [{"cue_ordinal": 1, "action": "unchanged"}]},
+            plan={"schema_version": "1.1", "policy_id": "smart-to-pro-reason-aware-2026-08-22-v1.2.6",
+                  "jobs": [_job(1)]}, acoustic_evidence={"jobs": [acoustic]},
+        )["decisions"][0]
+        self.assertEqual(result["timing_state"], "smart_candidate_unverified")
+        self.assertFalse(result["timing_fusion_evidence_eligible"])
+        self.assertEqual(result["timing_evidence_semantics"],
+                         "diagnostic_only_projection_domain_unqualified")
+
     def test_fusion_separates_support_rebuttal_tolerance_and_unvalidated(self) -> None:
         smart = {
             "schema_version": "smart-1.1",
-            "policy_id": "smart-validation-policy-2026-08-22-v1.2.10",
+            "policy_id": SMART_POLICY_ID,
             "timing_decisions": [
                 _timing(0, proposal=None),
                 _timing(1, proposal=11_200),
@@ -117,7 +158,7 @@ class ProDecisionFusionV120Tests(unittest.TestCase):
     def test_slope_boundary_match_cannot_support_or_rebut_smart(self) -> None:
         smart = {
             "schema_version": "smart-1.1",
-            "policy_id": "smart-validation-policy-2026-08-22-v1.2.10",
+            "policy_id": SMART_POLICY_ID,
             "timing_decisions": [
                 _timing(1, proposal=11_200),
                 _timing(2, proposal=24_000),
@@ -163,7 +204,7 @@ class ProDecisionFusionV120Tests(unittest.TestCase):
     def test_source_search_boundary_match_cannot_adjudicate_timing(self) -> None:
         smart = {
             "schema_version": "smart-1.1",
-            "policy_id": "smart-validation-policy-2026-08-22-v1.2.10",
+            "policy_id": SMART_POLICY_ID,
             "timing_decisions": [_timing(1, proposal=11_200)],
             "text_decisions": [{"cue_ordinal": 1, "action": "unchanged"}],
         }
@@ -197,7 +238,7 @@ class ProDecisionFusionV120Tests(unittest.TestCase):
     def test_legacy_acoustic_without_source_boundary_field_fails_closed(self) -> None:
         smart = {
             "schema_version": "smart-1.1",
-            "policy_id": "smart-validation-policy-2026-08-22-v1.2.10",
+            "policy_id": SMART_POLICY_ID,
             "timing_decisions": [_timing(1, proposal=11_200)],
             "text_decisions": [{"cue_ordinal": 1, "action": "unchanged"}],
         }
@@ -222,7 +263,7 @@ class ProDecisionFusionV120Tests(unittest.TestCase):
     def test_text_and_timing_axes_are_independent(self) -> None:
         smart = {
             "schema_version": "smart-1.1",
-            "policy_id": "smart-validation-policy-2026-08-22-v1.2.10",
+            "policy_id": SMART_POLICY_ID,
             "timing_decisions": [_timing(0, proposal=None)],
             "text_decisions": [
                 {
@@ -257,7 +298,7 @@ class ProDecisionFusionV120Tests(unittest.TestCase):
     def test_supported_acoustic_occurrence_can_support_cross_script_text_identity(self) -> None:
         smart = {
             "schema_version": "smart-1.1",
-            "policy_id": "smart-validation-policy-2026-08-22-v1.2.10",
+            "policy_id": SMART_POLICY_ID,
             "timing_decisions": [_timing(1, proposal=11_200)],
             "text_decisions": [
                 {
@@ -298,7 +339,7 @@ class ProDecisionFusionV120Tests(unittest.TestCase):
     def test_smart_cross_script_recovery_retains_high_timing_value(self) -> None:
         smart = {
             "schema_version": "smart-1.1",
-            "policy_id": "smart-validation-policy-2026-08-22-v1.2.10",
+            "policy_id": SMART_POLICY_ID,
             "timing_decisions": [_timing(1, proposal=11_200)],
             "text_decisions": [
                 {
@@ -336,7 +377,7 @@ class ProDecisionFusionV120Tests(unittest.TestCase):
         timing["reason"] = "segmentation_internal_boundary_unvalidated"
         smart = {
             "schema_version": "smart-1.1",
-            "policy_id": "smart-validation-policy-2026-08-22-v1.2.10",
+            "policy_id": SMART_POLICY_ID,
             "timing_decisions": [timing],
             "text_decisions": [{"cue_ordinal": 1, "action": "unchanged"}],
         }
@@ -373,7 +414,7 @@ class ProDecisionFusionV120Tests(unittest.TestCase):
     def test_v127_supported_text_is_advisory_not_auto_resolved(self) -> None:
         smart = {
             "schema_version": "smart-1.1",
-            "policy_id": "smart-validation-policy-2026-08-22-v1.2.10",
+            "policy_id": SMART_POLICY_ID,
             "timing_decisions": [{"cue_ordinal": 3, "action": "unchanged"}],
             "text_decisions": [
                 {
@@ -421,7 +462,7 @@ class ProDecisionFusionV120Tests(unittest.TestCase):
     def test_v127_supported_timing_becomes_confirm_only_advisory(self) -> None:
         smart = {
             "schema_version": "smart-1.1",
-            "policy_id": "smart-validation-policy-2026-08-22-v1.2.10",
+            "policy_id": SMART_POLICY_ID,
             "timing_decisions": [_timing(1, proposal=11_200)],
             "text_decisions": [{"cue_ordinal": 1, "action": "unchanged"}],
         }
@@ -457,7 +498,7 @@ class ProDecisionFusionV120Tests(unittest.TestCase):
     def test_v127_insufficient_asr_stays_investigative(self) -> None:
         smart = {
             "schema_version": "smart-1.1",
-            "policy_id": "smart-validation-policy-2026-08-22-v1.2.10",
+            "policy_id": SMART_POLICY_ID,
             "timing_decisions": [{"cue_ordinal": 4, "action": "unchanged"}],
             "text_decisions": [
                 {
@@ -503,7 +544,7 @@ class ProDecisionFusionV120Tests(unittest.TestCase):
     def test_v127_ambiguous_text_support_never_auto_resolves(self) -> None:
         smart = {
             "schema_version": "smart-1.1",
-            "policy_id": "smart-validation-policy-2026-08-22-v1.2.10",
+            "policy_id": SMART_POLICY_ID,
             "timing_decisions": [{"cue_ordinal": 5, "action": "unchanged"}],
             "text_decisions": [
                 {

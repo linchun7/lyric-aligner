@@ -35,6 +35,7 @@ from lyric_aligner.timeline.cuts import (
     CutTimelineProjectionError,
     project_binding_cut_timeline,
 )
+from lyric_aligner.timeline.source_clock import source_clock_from_mapping
 from task_contract import (
     load_task_manifest,
     resolve_manifest_record,
@@ -486,7 +487,10 @@ def main() -> int:
             new_mapping_artifact_ids.append(mapping_artifact_id)
             all_upstreams.add(mapping_artifact_id)
 
-            timeline_result = project_binding_cut_timeline(binding, cut_mapping)
+            source_clock = source_clock_from_mapping(summary.get("source_clock"))
+            timeline_result = project_binding_cut_timeline(
+                binding, cut_mapping, source_clock=source_clock
+            )
             for projection_issue in timeline_result.get("projection_issues", []):
                 fragment_issue = {
                     **projection_issue,
@@ -527,6 +531,9 @@ def main() -> int:
                     "cut_mapping_artifact_id": mapping_artifact_id,
                     "source_review_artifact_id": str(
                         review_artifact["artifact_id"]
+                    ),
+                    "source_clock": (
+                        source_clock.to_dict() if source_clock is not None else None
                     ),
                 },
                 producer=(

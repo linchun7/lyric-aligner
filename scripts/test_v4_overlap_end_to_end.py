@@ -174,6 +174,7 @@ class V4OverlapEndToEndTests(unittest.TestCase):
                     "occurrence_id": binding.occurrence_id,
                     "track_id": binding.track_id,
                     "mapping_source": "synthetic-primary",
+                    "source_clock_map_sha256": "9" * 64,
                     "result": result,
                 }
                 timeline_path = timeline_dir / f"{binding.ordinal}.timeline.json"
@@ -437,6 +438,18 @@ class V4OverlapEndToEndTests(unittest.TestCase):
                 )
             )
             self.assertTrue(all(row.get("overlap_recomposed") for row in recomposed["occurrences"]))
+            for row in recomposed["occurrences"]:
+                recomposed_timeline = json.loads(
+                    Path(row["timeline_path"]).read_text(encoding="utf-8")
+                )
+                self.assertEqual(recomposed_timeline["source_clock_map_sha256"], "9" * 64)
+                recomposed_timeline_artifact = json.loads(
+                    Path(row["timeline_artifact_path"]).read_text(encoding="utf-8")
+                )
+                self.assertEqual(
+                    recomposed_timeline_artifact["normalized_config"]["source_clock_map_sha256"],
+                    "9" * 64,
+                )
 
             final_srt = root / "FINAL.srt"
             final_csv = root / "FINAL.csv"

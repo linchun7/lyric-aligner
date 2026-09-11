@@ -16,7 +16,7 @@ import math
 import unicodedata
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable, Sequence
+from typing import Iterable, Mapping, Sequence
 
 from lyric_aligner.srt import Cue
 
@@ -462,6 +462,12 @@ def _timing_layer_summary(
             "asr_anchor_count": row["asr_anchor_count"],
             "evidence_basis": row["evidence_basis"],
             "editor_witness_reliable": row["editor_witness_reliable"],
+            "verified_source_clock_authority": bool(row.get("verified_source_clock_authority")),
+            "authority_holdout_anchor_count": int(row.get("authority_holdout_anchor_count") or 0),
+            "authority_policy_id": row.get("authority_policy_id"),
+            "authority_timeline_map_binding": row.get("authority_timeline_map_binding"),
+            "authority_current_audio_match_count": int(row.get("authority_current_audio_match_count") or 0),
+            "authority_final_projection_match_count": int(row.get("authority_final_projection_match_count") or 0),
             "match_count": len(deltas),
             "median_signed_delta_ms": median_signed,
             "median_abs_delta_ms": median_abs,
@@ -513,6 +519,7 @@ def audit_independent_audio_sync(
     audio_family_conflict_ms: int = DEFAULT_AUDIO_FAMILY_CONFLICT_MS,
     min_forced_confidence: float = DEFAULT_MIN_FORCED_CONFIDENCE,
     min_asr_support_score: float = DEFAULT_MIN_ASR_SUPPORT_SCORE,
+    verified_source_clock_authority_by_ordinal: Mapping[int, Mapping[str, object]] | None = None,
 ) -> dict:
     """Audit projection/final timing against independent audio-semantic evidence.
 
@@ -540,6 +547,7 @@ def audit_independent_audio_sync(
         if isinstance(row, dict)
     }
     final_onsets = _final_onset_index(final_rows)
+    authority_by_ordinal = verified_source_clock_authority_by_ordinal or {}
     grouped: dict[int, dict] = {}
     for line in lines:
         if not isinstance(line, dict):
@@ -562,12 +570,22 @@ def audit_independent_audio_sync(
                 "audio_conflict_count": 0,
                 "projection_deltas_ms": [],
                 "final_deltas_ms": [],
+                "source_final_deltas_ms": [],
+                "authority_audio_deltas_ms": [],
                 "shared_errors": [],
             },
         )
         if row["track_id"] != track_id:
             raise ValueError("one ordinal maps to multiple track IDs")
         row["canonical_line_count"] += 1
+        authority = authority_by_ordinal.get(ordinal)
+        source_boundary = line.get("source_timeline_boundary_ms")
+        final_start = final_onsets.get((occurrence_id, line_index))
+        if authority is not None:
+            if str(authority.get("track_id") or "") != track_id or str(authority.get("occurrence_id") or "") != occurrence_id:
+                raise ValueError(f"verified source-clock authority identity mismatch for ordinal {ordinal}")
+            if isinstance(source_boundary, list) and len(source_boundary) == 2 and final_start is not None:
+                row["source_final_deltas_ms"].append(final_start - int(source_boundary[0]))
         anchor = _line_audio_anchor(
             line,
             min_forced_confidence=min_forced_confidence,
@@ -586,6 +604,8 @@ def audit_independent_audio_sync(
         source_boundary = line.get("source_timeline_boundary_ms")
         if isinstance(source_boundary, list) and len(source_boundary) == 2:
             row["projection_deltas_ms"].append(int(source_boundary[0]) - audio_start)
+            if authority is not None:
+                row["authority_audio_deltas_ms"].append(int(source_boundary[0]) - audio_start)
         final_start = final_onsets.get((occurrence_id, line_index))
         if final_start is not None:
             row["final_deltas_ms"].append(final_start - audio_start)
@@ -602,13 +622,40 @@ def audit_independent_audio_sync(
         shared_errors: list[str] = []
         projection_errors: list[str] = []
         final_errors: list[str] = []
+        authority = authority_by_ordinal.get(ordinal)
+        if authority is not None:
+            holdout_errors = authority.get("holdout_signed_errors_ms")
+            if not isinstance(holdout_errors, list) or len(holdout_errors) < minimum:
+                raise ValueError(f"verified source-clock authority lacks holdout anchors for ordinal {ordinal}")
+            row["projection_deltas_ms"] = [int(value) for value in holdout_errors]
+            row["final_deltas_ms"] = list(row["source_final_deltas_ms"])
+            row["verified_source_clock_authority"] = True
+            row["authority_holdout_anchor_count"] = int(authority.get("holdout_anchor_count") or 0)
+            row["authority_policy_id"] = str(authority.get("policy_id") or "")
+            row["authority_timeline_map_binding"] = str(
+                authority.get("timeline_map_binding") or ""
+            )
+            rebuttal = [abs(int(value)) for value in row["authority_audio_deltas_ms"]]
+            if len(rebuttal) >= minimum:
+                rebuttal_median = float(statistics.median(rebuttal))
+                rebuttal_large_fraction = sum(value > large_error_ms for value in rebuttal) / len(rebuttal)
+                if rebuttal_median > max_median_abs_error_ms or rebuttal_large_fraction > max_large_error_fraction:
+                    shared_errors.append("verified_source_clock_current_audio_rebuttal")
+        else:
+            row["verified_source_clock_authority"] = False
+            row["authority_holdout_anchor_count"] = 0
+            row["authority_policy_id"] = None
+            row["authority_timeline_map_binding"] = None
         if row["audio_conflict_count"]:
             shared_errors.append("independent_audio_family_conflict")
         if (
-            row["forced_anchor_count"] >= minimum
-            and forced_fraction >= min_audio_anchor_fraction
+            authority is not None
+            or (
+                row["forced_anchor_count"] >= minimum
+                and forced_fraction >= min_audio_anchor_fraction
+            )
         ):
-            basis = "forced_alignment"
+            basis = "verified_source_clock_final_mix_holdout" if authority is not None else "forced_alignment"
         elif (
             reliable
             and row["asr_anchor_count"] >= minimum
@@ -624,7 +671,7 @@ def audit_independent_audio_sync(
         else:
             basis = "insufficient"
             shared_errors.append("insufficient_independent_audio_semantic_evidence")
-        if fraction < min_audio_anchor_fraction:
+        if authority is None and fraction < min_audio_anchor_fraction:
             shared_errors.append("insufficient_audio_anchor_fraction")
         row.update(
             {
@@ -632,6 +679,12 @@ def audit_independent_audio_sync(
                 "audio_anchor_fraction": round(fraction, 6),
                 "forced_anchor_fraction": round(forced_fraction, 6),
                 "asr_anchor_fraction": round(asr_fraction, 6),
+                "verified_source_clock_authority": bool(row.get("verified_source_clock_authority")),
+                "authority_holdout_anchor_count": int(row.get("authority_holdout_anchor_count") or 0),
+                "authority_policy_id": row.get("authority_policy_id"),
+                "authority_timeline_map_binding": row.get("authority_timeline_map_binding"),
+                "authority_current_audio_match_count": len(row.get("authority_audio_deltas_ms", [])),
+                "authority_final_projection_match_count": len(row.get("source_final_deltas_ms", [])),
                 "editor_witness_reliable": reliable,
                 "evidence_basis": basis,
                 "shared_errors": shared_errors,
@@ -659,7 +712,11 @@ def audit_independent_audio_sync(
     )
     return {
         "passed": bool(projection["passed"] and final["passed"]),
-        "policy": "forced_alignment_or_asr_plus_reliable_editor_v1",
+        "policy": (
+            "verified_source_clock_or_forced_alignment_or_asr_plus_reliable_editor_v2"
+            if authority_by_ordinal
+            else "forced_alignment_or_asr_plus_reliable_editor_v1"
+        ),
         "diagnostics_policy": "semantic-layer-errors-1.0",
         "projection_sync": projection,
         "final_sync": final,

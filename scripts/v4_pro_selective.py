@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
 import sys
 from pathlib import Path
 from typing import Any, Mapping
@@ -69,6 +70,31 @@ def _sha256(path: Path) -> str:
         for chunk in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def _mix_duration_ms(path: Path) -> int:
+    import soundfile as sf
+
+    try:
+        media = sf.info(str(path))
+        if media.samplerate <= 0 or media.frames <= 0:
+            raise ValueError("mix audio duration must be positive")
+        return int(media.frames * 1000 // media.samplerate)
+    except (OSError, RuntimeError, ValueError):
+        # AAC/M4A are commonly FFmpeg-backed rather than libsndfile-backed.
+        from lyric_aligner.audio.content_extent import _probe_audio_stream_duration
+
+        seconds = _probe_audio_stream_duration(path)
+        if seconds is None:
+            try:
+                import librosa
+
+                seconds = float(librosa.get_duration(path=str(path)))
+            except Exception as error:
+                raise ValueError(f"cannot inspect mix audio duration: {path}") from error
+        if not math.isfinite(seconds) or seconds <= 0:
+            raise ValueError("mix audio duration must be finite and positive")
+        return math.floor(seconds * 1000 + 1e-6)
 
 
 def _validate_smart_bindings(
@@ -297,6 +323,12 @@ def main() -> int:
             },
         )
 
+        mix_duration_ms = None
+        mix_audio_sha256 = None
+        if args.mix_audio is not None:
+            mix_duration_ms = _mix_duration_ms(args.mix_audio)
+            mix_audio_sha256 = _sha256(args.mix_audio)
+
         plan = build_selective_repair_plan_v11(
             smart_report=smart_report,
             cues=cues,
@@ -305,6 +337,8 @@ def main() -> int:
             config=SelectiveRepairConfig(
                 mix_context_ms=args.mix_context_ms,
                 max_jobs=args.max_jobs,
+                mix_duration_ms=mix_duration_ms,
+                mix_audio_sha256=mix_audio_sha256,
             ),
             region_merge_gap_ms=args.region_merge_gap_ms,
         )
@@ -318,6 +352,10 @@ def main() -> int:
                 for path in args.canonical_lyrics
             ],
         }
+        if args.mix_audio is not None:
+            plan["inputs"]["mix_audio_sha256"] = mix_audio_sha256
+            plan["mix_audio_duration_ms"] = mix_duration_ms
+            plan["mix_window_policy_id"] = "physical-media-bounded-pro-context-2026-09-10-v2"
         _write_json(args.plan_out, plan)
 
         summary: dict[str, object] = {

@@ -1,7 +1,8 @@
 import unittest
 
 from lyric_aligner.text.canonical_lyrics import CanonicalLine, CanonicalToken
-from lyric_aligner.timeline.cuts import project_cut_aware_lines
+from lyric_aligner.timeline.cuts import CutTimelineProjectionError, project_cut_aware_lines
+from lyric_aligner.timeline.source_clock import SourceClockTransform
 
 
 def mapping():
@@ -157,6 +158,36 @@ class V4CutTimelineTests(unittest.TestCase):
         self.assertEqual(len(projected), 1)
         self.assertEqual(projected[0]["text"], "hello world")
         self.assertFalse(projected[0]["canonical_fragment"])
+
+
+    def test_source_clock_is_applied_before_cut_mapping(self):
+        clock = SourceClockTransform(
+            rate=1.0,
+            offset_ms=1000.0,
+            provenance_sha256="a" * 64,
+        )
+        projected, issues, omitted = project_cut_aware_lines(
+            [line(0, 8000, "after")], mapping(), source_clock=clock
+        )
+        self.assertEqual(issues, [])
+        self.assertEqual(omitted, [])
+        self.assertEqual(len(projected), 1)
+        self.assertEqual(projected[0]["canonical_clock_start_ms"], 8000)
+        self.assertEqual(projected[0]["source_start_ms"], 9000)
+        self.assertEqual(projected[0]["mix_start_ms"], 6000)
+
+    def test_source_clock_cut_projection_refuses_token_timing_until_transformed(self):
+        clock = SourceClockTransform(
+            rate=1.0,
+            offset_ms=1000.0,
+            provenance_sha256="a" * 64,
+        )
+        with self.assertRaisesRegex(CutTimelineProjectionError, "token-timed"):
+            project_cut_aware_lines(
+                [line(0, 1000, "word", tokens=(token("word", 1000, 1500),))],
+                mapping(),
+                source_clock=clock,
+            )
 
 
 if __name__ == "__main__":

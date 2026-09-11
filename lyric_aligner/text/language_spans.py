@@ -190,6 +190,8 @@ def editor_mode_for_span(span: LanguageSpan) -> str:
 
     if span.language in {"zh", "en"}:
         return "direct_text"
+    if span.language == "generic" and span.script == "latin":
+        return "direct_text"
     if span.language in {"ko", "ja"}:
         return "phonetic_hint"
     if span.language == "yue":

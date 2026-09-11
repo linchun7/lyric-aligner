@@ -356,6 +356,16 @@ def materialize(*,manifest_path,srt_path,audit_path,run_path,run_artifact_path,
                 basis='bound_single_cue_single_word_suffix'))
             repaired[i]=replace(repaired[i],text=corrected)
     selected_lines=timeline['lines']
+    if not selected_lines:
+        raise ValueError('timeline has no canonical lines')
+    # ``canonical_content_start/end`` are deliberately absolute coordinates in
+    # the complete bound canonical stream. A production evaluation may begin
+    # after canonical index 0 when an occurrence boundary clips an earlier line.
+    # Persist the absolute coordinate at which this evaluated occurrence stream
+    # begins so downstream hybrid validation can translate absolute ownership
+    # spans without weakening the established full-LRC coordinate contract.
+    evaluation_canonical_content_origin=_absolute_canonical_content_prefix(
+        binding,[selected_lines[0]])
     # Region matching needs lexical content, while punctuation/music-marker cues
     # remain immutable retained subtitle content. Whole-occurrence restoration
     # keeps its historical all-cue contract and therefore does not use this filter.
@@ -445,6 +455,7 @@ def materialize(*,manifest_path,srt_path,audit_path,run_path,run_artifact_path,
             action='keep' if auto_keep else 'restore',candidates=auto_outcomes,
             selection_basis='largest compatible exact editor region; earliest canonical position breaks ties'),
         task_fingerprint_sha256=fingerprint,occurrence_id=occurrence_id,inputs=input_hashes,
+        evaluation_canonical_content_origin=evaluation_canonical_content_origin,
         baseline_target_cues=len(target_positions),restored_editor_cues=len(restored),
         timing_basis='unchanged_baseline' if auto_keep else 'immutable_editor',model_timing_authority_used=False,
         canonical_stream_verified=not auto_keep,non_target_content_and_timing_unchanged=True,
@@ -454,7 +465,7 @@ def materialize(*,manifest_path,srt_path,audit_path,run_path,run_artifact_path,
     atomic_write_json(staging/'preservation.json',report)
     artifact=build_artifact_manifest(task_fingerprint_sha256=fingerprint,stage='editor_preservation',
         algorithm_version=__version__,outputs=(('final_srt',staging/'final.srt'),('audit_csv',staging/'final.csv'),('preservation_report',staging/'preservation.json')),
-        normalized_config=dict(policy_id=effective_policy,auto_region_policy_id=AUTO_REGION_POLICY_ID if auto_requested else None,smart_input_policy_id=SMART_INPUT_POLICY_ID,occurrence_id=occurrence_id,canonical_region=canonical_region,input_sha256=input_hashes),
+        normalized_config=dict(policy_id=effective_policy,auto_region_policy_id=AUTO_REGION_POLICY_ID if auto_requested else None,smart_input_policy_id=SMART_INPUT_POLICY_ID,occurrence_id=occurrence_id,canonical_region=canonical_region,evaluation_canonical_content_origin=evaluation_canonical_content_origin,input_sha256=input_hashes),
         upstream_artifact_ids=tuple(sorted({run_artifact['artifact_id'],assets_artifact['artifact_id'],*timeline_ids})))
     # Paths in the artifact must refer to the transaction's final destination.
     for record in artifact['outputs']:record['path']=str(destination/Path(record['path']).name)

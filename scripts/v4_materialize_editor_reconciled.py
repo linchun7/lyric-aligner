@@ -403,6 +403,14 @@ def _validate_preservation(
         raise ValueError("editor preservation must not use model timing authority")
     if str(preservation.get("timing_basis") or "") != _PRESERVATION_TIMING_BASIS:
         raise ValueError("editor preservation timing basis mismatch")
+    origins = preservation.get("evaluation_canonical_content_origins")
+    if origins is None:
+        origins = {}
+    if not isinstance(origins, dict):
+        raise ValueError("editor preservation has invalid evaluation canonical content origins")
+    artifact_origins = config.get("evaluation_canonical_content_origins")
+    if artifact_origins is not None and artifact_origins != origins:
+        raise ValueError("editor preservation coordinate origins differ from artifact config")
 
     expected_hash_fields = {
         "input_srt_sha256": expected_input_hashes[str(evaluation_srt.resolve())],
@@ -439,6 +447,29 @@ def _validate_preservation(
         expected_task_fingerprint=fingerprint,
     )
     canonical, streams, line_spans, ordered_indices = _canonical_layout(evaluation_report)
+    coordinate_origins: dict[str, int] = {}
+    if origins and set(origins) != set(ordered_indices):
+        raise ValueError("editor preservation coordinate origins do not cover exact evaluation occurrences")
+    for occurrence_id, ordered in ordered_indices.items():
+        if not ordered or ordered != list(range(ordered[0], ordered[-1] + 1)):
+            raise ValueError(
+                f"canonical evaluation line indices are not contiguous for {occurrence_id}"
+            )
+        raw_origin = origins.get(occurrence_id)
+        if raw_origin is None:
+            # Legacy preservation artifacts are safe only when the evaluated
+            # occurrence itself starts at canonical index 0. Otherwise an
+            # absolute full-LRC ownership span cannot be translated reliably.
+            if not ordered or ordered[0] != 0:
+                raise ValueError(
+                    f"editor preservation lacks evaluation canonical content origin for {occurrence_id}"
+                )
+            raw_origin = 0
+        if type(raw_origin) is not int or raw_origin < 0:
+            raise ValueError(
+                f"editor preservation has invalid evaluation canonical content origin for {occurrence_id}"
+            )
+        coordinate_origins[occurrence_id] = raw_origin
     preserved_rows = _read_csv_rows(preserved_report, label="preserved audit")
     coverage: dict[str, list[tuple[int, int, int]]] = {key: [] for key in streams}
     for position, row in enumerate(preserved_rows, start=1):
@@ -467,6 +498,9 @@ def _validate_preservation(
                 raise ValueError(
                     f"preserved audit row {position} has invalid canonical content span"
                 ) from exc
+            absolute_start, absolute_end = start, end
+            origin = coordinate_origins[occurrence_id]
+            start, end = absolute_start - origin, absolute_end - origin
             stream = streams[occurrence_id]
             if start < 0 or end <= start or end > len(stream):
                 raise ValueError(

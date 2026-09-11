@@ -220,6 +220,84 @@ class V4AlignmentPlannerTests(unittest.TestCase):
             self.assertIsNone(job["mix_window_ms"])
         self.assertNotIn("private line", json.dumps(plan))
 
+    def test_release_semantic_asr_anchors_are_planned_from_direct_measurement(self):
+        editor = self.editor()
+        for index, row in enumerate(editor["occurrences"][0]["lines"]):
+            row["best_candidate_margin_uncalibrated"] = 0.30
+            row["candidates"] = [{
+                "timing_support_score": 0.90,
+                "direct_text_support_score": 0.95,
+                "phonetic_support_score": None,
+                "editor_start_ms": 5000 + index * 2000,
+                "editor_end_ms": 6500 + index * 2000,
+            }]
+        plan = build_alignment_plan(
+            run={"issues": []},
+            timeline_payloads=[self.timeline()],
+            editor_evidence=editor,
+            config=AlignmentPlannerConfig(release_semantic_anchors_per_track=2, max_jobs=20),
+            source_duration_ms_by_occurrence={"occ-1": 180000},
+        )
+        jobs = [j for j in plan["jobs"] if "release_semantic_asr_anchor" in j["reasons"]]
+        self.assertEqual(len(jobs), 2)
+        self.assertTrue(all("mix_asr" in job["requested_capabilities"] for job in jobs))
+        self.assertTrue(all("word_timestamps" in job["requested_capabilities"] for job in jobs))
+        self.assertTrue(all("source_forced_alignment" not in job["requested_capabilities"] for job in jobs))
+
+    def test_release_semantic_asr_spreads_after_reliability_filter(self):
+        timeline = self.timeline()
+        timeline["result"]["lines"].extend([
+            {
+                "canonical_line_index": 2,
+                "text": "private line two",
+                "source_start_ms": 14000,
+                "source_end_ms": 15500,
+                "mix_start_ms": 9000,
+                "mix_end_ms": 10500,
+            },
+            {
+                "canonical_line_index": 3,
+                "text": "private line three",
+                "source_start_ms": 16000,
+                "source_end_ms": 17500,
+                "mix_start_ms": 11000,
+                "mix_end_ms": 12500,
+            },
+        ])
+        editor = {
+            "mode": "shadow_only",
+            "authority": {"automatic_timing_change_allowed": False},
+            "occurrences": [{"occurrence_id": "occ-1", "lines": []}],
+        }
+        for index, line in enumerate(timeline["result"]["lines"]):
+            row = {
+                "canonical_line_index": index,
+                "canonical_text_sha256": __import__("hashlib").sha256(line["text"].encode()).hexdigest(),
+                "best_editor_cue_number": index + 1,
+                "suggested_onset_delta_ms": 20,
+                "suggested_offset_delta_ms": 20,
+                "best_candidate_margin_uncalibrated": 0.30,
+                "candidates": [],
+            }
+            if index in {1, 3}:
+                row["candidates"] = [{
+                    "timing_support_score": 0.90,
+                    "direct_text_support_score": 0.95,
+                    "phonetic_support_score": None,
+                    "editor_start_ms": int(line["mix_start_ms"]) + 20,
+                    "editor_end_ms": int(line["mix_end_ms"]) + 20,
+                }]
+            editor["occurrences"][0]["lines"].append(row)
+        plan = build_alignment_plan(
+            run={"issues": []},
+            timeline_payloads=[timeline],
+            editor_evidence=editor,
+            config=AlignmentPlannerConfig(release_semantic_anchors_per_track=2, max_jobs=20),
+            source_duration_ms_by_occurrence={"occ-1": 180000},
+        )
+        jobs = [j for j in plan["jobs"] if "release_semantic_asr_anchor" in j["reasons"]]
+        self.assertEqual([j["canonical_line_index"] for j in jobs], [1, 3])
+
     def test_release_semantic_anchors_require_duration_mapping(self):
         with self.assertRaises(AlignmentPlanningError):
             build_alignment_plan(
