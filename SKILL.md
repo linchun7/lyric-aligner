@@ -5,7 +5,7 @@ description: Reconstruct, review, materialize, diagnose and render multilingual 
 
 # Lyric Aligner
 
-2026-09-11 当前主线：Smart current=v1.2.11、Max=4.0.0a20、Pro acoustic schema=1.5。仓库 selector 已在 `main`，但具体字幕任务仍必须独立通过 lexical/structural/semantic/release gate；欧美经典140 a20 当前仍有 7 首 semantic BLOCK。当前入口见 [README](README.md)，任务级历史与证据见 [a20 交接](references/oumei140-a20-source-clock-upgrade-handoff-2026-09-10.md)。
+2026-09-12 当前主线：Smart current=v1.2.11、Max=4.0.0a20、Pro acoustic schema=1.5、Best-Safe=1.1.0。Best-Safe selector 已在当前工作区完成封板验证；是否已进入远端 `main` / production tag 以 [v4-status](references/v4-status.md) 的 source-release 状态为准。具体字幕任务仍必须独立通过 lexical/structural/semantic/release gate；欧美经典140 Max Release 当前仍有 7 首 semantic BLOCK，但 Best-Safe 1.1 已独立审计通过。当前入口见 [README](README.md)，任务级历史与证据见 [v4-status](references/v4-status.md)。
 
 当前生产主路径为 **Standard -> Smart -> Pro -> Max**。
 
@@ -33,6 +33,25 @@ smart-validation-policy-2026-09-10-v1.2.11
 ### 最低质量契约
 
 所有模式共同遵守：`Content correctness -> Structure/ownership correctness -> Timing non-regression -> Timing improvement`。纯文字修复不得顺带移动时间；Max/hybrid 成品应以 resolved canonical occurrence 做字符级 lexical floor 审计，而不是把整曲未使用 LRC 行机械算成漏词。大模型可以提出/比较 lexical/structural 假设，但确定性程序负责 ownership、单调性、timeline immutability、hash/lineage 与物化。display policy 只允许 normalized-equivalent 的空格、标点、大小写/排版修正和显式敏感词 mask；改变 normalized lexical content 必须先通过 `canonical-semantic-rebuttal`，不能借 display override 越权改字。
+
+### Best-Safe 产品层
+
+Best-Safe **不是第五种证据模式，也不改变 Smart 的行为**。Standard / Smart / Pro / Max 仍负责产生不同成本和权限的证据；Best-Safe 在这些已经冻结、可审计的结果上做产品选择，目标是产出“当前可用证据条件下期望风险最低、同时有明确质量下限”的实际交付版：
+
+```text
+Smart baseline -> Best-Safe -> Max Release
+```
+
+- Smart 是稳定保底基线；Best-Safe 不把大模型、敏感词、Max 回灌逻辑塞回 Smart policy，也不要求预先生成 Smart+ 中间 SRT。Best-Safe 1.1 默认完整继承 Smart 的 cue 数、顺序、start/end，形成不可静默退化的 topology/timing floor。
+- 高模式结果先作为**候选**而不是 authority：Max track semantic PASS、source-clock/Max 同源一致、稀疏 ASR anchor、transition clear、Pro/Max split/merge/add/delete 都不能单独授予整首或局部 timing 写权限。变化越大，举证责任越高；不得用“高模式更重”或“整首 PASS”替代 boundary-level 证明。
+- timing 只能逐边界晋级。每个 `start`/`end` 变化必须绑定具体 Smart cue/boundary、冻结 Smart 值、独立 authority 与 lineage；`unsupported_timing_change_count` 必须为 0 才能 `publish_ready=true`。当前实现只自动接受 human-truth-bound 单边界 promotion；未来若要开放 ASR/forced-alignment 自动 timing promotion，必须先有独立 calibration + boundary-level verifier，证明该边界相对 Smart 的期望误差更低，不能沿用 track semantic PASS 代替。
+- 高模式晋级不得依赖同一证据家族自证；Max candidate 与 Max 自己的 source projection 一致、两个同源模型一致，都不能单独证明它优于 Smart/editor。transition authorization 默认只做诊断，不得为了拼接 Max/Smart 而裁剪未经单边界授权的 Smart timing。
+- 大模型文字介入必须 task-bound 到原始 Smart SRT SHA、Smart report SHA 和按歌单顺序的全部 canonical lyric SHA，只允许提交连续 Smart review cue + exact canonical gap；提案不得携带自由替换歌词或 timing。启用 text adjudication 时，proposal + keep-Smart 台账必须对 Smart report 的全部 `review` cue **恰好完整覆盖**；漏记、重复记或把非-review cue 混入都 fail closed，不能再出现部分 review 被 ledger 隐藏。确定性 verifier 必须复用完整 text-region policy：resolved 邻接锚点、canonical span、region similarity、length ratio、多行 observed canonical/line coverage、safe DP word partition、ownership、单调性、timeline non-regression 与 hash/lineage；验证失败自动回退原 Smart。
+- 文字与 timing authority 必须分离。多 cue 文字修复不得在无 timing authority 时插入、删除或跨 cue 搬移 Latin token；只允许 cue ownership 不变的同位词形/错词纠正。若 Smart 与 canonical 的 normalized stream 已一致，则文字层保留 Smart presentation；重复吟唱、ad-lib、短呼喊的次数/归属没有独立 cue-level ownership 或 timing 证据时不得仅凭文本相似度自动 rescue。
+- 自动 canonical presentation 仅允许在 normalized-equivalent 前提下恢复 canonical 中显式 `*` mask；普通空格、标点、大小写、撇号、连字符、粘词等 presentation 默认保留 Smart，只有 task-bound 且 normalized-equivalent 的 model display override 才能修改。Best-Safe 默认执行 `strong_profanity_v1`；任何 display 路径都不得改 normalized lexical truth。
+- `publish_ready=true` 的最低条件包括：Smart topology 与 final 一致；所有 timing 变化都有显式 authorization；无 unsupported timing change；全部 task-bound human timing truth 通过；文字/display 各自通过确定性 verifier。该状态**不等于 Max `release_ready`**，只有整份 Max 正式 release gate 通过，Max Release 才取代 Best-Safe。
+
+当前实现入口：`scripts/v4_build_best_safe.py`；selector policy 为 `best-safe-smart-timing-floor-1.1`，算法版本 `1.1.0`。
 
 ## 生产模式选择：任何真实任务必须先做
 

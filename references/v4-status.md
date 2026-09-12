@@ -1,7 +1,8 @@
 # Lyric Aligner v4 当前实施状态
 
-更新：2026-09-11
+更新：2026-09-12
 主线算法版本：`4.0.0a20`
+Best-Safe：`1.1.0 / best-safe-smart-timing-floor-1.1`
 
 本文件只描述当前事实。历史实验、旧候选、阶段性测试数字和被否决路线见 [v4-change-record.md](v4-change-record.md)、[accuracy-experiment-register-2026-09-08.md](accuracy-experiment-register-2026-09-08.md) 与 Git history，不再在本页重复。
 
@@ -16,9 +17,11 @@ Smart policy       : smart-validation-policy-2026-09-10-v1.2.11
 Pro                 : v1.2.7
 Pro acoustic schema: 1.5
 Max                 : 4.0.0a20
+Best-Safe           : 1.1.0
+Best-Safe policy    : best-safe-smart-timing-floor-1.1
 ```
 
-当前生产路径：`Standard -> Smart -> Pro -> Max`。
+当前证据路径：`Standard -> Smart -> Pro -> Max`；当前产品路径：`Smart baseline -> Best-Safe -> Max Release`。Best-Safe 是证据模式之后的产品 selector，不改写 Smart/Max authority。
 
 `smart_current.py` 是唯一 current-production Smart facade。v1.2.10 仅保留为历史 regression baseline；v1.2.11 沿用 v1.2.10 timing authority，并增加 final canonical ownership / connected lexical-floor hardening。
 
@@ -26,29 +29,38 @@ Max                 : 4.0.0a20
 
 ## 2. 当前工程状态
 
-2026-09-11 工程封板验证：
+2026-09-12 Best-Safe 1.1 工程封板验证：
 
+- Best-Safe focused suite：`20/20 / OK`；
 - `python scripts/validate_skill.py .`：PASS；
-- `python -m unittest discover -s scripts -p "test_*.py"`：`1862 tests / OK`；
-- `git diff --check`：PASS；
+- `python -m unittest discover -s scripts -p "test_*.py"`：`1882 tests / OK`；
+- `git diff --check`：PASS（仅工作区 LF/CRLF 提示）；
 - SHE25 真实 A/B 验证：v1.2.11 相对同参数 v1.2.10 的 610 cue timing signature、完整 timing decisions 与 rendered SRT 均不变；
 - v1.2.11 的新增影响是收紧 final canonical ownership / lexical-floor authority，不重新建立 timing model。
 
 测试数字只描述该次快照；后续修改必须以新的实际重跑为准。
 
+### Source release freeze
+
+Best-Safe 1.1 的源码冻结身份为 production tag `prod-v4.0.0a20-best-safe-v1.1.0-20260912`；tag target 是该源码 release 的 Git 身份，冻结契约见 [release manifest](releases/prod-v4.0.0a20-best-safe-v1.1.0-20260912.json)。历史 `prod-smart-v1.2.5-pro-v1.1.4-20260821` 仅表示旧 Smart/Pro baseline，不代表当前 Best-Safe。任务级私有输入/字幕/Gold/Review 不进入源码仓库；欧美140 Best-Safe artifact SHA 单独记录在 release manifest，不把任务 artifact 与 source tag 混成同一 authority。
+
+### 本地音频模型部署状态
+
+2026-09-12 完成本地实验模型清理：删除 Qwen3-ASR 0.6B/1.7B 权重、Qwen boundary/forced-aligner 权重与 probe venv、SOFA 模型/runtime、HuBERTFA ONNX/runtime/压缩包及临时探针缓存、STARS 权重/runtime，以及 faster-whisper medium/small 缓存，共释放约 `17.115 GB`。保留源码、adapter、模型身份/下载元数据与历史实验结果；这些 Qwen/SOFA/HuBERTFA/STARS 路径仍可作为可选实验代码，但再次实跑前必须重新部署本地模型，不能假设权重仍存在。当前本机保留的主要 ASR 权重为 `mobiuslabsgmbh/faster-whisper-large-v3-turbo`（约 `1.51 GB`），仍作为现有默认/主要 faster-whisper backend 使用。清理后完整工程回归 `1882 tests / OK`，未触发模型自动下载。
+
 ## 3. 当前任务级阻断
 
 ### 欧美经典140 / a20
 
-source-clock authority 1.1 已有 7 首通过冻结 holdout 晋级；当前 semantic release gate 仍为 `passed=false`，ordinal：
+2026-09-12 fresh production 的 Max semantic release gate 仍为 `passed=false`。当前逐曲 `final_sync` 通过 `1 / 3 / 5 / 6 / 7 / 8 / 9 / 12`，BLOCK：
 
 ```text
-4 / 5 / 6 / 10 / 11 / 14 / 15
+2 / 4 / 10 / 11 / 13 / 14 / 15
 ```
 
-继续 BLOCK。不得因为代码已在 main、静态 lexical/structural QA 通过或某个 shadow observer 有局部结果，就宣布 a20 成品 release-ready。
+因此 **Max Release 继续 BLOCK**，不得把 `PRODUCT/FINAL.srt` 当作完整 release-ready 成品。
 
-详细 lineage 与阶段结论见 [oumei140-a20-source-clock-upgrade-handoff-2026-09-10.md](oumei140-a20-source-clock-upgrade-handoff-2026-09-10.md)。
+同一冻结任务已升级为 Best-Safe 1.1：直接从原始 Smart v1.2.11 构建，Smart 的 923 cues、顺序及全部 start/end 作为 topology/timing floor；8 首 Max semantic-pass 曲仅记录为 candidate，不再整首吸收 Max timing/topology，7 首 semantic-BLOCK 同样不影响 floor。当前 `BEST_SAFE/FINAL.srt` 为 923 cues，逐 cue 对 Smart 的 timing diff=0，`topology_exact=true`、`unsupported_timing_change_count=0`。用户人工真值 Toxic cue28 start=`116833ms` 已写入 task-bound timing truth，最终实际值同为 `116833ms`、误差0。Smart 全部70个文字 review 区域现在均有显式处置：Smart report 的155个 review cues 已由 ledger 155/155 完整且唯一记账（unaccounted=0）；16个区域进入 canonical-gap proposal、54个模型直接 keep Smart；完整 deterministic + cue-ownership verifier 最终只接受4个区域 / 6 cues、拒绝12个，最终66个区域 / 149 cues 保守留在 Smart。文字层不允许无 timing authority 的跨 cue 插词/删词/搬词；显式 `*` mask、`strong_profanity_v1` 与 normalized-equivalent display 可安全吸收。最终相对 Smart 仅24条文字/display变化，timing 变化0；独立审计 PASS，残留可 mask 强敏感词0、英文粘词0，SRT SHA=`adc5f26b10ffd95da3d039482b9a942312075b12cf5c586823f04d41768212bb`。该 `publish_ready=true` 只表示 Best-Safe 1.1 Smart-floor 合同通过，**不改变 Max Release 的 BLOCK 状态**。
 
 ### SHE25
 

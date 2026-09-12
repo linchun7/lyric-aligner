@@ -672,3 +672,19 @@ second-stage evidence path. It narrows retrieval around source positions
 predicted by accepted adjacent primary mappings; it is not a global threshold
 relaxation. Only clear sequential transitions may be recommended automatically;
 possible overlap remains human review.
+
+## 2026-09-12 Best-Safe 1.0 产品层
+
+- 保持 Standard / Smart / Pro / Max 证据 authority 不变，新增 `best-safe-evidence-selector-1.0` 产品 selector：Max 逐曲 semantic gate 通过才晋级，否则保留原始 Smart-safe；未授权跨曲 timing regression 自动回退。
+- Best-Safe 从原始 Smart 直接重放，不引入 Smart+ 中间架构。task-bound GPT-5.6 Sol text proposal 绑定 task、Smart SRT/report 与全部 canonical lyric SHA，只能引用连续 review cue + exact canonical gap；free-form text/timing 禁止进入 proposal，最终复用完整既有 text-region policy（resolved bracket / region similarity / length ratio / multi-line observed coverage / safe word partition）决定是否物化。Max semantic-BLOCK 区域内 canonical 与 Smart 实质冲突且缺少独立反证时保留 Smart。
+- 新增 canonical identity 优先的 Smart 曲目归属，修复秒级 songs.txt 边界下 crossfade 首句误归。自动 canonical presentation 仅恢复显式 `*` mask；普通撇号、空格、词边界等只允许经 task-bound normalized-equivalent model display override 修改。默认执行 `strong_profanity_v1`。
+- 欧美经典140 fresh 任务正式 Best-Safe 为 1020 cues：8 首 semantic-pass 曲使用 Max、7 首 BLOCK 曲使用 Smart-safe。34 个 BLOCK-track 文字 review 区域中，14 个进入 text proposal；完整 verifier 后仅 4 区域 / 8 cues 接受、10 拒绝，另 20 区域 / 49 cues 由模型主动保留 Smart；最终 30 区域 / 71 cues 作为显式残余风险保守留在 Smart。重复吟唱/ad-lib 次数无独立 cue-level ownership 时不自动 rescue。canonical 显式 mask 自动恢复 9 cues，确定性敏感词 mask 额外处理 1 cue，task-bound display override 9 cues。transition #4→#5 根据 `resolved_clear` 将左端裁到 797000ms；0 未授权跨曲 overlap。Max Release 仍因 `2/4/10/11/13/14/15` semantic BLOCK 而不可发布。
+- Best-Safe output tree 使用统一 path-safety，受保护输入目录不能被输出污染；QA/artifact 明确区分 Best-Safe `publish_ready` 与 Max `release_ready`。
+
+## 2026-09-12 Best-Safe 1.1 Smart timing floor
+
+- 用户人工抽查直接否定 Best-Safe 1.0 的 whole-track Max timing promotion：Toxic `You're toxic I'm slippin' under` 人工真值为 `00:01:56:25 @30fps ≈ 116833ms`，Smart 正好为 `116833ms`，1.0 吸收 Max 后为 `116404ms`，提前约429ms/13帧。第3、5首大量改动且人工表现较差；第7首虽大改但较可信，证明“变化幅度”只能是风险指标，不能单独判断准确率。
+- 1.1 改为 `best-safe-smart-timing-floor-1.1 / 1.1.0`：Smart cue 数、顺序、start/end 是默认不可静默退化的 product floor；Max track semantic PASS 只进入候选列表，不再允许整首 timing/topology、split/merge/add/delete 写入。transition authorization 默认仅诊断，不能为拼接候选静默裁 Smart。
+- 新增 boundary-level timing truth/promotion 契约：truth 绑定 task fingerprint + Smart SRT SHA + `track/source cue/start|end/truth/tolerance`；promotion 绑定冻结 Smart boundary 并必须引用独立 truth。当前自动 timing authority 仅开放 `human_truth`；未来机器 timing promotion 必须先有独立 calibration + boundary verifier，证明相对 Smart 的期望误差更低。`unsupported_timing_change_count=0` 和全部 truth PASS 是 `publish_ready` 必要条件。
+- 新增文字 cue-ownership floor：多 cue text adjudication 在无 timing authority 时不得插入、删除或跨 cue 搬移 Latin token，只允许 per-cue token ownership 不变的同位词形/错词替换。欧美140的自动 text rescue 因此从4 regions/8 cues 收紧到2 regions/4 cues；12 proposal 被 verifier 拒绝，32 regions/75 cues 明确保留 Smart。
+- 欧美140 Best-Safe 1.1 正式产物恢复为923 cues；逐 cue 相对 Smart timing diff=0，human truth 116833ms 误差0。随后把旧1.0未覆盖的 Max-pass 曲 Smart review 一并纳入，总计70个 review 区域全部显式记账；代码再增加完整 coverage invariant，Smart report 的155个 `review` cues 必须由 proposal/keep-Smart 155/155 唯一覆盖，否则 fail closed。最终 ledger 为16 proposals + 54 model keep-Smart；deterministic + cue-ownership verifier 接受4 regions/6 cues、拒绝12，66 regions/149 cues 保守留 Smart。最终24 cues 有经过各自门禁的文字/display变化，残留可 mask 强敏感词0、英文粘词0。最终独立审计 PASS，SRT SHA=`adc5f26b10ffd95da3d039482b9a942312075b12cf5c586823f04d41768212bb`。

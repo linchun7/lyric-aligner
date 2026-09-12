@@ -1,8 +1,9 @@
 # 多语言混剪歌词字幕：当前生产工作流
 
-更新：2026-09-11
-当前路径：`Standard -> Smart -> Pro -> Max`
-当前 Max：`4.0.0a20`
+更新：2026-09-12
+当前证据路径：`Standard -> Smart -> Pro -> Max`
+当前产品路径：`Smart baseline -> Best-Safe -> Max Release`
+当前 Max：`4.0.0a20`；当前 Best-Safe：`1.1.0 / best-safe-smart-timing-floor-1.1`
 
 本文件是当前生产工作流总览。历史 `v3.9` / `redo_karaoke_pipeline.py` 仅保留为兼容、回归与历史实现，不再是新任务默认入口。更细的 Max authority 与 CLI 约束分别见 `v4-runtime-guide.md`、`v4-cli-contract.md`。
 
@@ -139,6 +140,58 @@ python scripts/v4_run.py `
 `4.0.0a14` 起，如果 sibling `qa/v4_run_config.json` 存在，`v4_run.py`、direct optimized 和 direct legacy entrypoint 都会在任何 output mutation 前自动发现、验证并展开其中语义配置。调用者漏掉 `language_map` / `lyric_role_map` 不再悄悄改变运行语义。
 
 配置文件内容被修改、task fingerprint 不匹配、显式 CLI 参数与 config 不一致时全部 fail closed。不存在 run config 的 legacy task 仍兼容原显式 flags。
+
+### 4.5 Best-Safe 1.1：Smart timing floor 上的最低风险交付 selector
+
+Best-Safe 不新增 ASR/声学 evidence family，也不改变 Smart/Pro/Max 的 authority。1.1 的默认产品下限是 **Smart cue topology + Smart timing**；高模式、声学和 semantic 结果先作为候选证据，只有局部 authority 足够时才允许被吸收：
+
+```text
+Smart cue topology + Smart start/end
+  + bounded canonical/text repair (ownership-safe)
+  + explicit mask / profanity / normalized-equivalent display repair
+  + optional boundary-level authorized timing promotion
+  + Max/Pro/ASR/forced-alignment as diagnostic candidates
+-> Best-Safe 1.1
+```
+
+长期默认吸收规则分三档：
+
+1. **自动吸收**：不会破坏 Smart timing/cue ownership 的高确定性文字纠错；canonical 显式 `*` mask；`strong_profanity_v1`；task-bound normalized-equivalent display；以及已经绑定具体 Smart boundary 与独立真值的 timing promotion。
+2. **候选但不自动吸收**：Max track semantic PASS、source-clock 与 Max 同源一致、稀疏 ASR anchor、transition clear、Pro/Max topology 重建。这些可以提示“哪里可能更好”，但不能授予整首或局部 timing 写权限。
+3. **保留 Smart / review**：跨 cue 插词、删词、搬词，split/merge/add/delete，重复吟唱/ad-lib 次数或 occurrence 不确定，任何无法证明相对 Smart 期望误差更低的 start/end 修改。
+
+具体门禁：
+
+- track-level `final_sync PASS` 只进入 `max_candidate_track_ordinals`，**不得整体替换 Smart timing/topology**；变化越大，举证责任越高。
+- Smart 曲目归属优先使用 Smart report 的 canonical `source_ordinal`，`songs.txt` 秒级时间仅在 identity 缺失时 fallback，避免 crossfade 首句被章节取整误归曲。
+- task-bound 大模型文字提案必须绑定原始 Smart SRT/report SHA 与全部 canonical lyric SHA，只能提交连续 review cue + exact canonical gap；不能携带 free-form replacement/timing。启用 text adjudication 时，proposal + keep-Smart 必须把 Smart report 的全部 `review` cue 恰好完整记账；漏记、重叠或引用非-review cue 直接 fail closed。selector 复用完整 text-region policy（resolved bracket、region similarity、length ratio、多行 observed coverage、safe DP word partition）后才可能物化。
+- 多 cue 文字修复还必须通过 **cue ownership floor**：在无 timing authority 时不得插入、删除或跨 cue 搬移 Latin token；只允许现有 cue 内同位词形/错词纠正。normalized stream 已等价时保留 Smart presentation；重复吟唱/ad-lib/短呼喊没有独立 ownership/timing 时不得仅凭文本相似度 rescue。
+- 自动 canonical presentation 只允许 normalized-equivalent 的显式 `*` mask 恢复；普通空格/标点/撇号/连字符/词边界只允许 task-bound normalized-equivalent display override。
+- timing promotion 必须逐 `start`/`end` 边界绑定：`track + Smart source cue + boundary + frozen Smart ms + authority + lineage`。当前 1.1 只自动接受 human-truth-bound promotion；未来机器 promotion 必须先新增独立 calibration + boundary-level verifier，证明期望误差低于 Smart，不能复用 track PASS 或同源模型一致来授权。
+- transition authorization 在 Best-Safe 1.1 默认只做诊断，不得为了拼接候选而静默裁 Smart timing；真实边界若要写回，也必须走同一 boundary promotion authority。
+- `BEST_SAFE/QA.json::publish_ready=true` 至少要求：Smart topology exact；`unsupported_timing_change_count=0`；全部 timing truth PASS；文字/display verifier PASS。该状态不授予 Max Release authority。
+
+入口示例：
+
+```powershell
+python scripts/v4_build_best_safe.py `
+  --smart-srt "output/<task>/SMART.srt" `
+  --smart-report "output/<task>/SMART.json" `
+  --lyrics-dir "private/<task>/input/lyrics" `
+  --max-srt "output/<task>/PRODUCT/FINAL.srt" `
+  --max-audit "output/<task>/PRODUCT/FINAL.audit.csv" `
+  --semantic-sync "output/<task>/SEMANTIC/semantic_sync.json" `
+  --song-list "private/<task>/input/songs.txt" `
+  --transition-authorization "output/<task>/TRANSITION_FINAL_AUTH/AUTHORIZED_DECISIONS.json" `
+  --text-adjudication "private/<task>/qa/best_safe_text_adjudication.json" `
+  --mask-profile strong_profanity_v1 `
+  --display-overrides "private/<task>/qa/best_safe_display_overrides.json" `
+  --timing-truth "private/<task>/qa/best_safe_timing_truth.json" `
+  --timing-promotions "private/<task>/qa/best_safe_timing_promotions.json" `
+  --out-dir "output/<task>/BEST_SAFE"
+```
+
+`--timing-promotions` 是可选项；没有足够 authority 时应省略，最终 timing 与 Smart 完全一致。只有整份 Max 后续通过正式 release gate，Max Release 才取代 Best-Safe；否则实际交付优先使用 Best-Safe 1.1。
 
 ## 5. Max raw run 的含义
 

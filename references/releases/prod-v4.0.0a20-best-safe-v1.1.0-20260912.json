@@ -1,0 +1,64 @@
+{
+  "schema_version": "lyric-aligner-source-release-1.0",
+  "release_name": "prod-v4.0.0a20-best-safe-v1.1.0-20260912",
+  "release_date": "2026-09-12",
+  "branch": "main",
+  "git_identity": {
+    "production_tag": "prod-v4.0.0a20-best-safe-v1.1.0-20260912",
+    "source_commit_resolution": "resolve the production tag target; the manifest does not self-reference a commit SHA"
+  },
+  "versions": {
+    "algorithm": "4.0.0a20",
+    "standard": "Text Repair V2.1",
+    "smart": "1.2.11",
+    "smart_policy": "smart-validation-policy-2026-09-10-v1.2.11",
+    "pro": "1.2.7",
+    "pro_acoustic_schema": "1.5",
+    "max": "4.0.0a20",
+    "best_safe": "1.1.0",
+    "best_safe_policy": "best-safe-smart-timing-floor-1.1"
+  },
+  "production_contract": {
+    "evidence_path": "Standard -> Smart -> Pro -> Max",
+    "product_path": "Smart baseline -> Best-Safe -> Max Release",
+    "smart_timing_floor": true,
+    "track_semantic_pass_is_timing_authority": false,
+    "unsupported_timing_change_count_required": 0,
+    "machine_timing_promotion_enabled": false,
+    "current_automatic_timing_authority": "human-truth-bound single boundary only"
+  },
+  "verification": {
+    "focused_best_safe_tests": 20,
+    "full_unittest_count": 1882,
+    "full_unittest_status": "OK",
+    "validate_skill": "PASS",
+    "privacy_scan": "PASS",
+    "privacy_scan_issue_count": 0,
+    "git_diff_check": "PASS"
+  },
+  "reference_product": {
+    "task": "oumei140-production-rerun-20260911",
+    "best_safe_final_cue_count": 923,
+    "best_safe_final_srt_sha256": "adc5f26b10ffd95da3d039482b9a942312075b12cf5c586823f04d41768212bb",
+    "timing_diff_vs_smart": 0,
+    "unsupported_timing_change_count": 0,
+    "human_truth_toxic_cue28_start_ms": 116833,
+    "max_release_status": "BLOCK",
+    "max_blocked_track_ordinals": [2, 4, 10, 11, 13, 14, 15]
+  },
+  "repository_privacy": {
+    "excluded_local_roots": ["private/", "private_models/", "output/"],
+    "tracked_media_or_subtitle_files_allowed": false,
+    "local_absolute_paths_allowed": false,
+    "credentials_allowed": false
+  },
+  "local_model_state": {
+    "retained_primary_asr": "mobiuslabsgmbh/faster-whisper-large-v3-turbo",
+    "experimental_weights_removed": ["Qwen3-ASR", "Qwen forced aligner", "SOFA", "HuBERTFA", "STARS"],
+    "post_cleanup_full_suite": "1882 tests / OK"
+  },
+  "notes": [
+    "Best-Safe publish_ready and Max release_ready are independent authorities.",
+    "This source release freezes code/contracts; task-specific private inputs, subtitles, gold/review and evidence remain local and are not part of the repository release."
+  ]
+}

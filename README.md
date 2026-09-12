@@ -6,18 +6,26 @@
 
 当前仓库主线：`main`；算法版本：`4.0.0a20`。
 
-生产路径按成本和风险递增：
+证据模式按成本和风险递增：
 
 ```text
 Standard -> Smart -> Pro -> Max
 ```
 
+产品选择层独立于证据模式：
+
+```text
+Smart baseline -> Best-Safe -> Max Release
+```
+
 - **Standard**：只修 canonical 文字，冻结 cue 数量、编号、start/end。
-- **Smart v1.2.11**：当前 no-audio 默认 selector；沿用 v1.2.10 timing authority，只增加 final canonical ownership / connected lexical-floor hardening。
+- **Smart v1.2.11**：当前 no-audio 默认 selector；沿用 v1.2.10 timing authority，只增加 final canonical ownership / connected lexical-floor hardening。Smart 保持稳定基线职责，不吸收 Best-Safe 的大模型/Max 回灌逻辑。
 - **Pro v1.2.7**：只处理 Smart unresolved 的 bounded region；证据仍需 review，不自动把局部声学结果写成最终时间轴。
 - **Max 4.0.0a20**：整体 timeline 不可信、cut/overlap/reorder/重复 occurrence 等复杂任务的重路径。
+- **Best-Safe 1.1**：最低风险产品 selector，不是新的声学模式。Smart 的 cue 数、顺序、start/end 是默认 topology/timing floor；Max/Pro/ASR/forced-alignment 只提供候选，track-level semantic PASS 不授予整首 timing 或 split/merge/add/delete authority。文字/display 可在不破坏 Smart cue ownership 的前提下经确定性 verifier 安全增强；任何 timing 变化都必须绑定具体 Smart boundary 与独立 authority，`unsupported_timing_change_count` 必须为 0。当前自动 timing promotion 仅开放 human-truth-bound 单边界。
+- **Max Release**：只有整份 Max 通过正式 lexical/structural/semantic/release gate 后才取代 Best-Safe。
 
-仓库当前版本与“某个具体任务已可发布”是两件事。每个成品仍必须通过自己的 lexical/structural/semantic/release gate。例如欧美经典140 a20 当前仍有 ordinal `4/5/6/10/11/14/15` semantic BLOCK，不能因为代码已在 main 就宣布该成品 release-ready。
+仓库当前版本与“某个具体任务已可发布”是两件事。Max 可以整体 BLOCK，而 Best-Safe 仍可在不越过证据权限的前提下产出当前条件下风险最低的交付版本；Best-Safe 的 `publish_ready` 也不等于 Max 的 `release_ready`。
 
 ## 输入与输出
 
@@ -36,6 +44,7 @@ private/<task>/
    ├─ task_manifest.json
    ├─ v4_run_config.json
    ├─ *_manual_overrides.json
+   ├─ best_safe_timing_truth.json       # 可选，task-bound 独立边界真值
    └─ *_regression_cases.json
 ```
 
@@ -50,6 +59,7 @@ python scripts/v4_text_repair.py ...      # Standard
 python scripts/v4_smart_repair.py ...     # Smart
 python scripts/v4_pro_selective.py ...    # Pro
 python scripts/v4_run.py ...              # Max
+python scripts/v4_build_best_safe.py ...  # Best-Safe product selector
 ```
 
 legacy `scripts/redo_karaoke_pipeline.py` 只保留 QA/兼容/历史恢复用途，不是新任务默认入口；`scripts/karaoke_subtitle_pipeline.py` 已是 fail-closed 迁移提示。
@@ -64,7 +74,7 @@ python -m unittest discover -s scripts -p "test_*.py"
 git diff --check
 ```
 
-2026-09-11 工程封板时当前主线完整 suite 为 `1862 tests / OK`。这个数字只描述当时快照，后续以实际重跑结果为准。
+2026-09-12 Best-Safe 1.1 封板时当前主线完整 suite 为 `1882 tests / OK`；Best-Safe focused suite `20/20`、`validate_skill` 与 `git diff --check` 同轮通过。这个数字只描述当时快照，后续以实际重跑结果为准。
 
 真实任务重跑必须继续使用原 manifest/config/input identity；不要为了“跑过”而删除 review、降低阈值或手改 artifact。重跑前后应比较最终 SRT SHA、cue timing signature、canonical coverage、review/release 状态。
 
@@ -104,6 +114,7 @@ git diff --check
 - Max runtime：[references/v4-runtime-guide.md](references/v4-runtime-guide.md)
 - CLI 契约：[references/v4-cli-contract.md](references/v4-cli-contract.md)
 - 当前状态：[references/v4-status.md](references/v4-status.md)
+- Best-Safe 1.1 源码冻结：[references/releases/prod-v4.0.0a20-best-safe-v1.1.0-20260912.json](references/releases/prod-v4.0.0a20-best-safe-v1.1.0-20260912.json)
 - 历史变更：[references/v4-change-record.md](references/v4-change-record.md)
 - 实验台账：[references/accuracy-experiment-register-2026-09-08.md](references/accuracy-experiment-register-2026-09-08.md)
 

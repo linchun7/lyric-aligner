@@ -1,8 +1,8 @@
 # 当前能力与使用边界
 
-更新：2026-09-11
+更新：2026-09-12
 
-当前仓库主线为 `main`，算法版本 `4.0.0a20`；生产路径为 `Standard -> Smart v1.2.11 -> Pro v1.2.7 -> Max 4.0.0a20`。本页只描述当前可依赖的能力与限制；历史实验数字见 [实验台账](accuracy-experiment-register-2026-09-08.md) 和 [v4 change record](v4-change-record.md)。
+当前仓库主线为 `main`，算法版本 `4.0.0a20`；证据路径为 `Standard -> Smart v1.2.11 -> Pro v1.2.7 -> Max 4.0.0a20`，产品路径为 `Smart baseline -> Best-Safe 1.1 -> Max Release`。Best-Safe 是产品 selector，不是第五种证据模式。本页只描述当前可依赖的能力与限制；历史实验数字见 [实验台账](accuracy-experiment-register-2026-09-08.md) 和 [v4 change record](v4-change-record.md)。
 
 ## 1. 项目定位
 
@@ -29,6 +29,7 @@ Content correctness
 | Smart v1.2.11 | no-audio 使用 timed canonical、editor majority anchors、sequence 与 exact/soft BPM prior 做文字恢复和少量受控 timing 判断 | v1.2.11 不扩大 v1.2.10 timing authority；review 仍需 Pro/人工 |
 | Pro v1.2.7 | 仅对 Smart unresolved 的 bounded region 规划 local acoustic、ASR/forced evidence 和 adjudication | 默认 `timing_mutation_performed=false`；局部 evidence 不自动写成最终字幕 |
 | Max 4.0.0a20 | 完整 Source-to-Mix、cut/overlap/recomposition、editor preservation、canonical evaluation、semantic/release lineage | 更重不等于更准；结构/语义 gate 未过仍 BLOCK |
+| Best-Safe 1.1 | 以 Smart cue topology/start/end 为不可静默退化的产品 floor，安全吸收通过 verifier 的文字/display，以及具有独立 boundary-level authority 的局部 timing | track-level semantic PASS、同源模型一致或稀疏 anchor 都只算候选；`unsupported_timing_change_count` 必须为 0 |
 | Canonical lexical floor | 对 resolved canonical occurrence 做字符 ownership、coverage、Latin word-boundary 等审计 | 证明生产链不静默丢字/改字，不证明歌词源本身绝对正确 |
 | Canonical rebuttal | 允许独立 hash-bound evidence 对 normalized canonical lexical truth 提出反证 | 语义“看起来更顺”本身没有改字 authority |
 | Editor preservation / hybrid | 在 canonical 完整性与 editor timing/topology 可同时证明时保留可信 editor cue，并补结构遗漏 | 只接受显式 exact/lineage-bound 区域；不把 editor 整体升级成真值 |
@@ -67,13 +68,13 @@ Max 可处理复杂 cut、overlap、重复 occurrence、reference retime、edito
 
 ### 欧美经典140 a20
 
-当前 semantic release artifact 仍 `passed=false`。source-clock authority 已有 7 首合法晋级，但 ordinal：
+Max semantic release artifact 仍 `passed=false`。当前逐曲 `final_sync` 通过 `1 / 3 / 5 / 6 / 7 / 8 / 9 / 12`，BLOCK：
 
 ```text
-4 / 5 / 6 / 10 / 11 / 14 / 15
+2 / 4 / 10 / 11 / 13 / 14 / 15
 ```
 
-继续 BLOCK。因此“代码已经在 main”“static lexical/structural QA 通过”都不能解释为该成品已经 release-ready。
+因此 **Max Release 继续 BLOCK**，不能把 `PRODUCT/FINAL.srt` 当作完整 release-ready 成品。与此同时，同一冻结任务的 Best-Safe 1.1 已通过独立成品审计：923 cues 与 Smart topology/timing 完全一致，`unsupported_timing_change_count=0`，human truth Toxic cue28=`116833ms` 命中，最终 SRT SHA=`adc5f26b10ffd95da3d039482b9a942312075b12cf5c586823f04d41768212bb`。Best-Safe 的 `publish_ready=true` 只表示 Smart-floor 产品合同通过，不改变 Max Release BLOCK。
 
 ### SHE25
 

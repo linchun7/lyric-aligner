@@ -96,11 +96,19 @@ P9 fusion       -> legacy Partial shadow diagnostics
 P4 trust lock   -> legacy Partial calibrated proposal eligibility
 ```
 
-产品路径：
+证据路径：
 
 ```text
 Standard -> Smart -> Pro -> Max
 ```
+
+产品路径：
+
+```text
+Smart baseline -> Best-Safe -> Max Release
+```
+
+Best-Safe 1.1 是 `lyric_aligner/pipeline/best_safe.py` 实现的产品 selector，不是新的 evidence family。它以 Smart cue count/order/start/end 为 topology/timing floor；Max/Pro/ASR/forced-alignment 只产生候选，track-level semantic PASS 不授予整首 timing/topology authority。文字 adjudication 必须 task-bound 到 Smart/canonical hash，并对全部 Smart review cue 完整且唯一记账；deterministic verifier 与 cue-ownership floor 失败即回退 Smart。timing 只能逐 boundary 晋级，当前自动接受的 authority 仅为 human-truth-bound single-boundary promotion；任何未授权变化都会使 `unsupported_timing_change_count > 0` 并 fail closed。Best-Safe `publish_ready` 与 Max `release_ready` 独立。
 
 跨模式 authority contract：
 
