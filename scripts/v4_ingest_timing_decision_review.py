@@ -54,6 +54,10 @@ def main() -> int:
                 "record_count": len(gold["records"]),
                 "selection_lock_sha256": gold["selection_lock_sha256"],
                 "review_manifest_sha256": gold["review_manifest_sha256"],
+                "boundary_promotion_selection_sha256": gold.get(
+                    "boundary_promotion_selection_sha256"
+                ),
+                "boundary_promotion_partition": gold.get("boundary_promotion_partition"),
             },
             ensure_ascii=False,
         )

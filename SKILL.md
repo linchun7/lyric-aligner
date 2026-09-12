@@ -53,6 +53,8 @@ Smart baseline -> Best-Safe -> Max Release
 
 当前实现入口：`scripts/v4_build_best_safe.py`；selector policy 为 `best-safe-smart-timing-floor-1.1`，算法版本 `1.1.0`。
 
+下一阶段机器 timing 改进只能先进入 [P1 boundary promotion shadow](references/boundary-promotion-p1.md)：selector 决策、evidence family/correlation group 与 gate policy 必须在读取 Gold 前冻结；冻结 selection 的 `selection_payload_sha256` 与 intended partition 还必须在人工 review 前一起写入 candidate-blind review manifest，人工 response 与 Gold 继续绑定该 manifest/selection/partition，P1 evaluate 会重算 response→Gold 并核对全链，不能拿旧 Gold 事后重选 selector，也不能把 development/calibration response 改标签成 blind/holdout。只有预先冻结为新的 `blind` / `holdout` truth 可以让 shadow gate PASS。shadow PASS 仍固定 `production_authority_granted=false`，不得直接生成 Best-Safe `timing_promotions`。Qwen/SOFA/HuBERTFA/STARS 当前属于未部署权重的 dormant experimental，生产资格见 [module-lifecycle](references/module-lifecycle.md)，不得因源码仍存在就自动下载/启用。
+
 ## 生产模式选择：任何真实任务必须先做
 
 开始执行前，先判断用户任务属于哪一档。**不要默认从 Full V4/Max 开始，也不要因为韩语、日语或外文就自动升级 Max。**

@@ -64,6 +64,10 @@ Max 可处理复杂 cut、overlap、重复 occurrence、reference retime、edito
 
 这些实现可继续作为显式诊断/研究模块，但不能从 shadow 身份直接升级成 release authority。
 
+2026-09-12 新增 P1 boundary-promotion shadow，只评估“机器是否能事先判断某个具体 candidate boundary 比 Smart 更好”，不增加新的识别 backend。selector decision、evidence family/correlation group 与 gate policy 必须在读取 Gold 前冻结；frozen selection hash 与 intended partition 还必须在人工 review 前一起进入 candidate-blind review manifest，人工 raw response 与 ingest Gold 均继续绑定该 manifest/selection/partition，evaluate 会重算 response→Gold 并核对全链，防止旧 Gold 事后换绑 selector、development/calibration response 重标 blind/holdout，或人工 response 后手改 Gold。只有预先冻结为新的 blind/holdout truth 可以通过 shadow gate。即使 shadow PASS，当前代码仍固定 `production_authority_granted=false` / `production_writeback_permitted=false`，Best-Safe 1.1 的机器 timing authority 仍未开放。该 hash 链不是外部可信时间戳；原始 response 仍必须保留。详见 [P1 protocol](boundary-promotion-p1.md)。
+
+Qwen/SOFA/HuBERTFA/STARS 当前为 dormant experimental：重型本地权重/runtime 已清理，代码保留仅用于历史复现或未来预注册实验。源码存在不表示模型已部署或有 production 资格，后续不得自动下载/重装；模块状态见 [module-lifecycle](module-lifecycle.md)。
+
 ## 5. 当前任务实例的已知状态
 
 ### 欧美经典140 a20

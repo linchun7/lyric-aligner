@@ -74,7 +74,7 @@ python -m unittest discover -s scripts -p "test_*.py"
 git diff --check
 ```
 
-2026-09-12 Best-Safe 1.1 封板时当前主线完整 suite 为 `1882 tests / OK`；Best-Safe focused suite `20/20`、`validate_skill` 与 `git diff --check` 同轮通过。这个数字只描述当时快照，后续以实际重跑结果为准。
+2026-09-12 production source freeze `prod-v4.0.0a20-best-safe-v1.1.0-20260912` 的完整 suite 为 `1882 tests / OK`，Best-Safe focused `20/20`。随后 P1 boundary-promotion shadow 作为**不改变 production authority** 的 evaluation-only 扩展：P1 focused `22/22`、timing-decision review `11/11`、Best-Safe focused 仍 `20/20`，完整 suite `1908 tests / OK`；同轮 compile、`validate_skill`、privacy scan、dirty docs-contract（19 changed / 5 substantive / 0 issue）、`git diff --check` 与静态 production-reference 审计均通过。P1 会在人工 review 前把 frozen selection hash + intended partition 一起写入 deterministic candidate-blind manifest；evaluate 重建 exact manifest、重算 raw response -> Gold，并拒绝 post-gold reselection、development/calibration→blind/holdout 重标、Gold 手改、candidate/private 泄漏和 unchanged-control promotion。P0 production tag 不随 P1 shadow tooling 移动。测试数字只描述对应快照，后续以实际重跑结果为准。
 
 真实任务重跑必须继续使用原 manifest/config/input identity；不要为了“跑过”而删除 review、降低阈值或手改 artifact。重跑前后应比较最终 SRT SHA、cue timing signature、canonical coverage、review/release 状态。
 
@@ -115,6 +115,8 @@ git diff --check
 - CLI 契约：[references/v4-cli-contract.md](references/v4-cli-contract.md)
 - 当前状态：[references/v4-status.md](references/v4-status.md)
 - Best-Safe 1.1 源码冻结：[references/releases/prod-v4.0.0a20-best-safe-v1.1.0-20260912.json](references/releases/prod-v4.0.0a20-best-safe-v1.1.0-20260912.json)
+- P1 boundary promotion shadow：[references/boundary-promotion-p1.md](references/boundary-promotion-p1.md)
+- 模块生命周期/生产资格：[references/module-lifecycle.md](references/module-lifecycle.md)
 - 历史变更：[references/v4-change-record.md](references/v4-change-record.md)
 - 实验台账：[references/accuracy-experiment-register-2026-09-08.md](references/accuracy-experiment-register-2026-09-08.md)
 

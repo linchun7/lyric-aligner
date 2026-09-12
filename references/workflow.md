@@ -193,6 +193,63 @@ python scripts/v4_build_best_safe.py `
 
 `--timing-promotions` 是可选项；没有足够 authority 时应省略，最终 timing 与 Smart 完全一致。只有整份 Max 后续通过正式 release gate，Max Release 才取代 Best-Safe；否则实际交付优先使用 Best-Safe 1.1。
 
+### 4.6 P1 boundary promotion：只做 shadow，不直接写生产 timing
+
+P1 不新增新的识别模型，而是复用已有 timing-decision pack / blind review / decision validation，把“机器是否真的知道什么时候该改 Smart”做成事前冻结、事后盲测的闭环：
+
+```text
+Smart boundary + candidate boundary
+  -> pre-gold timing decision pack
+  -> selector decisions + evidence lineage + gate policy freeze
+  -> review manifest 绑定 frozen selection hash + intended partition
+  -> candidate-blind human response
+  -> response -> Gold ingestion
+  -> selection + manifest + response + Gold paired evaluation
+  -> shadow PASS / BLOCK
+```
+
+`freeze-selection` 阶段必须在读取 Gold 前完成：每个 frozen boundary 必须恰好一个 `keep_smart` 或 `promote_candidate`，并绑定 frozen Smart/candidate ms、selector id/revision/code SHA。机器 promotion 还必须有独立 timing evidence；candidate 与 supporting evidence 不得属于同一 correlation group，防止同源 evidence 自证；Smart==candidate 的 unchanged control 不得标成 promotion。漏记、重复、stale、rehash 后的 identity/count 漂移或 unchanged-control promotion 都 fail closed。
+
+```powershell
+python scripts/v4_boundary_promotion_shadow.py freeze-selection `
+  --pack "<timing-decision-pack.json>" `
+  --decisions "<machine-decisions.json>" `
+  --out "<boundary-promotion-selection.json>"
+```
+
+冻结 selection 后，P1 必须用该 selection 构建 candidate-blind review manifest，并在页面生成前冻结 intended partition；不能先完成人工 Gold/response 再事后把 selection 自哈希或 `blind` 标签贴上去：
+
+```powershell
+python scripts/v4_build_timing_decision_review.py `
+  --pack "<timing-decision-pack.json>" `
+  --final-mix "<exact-final-mix.wav>" `
+  --boundary-promotion-selection "<boundary-promotion-selection.json>" `
+  --boundary-promotion-partition blind `
+  --out-dir "<blind-review-dir>"
+```
+
+人工只在该页面标 boundary，导出原始 response；再由 exact manifest + response ingest Gold。Gold 会继承 review manifest hash、P1 selection hash 与 frozen partition；ingest 的 `--partition` 必须与 manifest 预先值一致，development/calibration response 不能事后改成 blind/holdout。只有预先冻结为 `blind` / `holdout` 的 review 有资格通过 shadow gate。首轮默认 preregistration：有效 truth>=24、独立 track>=4、实际 promotion>=8 且覆盖>=4 track、新 >500ms catastrophic error=0、>100ms harmful rate<=5%、P90 不退化、mean/track-equal gain 为正、track bootstrap 95% CI 下界非负。
+
+```powershell
+python scripts/v4_ingest_timing_decision_review.py `
+  --manifest "<blind-review-dir/manifest.json>" `
+  --response "<review-response.json>" `
+  --partition blind `
+  --out "<timing-decision-human-gold.json>"
+
+python scripts/v4_boundary_promotion_shadow.py evaluate `
+  --pack "<timing-decision-pack.json>" `
+  --selection "<boundary-promotion-selection.json>" `
+  --review-manifest "<blind-review-dir/manifest.json>" `
+  --review-response "<review-response.json>" `
+  --gold "<timing-decision-human-gold.json>" `
+  --out "<boundary-promotion-shadow-evaluation.json>"
+```
+
+P1 evaluate 会重新从 raw response 计算 Gold，并核对 selection / manifest / frozen partition / response / Gold 全链；任一 hash、partition、边界值或 lineage 不一致都 fail closed。该 hash 链不是可信时间戳，因此原始 response 仍必须保留，不能事后重写整套 blind artifact。
+
+无论 shadow PASS/BLOCK，当前工具都固定 `production_authority_granted=false` / `production_writeback_permitted=false`，不能生成 Best-Safe `timing_promotions`，也不能修改 Smart/Best-Safe SRT。只有新的 untouched blind/holdout 真值证明净收益后，才另开 production authority 变更。完整协议见 [P1 boundary promotion](boundary-promotion-p1.md)。
+
 ## 5. Max raw run 的含义
 
 Max raw chain：

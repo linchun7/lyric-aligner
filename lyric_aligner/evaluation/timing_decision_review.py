@@ -15,6 +15,7 @@ from lyric_aligner.evaluation.timing_decision_pack import (
 
 REVIEW_SCHEMA_VERSION = "timing-decision-review-manifest-1.0"
 RESPONSE_SCHEMA_VERSION = "timing-decision-review-response-1.0"
+REVIEW_PARTITIONS = frozenset({"development", "calibration", "blind", "holdout", "regression"})
 
 
 def _stable_sha(payload: Mapping[str, Any]) -> str:
@@ -23,10 +24,31 @@ def _stable_sha(payload: Mapping[str, Any]) -> str:
     ).hexdigest()
 
 
-def build_review_manifest(pack: Mapping[str, Any], *, clip_dir_name: str = "clips") -> dict[str, Any]:
+def _sha256_text(value: Any, *, label: str) -> str:
+    text = str(value or "").strip().lower()
+    if len(text) != 64 or any(char not in "0123456789abcdef" for char in text):
+        raise ValueError(f"{label} must be a SHA-256 hex string")
+    return text
+
+
+def build_review_manifest(
+    pack: Mapping[str, Any],
+    *,
+    clip_dir_name: str = "clips",
+    boundary_promotion_selection_sha256: str | None = None,
+    boundary_promotion_partition: str | None = None,
+) -> dict[str, Any]:
     lock = verify_selection_lock(pack)
     if pack.get("schema_version") != SCHEMA_VERSION:
         raise ValueError("unsupported timing decision pack schema")
+    has_promotion_selection = boundary_promotion_selection_sha256 is not None
+    has_promotion_partition = boundary_promotion_partition is not None
+    if has_promotion_selection != has_promotion_partition:
+        raise ValueError(
+            "boundary promotion selection SHA and partition must be provided together"
+        )
+    if boundary_promotion_partition is not None and boundary_promotion_partition not in REVIEW_PARTITIONS:
+        raise ValueError("boundary promotion partition is invalid")
     cases = pack.get("cases")
     if not isinstance(cases, list):
         raise ValueError("timing decision pack cases must be a list")
@@ -78,6 +100,12 @@ def build_review_manifest(pack: Mapping[str, Any], *, clip_dir_name: str = "clip
         "case_count": len(review_cases),
         "cases": review_cases,
     }
+    if boundary_promotion_selection_sha256 is not None:
+        manifest["boundary_promotion_selection_sha256"] = _sha256_text(
+            boundary_promotion_selection_sha256,
+            label="boundary_promotion_selection_sha256",
+        )
+        manifest["boundary_promotion_partition"] = boundary_promotion_partition
     manifest["manifest_sha256"] = _stable_sha(manifest)
     return manifest
 
@@ -95,12 +123,27 @@ def validate_review_response(
     bare.pop("manifest_sha256", None)
     if expected_manifest_sha != _stable_sha(bare):
         raise ValueError("review manifest hash mismatch")
+    boundary_promotion_selection_sha256 = manifest.get("boundary_promotion_selection_sha256")
+    boundary_promotion_partition = manifest.get("boundary_promotion_partition")
+    has_promotion_selection = boundary_promotion_selection_sha256 is not None
+    has_promotion_partition = boundary_promotion_partition is not None
+    if has_promotion_selection != has_promotion_partition:
+        raise ValueError("review manifest boundary promotion binding is incomplete")
+    if boundary_promotion_selection_sha256 is not None:
+        boundary_promotion_selection_sha256 = _sha256_text(
+            boundary_promotion_selection_sha256,
+            label="boundary_promotion_selection_sha256",
+        )
+        if boundary_promotion_partition not in REVIEW_PARTITIONS:
+            raise ValueError("review manifest boundary promotion partition is invalid")
     if response.get("schema_version") != RESPONSE_SCHEMA_VERSION:
         raise ValueError("review response schema mismatch")
     if response.get("manifest_sha256") != expected_manifest_sha:
         raise ValueError("review response belongs to another manifest")
-    if partition not in {"development", "calibration", "blind", "holdout", "regression"}:
+    if partition not in REVIEW_PARTITIONS:
         raise ValueError("review partition is invalid")
+    if boundary_promotion_partition is not None and partition != boundary_promotion_partition:
+        raise ValueError("review partition differs from frozen boundary promotion partition")
     raw_cases = manifest.get("cases")
     raw_records = response.get("records")
     if not isinstance(raw_cases, list) or not isinstance(raw_records, list):
@@ -142,7 +185,7 @@ def validate_review_response(
         raise ValueError("review response is incomplete")
     valid_ids = sorted(case_id for case_id, item in record_by_id.items() if item["status"] == "valid")
     invalid_ids = sorted(case_id for case_id, item in record_by_id.items() if item["status"] == "invalid")
-    return {
+    gold: dict[str, Any] = {
         "schema_version": GOLD_SCHEMA_VERSION,
         "selection_lock_sha256": manifest["selection_lock_sha256"],
         "partition": partition,
@@ -166,6 +209,10 @@ def validate_review_response(
             for case_id in invalid_ids
         ],
     }
+    if boundary_promotion_selection_sha256 is not None:
+        gold["boundary_promotion_selection_sha256"] = boundary_promotion_selection_sha256
+        gold["boundary_promotion_partition"] = boundary_promotion_partition
+    return gold
 
 
 def render_review_html(manifest: Mapping[str, Any]) -> str:

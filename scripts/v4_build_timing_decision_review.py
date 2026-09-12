@@ -14,7 +14,12 @@ REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 if str(REPOSITORY_ROOT) not in sys.path:
     sys.path.insert(0, str(REPOSITORY_ROOT))
 
-from lyric_aligner.evaluation.timing_decision_review import build_review_manifest, render_review_html
+from lyric_aligner.evaluation.boundary_promotion_shadow import verify_boundary_promotion_selection
+from lyric_aligner.evaluation.timing_decision_review import (
+    REVIEW_PARTITIONS,
+    build_review_manifest,
+    render_review_html,
+)
 
 
 def _sha256(path: Path) -> str:
@@ -32,11 +37,29 @@ def _atomic_text(path: Path, text: str) -> None:
     temp.replace(path)
 
 
+def _validate_boundary_promotion_binding_args(
+    selection_path: Path | None,
+    partition: str | None,
+) -> None:
+    if (selection_path is None) != (partition is None):
+        raise ValueError("boundary promotion selection and partition must be provided together")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--pack", required=True, type=Path)
     parser.add_argument("--final-mix", required=True, type=Path)
     parser.add_argument("--out-dir", required=True, type=Path)
+    parser.add_argument(
+        "--boundary-promotion-selection",
+        type=Path,
+        help="optional pre-gold P1 selection to bind into the blind review manifest",
+    )
+    parser.add_argument(
+        "--boundary-promotion-partition",
+        choices=sorted(REVIEW_PARTITIONS),
+        help="pre-gold intended partition; required together with --boundary-promotion-selection",
+    )
     parser.add_argument("--ffmpeg", default="ffmpeg")
     parser.add_argument("--sample-rate", type=int, default=16000)
     args = parser.parse_args()
@@ -50,10 +73,26 @@ def main() -> int:
         pack = json.loads(args.pack.read_text(encoding="utf-8-sig"))
         if not isinstance(pack, dict):
             raise ValueError("pack must contain one JSON object")
+        _validate_boundary_promotion_binding_args(
+            args.boundary_promotion_selection,
+            args.boundary_promotion_partition,
+        )
+        boundary_promotion_selection_sha256 = None
+        if args.boundary_promotion_selection is not None:
+            if not args.boundary_promotion_selection.is_file():
+                raise ValueError("boundary promotion selection must exist")
+            selection = json.loads(args.boundary_promotion_selection.read_text(encoding="utf-8-sig"))
+            if not isinstance(selection, dict):
+                raise ValueError("boundary promotion selection must contain one JSON object")
+            boundary_promotion_selection_sha256 = verify_boundary_promotion_selection(pack, selection)
         mix_sha = _sha256(args.final_mix)
         if pack.get("final_mix_sha256") != mix_sha:
             raise ValueError("review final mix SHA differs from frozen decision pack")
-        manifest = build_review_manifest(pack)
+        manifest = build_review_manifest(
+            pack,
+            boundary_promotion_selection_sha256=boundary_promotion_selection_sha256,
+            boundary_promotion_partition=args.boundary_promotion_partition,
+        )
         args.out_dir.mkdir(parents=True, exist_ok=True)
         clips_dir = args.out_dir / "clips"
         clips_dir.mkdir(parents=True, exist_ok=True)
@@ -118,6 +157,9 @@ def main() -> int:
             "sample_rate": args.sample_rate,
             "clips": clip_receipts,
         }
+        if boundary_promotion_selection_sha256 is not None:
+            receipt["boundary_promotion_selection_sha256"] = boundary_promotion_selection_sha256
+            receipt["boundary_promotion_partition"] = args.boundary_promotion_partition
         _atomic_text(args.out_dir / "materialization.json", json.dumps(receipt, ensure_ascii=False, indent=2) + "\n")
     except (OSError, ValueError, json.JSONDecodeError, subprocess.SubprocessError) as exc:
         parser.error(str(exc))
@@ -128,6 +170,10 @@ def main() -> int:
                 "candidate_positions_hidden": receipt["candidate_positions_hidden"],
                 "selection_lock_sha256": receipt["selection_lock_sha256"],
                 "review_manifest_sha256": receipt["review_manifest_sha256"],
+                "boundary_promotion_selection_sha256": receipt.get(
+                    "boundary_promotion_selection_sha256"
+                ),
+                "boundary_promotion_partition": receipt.get("boundary_promotion_partition"),
             },
             ensure_ascii=False,
         )

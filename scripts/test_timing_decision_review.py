@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import copy
 import unittest
+from pathlib import Path
 
 from lyric_aligner.evaluation.timing_decision_review import (
     RESPONSE_SCHEMA_VERSION,
@@ -9,6 +10,7 @@ from lyric_aligner.evaluation.timing_decision_review import (
     render_review_html,
     validate_review_response,
 )
+from scripts.v4_build_timing_decision_review import _validate_boundary_promotion_binding_args
 
 
 def pack() -> dict:
@@ -90,6 +92,64 @@ class TimingDecisionReviewTests(unittest.TestCase):
         self.assertEqual(gold["selection_lock_sha256"], pack()["selection_lock_sha256"])
         self.assertEqual(gold["records"][0]["gold_ms"], 5200)
         self.assertEqual(gold["records"][0]["uncertainty_ms"], 40)
+
+    def test_optional_boundary_promotion_binding_is_hash_and_partition_bound_into_gold(self):
+        manifest = build_review_manifest(
+            pack(),
+            boundary_promotion_selection_sha256="9" * 64,
+            boundary_promotion_partition="blind",
+        )
+        response = {
+            "schema_version": RESPONSE_SCHEMA_VERSION,
+            "manifest_sha256": manifest["manifest_sha256"],
+            "records": [
+                {"id": manifest["cases"][0]["id"], "relative_ms": 2700, "uncertainty_ms": 40}
+            ],
+        }
+        gold = validate_review_response(manifest, response, partition="blind")
+        self.assertEqual(manifest["boundary_promotion_selection_sha256"], "9" * 64)
+        self.assertEqual(manifest["boundary_promotion_partition"], "blind")
+        self.assertEqual(gold["boundary_promotion_selection_sha256"], "9" * 64)
+        self.assertEqual(gold["boundary_promotion_partition"], "blind")
+        self.assertEqual(gold["review_manifest_sha256"], manifest["manifest_sha256"])
+
+    def test_boundary_promotion_selection_and_partition_must_be_frozen_together(self):
+        with self.assertRaisesRegex(ValueError, "must be provided together"):
+            build_review_manifest(
+                pack(),
+                boundary_promotion_selection_sha256="9" * 64,
+            )
+        with self.assertRaisesRegex(ValueError, "must be provided together"):
+            build_review_manifest(
+                pack(),
+                boundary_promotion_partition="blind",
+            )
+
+    def test_cli_boundary_promotion_selection_and_partition_must_be_paired(self):
+        _validate_boundary_promotion_binding_args(None, None)
+        _validate_boundary_promotion_binding_args(Path("selection.json"), "blind")
+        with self.assertRaisesRegex(ValueError, "must be provided together"):
+            _validate_boundary_promotion_binding_args(Path("selection.json"), None)
+        with self.assertRaisesRegex(ValueError, "must be provided together"):
+            _validate_boundary_promotion_binding_args(None, "blind")
+
+    def test_boundary_promotion_partition_cannot_be_relabelled_after_review(self):
+        manifest = build_review_manifest(
+            pack(),
+            boundary_promotion_selection_sha256="9" * 64,
+            boundary_promotion_partition="development",
+        )
+        response = {
+            "schema_version": RESPONSE_SCHEMA_VERSION,
+            "manifest_sha256": manifest["manifest_sha256"],
+            "records": [
+                {"id": manifest["cases"][0]["id"], "relative_ms": 2700, "uncertainty_ms": 40}
+            ],
+        }
+        gold = validate_review_response(manifest, response, partition="development")
+        self.assertEqual(gold["partition"], "development")
+        with self.assertRaisesRegex(ValueError, "differs from frozen"):
+            validate_review_response(manifest, response, partition="blind")
 
     def test_invalid_case_is_explicitly_retained_in_gold_denominator(self):
         manifest = build_review_manifest(pack())
