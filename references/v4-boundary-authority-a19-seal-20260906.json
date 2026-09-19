@@ -1,0 +1,43 @@
+{
+  "schema_version": "v4-boundary-authority-seal-reference-1.0",
+  "sealed_at": "2026-09-06",
+  "supersedes_runtime_status_of": "references/v4-boundary-authority-a18-wip-manifest.json",
+  "preserves_a18_wip_as_historical_provenance": true,
+  "scope": "华语青春180 recovery baseline + Human-Gold-calibrated internal boundary authority overlay",
+  "task_fingerprint_sha256": "371149487b5628240d300bb4f33419d642511908e584df0c1250093813c8e760",
+  "final_audio_sha256": "76533f19b626f1cb62f364bf012f77968baafc4f0fe4c6de29ce9e7a611d4dd4",
+  "human_anchor": {
+    "confirmed_cases": 24,
+    "pending_cases": 0,
+    "selection_lock_sha256": "c6b78c7cd07a36c2e779e8cf983032418031fcfcad988e75f4711a636663dea2",
+    "human_gold_artifact_sha256": "63f665fcce353c7ac8a6c06eabfe0bccdd2cf73b5a0ad6c028ff9ef0ec0a2632"
+  },
+  "authority": {
+    "internal": {
+      "ready": true,
+      "mode": "human_gold_joint_lexical_selector_v1",
+      "joint_calibration_artifact_sha256": "84174bb8439cc3458acc1568ff60b579d6845be2d838327150420e7d24a2e1de",
+      "authorized_boundary_count": 137,
+      "planned_boundary_count": 152
+    },
+    "outer_start": {"ready": false, "fallback": "keep_editor"},
+    "outer_end": {"ready": false, "fallback": "keep_editor"}
+  },
+  "final": {
+    "srt_path": "output/华语青春180_v4_authority_a19_20260906/corrected/internal_direct_v2_textfix_v1/corrected.srt",
+    "srt_sha256": "02b89d49db3f8cbc5886e9495804e3d0ee1b409ef0ed91e7333223e4c84f9f7a",
+    "qa_path": "output/华语青春180_v4_authority_a19_20260906/qa/final_corrected_v4.qa.json",
+    "qa_sha256": "239f2b04fdfcae77e2b5797a60fb0ea7daa0294c1f936f9d9825af2140580cf1",
+    "publish_ready": true,
+    "regression_passed": "8/8",
+    "review_candidate_count": 0,
+    "unverified_timing_mutation_count": 0
+  },
+  "release_seal": {
+    "path": "output/华语青春180_v4_authority_a19_20260906/qa/boundary_authority_overlay_release_seal.json",
+    "file_sha256": "69e81a870e1df91514339d04c0332bb5671dc6aab8799c05d9c2ddc363fc1a90",
+    "seal_sha256": "8732cb718b47b0c5b3910236ec3dd4d2ee41d8ce0021c45a3d9af4c93cb94d53"
+  },
+  "full_max_semantic_sync_release_claimed": false,
+  "full_max_semantic_sync_note": "No exact current Max run+fusion pair exists for this recovery-overlay chain; do not represent this seal as v4_audit_semantic_sync/v4_validate_release full semantic authority."
+}

@@ -1,0 +1,707 @@
+"""Bounded faster-whisper execution for planner-selected local mix windows.
+
+This executor is optional and lazy-imports faster-whisper.  It never downloads
+or loads a model during planning/availability checks.  Runtime output omits raw
+ASR text by default but keeps hashes, confidence, word timing and canonical
+local-match scores for line-specific jobs.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import math
+import unicodedata
+from dataclasses import asdict, dataclass
+from difflib import SequenceMatcher
+from pathlib import Path
+from typing import Any, Callable, Iterable
+
+from lyric_aligner.text.bijective_han import fold_unambiguous_han
+from lyric_aligner.text.language_spans import ASR_LANGUAGE_HINT_POLICY_ID, asr_language_hint_for_text
+
+
+ASR_EVIDENCE_SCHEMA_VERSION = "1.0"
+ASR_SAMPLE_RATE = 16000
+WORD_MATCH_POLICY_ID = "bounded-lexical-match-2026-09-08-v6-opencc131-bijective"
+
+
+class AsrExecutionError(RuntimeError):
+    """Raised when a planned ASR job cannot be executed truthfully."""
+
+
+class AsrModelLoadError(AsrExecutionError):
+    """Backend unavailable before inference; distinct from invalid evidence."""
+
+
+@dataclass(frozen=True)
+class FasterWhisperExecutionConfig:
+    model_id: str
+    device: str = "cpu"
+    compute_type: str = "int8"
+    beam_size: int = 5
+    temperature: float = 0.0
+    include_private_text: bool = False
+
+    def validate(self) -> None:
+        if not str(self.model_id or "").strip():
+            raise AsrExecutionError("faster-whisper model_id is required")
+        if not str(self.device or "").strip():
+            raise AsrExecutionError("faster-whisper device is required")
+        if not str(self.compute_type or "").strip():
+            raise AsrExecutionError("faster-whisper compute_type is required")
+        if self.beam_size < 1:
+            raise AsrExecutionError("beam_size must be >= 1")
+        if not math.isfinite(float(self.temperature)) or self.temperature < 0:
+            raise AsrExecutionError("temperature must be finite and >= 0")
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+def _sha(value: str) -> str:
+    return hashlib.sha256(str(value or "").encode("utf-8")).hexdigest()
+
+
+def _normalize(value: str) -> str:
+    value = unicodedata.normalize("NFKC", str(value or "")).casefold()
+    return "".join(character for character in value if character.isalnum())
+
+
+def _text_support(canonical: str, observed: str) -> float | None:
+    left = fold_unambiguous_han(_normalize(canonical))
+    right = fold_unambiguous_han(_normalize(observed))
+    if not left or not right:
+        return None
+    return SequenceMatcher(None, left, right, autojunk=False).ratio()
+
+
+def _window_word_text(segments: Iterable[Any], window_ms: tuple[int, int], *, offset_ms: int = 0) -> str:
+    """Return one continuous bounded observation, or unknown across barriers."""
+    words = _bounded_words(segments, offset_ms=offset_ms, window_ms=window_ms)
+    valid = [i for i, word in enumerate(words) if word is not None]
+    if not valid:
+        return ""
+    words = words[valid[0]:valid[-1] + 1]
+    if any(word is None for word in words) or any(
+        right[1] < left[2] for left, right in zip(words, words[1:])
+    ):
+        return ""
+    return "".join(word[0] for word in words)
+
+
+def _bounded_words(
+    segments: Iterable[Any],
+    *,
+    offset_ms: int = 0,
+    window_ms: tuple[int, int] | None = None,
+    retain_zero_duration: bool = False,
+):
+    words = []
+    for segment in segments:
+        for word in getattr(segment, "words", None) or []:
+            normalized = _normalize(getattr(word, "word", ""))
+            start = float(getattr(word, "start", 0.0) or 0.0)
+            end = float(getattr(word, "end", 0.0) or 0.0)
+            if normalized and math.isfinite(start) and math.isfinite(end) and (
+                end > start or (retain_zero_duration and end == start)
+            ):
+                absolute_start = offset_ms + int(round(start * 1000))
+                absolute_end = offset_ms + int(round(end * 1000))
+                if absolute_end <= absolute_start and not retain_zero_duration:
+                    words.append(None)
+                    continue
+                if window_ms is not None and (
+                    absolute_start < window_ms[0] or absolute_end > window_ms[1]
+                ):
+                    words.append(None)
+                    continue
+                words.append(
+                    (
+                        normalized,
+                        absolute_start,
+                        absolute_end,
+                        getattr(word, "probability", None),
+                    )
+                )
+            elif normalized:
+                words.append(None)
+    return words
+
+
+def _canonical_word_span(
+    canonical: str,
+    segments: Iterable[Any],
+    *,
+    offset_ms: int = 0,
+    window_ms: tuple[int, int] | None = None,
+) -> dict[str, Any] | None:
+    target = fold_unambiguous_han(_normalize(canonical))
+    # Collapsed aligner words still carry observed text. Keep that text in the
+    # sequence, but never use a collapsed outer word as boundary evidence.
+    words = _bounded_words(segments, offset_ms=offset_ms, window_ms=window_ms,
+                           retain_zero_duration=True)
+    words = [None if word is None else (fold_unambiguous_han(word[0]), *word[1:]) for word in words]
+    if not target or not words:
+        return None
+    minimum = max(1, len(target) // 2)
+    maximum = max(2 * len(target), len(target) + 12)
+    best = None
+    tied = []
+    for start in range(len(words)):
+        combined = ""
+        for end in range(start, len(words)):
+            if words[end] is None or (
+                end > start and words[end][1] < words[end - 1][2]
+            ):
+                break
+            combined += words[end][0]
+            if len(combined) > maximum:
+                break
+            if len(combined) < minimum:
+                continue
+            score = SequenceMatcher(None, target, combined, autojunk=False).ratio()
+            ranked = score + 0.001 * min(len(target), len(combined)) / len(target)
+            if best is None or ranked > best[0]:
+                best = (ranked, start, end + 1, combined)
+                tied = [(start, end + 1, combined)]
+            elif ranked == best[0]:
+                tied.append((start, end + 1, combined))
+    if best is None:
+        return None
+    _, start, end, combined = best
+    selected = words[start:end]
+    candidates = [dict(start_ms=words[a][1], end_ms=words[b-1][2],
+        normalized_match_sha256=_sha(text)) for a,b,text in tied]
+    ambiguous = len({(r['start_ms'],r['end_ms']) for r in candidates}) > 1
+    probabilities = [float(row[3]) for row in selected if row[3] is not None]
+    blocks = [b for b in SequenceMatcher(None, target, combined, autojunk=False).get_matching_blocks() if b.size]
+    start_timed = selected[0][2] > selected[0][1]
+    end_timed = selected[-1][2] > selected[-1][1]
+    return {
+        "start_ms": None if ambiguous or not start_timed else selected[0][1],
+        "end_ms": None if ambiguous or not end_timed else selected[-1][2],
+        "ambiguous": ambiguous, "candidates": candidates,
+        "support_score": round(SequenceMatcher(None, target, combined, autojunk=False).ratio(), 6),
+        "word_count": len(selected), "normalized_match_sha256": _sha(combined),
+        "untimed_word_count": sum(row[1] == row[2] for row in selected),
+        "mean_word_probability": None if ambiguous or not probabilities else round(sum(probabilities) / len(probabilities), 6),
+        "canonical_start_covered": bool(not ambiguous and start_timed and blocks and blocks[0].a == 0 and blocks[0].b == 0),
+        "canonical_end_covered": bool(not ambiguous and end_timed and blocks and blocks[-1].a + blocks[-1].size == len(target)
+                                      and blocks[-1].b + blocks[-1].size == len(combined)),
+    }
+
+
+def _language_hint(profile: str) -> str | None:
+    value = str(profile or "").strip().lower()
+    return value if value in {"en", "zh", "ko", "ja"} else None
+
+
+def _job_language_hint(job: dict[str, Any], canonical_text: str | None) -> str | None:
+    """Prefer explicit/local canonical evidence over whole-track language.
+
+    A supported concrete ``asr_language_hint`` is a planner-level override.
+    ``auto``/empty means no concrete override, so canonical text may still
+    provide a safe local hint.  A mixed-language result intentionally returns
+    ``None`` and must not fall back to the track profile, otherwise a Chinese
+    track could force an English rap/code-switch job through ``language='zh'``.
+    Explicit mixed/unknown markers likewise keep backend auto-detection open.
+    """
+
+    if bool(job.get("asr_force_auto_detect", False)):
+        return None
+    planner_hint = str(job.get("asr_language_hint") or "").strip().lower()
+    concrete_hint = _language_hint(planner_hint)
+    if concrete_hint is not None:
+        return concrete_hint
+    if planner_hint not in {"", "auto"}:
+        return None
+    if canonical_text is not None and str(canonical_text).strip():
+        return asr_language_hint_for_text(
+            canonical_text,
+            track_language=str(job.get("language_profile") or "auto"),
+        )
+    return _language_hint(str(job.get("language_profile") or ""))
+
+
+def _model_factory_default(model_id: str, *, device: str, compute_type: str):
+    try:
+        from faster_whisper import WhisperModel
+    except ImportError as exc:
+        raise AsrModelLoadError(
+            "faster_whisper package is not installed; install requirements-asr.txt"
+        ) from exc
+    try:
+        return WhisperModel(model_id, device=device, compute_type=compute_type)
+    except Exception as exc:  # backend-specific model/runtime failures must be explicit
+        raise AsrModelLoadError(f"cannot initialize faster-whisper model: {exc}") from exc
+
+
+def _decode_audio_default(audio_path: Path):
+    try:
+        from faster_whisper.audio import decode_audio
+    except ImportError as exc:
+        raise AsrExecutionError(
+            "faster_whisper audio decoder is unavailable; install requirements-asr.txt"
+        ) from exc
+    try:
+        return decode_audio(str(audio_path), sampling_rate=ASR_SAMPLE_RATE)
+    except Exception as exc:
+        raise AsrExecutionError(f"cannot decode mix audio once for bounded ASR: {exc}") from exc
+
+
+def _finite_ms(value: Any, *, label: str) -> int:
+    try:
+        number = float(value)
+    except (TypeError, ValueError) as exc:
+        raise AsrExecutionError(f"{label} is invalid") from exc
+    if not math.isfinite(number):
+        raise AsrExecutionError(f"{label} must be finite")
+    return int(round(number))
+
+
+def _word_row(
+    word: Any,
+    *,
+    include_private_text: bool,
+    offset_ms: int = 0,
+) -> dict[str, Any]:
+    text = str(getattr(word, "word", "") or "")
+    start = float(getattr(word, "start", 0.0) or 0.0)
+    end = float(getattr(word, "end", start) or start)
+    probability = getattr(word, "probability", None)
+    row: dict[str, Any] = {
+        "start_ms": offset_ms + int(round(start * 1000.0)),
+        "end_ms": offset_ms + int(round(end * 1000.0)),
+        "text_sha256": _sha(text),
+        "probability": None if probability is None else round(float(probability), 6),
+    }
+    if include_private_text:
+        row["text"] = text
+    return row
+
+
+def _segment_row(
+    segment: Any,
+    *,
+    include_private_text: bool,
+    offset_ms: int = 0,
+) -> tuple[dict[str, Any], str]:
+    text = str(getattr(segment, "text", "") or "")
+    start = float(getattr(segment, "start", 0.0) or 0.0)
+    end = float(getattr(segment, "end", start) or start)
+    words = getattr(segment, "words", None) or []
+    row: dict[str, Any] = {
+        "start_ms": offset_ms + int(round(start * 1000.0)),
+        "end_ms": offset_ms + int(round(end * 1000.0)),
+        "text_sha256": _sha(text),
+        "avg_logprob": round(float(getattr(segment, "avg_logprob", 0.0) or 0.0), 6),
+        "no_speech_prob": round(
+            float(getattr(segment, "no_speech_prob", 0.0) or 0.0), 6
+        ),
+        "compression_ratio": round(
+            float(getattr(segment, "compression_ratio", 0.0) or 0.0), 6
+        ),
+        "words": [
+            _word_row(
+                word,
+                include_private_text=include_private_text,
+                offset_ms=offset_ms,
+            )
+            for word in words
+        ],
+    }
+    if include_private_text:
+        row["text"] = text
+    return row, text
+
+
+def _execute_grouped_predecoded_jobs(
+    *,
+    model: Any,
+    predecoded_audio: Any,
+    selected: list[dict[str, Any]],
+    canonical_text_by_job_id: dict[str, str],
+    config: FasterWhisperExecutionConfig,
+) -> dict[str, Any]:
+    """Execute disjoint bounded windows in batches within each language group.
+
+    Concrete language hints may be grouped across occurrences. Jobs requiring
+    backend auto-detection remain grouped only within one occurrence so language
+    detection cannot leak across songs.
+    """
+
+    duration_ms = int(round(len(predecoded_audio) * 1000.0 / ASR_SAMPLE_RATE))
+    prepared: list[dict[str, Any]] = []
+    for job in selected:
+        job_id = str(job.get("job_id") or "").strip()
+        if not job_id:
+            raise AsrExecutionError("alignment job is missing job_id")
+        window = job.get("mix_window_ms")
+        if not isinstance(window, list) or len(window) != 2:
+            raise AsrExecutionError(f"ASR job {job_id} has no finite mix window")
+        start_ms = _finite_ms(window[0], label="ASR clip start")
+        end_ms = _finite_ms(window[1], label="ASR clip end")
+        if start_ms < 0 or end_ms <= start_ms:
+            raise AsrExecutionError(f"ASR job {job_id} has invalid mix window")
+        if end_ms > duration_ms:
+            raise AsrExecutionError(f"ASR job {job_id} extends beyond decoded mix audio")
+        canonical = canonical_text_by_job_id.get(job_id)
+        prepared.append(
+            {
+                "job": job,
+                "job_id": job_id,
+                "start_ms": start_ms,
+                "end_ms": end_ms,
+                "canonical": canonical,
+                "language": _job_language_hint(job, canonical),
+            }
+        )
+
+    groups: dict[tuple[str, str], list[dict[str, Any]]] = {}
+    for entry in prepared:
+        occurrence_id = str(entry["job"].get("occurrence_id") or "")
+        language = entry["language"]
+        key = (
+            ("language", str(language))
+            if language is not None
+            else ("auto_occurrence", occurrence_id)
+        )
+        groups.setdefault(key, []).append(entry)
+
+    batches: list[list[dict[str, Any]]] = []
+    for entries in groups.values():
+        disjoint: list[list[dict[str, Any]]] = []
+        for entry in sorted(entries, key=lambda row: (row["start_ms"], row["end_ms"], row["job_id"])):
+            for batch in disjoint:
+                if batch[-1]["end_ms"] <= entry["start_ms"]:
+                    batch.append(entry)
+                    break
+            else:
+                disjoint.append([entry])
+        batches.extend(disjoint)
+
+    result_by_job_id: dict[str, dict[str, Any]] = {}
+    for group_entries in batches:
+        group_entries.sort(
+            key=lambda row: (row["start_ms"], row["end_ms"], row["job_id"])
+        )
+        clip_timestamps: list[float] = []
+        for entry in group_entries:
+            clip_timestamps.extend(
+                [entry["start_ms"] / 1000.0, entry["end_ms"] / 1000.0]
+            )
+        kwargs = {
+            "language": group_entries[0]["language"],
+            "beam_size": config.beam_size,
+            "temperature": config.temperature,
+            "condition_on_previous_text": False,
+            "word_timestamps": True,
+            "vad_filter": False,
+            "clip_timestamps": clip_timestamps,
+        }
+        try:
+            segments_iter, info = model.transcribe(predecoded_audio, **kwargs)
+            group_segments = list(segments_iter)
+        except Exception as exc:
+            job_ids = ",".join(entry["job_id"] for entry in group_entries)
+            raise AsrExecutionError(
+                f"grouped ASR jobs {job_ids} failed: {exc}"
+            ) from exc
+
+        for segment in group_segments:
+            segment_start_ms = int(
+                round(float(getattr(segment, "start", 0.0) or 0.0) * 1000.0)
+            )
+            segment_end_ms = int(
+                round(float(getattr(segment, "end", 0.0) or 0.0) * 1000.0)
+            )
+            if not any(
+                segment_end_ms > entry["start_ms"]
+                and segment_start_ms < entry["end_ms"]
+                for entry in group_entries
+            ):
+                raise AsrExecutionError(
+                    "grouped clip-timestamp ASR returned a segment outside every requested window"
+                )
+
+        for entry in group_entries:
+            segments = [
+                segment
+                for segment in group_segments
+                if int(
+                    round(float(getattr(segment, "end", 0.0) or 0.0) * 1000.0)
+                )
+                > entry["start_ms"]
+                and int(
+                    round(float(getattr(segment, "start", 0.0) or 0.0) * 1000.0)
+                )
+                < entry["end_ms"]
+            ]
+            segment_rows: list[dict[str, Any]] = []
+            observed_parts: list[str] = []
+            for segment in segments:
+                row, text = _segment_row(
+                    segment,
+                    include_private_text=config.include_private_text,
+                )
+                segment_rows.append(row)
+                observed_parts.append(text)
+            observed = " ".join(observed_parts)
+            canonical = entry["canonical"]
+            support = None if canonical is None else _text_support(
+                canonical, _window_word_text(segments, (entry["start_ms"], entry["end_ms"]))
+            )
+            canonical_span = (
+                None if canonical is None else _canonical_word_span(
+                    canonical, segments, window_ms=(entry["start_ms"], entry["end_ms"])
+                )
+            )
+            job = entry["job"]
+            result: dict[str, Any] = {
+                "job_id": entry["job_id"],
+                "occurrence_id": str(job.get("occurrence_id") or ""),
+                "canonical_line_index": job.get("canonical_line_index"),
+                "mix_window_ms": [entry["start_ms"], entry["end_ms"]],
+                "language_hint": entry["language"],
+                "detected_language": str(getattr(info, "language", "") or ""),
+                "language_probability": round(
+                    float(getattr(info, "language_probability", 0.0) or 0.0), 6
+                ),
+                "observed_text_sha256": _sha(observed),
+                "canonical_text_support_score": None
+                if support is None
+                else round(float(support), 6),
+                "canonical_match_support_score": None
+                if canonical_span is None
+                else canonical_span["support_score"],
+                "canonical_match_ambiguous": bool(canonical_span and canonical_span["ambiguous"]),
+                "canonical_start_covered": bool(canonical_span and canonical_span["canonical_start_covered"]),
+                "canonical_end_covered": bool(canonical_span and canonical_span["canonical_end_covered"]),
+                "canonical_match_candidates": [] if canonical_span is None else canonical_span["candidates"],
+                "canonical_match_start_ms": None
+                if canonical_span is None or not canonical_span['canonical_start_covered']
+                else canonical_span["start_ms"],
+                "canonical_match_end_ms": None
+                if canonical_span is None or not canonical_span['canonical_end_covered']
+                else canonical_span["end_ms"],
+                "canonical_match_word_count": None
+                if canonical_span is None
+                else canonical_span["word_count"],
+                "canonical_match_mean_word_probability": None
+                if canonical_span is None
+                else canonical_span["mean_word_probability"],
+                "canonical_match_normalized_sha256": None
+                if canonical_span is None
+                else canonical_span["normalized_match_sha256"],
+                "segment_count": len(segment_rows),
+                "segments": segment_rows,
+            }
+            if config.include_private_text:
+                result["observed_text"] = observed
+            result_by_job_id[entry["job_id"]] = result
+
+    results = [
+        result_by_job_id[str(job.get("job_id") or "").strip()]
+        for job in selected
+    ]
+    return {
+        "schema_version": ASR_EVIDENCE_SCHEMA_VERSION,
+        "backend": "faster_whisper",
+        "execution_strategy": "disjoint_window_batches_v2",
+        "word_match_policy_id": WORD_MATCH_POLICY_ID,
+        "language_hint_policy_id": ASR_LANGUAGE_HINT_POLICY_ID,
+        "config": config.to_dict(),
+        "model_loaded": True,
+        "job_count": len(results),
+        "jobs": results,
+        "privacy": (
+            "private ASR text included by explicit request"
+            if config.include_private_text
+            else "raw ASR text omitted; hashes/confidence/timing/support only"
+        ),
+    }
+
+
+def execute_faster_whisper_jobs(
+    *,
+    audio_path: Path,
+    plan: dict[str, Any],
+    canonical_text_by_job_id: dict[str, str] | None,
+    config: FasterWhisperExecutionConfig,
+    model_factory: Callable[..., Any] | None = None,
+    audio_loader: Callable[[Path], Any] | None = None,
+) -> dict[str, Any]:
+    """Execute only plan jobs requesting mix_asr, one bounded clip per job."""
+
+    config.validate()
+    if not audio_path.is_file():
+        raise AsrExecutionError(f"mix audio does not exist: {audio_path}")
+    if plan.get("mode") != "plan_only" or plan.get("backend_execution_performed") is not False:
+        raise AsrExecutionError("input is not an unexecuted alignment plan")
+    jobs = plan.get("jobs")
+    if not isinstance(jobs, list):
+        raise AsrExecutionError("alignment plan jobs must be a list")
+    selected = [
+        job
+        for job in jobs
+        if isinstance(job, dict)
+        and "mix_asr" in (job.get("requested_capabilities") or [])
+    ]
+    if not selected:
+        return {
+            "schema_version": ASR_EVIDENCE_SCHEMA_VERSION,
+            "backend": "faster_whisper",
+            "config": config.to_dict(),
+            "model_loaded": False,
+            "job_count": 0,
+            "jobs": [],
+            "privacy": "raw ASR text omitted unless include_private_text=true",
+        }
+
+    factory = model_factory or _model_factory_default
+    try:
+        model = factory(
+            config.model_id,
+            device=config.device,
+            compute_type=config.compute_type,
+        )
+    except AsrExecutionError:
+        raise
+    except Exception as exc:
+        raise AsrModelLoadError(f"faster-whisper model factory failed: {exc}") from exc
+
+    predecoded_audio = None
+    if audio_loader is not None or model_factory is None:
+        loader = audio_loader or _decode_audio_default
+        try:
+            predecoded_audio = loader(audio_path)
+        except AsrExecutionError:
+            raise
+        except Exception as exc:
+            raise AsrExecutionError(f"bounded ASR audio preload failed: {exc}") from exc
+        if predecoded_audio is None:
+            raise AsrExecutionError("bounded ASR audio preload returned no samples")
+
+    canonical_text_by_job_id = canonical_text_by_job_id or {}
+    if predecoded_audio is not None and len(selected) > 1:
+        return _execute_grouped_predecoded_jobs(
+            model=model,
+            predecoded_audio=predecoded_audio,
+            selected=selected,
+            canonical_text_by_job_id=canonical_text_by_job_id,
+            config=config,
+        )
+
+    results: list[dict[str, Any]] = []
+    for job in selected:
+        job_id = str(job.get("job_id") or "").strip()
+        if not job_id:
+            raise AsrExecutionError("alignment job is missing job_id")
+        window = job.get("mix_window_ms")
+        if not isinstance(window, list) or len(window) != 2:
+            raise AsrExecutionError(f"ASR job {job_id} has no finite mix window")
+        start_ms = _finite_ms(window[0], label="ASR clip start")
+        end_ms = _finite_ms(window[1], label="ASR clip end")
+        if start_ms < 0 or end_ms <= start_ms:
+            raise AsrExecutionError(f"ASR job {job_id} has invalid mix window")
+        canonical = canonical_text_by_job_id.get(job_id)
+        language = _job_language_hint(job, canonical)
+        kwargs = {
+            "language": language,
+            "beam_size": config.beam_size,
+            "temperature": config.temperature,
+            "condition_on_previous_text": False,
+            "word_timestamps": True,
+            "vad_filter": False,
+        }
+        segment_offset_ms = 0
+        if predecoded_audio is None:
+            transcribe_audio = str(audio_path)
+            kwargs["clip_timestamps"] = [start_ms / 1000.0, end_ms / 1000.0]
+        else:
+            start_sample = max(0, int(round(start_ms * ASR_SAMPLE_RATE / 1000.0)))
+            end_sample = min(
+                len(predecoded_audio),
+                int(round(end_ms * ASR_SAMPLE_RATE / 1000.0)),
+            )
+            if end_sample <= start_sample:
+                raise AsrExecutionError(f"ASR job {job_id} resolves to an empty audio clip")
+            transcribe_audio = predecoded_audio[start_sample:end_sample]
+            segment_offset_ms = int(round(start_sample * 1000.0 / ASR_SAMPLE_RATE))
+        try:
+            segments_iter, info = model.transcribe(transcribe_audio, **kwargs)
+            segments = list(segments_iter)
+        except Exception as exc:
+            raise AsrExecutionError(f"ASR job {job_id} failed: {exc}") from exc
+
+        segment_rows: list[dict[str, Any]] = []
+        observed_parts: list[str] = []
+        for segment in segments:
+            row, text = _segment_row(
+                segment,
+                include_private_text=config.include_private_text,
+                offset_ms=segment_offset_ms,
+            )
+            segment_rows.append(row)
+            observed_parts.append(text)
+        observed = " ".join(observed_parts)
+        support = None if canonical is None else _text_support(
+            canonical, _window_word_text(segments, (start_ms, end_ms), offset_ms=segment_offset_ms)
+        )
+        canonical_span = (
+            None
+            if canonical is None
+            else _canonical_word_span(
+                canonical,
+                segments,
+                offset_ms=segment_offset_ms,
+                window_ms=(start_ms, end_ms),
+            )
+        )
+        result: dict[str, Any] = {
+            "job_id": job_id,
+            "occurrence_id": str(job.get("occurrence_id") or ""),
+            "canonical_line_index": job.get("canonical_line_index"),
+            "mix_window_ms": [start_ms, end_ms],
+            "language_hint": language,
+            "detected_language": str(getattr(info, "language", "") or ""),
+            "language_probability": round(
+                float(getattr(info, "language_probability", 0.0) or 0.0), 6
+            ),
+            "observed_text_sha256": _sha(observed),
+            "canonical_text_support_score": None
+            if support is None
+            else round(float(support), 6),
+            "canonical_match_support_score": None if canonical_span is None else canonical_span["support_score"],
+            "canonical_match_ambiguous": bool(canonical_span and canonical_span["ambiguous"]),
+            "canonical_start_covered": bool(canonical_span and canonical_span["canonical_start_covered"]),
+            "canonical_end_covered": bool(canonical_span and canonical_span["canonical_end_covered"]),
+            "canonical_match_candidates": [] if canonical_span is None else canonical_span["candidates"],
+            "canonical_match_start_ms": None if canonical_span is None or not canonical_span['canonical_start_covered'] else canonical_span["start_ms"],
+            "canonical_match_end_ms": None if canonical_span is None or not canonical_span['canonical_end_covered'] else canonical_span["end_ms"],
+            "canonical_match_word_count": None if canonical_span is None else canonical_span["word_count"],
+            "canonical_match_mean_word_probability": None if canonical_span is None else canonical_span["mean_word_probability"],
+            "canonical_match_normalized_sha256": None if canonical_span is None else canonical_span["normalized_match_sha256"],
+            "segment_count": len(segment_rows),
+            "segments": segment_rows,
+        }
+        if config.include_private_text:
+            result["observed_text"] = observed
+        results.append(result)
+
+    return {
+        "schema_version": ASR_EVIDENCE_SCHEMA_VERSION,
+        "backend": "faster_whisper",
+        "execution_strategy": "per_job_bounded_words_v2",
+        "word_match_policy_id": WORD_MATCH_POLICY_ID,
+        "language_hint_policy_id": ASR_LANGUAGE_HINT_POLICY_ID,
+        "config": config.to_dict(),
+        "model_loaded": True,
+        "job_count": len(results),
+        "jobs": results,
+        "privacy": (
+            "private ASR text included by explicit request"
+            if config.include_private_text
+            else "raw ASR text omitted; hashes/confidence/timing/support only"
+        ),
+    }

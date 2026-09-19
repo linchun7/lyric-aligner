@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="zh-CN">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>字幕边界 A/B 试听</title>
+<style>
+*{box-sizing:border-box}body{font:16px/1.6 system-ui;background:#f3f5f3;color:#21312c;margin:0}
+main{max-width:1050px;margin:auto;padding:24px}h1{font-size:27px}h2{font-size:21px}
+article{background:white;border:1px solid #cad5d0;border-radius:10px;padding:22px;margin:24px 0}
+label{display:block;margin:8px 0}fieldset label{display:inline-flex;gap:6px;margin-right:18px}
+input,select,button,textarea{font:inherit}input[type=range]{display:block;width:100%;height:36px}
+input[type=number]{width:115px;padding:7px}input[type=checkbox],input[type=radio]{width:18px;height:18px}
+button{padding:9px 14px;background:#eaf1ec;border:1px solid #9bb0a4;border-radius:5px;cursor:pointer}
+button:hover{background:#dceadf}button:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-visible{outline:3px solid #316cbd;outline-offset:2px}
+canvas{width:100%;height:96px;background:#f6f8f6;touch-action:none}output{display:block;font-variant-numeric:tabular-nums}
+.row{display:flex;flex-wrap:wrap;gap:10px;align-items:center}.hint{color:#54685e}textarea{width:100%;min-height:75px;padding:8px}
+#export{background:#245c43;color:white}.toolbar{padding:15px;background:#e4ece5;border-radius:8px}
+@media(max-width:600px){main{padding:12px}article{padding:14px}.row button{flex:1 1 180px}}
+</style>
+<main>
+<h1>字幕边界 A/B 试听</h1>
+<p>先选“起点”或“终点”，拖动进度条或波形，或直接输入时间。可单独“听到所选点结束”或“从所选点开始听”。正常播放不改动边界。</p>
+<p>A 播放边界前的一段，停顿后 B 播放边界后的一段；也可比较“本句结尾 → 下一句起点”。若连续人声没有可辨分界，请选“仍不确定”，不要靠窗口边缘猜测。</p>
+<p>这份局部核对是可选辅助，不是继续开发算法的前置条件。连续啊／Na 如果没有可辨分界，可以保留“仍不确定”。</p>
+<div class="toolbar row"><label>前后各听（秒） <input id="context" type="number" min="0.2" max="60" step="0.5" value="3"></label>
+<label>A/B 间停顿（秒） <input id="pause" type="number" min="0" max="3" step="0.1" value="0.4"></label></div>
+<div class="toolbar"><label>移动步长（秒，可直接输入） <input id="step" type="number" min="0.001" max="10" step="0.05" value="0.1"></label><div id="step-presets" class="row"></div></div>
+<div id="cases"></div><button id="export" type="button">导出本次核对结果</button><p id="message" role="status"></p>
+<p class="hint">离线工作，不上传音频。修改边界后需要重新勾选确认。</p>
+</main>
+<script id="payload" type="application/json">__PAYLOAD__</script>
+<script>__SCRIPT__</script>
+</html>

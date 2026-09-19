@@ -1,0 +1,450 @@
+import unittest
+from unittest.mock import patch
+
+import librosa
+import numpy as np
+
+from lyric_aligner.audio.coarse_mapper import (
+    build_coarse_timewarp,
+    select_monotonic_candidate_path,
+)
+from lyric_aligner.audio.features import (
+    FeatureBundle,
+    RetrievalCandidate,
+    RetrievalResult,
+    extract_harmonic_features,
+)
+
+
+SR = 8000
+
+
+def source_song(seconds=24.0):
+    length = int(seconds * SR)
+    y = np.zeros(length, dtype=np.float32)
+    frequencies = [
+        196.0,
+        246.94,
+        293.66,
+        349.23,
+        440.0,
+        329.63,
+        261.63,
+        392.0,
+        523.25,
+        311.13,
+        233.08,
+        466.16,
+    ]
+    for index, frequency in enumerate(frequencies):
+        start = int(index * 2.0 * SR)
+        end = min(length, int((index + 1) * 2.0 * SR))
+        if start >= length:
+            break
+        t = np.arange(end - start, dtype=np.float32) / SR
+        y[start:end] = (
+            0.7 * np.sin(2 * np.pi * frequency * t)
+            + 0.2 * np.sin(4 * np.pi * frequency * t)
+        )
+    return y
+
+
+def clicks(length, bpm=140.0):
+    y = np.zeros(length, dtype=np.float32)
+    for beat in np.arange(0, length / SR, 60.0 / bpm):
+        start = int(beat * SR)
+        end = min(length, start + int(0.01 * SR))
+        if end > start:
+            y[start:end] += 0.8
+    return y
+
+
+def retrieval(mix_center, source_center):
+    candidate = RetrievalCandidate(
+        source_start=source_center - 2.0,
+        source_end=source_center + 2.0,
+        source_center=source_center,
+        estimated_slope=1.0,
+        chroma_score=0.90,
+        mfcc_score=0.88,
+        fused_score=0.89,
+        feature_agreement=2,
+    )
+    return RetrievalResult(
+        mix_start=mix_center - 2.0,
+        mix_end=mix_center + 2.0,
+        mix_center=mix_center,
+        top1=candidate,
+        top2=None,
+        candidates=(candidate,),
+        margin=0.20,
+        ambiguous=False,
+        min_score=0.72,
+        min_margin=0.035,
+    )
+
+
+class V4CoarseMapperTests(unittest.TestCase):
+    def test_build_reports_full_retrieval_and_bounded_selected_coverage(self):
+        centers = iter([4.0, 6.0, 8.0, 10.0, 1.0, 1.5])
+
+        def fake_retrieve(_mix, _source, *, mix_start, mix_end, **_kwargs):
+            return retrieval((mix_start + mix_end) / 2.0, next(centers))
+
+        features = FeatureBundle(
+            sr=SR,
+            hop_length=512,
+            duration_seconds=24.0,
+            chroma=np.ones((12, 10), dtype=np.float32),
+            mfcc=np.ones((12, 10), dtype=np.float32),
+        )
+        with (
+            patch(
+                "lyric_aligner.audio.coarse_mapper.extract_harmonic_features",
+                return_value=features,
+            ),
+            patch(
+                "lyric_aligner.audio.coarse_mapper.retrieve_coarse_window",
+                side_effect=fake_retrieve,
+            ),
+        ):
+            result = build_coarse_timewarp(
+                np.zeros(14 * SR, dtype=np.float32),
+                np.zeros(24 * SR, dtype=np.float32),
+                sr=SR,
+                mix_start=0.0,
+                mix_end=14.0,
+                feature_hop_length=512,
+                window_seconds=4.0,
+                step_seconds=2.0,
+            )
+
+        self.assertEqual(len(result["windows"]), 6)
+        self.assertEqual(len(result["path"]), 4)
+        self.assertEqual(
+            result["path_coverage"],
+            {
+                "status": "bounded_terminal_disconnect",
+                "timewarp_required": True,
+                "retrieved_window_count": 6,
+                "selected_window_count": 4,
+                "excluded_trailing_window_count": 2,
+                "maximum_excluded_trailing_windows": 2,
+                "excluded_mix_centers": [10.0, 12.0],
+            },
+        )
+
+    def test_candidate_pool_size_is_forwarded_and_reported(self):
+        centers = iter([4.0, 6.0, 8.0, 10.0, 12.0, 14.0])
+        seen_top_k = []
+
+        def fake_retrieve(_mix, _source, *, mix_start, mix_end, top_k, **_kwargs):
+            seen_top_k.append(top_k)
+            return retrieval((mix_start + mix_end) / 2.0, next(centers))
+
+        features = FeatureBundle(
+            sr=SR,
+            hop_length=512,
+            duration_seconds=24.0,
+            chroma=np.ones((12, 10), dtype=np.float32),
+            mfcc=np.ones((12, 10), dtype=np.float32),
+        )
+        with (
+            patch(
+                "lyric_aligner.audio.coarse_mapper.extract_harmonic_features",
+                return_value=features,
+            ),
+            patch(
+                "lyric_aligner.audio.coarse_mapper.retrieve_coarse_window",
+                side_effect=fake_retrieve,
+            ),
+        ):
+            result = build_coarse_timewarp(
+                np.zeros(14 * SR, dtype=np.float32),
+                np.zeros(24 * SR, dtype=np.float32),
+                sr=SR,
+                mix_start=0.0,
+                mix_end=14.0,
+                feature_hop_length=512,
+                window_seconds=4.0,
+                step_seconds=2.0,
+                candidate_pool_size=64,
+            )
+
+        self.assertEqual(seen_top_k, [64] * 6)
+        self.assertEqual(result["feature_config"]["candidate_pool_size"], 64)
+        self.assertEqual(len(result["path"]), 6)
+
+    def test_candidate_pool_size_fails_closed_below_two(self):
+        with self.assertRaisesRegex(ValueError, "candidate_pool_size"):
+            build_coarse_timewarp(
+                np.zeros(8 * SR, dtype=np.float32),
+                np.zeros(8 * SR, dtype=np.float32),
+                sr=SR,
+                mix_start=0.0,
+                mix_end=8.0,
+                candidate_pool_size=1,
+            )
+
+    def test_transition_activity_keeps_all_windows_without_requesting_timewarp(self):
+        centers = iter([4.0, 6.0, 8.0, 10.0, 1.0, 1.5])
+
+        def fake_retrieve(_mix, _source, *, mix_start, mix_end, **_kwargs):
+            return retrieval((mix_start + mix_end) / 2.0, next(centers))
+
+        features = FeatureBundle(
+            sr=SR,
+            hop_length=512,
+            duration_seconds=24.0,
+            chroma=np.ones((12, 10), dtype=np.float32),
+            mfcc=np.ones((12, 10), dtype=np.float32),
+        )
+        with (
+            patch(
+                "lyric_aligner.audio.coarse_mapper.extract_harmonic_features",
+                return_value=features,
+            ),
+            patch(
+                "lyric_aligner.audio.coarse_mapper.retrieve_coarse_window",
+                side_effect=fake_retrieve,
+            ),
+        ):
+            result = build_coarse_timewarp(
+                np.zeros(14 * SR, dtype=np.float32),
+                np.zeros(24 * SR, dtype=np.float32),
+                sr=SR,
+                mix_start=0.0,
+                mix_end=14.0,
+                feature_hop_length=512,
+                window_seconds=4.0,
+                step_seconds=2.0,
+                require_timewarp=False,
+            )
+
+        self.assertEqual(len(result["windows"]), 6)
+        self.assertEqual(result["path"], [])
+        self.assertEqual(result["timewarp"]["selection"], "NOT_REQUESTED")
+        self.assertFalse(result["timewarp"]["blocked"])
+        self.assertEqual(result["path_coverage"]["status"], "retrieval_only")
+        self.assertFalse(result["path_coverage"]["timewarp_required"])
+
+    def test_bounded_terminal_disconnect_keeps_proven_monotonic_prefix(self):
+        rows = [
+            retrieval(2.0, 4.0),
+            retrieval(4.0, 6.0),
+            retrieval(6.0, 8.0),
+            retrieval(8.0, 10.0),
+            retrieval(10.0, 1.0),
+            retrieval(12.0, 1.5),
+        ]
+
+        path = select_monotonic_candidate_path(
+            rows,
+            max_trailing_unmatched_windows=2,
+        )
+
+        self.assertEqual([point.mix_center for point in path], [2.0, 4.0, 6.0, 8.0])
+
+    def test_terminal_disconnect_is_not_allowed_by_default(self):
+        rows = [
+            retrieval(2.0, 4.0),
+            retrieval(4.0, 6.0),
+            retrieval(6.0, 8.0),
+            retrieval(8.0, 1.0),
+        ]
+
+        with self.assertRaisesRegex(ValueError, "no monotonic coarse candidate path"):
+            select_monotonic_candidate_path(rows)
+
+    def test_interior_disconnect_still_fails_closed(self):
+        rows = [
+            retrieval(2.0, 4.0),
+            retrieval(4.0, 6.0),
+            retrieval(6.0, 8.0),
+            retrieval(8.0, 1.0),
+            retrieval(10.0, 1.5),
+            retrieval(12.0, 2.0),
+        ]
+
+        with self.assertRaisesRegex(ValueError, "mix window 8.000s"):
+            select_monotonic_candidate_path(
+                rows,
+                max_trailing_unmatched_windows=2,
+            )
+
+    def test_terminal_disconnect_requires_three_proven_anchors(self):
+        rows = [
+            retrieval(2.0, 4.0),
+            retrieval(4.0, 6.0),
+            retrieval(6.0, 1.0),
+            retrieval(8.0, 1.5),
+        ]
+
+        with self.assertRaisesRegex(ValueError, "mix window 6.000s"):
+            select_monotonic_candidate_path(
+                rows,
+                max_trailing_unmatched_windows=2,
+            )
+
+    def test_multiple_windows_recover_affine_path_under_click(self):
+        source = source_song()
+        segment_start = 3.0
+        segment_end = 19.0
+        segment = source[int(segment_start * SR) : int(segment_end * SR)]
+        rate = 1.20
+        stretched = librosa.effects.time_stretch(segment, rate=rate)
+        mix = stretched + clicks(len(stretched))
+        result = build_coarse_timewarp(
+            mix,
+            source,
+            sr=SR,
+            mix_start=0.0,
+            mix_end=len(mix) / SR,
+            bpm_prior=1.05,
+            feature_hop_length=512,
+            window_seconds=4.0,
+            step_seconds=2.0,
+            candidate_step_seconds=0.25,
+            slope_minimum=0.9,
+            slope_maximum=1.4,
+            slope_step=0.1,
+            min_score=0.55,
+            min_margin=0.0,
+        )
+        self.assertGreaterEqual(len(result["path"]), 4)
+        self.assertFalse(result["timewarp"]["blocked"])
+        self.assertAlmostEqual(
+            result["timewarp"]["mapping"]["base_slope"], rate, delta=0.15
+        )
+        starts = [point["source_center"] for point in result["path"]]
+        self.assertEqual(starts, sorted(starts))
+
+    def test_interval_scoped_features_restore_global_mix_coordinates(self):
+        source = source_song()
+        segment = source[int(4.0 * SR) : int(18.0 * SR)]
+        rate = 1.20
+        stretched = librosa.effects.time_stretch(segment, rate=rate)
+        body = stretched + clicks(len(stretched))
+        prefix_seconds = 7.0
+        suffix_seconds = 5.0
+        mix = np.concatenate(
+            [
+                np.zeros(int(prefix_seconds * SR), dtype=np.float32),
+                body,
+                np.zeros(int(suffix_seconds * SR), dtype=np.float32),
+            ]
+        )
+        mix_start = prefix_seconds
+        mix_end = prefix_seconds + len(body) / SR
+        result = build_coarse_timewarp(
+            mix,
+            source,
+            sr=SR,
+            mix_start=mix_start,
+            mix_end=mix_end,
+            feature_hop_length=512,
+            window_seconds=4.0,
+            step_seconds=2.0,
+            candidate_step_seconds=0.25,
+            slope_minimum=0.9,
+            slope_maximum=1.4,
+            slope_step=0.1,
+            min_score=0.55,
+            min_margin=0.0,
+        )
+        self.assertGreaterEqual(result["windows"][0]["mix_start"], mix_start)
+        self.assertGreater(result["path"][0]["mix_center"], mix_start)
+        self.assertLessEqual(result["path"][-1]["mix_center"], mix_end)
+        scope = result["feature_scope"]
+        self.assertAlmostEqual(scope["mix_feature_start"], mix_start, delta=1 / SR)
+        self.assertLess(
+            scope["mix_feature_end"] - scope["mix_feature_start"],
+            scope["full_mix_duration"],
+        )
+        self.assertAlmostEqual(
+            result["timewarp"]["mapping"]["base_slope"], rate, delta=0.15
+        )
+
+    def test_bounded_mix_buffer_matches_full_mix_result(self):
+        source = source_song()
+        segment = source[int(4.0 * SR) : int(18.0 * SR)]
+        rate = 1.20
+        body = librosa.effects.time_stretch(segment, rate=rate)
+        body = body + clicks(len(body))
+        prefix_seconds = 7.0
+        suffix_seconds = 5.0
+        mix = np.concatenate(
+            [
+                np.zeros(int(prefix_seconds * SR), dtype=np.float32),
+                body,
+                np.zeros(int(suffix_seconds * SR), dtype=np.float32),
+            ]
+        )
+        mix_start = prefix_seconds
+        mix_end = prefix_seconds + len(body) / SR
+        kwargs = {
+            "sr": SR,
+            "mix_start": mix_start,
+            "mix_end": mix_end,
+            "feature_hop_length": 512,
+            "window_seconds": 4.0,
+            "step_seconds": 2.0,
+            "candidate_step_seconds": 0.25,
+            "slope_minimum": 0.9,
+            "slope_maximum": 1.4,
+            "slope_step": 0.1,
+            "min_score": 0.55,
+            "min_margin": 0.0,
+        }
+        full = build_coarse_timewarp(mix, source, **kwargs)
+
+        buffer_start = 6.0
+        buffer_end = min(len(mix) / SR, mix_end + 1.0)
+        bounded = mix[int(buffer_start * SR) : int(buffer_end * SR)]
+        cropped = build_coarse_timewarp(
+            bounded,
+            source,
+            mix_audio_start=buffer_start,
+            full_mix_duration=len(mix) / SR,
+            **kwargs,
+        )
+
+        self.assertEqual(cropped["windows"], full["windows"])
+        self.assertEqual(cropped["path"], full["path"])
+        self.assertEqual(cropped["timewarp"], full["timewarp"])
+        self.assertEqual(
+            cropped["feature_scope"]["full_mix_duration"],
+            full["feature_scope"]["full_mix_duration"],
+        )
+
+    def test_precomputed_source_features_match_direct_extraction(self):
+        source = source_song()
+        segment = source[int(3.0 * SR) : int(19.0 * SR)]
+        mix = librosa.effects.time_stretch(segment, rate=1.20)
+        kwargs = {
+            "sr": SR,
+            "mix_start": 0.0,
+            "mix_end": len(mix) / SR,
+            "feature_hop_length": 512,
+            "window_seconds": 4.0,
+            "step_seconds": 2.0,
+            "candidate_step_seconds": 0.25,
+            "slope_minimum": 0.9,
+            "slope_maximum": 1.4,
+            "slope_step": 0.1,
+            "min_score": 0.55,
+            "min_margin": 0.0,
+        }
+        direct = build_coarse_timewarp(mix, source, **kwargs)
+        source_features = extract_harmonic_features(source, sr=SR, hop_length=512)
+        cached = build_coarse_timewarp(
+            mix,
+            None,
+            source_feature_bundle=source_features,
+            **kwargs,
+        )
+        self.assertEqual(cached, direct)
+
+
+if __name__ == "__main__":
+    unittest.main()

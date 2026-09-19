@@ -1,0 +1,7 @@
+{
+  "ui_revision": "3.2",
+  "canonical_entry": "scripts/v4_human_boundary_anchor_audit_ui.py",
+  "base_html_sha256": "956d1a63d737551abbef5cc66386622a12ba3208aa136dc415068b58cf5607b1",
+  "original_source_sha256": "323a5e2e84bf9a1d22d5c41366882d7be5344edf9890a163e430c3959c374266",
+  "extension_policy": "Retain frozen HTML/playback core; add task fields through the same UI 3.2 extension only"
+}

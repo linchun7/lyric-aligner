@@ -1,0 +1,4 @@
+interface:
+  display_name: "Lyric Aligner"
+  short_description: "Align edited multilingual songs to auditable line-level SRT"
+  default_prompt: "Use $lyric-aligner to align an edited song mix, review cuts or overlaps, and produce an auditable line-level SRT."

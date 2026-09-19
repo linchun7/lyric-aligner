@@ -1,0 +1,76 @@
+name: cleanup-merged-branches
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    types:
+      - closed
+
+permissions:
+  contents: write
+
+jobs:
+  cleanup-legacy-agent-branches:
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Delete known obsolete agent branches
+        shell: bash
+        run: |
+          set -euo pipefail
+          branches=(
+            "agent/text-only-repair-fast-path"
+            "agent/v4-batch-final-integration"
+            "agent/v4-bounded-workers"
+            "agent/v4-forced-alignment-batch-v2"
+            "agent/v4-hardening-review-fixes"
+            "agent/v4-hardening-status-sync"
+            "agent/v4-production-fast-path"
+            "agent/v4-production-readiness-tooling"
+            "agent/v4-source-feature-cache"
+            "agent/v4-whisperx-reference-adapter"
+            "agent/v4-windows-validation-fix"
+            "agent/final-branch-cleanup"
+            "agent/partial-timeline-repair-v1"
+            "agent/runtime-export-20260820"
+            "agent/smart-canonical-metadata-parser-fix"
+            "agent/smart-v121-ownership-closeout"
+            "agent/smart-v122-calibration"
+            "agent/smart-v122-calibration-impl"
+            "agent/smart-v122-calibration-work"
+            "agent/smart-v122-final"
+            "agent/smart-v122-final2"
+            "agent/smart-v122-final3"
+            "agent/smart-v122-final4"
+            "agent/smart-v122-final5"
+            "agent/smart-v124-acceptance-fix-20260821"
+            "agent/sync-skill-smart-v121-20260820"
+            "tmp/export-final-main-20260821"
+          )
+          for branch in "${branches[@]}"; do
+            if git ls-remote --exit-code --heads origin "refs/heads/${branch}" >/dev/null 2>&1; then
+              git push origin --delete "${branch}"
+            fi
+          done
+
+  cleanup-merged-pr-branch:
+    if: >-
+      github.event_name == 'pull_request' &&
+      github.event.pull_request.merged == true &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      github.event.pull_request.head.ref != github.event.repository.default_branch
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Delete merged pull-request branch
+        shell: bash
+        env:
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+        run: |
+          set -euo pipefail
+          git push origin --delete "${HEAD_REF}"

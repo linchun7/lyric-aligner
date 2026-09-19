@@ -1,0 +1,18 @@
+请按当前 $lyric-aligner Skill 的生产路径直接执行本次字幕任务，不要只给方案。
+
+先确定正常走 Safe Final 还是确有时间轴事故需要 Max Recovery。Standard / Smart / Pro / Max 仅是内部能力层，不是四个用户成品版本；不要因为韩语、日语或其他外文自动升级 Max。
+
+默认：一般中文优先 Standard stable floor；occurrence/拆句/重复结构复杂时再用 Smart。一般韩文/K-Pop 优先 Smart stable floor，再做 pseudo-English / 韩英混唱 / 真实英文保留的 lexical review。Balanced / Fluent 不恢复。
+
+必须遵守：
+1. 当前用户产品路径为 Safe Final / 最低下限最终版；异常恢复路径为 Max Recovery。Max 具体版本以 references/v4-status.md 为准。
+2. 新任务先使用 scripts/init_task.py 建立 task_manifest.json 与 task-local v4_run_config.json。
+3. Full V4/Max 若存在 qa/v4_run_config.json，必须由 public v4_run entrypoint 自动发现并验证；不要手工漏传或临时替换 profile/language_map/middle_cut_map/lyric_role_map。
+4. canonical lyric 是默认文字与顺序真源，但允许有独立语义反证；LRC line break 不是 final subtitle cue authority；ASR 只能作为证据。
+5. 文字正确 > 结构/归属正确 > timing non-regression > timing improvement。文字修复不自动取得 timing 权限。
+6. 证据不足时 review/BLOCK，不降低 threshold，不静默回退 legacy，不直接编辑 artifact 绕过 lineage。
+7. Pro 只按需提供局部证据；Max Recovery 只在整体 timeline 明显损坏时使用，普通 timing 可信任务不要无意义全量重建。
+8. 所有输出写入独立 output tree，保护 task/upstream/config inputs，不覆盖原文件。
+9. 正式终稿必须通过对应 Safe Final / release QA，并在最终文字冻结后执行 `sensitive-pack -> GPT 全量语义敏感词审查 -> sensitive-finalize`。规则命中只作提示，不能机械替换；GPT 结合整份字幕、前后语境和歌曲语义决定 KEEP/MASK/REVIEW，REVIEW 未解决时不得交付正式终稿。不要用 review 数下降、Hangul 字数增加或字符距离下降冒充正确率。
+10. 真实歌曲、歌词、时间戳、音频、绝对本地路径、用户名和任务级 QA 保持 private；通用代码/tests/docs 只使用脱敏 synthetic fixtures 或通用占位路径。
+11. 执行前优先阅读 README.md、SKILL.md、references/workflow.md、references/safe-final-review.md、references/v4-status.md。

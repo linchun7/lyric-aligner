@@ -1,0 +1,124 @@
+name: validate
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.12", "3.14"]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+      - run: python -m pip install --upgrade pip
+      - run: python -m pip install -r requirements-dev.txt
+      - run: python -m compileall -q lyric_aligner scripts
+      - name: Validate documentation contract
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            BASE="${{ github.event.pull_request.base.sha }}"
+          else
+            BASE="${{ github.event.before }}"
+            if [ -z "$BASE" ] || [[ "$BASE" =~ ^0+$ ]]; then
+              BASE="$(git rev-parse HEAD^)"
+            fi
+          fi
+          python scripts/validate_docs_contract.py --base "$BASE" --head HEAD
+      - name: Run unit tests
+        id: unit-tests
+        shell: bash
+        run: |
+          set -o pipefail
+          python -m unittest discover -s scripts -p "test_*.py" 2>&1 | tee "unittest-${{ matrix.python-version }}.log"
+      - name: Upload unittest log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: unittest-python-${{ matrix.python-version }}
+          path: unittest-${{ matrix.python-version }}.log
+          if-no-files-found: error
+          retention-days: 7
+      - run: python scripts/validate_skill.py .
+      - run: python scripts/privacy_scan.py
+      - name: Ensure ffprobe
+        shell: bash
+        run: |
+          if ! command -v ffprobe >/dev/null 2>&1; then
+            # GitHub-hosted Ubuntu images may point apt at an Azure mirror that
+            # occasionally stalls. Prefer the canonical archive while keeping
+            # hard per-connection and whole-command bounds.
+            if [ -f /etc/apt/apt-mirrors.txt ]; then
+              sudo sed -i 's|http://azure.archive.ubuntu.com/ubuntu|https://archive.ubuntu.com/ubuntu|g' /etc/apt/apt-mirrors.txt
+            fi
+            if [ -f /etc/apt/sources.list.d/ubuntu.sources ]; then
+              sudo sed -i 's|http://azure.archive.ubuntu.com/ubuntu|https://archive.ubuntu.com/ubuntu|g' /etc/apt/sources.list.d/ubuntu.sources
+            fi
+            timeout 150s sudo apt-get \
+              -o Acquire::Retries=2 \
+              -o Acquire::http::Timeout=15 \
+              -o Acquire::https::Timeout=15 \
+              update
+            timeout 150s sudo apt-get \
+              -o Acquire::Retries=2 \
+              -o Acquire::http::Timeout=15 \
+              -o Acquire::https::Timeout=15 \
+              install -y --no-install-recommends ffmpeg
+          fi
+          ffprobe -version | head -n 1
+      - run: python scripts/check_environment.py
+      - run: git diff --check
+
+  asr-environment:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: python -m pip install --upgrade pip
+      - run: python -m pip install -r requirements-asr.txt
+      - name: Ensure ffprobe
+        shell: bash
+        run: |
+          if ! command -v ffprobe >/dev/null 2>&1; then
+            if [ -f /etc/apt/apt-mirrors.txt ]; then
+              sudo sed -i 's|http://azure.archive.ubuntu.com/ubuntu|https://archive.ubuntu.com/ubuntu|g' /etc/apt/apt-mirrors.txt
+            fi
+            if [ -f /etc/apt/sources.list.d/ubuntu.sources ]; then
+              sudo sed -i 's|http://azure.archive.ubuntu.com/ubuntu|https://archive.ubuntu.com/ubuntu|g' /etc/apt/sources.list.d/ubuntu.sources
+            fi
+            timeout 150s sudo apt-get \
+              -o Acquire::Retries=2 \
+              -o Acquire::http::Timeout=15 \
+              -o Acquire::https::Timeout=15 \
+              update
+            timeout 150s sudo apt-get \
+              -o Acquire::Retries=2 \
+              -o Acquire::http::Timeout=15 \
+              -o Acquire::https::Timeout=15 \
+              install -y --no-install-recommends ffmpeg
+          fi
+          ffprobe -version | head -n 1
+      - run: python scripts/check_environment.py --asr
+      - name: Verify floating-point audio decoding
+        run: |
+          python -c "import av, numpy, soundfile"
+          python -m unittest discover -s scripts -p "test_float_decode.py" -v

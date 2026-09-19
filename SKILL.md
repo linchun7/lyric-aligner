@@ -1,0 +1,666 @@
+---
+name: lyric-aligner
+description: Reconstruct, review, materialize, diagnose and render multilingual canonical lyric subtitles for edited music mixes using Standard text repair, Smart no-audio anchor repair, Pro selective local audio evidence, and Max full Source-to-Mix reconstruction.
+---
+
+# Lyric Aligner
+
+2026-09-18 当前主线：Smart current=v1.2.11、Max=4.0.0a20、Pro acoustic schema=1.5、Best-Safe=1.1.0。production source freeze 仍为 `prod-v4.0.0a20-best-safe-v1.1.0-20260912`；当前源码资格以 [v4-status](references/v4-status.md) 为准。具体字幕任务必须使用各自私有输入与证据独立通过 lexical/structural/semantic/release gate，任务级歌曲、字幕、Gold/review 与 QA 不写入通用仓库。当前入口见 [README](README.md)。
+
+当前生产主路径为 **Standard / Smart stable floor -> GPT lexical review -> QA -> GPT 全量语义敏感词审查 -> Safe Final；时间轴事故才进入 Max Recovery**。
+
+默认语言路由：一般中文优先 Standard stable floor，复杂 occurrence/拆分/重复结构再用 Smart；一般韩文 / K-Pop 优先 Smart stable floor，再做 pseudo-English、韩英混唱与真实英文保留的 lexical review。Pro 只按需提供局部证据；Balanced / Fluent 已撤出当前产品层。
+
+任何试听/人工复核先用 [唯一默认 UI 3.2](references/listening-ui.md)：原 `scripts/v4_human_boundary_anchor_audit_ui.py` 冻结核心、统一 `scripts/v4_listen.py`，Windows 双击 `试听复核.cmd`。Safe/R5、Max、Gold、转场/ownership 不再另造页面；其他 UI/任务副本全部 legacy。新字段只在同页最小扩展，原始作答保留，外语理解不足可选不确定，不伪装人工 Gold。
+
+当前能力、评分依据与未具备事项见[能力与使用边界](references/capabilities-and-limits.md)。当前为维护收敛阶段；工程验收不代表任意新歌的准确率封板。
+
+具体成品优化按 [Smart 安全增量交付](references/smart-safe-incremental-delivery.md) 逐条取舍：充分确认一条即可交付一条，不以整批 blind 完成作为该条修改的前置条件。人工听审若缺语言理解能力，只作有不确定性的参考；机器多次解码也不自动成为独立真值。任务交付修订不改变 Smart / Best-Safe 自动策略身份和 authority。
+
+最低保底先用 `python scripts/v4_review_safe_final.py scan --plan PLAN.json --out CANDIDATES.json` 提取当前 floor 的完整前后文、真实空档、canonical occurrence、韩英混合保留提示与中文风险。GPT 亲自判断语义/发音/归属并另存 reviewed plan/review，再用[通用字符片段入口](references/reviewed-canonical-splices.md)物化；只确认中间词就只改该段，未提议/明确 keep 继承当前 floor。入口接受真正的 Standard 或 Smart 报告并核对输出 SRT hash，不改变 selector、DP、时间或分段。充分的任务语义/上下文审定也可作为外部观察，不强制追加音频，但程序候选、自造音频结论或相关 ASR 重复不是独立真值。Gap 仅 detector + review contract + verifier，原始 final-mix timing truth 未接通前不写回。文字与 QA 收敛后还必须执行 `sensitive-pack -> GPT 全量语义敏感词审查 -> sensitive-finalize`：机械规则只给提示，GPT 结合完整字幕上下文决定 KEEP/MASK/REVIEW，REVIEW 未解决时不得生成正式 Safe Final。流程名称 Safe Final / Max Recovery 不新增 `--mode`。详细契约见 [Safe Final review](references/safe-final-review.md)。
+
+韩语伪英文恢复同样只作该任务的具体文字审定：优先恢复有证据的 canonical 词段，保留 cue 内已正确英文与语气词；canonical 行号仅为错位或不同演唱版本中的文字出处时必须明确记录，不伪装成 Smart ownership。局部音频出现片尾式幻觉或重复时不能计作支持。整条文字审定、局部改善、独立 Gold 正确条数分别记录，禁止用采用数冒充净正确条数；时间轴和 cue 分段保持当前 floor。
+
+当前仓库生产实现：
+
+```text
+Standard -> Text Repair V2.1
+Smart    -> Sequence Reconciliation + Anchor Timeline Repair v1.2.11
+Pro      -> Selective Audio Repair v1.2.7
+Max      -> Full V4 Alignment 4.0.0a20
+```
+
+当前 Smart policy：
+
+```text
+smart-validation-policy-2026-09-10-v1.2.11
+```
+
+这个项目的生产原则不是“让 ASR 重写歌词”，而是：**canonical lyric 是最终文字与顺序的默认真源；只有独立、可审计的 canonical-semantic-rebuttal 证据链才能推翻 normalized lexical truth；canonical LRC line break 不等于最终 subtitle cue boundary；Jianying timing / cue segmentation 是强但可推翻的先验；Smart 先用 timed canonical + editor majority anchors 做 0-audio 验证；Pro/Max 才引入 Source-to-Mix acoustic evidence。**
+
+更高模式可以增加证据和修复能力，但没有更强独立反证时，不得破坏较低模式已经安全成立的 text / cue ownership / timing。任何无法由现有证据安全证明的情况继续 review/BLOCK，**不得静默回退 v3.9，不得手工拼/改 artifact 绕过 lineage。**
+
+### 最低质量契约
+
+所有模式共同遵守：`Content correctness -> Structure/ownership correctness -> Timing non-regression -> Timing improvement`。纯文字修复不得顺带移动时间；Max/hybrid 成品应以 resolved canonical occurrence 做字符级 lexical floor 审计，而不是把整曲未使用 LRC 行机械算成漏词。大模型可以提出/比较 lexical/structural 假设，但确定性程序负责 ownership、单调性、timeline immutability、hash/lineage 与物化。普通 display override 只允许 normalized-equivalent 的空格、标点、大小写/排版修正；最终语义敏感词 gate 是唯一额外的 lexical-display 例外，只允许对 GPT 高置信确认的原文精确词段做 mask，不改变 canonical truth、cue 结构或 timing。其它 normalized lexical content 改动仍必须先通过 `canonical-semantic-rebuttal`。
+
+### Best-Safe 内部 selector
+
+Best-Safe **不是第五种证据模式，也不是用户面对的另一个成品版本**，且不改变 Smart 的行为。Standard / Smart / Pro / Max 负责产生不同成本和权限的内部证据；Best-Safe 仅在需要时对已冻结、可审计结果做低风险内部选择。正常用户交付仍统一叫 Safe Final：
+
+```text
+Smart baseline -> Best-Safe（可选内部选择） -> Safe Final
+Max Release 仅属于通过完整 gate 的 Max Recovery
+```
+
+- Smart 是稳定保底基线；Best-Safe 不把大模型、敏感词、Max 回灌逻辑塞回 Smart policy，也不要求预先生成 Smart+ 中间 SRT。Best-Safe 1.1 默认完整继承 Smart 的 cue 数、顺序、start/end，形成不可静默退化的 topology/timing floor。
+- 高模式结果先作为**候选**而不是 authority：Max track semantic PASS、source-clock/Max 同源一致、稀疏 ASR anchor、transition clear、Pro/Max split/merge/add/delete 都不能单独授予整首或局部 timing 写权限。变化越大，举证责任越高；不得用“高模式更重”或“整首 PASS”替代 boundary-level 证明。
+- timing 只能逐边界晋级。每个 `start`/`end` 变化必须绑定具体 Smart cue/boundary、冻结 Smart 值、独立 authority 与 lineage；`unsupported_timing_change_count` 必须为 0 才能 `publish_ready=true`。当前实现只自动接受 human-truth-bound 单边界 promotion；未来若要开放 ASR/forced-alignment 自动 timing promotion，必须先有独立 calibration + boundary-level verifier，证明该边界相对 Smart 的期望误差更低，不能沿用 track semantic PASS 代替。
+- 高模式晋级不得依赖同一证据家族自证；Max candidate 与 Max 自己的 source projection 一致、两个同源模型一致，都不能单独证明它优于 Smart/editor。transition authorization 默认只做诊断，不得为了拼接 Max/Smart 而裁剪未经单边界授权的 Smart timing。
+- 大模型文字介入必须 task-bound 到原始 Smart SRT SHA、Smart report SHA 和按歌单顺序的全部 canonical lyric SHA，只允许提交连续 Smart review cue + exact canonical gap；提案不得携带自由替换歌词或 timing。启用 text adjudication 时，proposal + keep-Smart 台账必须对 Smart report 的全部 `review` cue **恰好完整覆盖**；漏记、重复记或把非-review cue 混入都 fail closed，不能再出现部分 review 被 ledger 隐藏。确定性 verifier 必须复用完整 text-region policy：resolved 邻接锚点、canonical span、region similarity、length ratio、多行 observed canonical/line coverage、safe DP word partition、ownership、单调性、timeline non-regression 与 hash/lineage；验证失败自动回退原 Smart。
+- 文字与 timing authority 必须分离。多 cue 文字修复不得在无 timing authority 时插入、删除或跨 cue 搬移 Latin token；只允许 cue ownership 不变的同位词形/错词纠正。若 Smart 与 canonical 的 normalized stream 已一致，则文字层保留 Smart presentation；重复吟唱、ad-lib、短呼喊的次数/归属没有独立 cue-level ownership 或 timing 证据时不得仅凭文本相似度自动 rescue。
+- 自动 canonical presentation 仅允许在 normalized-equivalent 前提下恢复 canonical 中显式 `*` mask；普通空格、标点、大小写、撇号、连字符、粘词等 presentation 默认保留 Smart，只有 task-bound 且 normalized-equivalent 的 model display override 才能修改。Best-Safe 未来默认 `mask_profile=none`，不得在 GPT 看见最终原文前机械改敏感词；旧 `strong_profanity_v1` 仅保留为显式兼容/候选提示能力。正式 Safe Final 必须在最后由 GPT 完整语义审查，再由 mask-only finalizer 物化。
+- Best-Safe `publish_ready=true` 的最低条件包括：Smart topology 与 final 一致；所有 timing 变化都有显式 authorization；无 unsupported timing change；全部 task-bound human timing truth 通过；文字/display 各自通过确定性 verifier。它仍只是 pre-release 资格；正常任务还必须通过最终 semantic-sensitive model gate 才能称为正式 Safe Final。该状态**不等于 Max `release_ready`**，只有整份 Max 正式 release gate 通过，Max Release 才取代 Best-Safe。
+
+当前实现入口：`scripts/v4_build_best_safe.py`；selector policy 为 `best-safe-smart-timing-floor-1.1`，算法版本 `1.1.0`。
+
+下一阶段机器 timing 改进只能先进入 [P1 boundary promotion shadow](references/boundary-promotion-p1.md)：selector 决策、evidence family/correlation group 与 gate policy 必须在读取 Gold 前冻结；冻结 selection 的 `selection_payload_sha256` 与 intended partition 还必须在人工 review 前一起写入 candidate-blind review manifest，人工 response 与 Gold 继续绑定该 manifest/selection/partition，P1 evaluate 会重算 response→Gold 并核对全链，不能拿旧 Gold 事后重选 selector，也不能把 development/calibration response 改标签成 blind/holdout。只有预先冻结为新的 `blind` / `holdout` truth 可以让 shadow gate PASS。shadow PASS 仍固定 `production_authority_granted=false`，不得直接生成 Best-Safe `timing_promotions`。Qwen/SOFA/HuBERTFA/STARS 当前属于未部署权重的 dormant experimental，生产资格见 [module-lifecycle](references/module-lifecycle.md)，不得因源码仍存在就自动下载/启用。
+
+## 生产模式选择：任何真实任务必须先做
+
+开始执行前，先判断用户任务属于哪一档。**不要默认从 Full V4/Max 开始，也不要因为韩语、日语或外文就自动升级 Max。**
+
+```text
+Standard / Smart stable floor -> Safe Final；时间轴事故才进入 Max Recovery
+```
+
+### Standard / 标准
+
+选择条件：
+
+- 用户明确要求时间轴冻结；或
+- Jianying SRT timing 被明确视为可信，只需要按规范歌词修正错字、漏字、多字和安全的断句差异。
+
+执行：
+
+```powershell
+python scripts/v4_text_repair.py ...
+```
+
+约束：
+
+```text
+audio_read = false
+cue count / number / start / end 全部冻结
+canonical lyric = default final text/order truth; normalized lexical rebuttal requires separate audited authority
+trusted editor cue ownership = display segmentation prior
+LRC line break != subtitle cue boundary authority
+```
+
+如果 editor 多个 cue 拼接后的连续文字已经与 canonical 连续文字一致，只是 LRC 的行换行不同，**必须保留 editor 原 cue ownership，不得仅为模仿 LRC 分行跨 cue 搬字。**
+
+**只要用户要求“不要动时间轴”，就优先 Standard，不要擅自调用 Smart/Pro/Max。**
+
+### Smart / 智能（韩文/复杂中文优先 stable floor）
+
+选择条件：
+
+- 有规范 timed LRC/QRC/Enhanced LRC；
+- 有 Jianying SRT；
+- 大部分 timing 本来就是对的，只怀疑少数 cue；
+- 单曲通常是一个固定变速倍率，或有可用 BPM / DAW stretch ratio；
+- 希望优先 0-audio、低成本完成验证和少量安全修复。
+
+执行：
+
+```powershell
+python scripts/v4_smart_repair.py ...
+```
+
+Smart v1.2.11 仍然不读音频。它从 Standard/Text Repair V2.1 的安全文字结果开始，并通过版本化 wrapper 累积 A-bounded text recovery、actionable-review 修正、CJK cast proof、split-line guard 与最终 canonical ownership / lexical-floor hardening；v1.2.11 不扩大 v1.2.10 的 timing authority。当前 selector 只通过 `smart_current` facade 暴露：
+
+```text
+shared canonical parser conservative role/metadata filtering
+    -> Text Repair V2.1 safe baseline
+    -> independently-ready four-A timing recovery（若已有）
+    -> baseline strong text identities 建立 text-only Sequence Projection
+    -> bounded canonical sequence reconciliation / cautious frontier walk
+    -> BPM-derived rate 经 baseline-safe anchors 验证后的 text-only recovery
+    -> editor cue ownership guard
+    -> final v1.2.4 Smart timing plan（冻结）
+    -> v1.2.5 A-bounded mapped-review text-only recovery
+    -> final one-character / proven-suffix ownership text recovery
+    -> v1.2.7 anchored cross-script vocalization text recovery
+    -> no-audio timing hypothesis quality/value stratification
+    -> v1.2.8 actionable-review/product-status correction
+    -> v1.2.9 same-file contextual CJK cast proof
+    -> v1.2.10 version-scoped split-line guard in the base timing pass
+    -> post-timing text-only recovery 不重新建立 timing model / 不重新计算 timing decisions
+    -> v1.2.11 final canonical ownership + connected lexical-floor recheck / quarantine
+```
+
+生产代码中的“当前 Smart”必须通过 `lyric_aligner.timeline.smart_current` 这个稳定 facade 消费。`smart_policy.py` / `smart_policy_v125.py` / `smart_policy_v126.py` / `smart_policy_v127.py` / `smart_policy_v128.py` / `smart_policy_v129.py` / `smart_policy_v1210.py` 是版本化 base/wrapper，不允许 Smart CLI、Pro gate 或测试各自从版本化模块猜 current policy。
+
+#### Smart timing authority
+
+Smart 使用 canonical timing、A-anchor majority、可用的逐字 timing 和可选 rate prior：
+
+```text
+exact_daw        -> hard rate prior
+bpm_derived      -> soft plausibility prior
+anchor_estimated -> 无 hard prior 时由 A anchors robust estimate
+```
+
+`bpm_derived` 不能冒充 exact DAW rate。BPM soft prior 与稳定 A-anchor evidence 冲突时，不靠 BPM 强行改 timeline。BPM 帮助文字 recovery 时也不会被升级成 timing hard prior。
+
+当前 Smart 的 `models[].status=ready` 只表示 timing model 可用于 prediction，不表示某个 cue 已自动获得 timing mutation 权限。下列情况必须 `review` / `pro_escalation_required=true`：
+
+```text
+timing model not ready
+no unique timed-canonical identity
+C-grade identity
+BPM soft prior conflicts with an otherwise proposed automatic repair
+combined repair would create or worsen overlap
+```
+
+#### Severe-ASR recovery / Sequence Projection
+
+Smart 不通过降低 Text Repair 阈值来解决严重 ASR。v1.2.x 增加独立的 **Sequence Projection**，只用于恢复 canonical text identity：
+
+- interior review 优先消费双侧 canonical strong anchors；已有 independently-ready four-A timing model 时，继续使用更强的 timing recovery；
+- 主 timing model 不足以启动时，可由 baseline strong text identities 建立只读 text-only projection；
+- bounded reconciliation 只在 weak/review severe-ASR region 中按连续 canonical sequence 恢复文字；
+- outer frontier 只能谨慎向歌曲边缘推进，遇到 timing discontinuity / cut / editor-only ad-lib / bad boundary 必须停止，不能越过断点追更远 LRC；
+- editor-only ad-lib 只有完全没有 canonical claim 时才可作为透明间隔，ad-lib 本身不删除、不改写；
+- weak mapped cue 不能被跨过借远处 anchor；
+- sequence/timing recovered text 永远不能因为“文字被修对了”就升级成 A/B primary timing anchor。
+
+Sequence Projection **不是** `SongTimingModel ready` 的替代品。sequence-projected decision 固定保持在 B-grade 以下，只提供 final-text evidence，不得反向制造 timing authority。
+
+#### v1.2.4 BPM-validated text recovery
+
+当生产提供“原 BPM -> 目标 BPM”且一首歌主要是固定匀速变化时，BPM 可以帮助 repeated lyric / severe-ASR 的文字定位，但只有经过独立文本证据验证后才能启用：
+
+- `bpm_derived` 仍为 soft prior，不进入 timing hard-rate map；
+- 至少 3 个 baseline-safe 1:1 text anchors 验证固定 BPM rate；
+- 要求有效 source/mix 跨度、稳定 offset/residual、足够 inlier fraction，并且 safe-anchor pairwise rate 与 BPM rate 一致；
+- 先保留 v1.2.2 的 mapped 1:1 review recovery；随后允许在两个同源 baseline-safe BPM inlier anchors 之间做 bounded continuous-stream recovery；
+- bounded stream 可以处理 mapped review，也可以处理位于完整双侧强锚点之间、与分配后 canonical text 仍有最低 lexical 支持的 unmapped cue；unmapped 口播/ad-lib 不满足 lexical floor 时继续 review；
+- bounded stream 不使用 LRC 行数作为 cue 数，允许一个 canonical 行跨多个 editor cue，但所有已非 review 的 lower-mode 安全文字必须 normalized 完全不变；
+- mapped 1:1 interior candidate 必须被同源安全 anchors 夹住；原有歌曲前缘只允许极窄 leading-edge recovery；v1.2.3 bounded-stream path **只允许双侧夹住的 interior region，不做任何 frontier 外推**；
+- 相邻 cue 共同 claim 同一 occurrence、split-continuation、下一 lexical canonical 已进入当前 cue、pure vocalization 等情况 fail closed；
+- pure vocalization 不得被 BPM 自动填成 lexical lyric；bounded region 只要存在纯 vocalization review cue 就整体 fail closed，防止把哼唱/ad-lib 强塞成歌词；
+- bounded stream 必须通过固定 BPM projection、双侧 baseline-safe anchors、完整 canonical stream、总长度合理性、editor boundary assignment 和 non-review immutability；遇到跨 song claim、cut/frontier、boundary insertion 或低相似 unmapped cue 时 fail closed；
+- 只有去掉受限的 `哦/啊/耶/oh/yeah/...` 边缘 vocalization 后，剩余 editor text **精确等于 canonical** 时，才允许自动裁掉这些边缘 vocalization；普通英文词不能当 vocalization 删除；
+- BPM-recovered text 保持 B-grade 以下，不能成为 A/B primary timing anchor。
+
+report 记录：
+
+```text
+text_bpm_projection_recovery_count
+text_bpm_projection_vocalization_trim_count
+text_bpm_bounded_stream_cue_count
+text_bpm_bounded_stream_region_count
+text_bpm_bounded_stream_unmapped_recovery_count
+text_bpm_projection_models
+```
+
+#### v1.2.5 A-bounded mapped-review recovery
+
+A-bounded 是**冻结 final timing 之后的低权限文字层**，不是新的 timing model。只有以下条件同时成立才自动恢复：
+
+- region 是连续 mapped review；`canonical_span=None` 或 zero-width span 直接 fail closed；
+- immediate resolved neighbours 定义 exact same-source canonical gap；
+- 更远的 same-source A/A timing anchors 双侧夹住 region；两侧都来自 `model_status=ready`，且各自 `|residual_ms| <= 750ms`；
+- regional normalized similarity `>=0.80`；normalized length ratio `>=0.85`；region 至少 12 个 normalized characters；
+- pure vocalization、cross-source、boundary insertion、empty ownership、multi-cue Latin/mixed repartition、弱 timing bracket、低相似、短区域或 poor length ratio 全部 fail closed；
+- recovered decision score cap `<=0.89`，低于 B timing authority；
+- cue count / number / start / end 和 v1.2.4 final timing decisions 全部保持不变，恢复后**不得重新运行 timing model**。
+
+report 记录：
+
+```text
+text_a_bounded_recovery_count
+text_a_bounded_region_count
+text_a_bounded_materialized_change_count
+```
+
+#### v1.2.6 metadata / final-text hardening
+
+角色/metadata 过滤属于 **shared canonical parser 的前置阶段**：它在 canonical lines/ordinal 建立前执行，因此会影响后续所有 Standard/Smart/Pro/Max canonical identity；不是 Smart timing 完成后的纯后处理。裸中文短行默认 fail closed 保留为 lexical；明确角色词、多人分隔名单或显式 `(主唱)/(Rap)` 等标记可直接过滤。v1.2.9 只增加 same-file context：裸中文名字必须被同文件明确多人 cast 直接证明；若是 cast 外成员，还必须在至少四个已证明裸标签建立 ensemble grammar 后重复出现，且每次都在两秒内紧接 lexical 行。普通“夏天：/白天：/向前：”仍保留。v1.2.6 的 final-text recovery 则发生在冻结 timing 后。
+
+Smart 产品字段不再把所有 unresolved timing 都叫人工 review：
+
+```text
+timing_validated_count
+timing_suspected_count
+timing_suspected_actionable_count
+timing_suspected_within_display_tolerance_count
+timing_unvalidated_count
+manual_timing_review_candidate_count
+timing_review_count_semantics = legacy_unresolved_total_not_manual_review_queue
+```
+
+`timing_review_count` 为兼容旧 artifact reader 保留，等于 suspected + unvalidated，不是人工逐条核查队列。
+
+#### v1.2.7 cross-script vocalization / hypothesis ranking
+
+跨文字体系拟声恢复只允许 mapped 1:1 review cue，且前一 cue 必须已经安全解决并证明 exact same-source canonical adjacency；两边都必须落在窄定义拟声字符集合，普通中文或英文 lexical text fail closed。该层只改文字，不改 cue ownership/timing，也不建立 timing anchor。
+
+Smart no-audio actionable timing 另外按 local model 质量和 text identity 状态分层。`timing_high_value_pro_candidate_count` 只表示优先取证价值，不是 vocal-onset 错误概率；弱/未知模型的大 shift 继续保留 hypothesis，但不得抢在 strong-model candidate 前面。
+
+#### v1.2.8 product review semantics
+
+`manual_timing_review_candidate_count` 等于所有明确 actionable timing suspicions；`timing_high_value_pro_candidate_count` 只是 Pro 预算有限时优先取证的子集。只要前者非零，`manual_review_required=true` 且 `product_status=review_required`，不能因为 high-value 子集为空而 false-ready。
+
+#### v1.2.1 editor cue ownership guard
+
+v1.2.1 起在 final text materialization 前增加 editor cue ownership guard，用来修复 sequence/BPM/text-repair 已经产生的局部边界误搬，而不是扩大 canonical recovery 权限。
+
+规则：
+
+- canonical 继续拥有最终文字与顺序权威；
+- line-LRC 行边界不能单独把 editor 已经清楚识别的短语搬到相邻 cue；
+- 普通 boundary restore 必须保持相邻 cue **合并后的 normalized lyric stream 完全不变**，只允许重新分配 ownership；
+- 仅在能证明相邻两边出现同一短 boundary fragment 的窄场景，才允许删除一份短重复；不能借此做广泛 deletion；
+- ownership guard 不改变 cue count / number / start / end；
+- ownership-restored decision 保持低于 timing-anchor authority，不能成为 A/B primary timing anchor；
+- report 使用 `text_editor_ownership_repartition_count` 记录实际触发次数。
+
+因此像“前一 cue 末尾词被错误搬到后一 cue”“后一 cue 开头词被错误搬到前一 cue”这类问题，应优先恢复可信 editor ownership，而不是按 LRC 换行机械重分。
+
+#### Smart 输出语义
+
+Smart report schema 当前为：
+
+```text
+schema_version = smart-1.1
+policy_id      = smart-validation-policy-2026-09-10-v1.2.11
+```
+
+这里描述的是当前 `main` 的 Smart selector。v1.2.11 已完成 SHE25 真实 timing non-regression，并保持 v1.2.10 timing authority 不变；具体任务仍需按各自 report/release gate 判断是否可结束，不能把仓库版本直接等同于成品发布资格。
+
+生产判断：
+
+```text
+status == ready
+AND pro_escalation_required == false
+    -> 普通 Smart 任务可结束
+
+status == review_required
+OR pro_escalation_required == true
+    -> 该 Smart SRT 是中间/诊断产物，不得宣称“全部校正完成”；进入 Pro 或人工 review
+```
+
+**不要把 unresolved review cue 中仍保留的 editor ASR 当成已校正 canonical final。** review 的含义就是“现有无音频证据不足以安全自动改”。
+
+**韩文、日文、英文或其他外文不是升级 Max 的条件。** 只要 canonical identity 和 timed anchors 够强，仍先 Smart。
+
+### Pro（Smart unresolved 的局部音频层）
+
+选择条件：
+
+- 已经运行当前生产 Smart；并且
+- Smart report 明确存在 unresolved/review，`pro_escalation_required=true`；
+- 问题只集中在少量 cue/局部 region，而不是整条 timeline 广泛失真。
+
+执行入口：
+
+```powershell
+python scripts/v4_pro_selective.py ...
+```
+
+Pro v1.2.7 必须绑定**当前 Smart schema + current Smart policy + exact Smart SRT/canonical hashes**。当前只接受 `schema_version=smart-1.1` 且 `policy_id=smart-validation-policy-2026-09-10-v1.2.11`；旧 Smart artifact 不能直接复用，版本/policy/hash 不匹配时先重新跑当前 Smart。
+
+实现上，`smart_policy.py` 是 frozen v1.2.4 base contract，v1.2.5/v1.2.6/v1.2.7/v1.2.8 是顺序 wrapper；**`smart_current.py` 才是唯一 current-production Smart facade**。Smart CLI 与 Pro compatibility gate 都必须从它取得当前 schema/policy/function binding，不能从旧版本模块的常量推断 current policy。
+
+Pro 按失败原因选择局部 evidence：
+
+```text
+timing review + known canonical identity
+    -> bounded source<->mix acoustic first
+
+text / identity review
+    -> bounded ASR + word timestamps
+
+no word timing + source-side identity needs reinforcement
+    -> external forced alignment when configured
+
+unmapped review
+    -> bounded mix ASR only
+```
+
+相邻 acoustic jobs 可共享一个 bounded mix region，但 ASR-only job 不得无意义扩大 acoustic decode。歌曲交界的 neighbouring-source competitor 是 shadow evidence，不能直接改 timing。
+
+Pro v1.2.7 沿用 v1.2.6 planner：先消费 Smart 明确声明的 high-value 预算子集，再在同类任务中按 actionable/text、local model 与绝对 shift 排序；完整 manual queue 仍独立保留，不能被 high-value 子集覆盖。只有 canonical-local language 与已知 source language 一致时才固定 `zh/en/ko/ja`；code-switch/mixed/unknown 使用显式 `asr_force_auto_detect=true`，防止宽 timing-search 窗口被错误锁成局部语言。局部声学的 `local_match_gate_passed` 只表示 retrieval 成功；只有显式 `timing_fusion_evidence_eligible=true` 且 slope optimum 与 source-start optimum 都不在/不接近各自搜索边界时才能参与 support/rebuttal。任一边界结果都只保留 diagnostic，不是 timing anomaly authority。
+
+当前 Pro 仍固定：
+
+```text
+automatic_review_resolution_allowed = false
+automatic_adjudication_scope = decision_support_no_srt_mutation
+timing_mutation_performed = false
+automatic_timing_change_allowed = false
+automatic_text_change_allowed = false
+```
+
+即 Pro v1.2.7 负责**局部取证 + 自动裁决 + 人工队列收敛**：所有 timing/text review 仍保留人工确认；证据足够时可自动把 review 分类为明确的 recommendation（例如 `candidate_confirmed_advisory`、`keep_editor_advisory`、canonical text/occurrence support advisory），但不会自动把 review 标成 resolved，也不会写回字幕 timing/text。结构风险、证据冲突或证据不足继续进入 investigate。Pro 仍只处理 Smart 明确 unresolved 的 cue，因此不能假设 Smart 的 false-ready 会自动被 Pro 兜底。
+
+### Max（Full V4 / 重型 fallback）
+
+仅在以下情况选择：
+
+- 整体 Jianying timeline 广泛不可信；
+- 大量 cue 无法稳定映射 canonical occurrence；
+- 存在复杂 cut / reorder / overlap / 多段结构，无法用少数局部 Pro region 解决；
+- Smart/Pro 已证明局部链路不足以收敛；
+- 任务本身就是从广泛不可信状态重建 Source-to-Mix。
+
+执行：
+
+```powershell
+python scripts/v4_run.py ...
+```
+
+**Max 是 fallback，不是“更准所以默认用”的模式。** 日常剪映字幕修复不能为了少量坏 cue 重扫 40–60 分钟完整节目。Max 同样必须遵守 segmentation authority：line-LRC grouping 不能单独推翻可信 editor cue boundary；需要更强 word/token/audio evidence。
+
+如果绑定的 `source-audio` 是调速后单曲，而 canonical LRC/QRC 的时间仍属于原曲时钟，**不得把 raw lyric timestamp 直接送入 Source-to-Mix mapping**。必须先显式建立 `canonical lyric clock -> bound source-audio clock`：已知 BPM 变速时 rate 固定为 `input_bpm / target_bpm`，offset 只能由独立 source-audio 证据验证；未获验证的 transform 不能写入 production `source-clock-map`。a20 首次接入只支持 line-LRC；token-timed Enhanced/QRC 在逐 token 时钟变换完整实现前 fail closed。最终是否采用仍需 fresh final-mix audio QA，source-clock 自洽不能替代成品时基验证。
+
+#### a18 direct-final-mix boundary authority
+
+当 Max 需要自动修改 cue start/end 或把一个可信 editor 长 cue 拆成多条时，必须走当前 boundary-authority 链；不能继续使用 projected LRC onset 直接创建/移动边界。
+
+```text
+canonical lyric -> 文字/顺序真源，不提供自动 boundary authority
+editor cue timing -> 强但可推翻 prior
+LRC timestamp -> routing/search only
+SOFA / HuBERTFA raw result -> diagnostic only
+human-gold-calibrated independent final-mix evidence -> 才可授予自动 boundary mutation authority
+```
+
+生产要求：
+
+- calibration 必须来自预先锁定、人工听音标注的 final-mix human gold；不得让模型先看 blind selection 再补 gold；
+- human-gold pack 若其 source report 后续被证明存在题目语义/ownership 错误，必须在原目录写 `HUMAN_GOLD_PACK_INVALIDATED.json` 并废弃整包；ingest 遇到该 sentinel 必须 hard fail，禁止原地删 sentinel、改 lock 或继续填旧 audit，须从修复后的新 report 重新 blind-select 新 pack；
+- outer `start/end` 与 internal split 分开校准；每个 backend/profile × boundary kind 独立形成 calibration artifact；
+- production evidence 必须绑定 exact final-audio SHA、exact plan SHA、backend profile/model revision、language、lexical contract 与 deterministic window policy；任一身份变化都会使旧 calibration 失效；
+- 默认 direct-final-mix window policy 为 `editor_cue_plus_1500ms_clamped_to_mix_v1`，sidecar 必须根据 owning cue 与实际 WAV duration 自行复算，不能只相信调用方字符串；
+- 自动 outer/internal mutation 至少需要两个不同 `backend_id`、两个不同 `correlation_group`，并来自规定的 independent direct-final-mix evidence families；同一个 backend 不能通过换 group 名称冒充两票；
+- raw confidence 只作诊断，不能跨模型直接比较或单独授权；真正 uncertainty floor 来自 human-gold holdout calibration；
+- 普通“双 backend 各自已取得该 boundary-kind production calibration”的 consensus 路径仍执行 `250ms` spread gate；超过必须保持 unsplit，不得取平均制造假精度；
+- `human_gold_joint_lexical_selector_v1` 是独立校准的 selector authority，不适用上述普通 consensus 的 `250ms` gate：它要求 selector 在最后一条 blind gold 揭晓前冻结、两个 exact direct aligner 都有结果、Human-Gold calibration+holdout 通过，并在运行时重算 lexical-ratio prior 后选择离 prior 最近的 direct prediction；因此“大 spread”本身不能被旧 gate 二次否决，也不能把未经该 joint calibration 的其它 selector 类推为有 authority。exact-distance tie 只沿用冻结 selector 的 tie rule，不得临时改算法；
+- text ownership 与 timing authority 分离：当相邻 editor cue 的原文精确拼成一个 canonical event，或三格原文精确拼成两个连续 canonical events 时，只允许按 editor 原 cue ownership 重新分配 canonical text；不得把同一整句复制进多个 cue，真实整句重复不得被该规则折叠；
+- `v4_run_alignment_backend_evidence.py` 只生成 raw evidence；`v4_adjudicate_calibrated_alignment.py` 只生成校准绑定后的 evidence/decision/bundle，本身不等于已写回字幕；internal plan 使用 `v4_plan_internal_segmentation.py`；最终写回必须通过 `v4_materialize_calibrated_alignment.py`，并重新绑定 task/source/final-mix/report/plan/evidence/decisions 与 exact adjudication bundle SHA、fresh re-adjudicate 后才能生成新 CSV/SRT，materialize 阶段不得重新注入另一组 structural confirmations；
+- `production_authority_ready=false` 时严禁把 boundary decision 描述成 final timing truth，也不得借 editor/LRC/旧 smoke 绕过 human-gold gate。
+
+具体 algorithm version 不在本段硬编码，以 `references/v4-status.md` 与 runtime snapshot 为准。
+
+### 模式选择速查
+
+```text
+用户明确说“只修文字/绝不改时间”
+    -> Standard
+
+规范 timed lyrics + Jianying timing 大部分正确
+    -> Smart（默认）
+
+Smart 有少量 unresolved/review
+    -> Pro，只处理这些 bounded regions
+
+整体 mapping/timeline 广泛失真或复杂结构无法局部解决
+    -> Max
+```
+
+不要反向调用：
+
+```text
+普通任务 -> 直接 Max            禁止作为默认策略
+Smart ready -> 无理由再跑 Pro   不需要
+Pro local issue -> 全曲 ASR      不允许为了“更智能”扩大成本
+外文 -> 自动 Max                 错误
+rate change -> 自动当 cut        错误
+LRC 换行 -> 强制重分 editor cue  错误
+higher mode -> 无证据覆盖 lower-mode safe result  错误
+review_required Smart -> 当 final 发布  错误
+```
+
+## Codex 开始任何真实任务前必须先读
+
+```text
+SKILL.md
+references/production-requirements.md
+references/v4-runtime-guide.md
+references/v4-status.md
+references/v4-implementation.md
+references/smart-pro-v1-1.md
+references/dataset-protocol.md
+```
+
+如果正在改生产代码，再读：
+
+```text
+references/documentation-contract.md
+references/v4-change-record.md
+```
+
+## Codex 真实任务开场纪律
+
+真实生产任务与代码开发必须分开。开始真实歌曲任务时：
+
+```text
+1. checkout/fetch 到最新 main；不要从旧 agent/* / codex/* 分支恢复实现；
+2. 先按 Standard / Smart / Pro / Max 决策树选择最低成本且证据足够的模式；
+3. Smart/Pro 运行前确认当前 schema/policy/hash，不复用 stale artifact；
+4. 需要 Full V4/Max formal lineage 时，先运行 scripts/v4_runtime_snapshot.py 固化当前 runtime identity；
+5. 已有 Full V4 formal artifact 时，把 payload 与对应 *.artifact.json 成对交给 scripts/v4_doctor.py，并要求 --require lineage；
+6. 中断恢复先根据 doctor 的 BLOCK / recommended_next_action 续跑，不要无条件从 reconstruction 重跑；
+7. 真实生产任务本身不得顺手修改 tracked production code。
+```
+
+如果真实数据暴露代码 bug：停止受影响的生产阶段，保存最小复现和可用的 report/lineage 证据；从**最新 main** 新建独立 bugfix 分支修复、补测试、走 CI/PR。修复合入后再以新版本重跑受影响阶段。不要在生产任务分支边跑数据边改算法，也不要为了过任务手改 formal artifact。
+
+真实歌曲、cue 编号、时间戳、歌词、真实 BPM 不得硬编码进 production algorithm/public regression。真实 failure pattern 应转成通用 synthetic regression。
+
+## 不可违反的原则
+
+1. **Canonical lyric 是最终文字与顺序真源，但不是无条件的 line-break / subtitle segmentation 真源。** ASR、编辑器、forced aligner 都不能替换 final text/order；LRC 行换行也不能单独把文字跨可信 editor cue 搬移。
+2. **模式必须按 cheapest sufficient evidence 选择。** Standard/Smart 不读音频；Pro 只读 Smart unresolved 的局部音频；Source-to-Mix 全局/重型 reconstruction 主要属于 Max。
+3. **Jianying timing / credible cue segmentation 是强但可推翻的先验。** 普通 Smart 任务应保留多数可信 cue，只修少量有多重独立证据支持的 outlier。
+4. **Metadata/credits 不是 canonical lyric。** 明显制作信息、商务合作、版权提示等不得进入 lyric truth；无法安全区分时 fail closed，不用 metadata 驱动 sequence/timing。
+5. `rate change != cut`；forward source-position discontinuity 才能进入 candidate-level cut review。
+6. `confirmed_cut` 必须经过 local cut locator -> CUT_AWARE mapping -> cut-aware canonical timeline。
+7. line-LRC 只有整个可推断行区间都位于 source gap 才可整行删除；partial-line 一律 review。
+8. confirmed overlap 保持左右两条独立 canonical cue stream，跨轨实际交集必须完整位于 exact confirmed region。
+9. cut/overlap 两边先从同一个 `review_resolution` 独立物化，再由 composition stage 合并；不得互相改写 materializer。
+10. cut + overlap 只有两层都安全时自动组合；无法证明时继续 BLOCK。
+11. `TrackAsset / TrackOccurrence / ResolvedAssetBinding` 确定后，下游不得重新猜 source/LRC/canonical selection。
+12. Review Decision 必须 task-scoped + exact base-run-scoped；所有 materialization/evidence 必须绑定 exact source run/artifact lineage。
+13. P7 forced alignment 只在 **source time** 产生 auxiliary evidence；进入 legacy Full V4 fusion 前必须经 P8 exact Source-to-Mix projection。
+14. P7 protocol `1.0` single-job 与 optional protocol `1.1` batch 只改变 external aligner 进程组织；batch 不能提升 authority。
+15. P8 `CUT_AWARE` line 跨 confirmed gap/cut 必须 `unprojectable`，不得 bridge。
+16. P9 fusion 只接受 mix-time editor/ASR/forced evidence；任意可用 auxiliary pair 超阈值就是 `CONFLICT`，不得用 2-of-3 多数票隐藏 outlier。
+17. P9 的 `LOW/MEDIUM/HIGH/CONFLICT` 都是 **uncalibrated shadow state**；`HIGH` 也不得自动改 authoritative timing 或视为 release confidence。
+18. Final renderer 只接受 `ready_for_render + issues=[] + legacy_fallback_used=false`，并验证 exact task/profile/artifact lineage。
+19. 所有 stage 都绑定 task fingerprint、algorithm version、upstream IDs、materialized SHA-256；涉及模型的 evidence 还必须绑定 backend/model revision。
+20. 所有实质性更新必须同步 owning docs；CI 不通过不得合并。
+21. Runtime snapshot / doctor / family evaluator 都是可复现与诊断层，不改变 timing authority；没有独立 blind-test 结果不得把 auxiliary family 提升为自动 timing/release authority。
+22. **Standard/Text Repair V2.1 只在时间轴明确冻结时使用。** 它可处理错字、漏字、多字以及 bounded 1↔N / N↔1 / N↔N 断句差异；任何情况下都不得改变 cue 数、编号或 timing。
+23. **当前 Smart v1.2.11 是普通“多数 timing 正确、少数 timing 可疑”任务的默认入口。** 不得把原曲 LRC/source absolute time 直接覆盖到 edited mix；必须经 rate/anchor model；A-bounded 仍只在基础 timing plan 冻结后做 text-only recovery，后续版本化 wrapper 不得重新建立 timing authority。v1.2.11 只收紧最终 canonical ownership / lexical floor，不新增 timing authority。
+24. **Pro 只能处理当前 Smart unresolved 的 bounded regions。** 不得无理由重扫已被 Smart 验证的正常 cue；当前仍不得自动 timing writeback。
+25. **永远不覆盖原始输入。** Standard/Smart/Pro/Max 都写独立 outputs/artifacts；Smart/Pro CLI 的路径碰撞必须 fail closed。
+26. **Higher mode 必须保持能力单调性。** 没有更强独立证据时，不得退化 lower-mode 已安全成立的 text、cue ownership/display segmentation 或 timing。
+27. **Recovered text 不得形成循环证据。** 无论 ready-model recovery、Sequence Projection、BPM-validated recovery 还是 A-bounded recovery，都不能反向把自己的恢复结果提升为 primary timing anchor。
+28. **Editor ownership restoration 不是新的 canonical/timing authority。** 它只允许在已有 canonical text stream 内修正相邻 cue 的边界归属；普通移动保持 pair-combined text invariant，窄 duplicate drop 也不得扩张为一般删除规则。
+29. **`review_required` 不是 final-ready。** unresolved editor ASR 可以保留用于诊断，但不能被描述成“规范歌词已全部校正”。
+30. **BPM-derived text evidence 仍必须 fail closed。** 没有足够 baseline-safe anchors、occurrence 不唯一、split/邻 cue 冲突或 pure vocalization 时，不得为了降低 review 数量强行自动修复。
+31. **Current Smart binding 只有一个真源：`smart_current.py`。** Smart CLI、Pro compatibility gate 和 current-policy tests 都不得直接绑定某个历史版本模块。
+
+## 权威文档
+
+- 生产工作负载与模式基线：`references/production-requirements.md`
+- 运行：`references/v4-runtime-guide.md`
+- 状态：`references/v4-status.md`
+- 架构：`references/v4-implementation.md`
+- Smart / Pro：`references/smart-pro-v1-1.md`
+- 变更：`references/v4-change-record.md`
+- forced batch protocol：`references/forced-alignment-batch-protocol.md`
+- 文档契约：`references/documentation-contract.md`
+- 数据/盲测：`references/dataset-protocol.md`
+
+## 标准生产流程
+
+### 0. 先选模式
+
+除非用户已经明确指定模式，否则按以下顺序判断：
+
+```text
+frozen timing?          -> Standard
+mostly-correct timing?  -> Smart
+Smart unresolved?       -> Pro
+broad structural fail?  -> Max
+```
+
+不要把“已有 mix audio / source audio”理解成必须使用 Pro/Max；**有音频只是可用证据，不是升级理由。**
+
+### 1. Standard / Text Repair V2.1
+
+如果规范歌词可信，而且任务明确要求保留剪映现有 cue 数量、编号及全部起止时间，只修文字，直接运行：
+
+```powershell
+python scripts/v4_text_repair.py `
+  --source-srt "private/<任务>/input/source.srt" `
+  --canonical-lrc "private/<任务>/input/lyrics/01.lrc" `
+  --canonical-lrc "private/<任务>/input/lyrics/02.lrc" `
+  --out "output/<任务>/TEXT_REPAIRED.srt" `
+  --report "output/<任务>/TEXT_REPAIR.json"
+```
+
+批量高频生产使用：
+
+```powershell
+python scripts/v4_text_repair_batch.py `
+  --manifest "private/<任务>/text-repair.batch.json" `
+  --summary "output/<任务>/text-repair.batch.summary.json"
+```
+
+V2.1 先用唯一 exact 文本锚点把长字幕切成局部区间，再在区间内运行 bounded monotonic span DP。常见 1↔1 / 1↔2 / 2↔1 / 2↔2 可在高置信下自动处理；真实 canonical gap、额外 subtitle cue、近似重复歌词歧义、gap 邻域弱匹配、会把现有 cue 清空的重分配或结构差异过大继续 `review_required`。
+
+如果 span 连续文字已经一致，仅 LRC/editor line grouping 不同，V2.1 保留 editor cue ownership，不执行仅由 LRC 换行驱动的跨 cue 文字迁移。
+
+这个入口完全不读取音频，也不依据 LRC timestamp 修改 SRT timing，因此 **BPM 加速/减速不会改变 Standard 的文字修复规则**。
+
+### 2. Smart / Sequence Reconciliation + Anchor Timeline Repair v1.2.11
+
+日常“剪映 timing 大部分正确”的任务优先：
+
+```powershell
+python scripts/v4_smart_repair.py `
+  --source-srt "private/<任务>/input/source.srt" `
+  --canonical-lyrics "lyrics/01.lrc" "lyrics/02.lrc" `
+  --output-srt "output/<任务>/<任务>_SMART.srt" `
+  --report "output/<任务>/<任务>_SMART.json"
+```
+
+有 Cubase/DAW 精确 stretch ratio 时：
+
+```powershell
+--rate-prior "01.lrc=1.09375"
+```
+
+只有 BPM 时：
+
+```powershell
+--target-bpm 140 `
+--source-bpm "01.lrc=128"
+```
+
+`target_bpm/source_bpm` 只作为 soft prior；不要把它伪装成 exact DAW rate。BPM text-only recovery 自 v1.2.2 引入；当前 v1.2.11 仍要求该 soft prior 被多个 baseline-safe text anchors 独立验证后才可用于**文字 recovery**，并且不增加 timing mutation authority。v1.2.5 A-bounded、v1.2.6 final recovery、v1.2.7 cross-script recovery 以及 v1.2.11 final ownership/lexical-floor hardening 都发生在 final timing 冻结之后，不重新建立 timing model。
+
+Smart 输出后：
+
+```text
+status == ready AND pro_escalation_required == false
+    -> 普通任务结束；不要无理由再跑 Pro
+
+status == review_required OR pro_escalation_required == true
+    -> 进入 Pro / 人工 review；当前 Smart SRT 不是 final-ready
+```
+
+### 3. Pro / Selective Audio Repair v1.2.7
+
+先生成计划，默认仍不读 audio：
+
+```powershell
+python scripts/v4_pro_selective.py `
+  --smart-report "output/<任务>/<任务>_SMART.json" `
+  --smart-srt "output/<任务>/<任务>_SMART.srt" `
+  --canonical-lyrics "lyrics/01.lrc" "lyrics/02.lrc" `
+  --plan-out "output/<任务>/<任务>_PRO_PLAN.json"
+```
+
+Pro v1.2.7 只接受当前 `smart_current` 暴露的 Smart v1.2.11 policy；不要把旧 report 直接送入 Pro。CLI 还会继续核验 exact Smart SRT / canonical hash binding。
+
+需要 local source<->mix acoustic evidence 时：
+
+```powershell
+--mix-audio "private/<任务>/input/mix.wav" `
+--source-audio "01.lrc=private/<任务>/source/01.wav" `
+--source-audio "02.lrc=private/<任务>/source/02.wav" `
+--acoustic-out "output/<任务>/<任务>_PRO_ACOUSTIC.json"
+--decision-out "output/<任务>/<任务>_PRO_DECISIONS.json"
+```
+
+需要 ASR 时仅对 planner 选中的 bounded jobs 执行：
+
+```powershell
+--mix-audio "private/<任务>/input/mix.wav" `
+--asr-model-id "<faster-whisper-model>" `
+--asr-out "output/<任务>/<任务>_PRO_ASR.json"
+```
+
+需要 external forced alignment 时按 `references/v4-runtime-guide.md` 提供 explicit command/backend/model identity。不要因为 backend 已配置就无条件跑 forced；由 Pro reason-aware routing 决定哪些 jobs 请求它。
+
+Pro 当前输出 evidence，不自动写 SRT timing。真实生产中如果 Pro 仍无法局部收敛，再判断是否需要人工 review 或 Max，而不是擅自扩大 Pro 扫描范围。
+
+### 4. Max / Full V4 Runtime / Resume preflight
+
+只有进入 Max/Full V4 formal chain 时，先做：
+
+```powershell
+python scripts/v4_runtime_snapshot.py ...
+python scripts/v4_doctor.py ... --require lineage
+```
+
+新任务没有任何 formal artifact 时，doctor 的 lineage requirement 可等第一个 run artifact 生成后再启用；中断恢复或已有产物时必须优先验证现有 payload/artifact lineage。具体配对参数见 `references/v4-runtime-guide.md`。
+
+`4.0.0a14` 起，新任务同时拥有 task-local `qa/v4_run_config.json`，用于绑定 `profile / language_map / middle_cut_map / lyric_role_map`。只要该文件存在，三个 public Max run entrypoint 会在任何 output mutation 前自动发现、验证并展开这些语义输入；不要再依赖人工记住对应 CLI flags。旧任务用 `scripts/init_v4_run_config.py` 显式迁移，语义变化必须 `--replace`。workers/resume/out-dir 不属于 semantic config。
+
+### 5. Max Reconstruction / Review / Materialization / Evidence / Render
+
+主入口：
+
+```powershell
+python scripts/v4_run.py `
+  --task-manifest "private/<任务>/qa/task_manifest.json" `
+  --out-dir "output/<任务>/v4" `
+  --git-commit "<commit>"
+```
+
+后续按 `references/v4-runtime-guide.md` 与当前 `references/v4-status.md` 执行：
+
+```text
+review
+-> overlap/cut materialization（需要时）
+-> editor / ASR / forced evidence（按 planner，bounded only）
+-> forced source->mix projection
+-> shadow fusion
+-> final render / release validation
+```
+
+关键 authority 保持：
+
+- authoritative run 的 payload/artifact lineage 必须精确绑定；
+- forced alignment 原始结果在 source time，进入 fusion 前必须经 Source->Mix projection；
+- P9 fusion 是 shadow evidence，不得把 `HIGH` 直接写回 timeline；
+- Render/release 只接受当前 formal renderer/release gate 所要求的 authoritative state；
+- 具体 algorithm version 不在 `SKILL.md` 硬编码旧值，以 `references/v4-status.md` / runtime snapshot 为准。

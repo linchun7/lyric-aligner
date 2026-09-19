@@ -1,0 +1,258 @@
+# Lyric Aligner Production Requirements
+
+2026-09-09 lexical floor note: English production verifies Latin word boundaries in addition to normalized characters. Smart audits mapped trusted regions and does not require raw LRC coverage; mid-word newline/cue splits fail closed. oumei140 remains review_required, with no human timing gold or timing-accuracy claim.
+
+Status: normative production baseline
+
+Before using this document for architecture, production, review, or delegation decisions, read `references/project-principles.md`. That file defines the long-term ChatGPT/Codex collaboration model and the intended Standard/Smart/Pro/Max product roles.
+
+This document records the real production workload that should drive product and algorithm decisions. When an implementation choice, optimization target, or edge-case architecture conflicts with this workload, use this document as the design baseline unless a later explicit production decision supersedes it.
+
+> **2026-09-07 Max reliability refinement:** statements below such as “normal Chinese jobs are often mostly correct” describe observed workload history and cost distribution; they are **not** a hard production prior that Chinese/editor timing is reliable, nor do they define fixed reliability tiers for Korean, Japanese, English, style, artist, or any other category. For the next Max timing upgrade, `references/next-stage-max-expected-loss-handoff-2026-09-07.md` supersedes any such fixed interpretation: editor text/timing reliability is calibrated dynamically for the current task/track/cue; language/style are weak features only, and direct final-mix/local evidence may rebut the broad workload baseline.
+
+## 1. Primary production job
+
+The normal job is not subtitle generation from zero. The normal job starts with a Jianying-exported SRT that is already mostly usable, then repairs it against canonical lyrics.
+
+Typical inputs are:
+
+- one mixed/final program, often around 40–60 minutes;
+- a Jianying SRT whose timing is mostly correct;
+- canonical lyrics for nearly every song, usually timestamped LRC;
+- some canonical files with Enhanced LRC/QRC or other word/token timing;
+- original/source song audio for most songs when acoustic fallback is needed;
+- song order and, when available, original BPM, target BPM, or the exact time-stretch ratio.
+
+Canonical lyrics are the default authority for lyric text and lyric order. Editor ASR, generic ASR, and acoustic models may establish identity or timing evidence, but must not casually rewrite canonical lyric truth from recognition guesses. **Default authority is not infallibility:** a source lyric can itself contain transcription, contraction, spacing, version, or copy errors. A lexical change that genuinely rebuts normalized canonical content must therefore use a separate, auditable canonical-semantic-rebuttal path: bind the exact canonical identity and source hash, retain the original text, record model/prompt identity and evidence roles, require independently supporting evidence before authorization, and remain non-authoritative when direct evidence still supports the canonical wording. Pure punctuation/spacing changes stay presentation-only. Canonical rebuttal never grants timing or occurrence authority.
+
+**Canonical text/order authority is not canonical line-break authority.** A line break in LRC/QRC is a grouping/onset representation, not unconditional authority over the final subtitle cue boundary. When editor cue segmentation is already credible, do not move words across cue boundaries merely to mimic canonical line grouping. Re-segmentation requires stronger independent boundary evidence such as word/token timing or audio-derived evidence.
+
+**Text certainty and timing certainty are separate axes.** If canonical sequence can be independently established while cue timing still needs review, repair the known-wrong editor text and keep only the timing question unresolved. A timing review is not permission to preserve editor ASR text that contradicts already-proven canonical lyrics.
+
+**Severe ASR must not create a text-first bootstrap deadlock.** The worse an editor cue is recognized, the less useful raw lexical similarity becomes. When song identity, canonical order, surrounding strong identities, and timed-canonical projection jointly establish a unique sequence, Smart may recover canonical text without lowering lexical thresholds or pretending the recovered cue is a timing anchor.
+
+### Product-quality floor
+
+The mandatory product priority is:
+
+`lexical content correctness -> structural identity/ownership correctness -> timing non-regression -> timing improvement`
+
+This ordering is a product floor, not a claim that upstream canonical selection is infallible. “Lexically correct” means correct relative to a trusted canonical lyric and a sufficiently established occurrence/content identity in the exact final mix. If canonical identity, occurrence, cut/repeat state, or whether the lyric is actually present remains ambiguous, the system must preserve/review that ambiguity rather than manufacture 100% coverage.
+
+When lexical truth is established but timing is not, the system should still repair known editor recognition errors. A lexical-only repair must preserve the exact source timeline signature: cue numbering/count and every start/end timestamp remain unchanged unless a separately authorized structural/timing operation is performed. A missing canonical lyric may be inserted automatically only when its actual presence/occurrence and a bounded placement are independently established; otherwise it remains unresolved rather than receiving invented timing.
+
+The minimum useful product is therefore a subtitle whose trusted lyric content/ownership is better than the editor while its still-unproven timing is conservatively preserved. Timing improvement is a higher layer and must be evaluated separately from lexical improvement.
+
+### Model-assisted semantic reasoning
+
+Do not reduce the production system to deterministic string rules alone. Large language/foundation models should be used selectively where semantic reasoning adds information, while deterministic code remains the final verifier of hard invariants. The governing rule is: **the model proposes or adjudicates hypotheses; the contract verifies and materializes them.**
+
+Good model-assisted uses include:
+
+- reconciling severe editor ASR corruption with a trusted canonical sequence when literal similarity is weak, including homophones, transliteration/romanization, code-switching, mixed scripts, contractions, and unusual segmentation;
+- proposing bounded cue-to-canonical span ownership for difficult `1<->N / N<->1 / N<->N` text mappings;
+- comparing competing canonical/source interpretations and explaining why a case remains ambiguous, without inventing a new canonical truth when source provenance is unresolved;
+- ranking or classifying repeat/ad-lib/occurrence/cut/crossfade hypotheses from structured evidence summaries so expensive acoustic work is spent on the highest-value unresolved cases;
+- reviewing final lexical/display differences and classifying expected presentation transforms versus likely lyric corruption;
+- when an audio-capable foundation model is available, generating an additional acoustic/timing candidate or diagnostic observation under an explicit model/runtime identity.
+
+Model output is not by itself authority to overwrite canonical truth, choose an ambiguous occurrence, move a timestamp, or pass a release gate. Production-affecting model proposals must be converted to bounded structured data and checked by deterministic constraints such as complete character ownership, monotonicity, occurrence bounds, overlap/cut rules, immutable-timeline assertions for text-only repair, artifact lineage, and calibration policy. A model-generated mapping must not become independent timing evidence merely because the same model generated it. Any model that can change production output must have auditable model/prompt/policy identity and must be evaluated on frozen data before its decisions receive automatic authority.
+
+## 2. Language distribution
+
+The common case is Chinese music with canonical lyrics. English phrases or rap can occur inside Chinese songs.
+
+Korean, Japanese, and other foreign-language songs are less common in ordinary jobs, but a whole 40-minute mix can occasionally contain many such songs. Foreign-language content does **not** automatically require Full V4/Max. It should first use the cheapest mode whose evidence is sufficient; escalate to selective audio or Max only when the text/timing mapping is broadly untrustworthy or local evidence cannot resolve it.
+
+Missing canonical lyrics are uncommon and are a fallback path, not the architecture that should set the cost of ordinary Chinese jobs.
+
+## 3. Tempo and rate reality
+
+Most songs are changed from their source BPM to one target cadence/BPM with one constant time-stretch ratio for the whole used occurrence.
+
+Therefore the primary timing model is affine/constant-rate. If source BPM and target BPM are known, the expected Source-to-Mix slope is:
+
+`rate_prior = target_bpm / source_bpm`
+
+If the exact editor/DAW stretch ratio is available, it is stronger than a BPM-derived prior.
+
+A minority of songs contain multiple source-speed segments inside one used song. Piecewise-rate mapping must be supported, but it is an evidence-triggered exception. A rate change is not itself evidence of a cut.
+
+Design rule: **Affine first; piecewise only when evidence rejects the single-rate model.**
+
+## 4. Jianying timing prior
+
+For normal Chinese jobs, most Jianying cue timing is correct. The common failure pattern is a small number of bad cues inside a largely trustworthy timeline, not a globally broken timeline.
+
+The system must preserve the majority and search for evidence-backed outliers. It must not rebuild an entire timeline merely because a few cues are wrong.
+
+Common high-risk regions include song starts/ends, transitions, English rap/code-switch, fast/stylized/ancient-style singing, repeated chorus identity, and occasional local cuts or special edits.
+
+## 5. Canonical timing evidence
+
+Timestamped LRC line starts are primary non-audio timing evidence.
+
+When Enhanced LRC/QRC or equivalent word/token timing is available, preserve and use it. Word timing can strengthen boundary evidence, distinguish internal lyric structure, and improve local validation. Do not discard word timing merely because line-level matching is sufficient for Text Repair.
+
+Word timing is evidence, not unconditional authority over final subtitle segmentation. Jianying cue boundaries and canonical token boundaries can represent different display semantics. Plain line-LRC grouping is weaker still: it must never, by itself, move otherwise-correct words across trusted editor cue boundaries.
+
+## 6. Internal capability layers
+
+### Standard
+
+Internal basis: Text Repair V2.1.
+
+- no audio reads;
+- repair lyric text only;
+- never change cue count, numbering, start, or end time;
+- preserve trusted editor cue ownership when continuous canonical text/order already matches but canonical line grouping differs;
+- fail closed to review when text identity is ambiguous.
+
+Use as the preferred stable floor for ordinary Chinese tasks when the editor timeline is trusted.
+
+### Smart
+
+Internal basis: Canonical Sequence Reconciliation + Anchor Timeline Repair.
+
+- normally no audio reads;
+- run Standard/Text Repair first and keep its lexical thresholds unchanged;
+- inherit Standard-safe text/cue ownership unless stronger independent sequence/timing evidence rebuts a weak result;
+- use exact/unique 1:1 editor identities as primary timing anchors;
+- keep the primary timing model four-A gate unchanged;
+- use timed LRC, available word/token timing, exact DAW prior, and soft BPM plausibility;
+- model the dominant constant-rate transformation robustly;
+- preserve normal timing and change only evidence-backed outliers;
+- when severe ASR prevents correct lexical span bootstrap, allow an independent **text-only sequence projection** built from baseline strong identities to recover canonical order into existing editor cues;
+- without an exact hard rate prior, text-only projection must require at least 3 unique A text anchors plus at least one additional strong A/B anchor, useful source/mix span, and stable affine residuals;
+- text-only projection may use complete strong-anchor-bounded canonical gaps to solve 1↔N/N↔N ownership without treating LRC line count as subtitle cue count;
+- outer-frontier projection must stop at the first timing discontinuity/cut/ad-lib rather than jumping over the break to chase later LRC;
+- sequence/timing-recovered text must remain below B timing grade and must not increase primary timing anchor count;
+- unresolved timing can remain review/Pro even after text has been safely repaired;
+- unresolved text/identity stays review/selective-audio escalation rather than a guess.
+
+Use as the preferred stable floor for ordinary Korean/K-Pop tasks and for Chinese tasks with non-trivial occurrence, split/merge, or repeated-structure ambiguity. It is not a required step for already-safe Standard tasks.
+
+### Pro
+
+Internal basis: Selective Audio Repair.
+
+- inherit Standard/Smart results;
+- read only bounded suspicious audio windows;
+- use source↔mix acoustic matching, canonical-constrained forced alignment, and ASR only where useful;
+- choose language hints per local canonical span/job rather than blindly using a whole-track language;
+- do not rescan already-trusted regions;
+- do not assume it can repair a Smart false-ready, because Pro sees only Smart-unresolved work.
+
+Use when Smart cannot safely resolve a small number of regions.
+
+### Max
+
+Internal basis: Full V4 Alignment.
+
+- full/heavy Source-to-Mix reconstruction and acoustic evidence path;
+- supports broadly untrusted timelines, complex cuts, transitions, overlaps, and weak anchor coverage;
+- must still distinguish canonical text/order authority from final display-segmentation authority.
+
+Max is a fallback, not the default merely because a mix contains Korean/Japanese or other foreign-language songs.
+
+### Cross-mode monotonicity
+
+Standard / Smart / Pro / Max are internal capability layers, not four user-facing deliverables. Normal output is Safe Final; Max is entered only as Max Recovery when the broad timeline is untrusted. Every normal Safe Final must end with a model-completed full-SRT semantic-sensitive review and a deterministic mask-only finalizer; lexical rules may nominate candidates but must not directly mutate release text. Higher capability is not permission to overwrite lower-layer safe results:
+
+`Standard / Smart stable floor -> Pro (bounded evidence); Max only for Max Recovery`
+
+A higher mode may add evidence, resolve more reviews, or rebut a **weak** lower-mode mapping. Without stronger independent evidence, it must not regress text correctness, cue ownership/display segmentation, or timing already established safely. In particular, Smart sequence projection is allowed to replace a low-confidence/review lexical mapping only when song-local canonical order and independent projection satisfy their own strict contract; it must not reopen pure Standard-safe segmentation merely because LRC line grouping differs.
+
+## 7. Anchor trust and anti-circularity
+
+Do not let a cue prove itself correct.
+
+Trust classes:
+
+- **A anchor:** original editor text already has a unique/high-confidence 1:1 canonical identity and monotonic context independent of timing model. A anchors may build primary timing model.
+- **B evidence:** a small safe text repair was needed but identity remains strong. B may support/check a model but must not establish primary timing authority by itself.
+- **C evidence:** span merge/split, gap, repeated occurrence, large edit, sequence/timing-recovered text, or otherwise ambiguous identity. C must not build primary timing model.
+
+Two independent model families are allowed, with different authority:
+
+1. **Primary timing model:** four-A production gate; may support timing validation/repair under existing guards.
+2. **Text-only Sequence Projection:** can be built from 3 A + >=1 strong B (or a narrower exact-rate-prior case) solely to recover canonical text/order. It cannot authorize timing mutation and its recovered decisions must remain C-grade.
+
+This separation is mandatory. A sequence-recovered cue may be perfectly canonical after repair and still remain timing review. It must not be promoted to A/B merely because the system itself inserted the correct text.
+
+Outlier timing decisions continue to use robust fitting and leave-one-out/independent-neighbor logic so the candidate cue does not circularly validate its own timing.
+
+## 8. Timing change policy
+
+Jianying timing is a strong prior, but not absolute authority.
+
+A timing change requires multiple independent supports such as canonical occurrence identity, monotonic lyric order, strong anchors before/after, stable per-song affine model, exact/compatible rate evidence, canonical line/token timing, and structural safety after the proposed change.
+
+Interior repairs should prefer evidence from both sides. Edge extrapolation at a song start/end needs stronger one-sided support and/or a known rate prior.
+
+If evidence is insufficient, keep original timing and return review/Pro escalation. This does not prevent separately repairing lyric text when canonical text/order has already been independently established.
+
+## 9. Piecewise and cut behavior
+
+A stable rate with an abrupt offset change across many anchors can indicate a local cut and may justify a piecewise-offset proposal. Different stable rates can indicate a true piecewise-rate edit.
+
+These are minority paths. They must be inferred from evidence, never enabled globally by default. Smart text-only frontier reconciliation must stop on a local timing discontinuity instead of treating a cut as permission to keep extrapolating canonical order.
+
+## 10. Cost escalation principle
+
+Use the cheapest sufficient evidence first:
+
+`Standard / Smart stable floor -> Pro (bounded evidence); Max only for Max Recovery`
+
+Normal cues must not pay for hard cases. A few difficult cues must not trigger a full-program acoustic scan unless the cheap evidence chain demonstrates that the broad timeline is unreliable.
+
+## 11. Output and safety requirements
+
+MUST:
+
+1. Optimize the main path for Chinese + canonical lyrics + mostly-correct Jianying timing.
+2. Treat one constant time-stretch ratio per song as the common case.
+3. Preserve and use word/token timing when available.
+4. Avoid making ordinary jobs pay the acoustic cost of rare multilingual/no-lyric cases.
+5. Never rebuild all timing merely to fix a small number of cues.
+6. Treat canonical lyrics as text/order authority, not unconditional line-break/segmentation authority.
+7. Treat Jianying timing and credible cue segmentation as strong but rebuttable priors.
+8. Keep text certainty separate from timing certainty; do not keep known-wrong editor text merely because timing remains review.
+9. Do not let severe-ASR lexical failure permanently block canonical sequence recovery when independent song/order/timing evidence is sufficient.
+10. Keep text-only sequence projection authority strictly below primary timing authority; recovered text must not create timing anchors.
+11. Require multiple independent supports before automatically changing timing or moving text across a trusted cue boundary.
+12. Fail closed to preserve/review/Pro escalation when proof is insufficient.
+13. Run expensive acoustic work locally before escalating to Max.
+14. Never overwrite original inputs; write separate outputs/artifacts.
+15. Never improve benchmarks with song/cue/timestamp-specific hard-coding.
+16. Optimize false-repair/false-ready risk before optimizing for fewer reviews.
+17. Keep the four product modes semantically distinct even if implementation components are shared.
+18. Preserve lower-mode safe results in higher modes unless stronger independent evidence explicitly rebuts them.
+
+## 12. Acceptance direction
+
+Measure at least:
+
+- trusted-canonical lexical error / missing / unexpected-duplicate counts in auto-finalized regions;
+- lexical-only timeline mutation count (must be zero);
+- unresolved identity/occurrence cases incorrectly materialized as certain;
+- false text repairs;
+- false cross-cue text moves / segmentation regressions;
+- canonical-text recovery rate on severely corrupted editor ASR;
+- model-assisted lexical/structural proposal precision and false-auto rate after deterministic validation;
+- canonical-semantic-rebuttal candidate / authorized / rejected counts, supporting-vs-opposing evidence families, and false rebuttal rate; presentation-only formatting changes must be reported separately from lexical rebuttals;
+- sequence-projection false-auto rate;
+- number of primary timing anchors before/after text recovery (must not grow from self-recovered text);
+- false timing repairs;
+- on pre-gold locked decision-sensitive cases: improved / regressed / >100ms harm / >500ms new-error / rescue / missed-rescue counts, P90/worst, and manual-repair reduction; changed and unchanged controls must be selected before human truth is read;
+- blind-review invalid/unscorable count and reasons must remain in the population report rather than forcing a guessed boundary or silently dropping hard cases;
+- false-ready decisions;
+- percentage of original trusted cues preserved;
+- timing error on intentionally corrupted cues;
+- review/escalation rate;
+- fraction of jobs resolved without audio;
+- fraction of audio processed in Pro relative to full duration;
+- runtime by mode;
+- Chinese ordinary-job performance separately from multilingual hard-set performance.
+
+Private real-song calibration and blind evaluation should decide whether new evidence is safe enough for automatic write-back. Decision-sensitive timing evaluation must freeze case identities, candidate outputs, final-mix hash, changed-case threshold and deterministic unchanged controls **before** any human boundary truth is read; the review surface must hide old/hybrid/editor candidate positions. A human may mark a case invalid/unscorable instead of guessing; such cases remain explicitly counted and may only be replaced under a separately predeclared deterministic replacement protocol. A development-visible pack can test wiring but must never be renamed blind/untouched. Production safety thresholds must not be loosened merely to reduce review count. Every real production failure used for development should be converted to a generic synthetic regression without publishing or hard-coding the real song, cue number, timestamp, or lyric text.
